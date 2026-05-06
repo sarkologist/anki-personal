@@ -48,21 +48,8 @@ function restoreFrameHandles(mutations: MutationRecord[]): void {
                 continue;
             }
 
-            if (
-                /* avoid triggering when (un)mounting whole frame */
-                mutations.length === 1
-                && !node.partiallySelected
-            ) {
-                // Similar to a "movein", this could be considered a
-                // "deletein" event and could get some special treatment, e.g.
-                // first highlight the entire frame-element.
-                frameElement.remove();
-                continue;
-            }
-
             if (frameElement.isConnected) {
                 frameElement.refreshHandles();
-                continue;
             }
         }
     }
