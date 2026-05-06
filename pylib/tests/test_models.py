@@ -293,9 +293,10 @@ def test_cloze_mathjax():
         note.cards()[0]
         .question()
         .endswith(
-            r'\(a\) <span class="cloze" data-cloze="b" data-ordinal="1">[...]</span> \[ [...] \]'
+            r'\(a\) <span class="cloze" data-cloze="b" data-ordinal="1">[...]</span> \[ \class{cloze}{[...]} \]'
         )
     )
+    assert r"\[ \class{cloze}{c} \]" in note.cards()[0].answer()
 
 
 def test_typecloze():

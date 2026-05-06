@@ -24,7 +24,6 @@ use crate::image_occlusion::imageocclusion::get_image_cloze_data;
 use crate::image_occlusion::imageocclusion::parse_image_cloze;
 use crate::latex::contains_latex;
 use crate::template::RenderContext;
-use crate::text::strip_html_preserving_entities;
 
 static CLOZE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)\{\{c[\d,]+::(.*?)(::.*?)?\}\}").unwrap());
@@ -38,6 +37,21 @@ static MATHJAX: LazyLock<Regex> = LazyLock::new(|| {
            ",
     )
     .unwrap()
+});
+
+static HTML_TAG_OR_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        "(?si)",
+        // wrapped text
+        r"(<!--.*?-->)|(<style.*?>.*?</style>)|(<script.*?>.*?</script>)",
+        // html tags
+        r"|(<.*?>)",
+    ))
+    .unwrap()
+});
+
+static HTML_CLASS_ATTR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)\bclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#).unwrap()
 });
 
 mod mathjax_caps {
@@ -489,13 +503,111 @@ pub(crate) fn strip_clozes(text: &str) -> Cow<'_, str> {
     CLOZE.replace_all(text, "$1")
 }
 
+fn html_tag_name(tag: &str) -> Option<(&str, bool)> {
+    let tag = tag.strip_prefix('<')?.trim_start();
+    let (closing, tag) = if let Some(tag) = tag.strip_prefix('/') {
+        (true, tag.trim_start())
+    } else {
+        (false, tag)
+    };
+    let name_end = tag
+        .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
+        .unwrap_or(tag.len());
+    if name_end == 0 {
+        None
+    } else {
+        Some((&tag[..name_end], closing))
+    }
+}
+
+fn html_tag_is_self_closing(tag: &str) -> bool {
+    tag.trim_end()
+        .strip_suffix('>')
+        .unwrap_or(tag)
+        .trim_end()
+        .ends_with('/')
+}
+
+fn html_tag_has_class(tag: &str, target_class: &str) -> bool {
+    let Some(caps) = HTML_CLASS_ATTR.captures(tag) else {
+        return false;
+    };
+    let class_attr = caps
+        .get(1)
+        .or_else(|| caps.get(2))
+        .or_else(|| caps.get(3))
+        .map(|m| m.as_str())
+        .unwrap_or("");
+
+    class_attr
+        .split_ascii_whitespace()
+        .any(|class| class == target_class)
+}
+
+fn strip_html_preserving_cloze_in_mathjax(html: &str) -> Cow<'_, str> {
+    if !html.contains('<') {
+        return html.into();
+    }
+
+    let mut output = String::with_capacity(html.len());
+    let mut span_stack = Vec::new();
+    let mut last_end = 0;
+    let mut found_tag = false;
+
+    for tag_match in HTML_TAG_OR_BLOCK.find_iter(html) {
+        found_tag = true;
+        output.push_str(&html[last_end..tag_match.start()]);
+
+        let tag = tag_match.as_str();
+        if let Some((name, closing)) = html_tag_name(tag) {
+            if name.eq_ignore_ascii_case("span") {
+                if closing {
+                    if span_stack.pop().unwrap_or(false) {
+                        output.push('}');
+                    }
+                } else {
+                    let cloze = html_tag_has_class(tag, "cloze");
+                    if cloze {
+                        output.push_str(r"\class{cloze}{");
+                    }
+                    if html_tag_is_self_closing(tag) {
+                        if cloze {
+                            output.push('}');
+                        }
+                    } else {
+                        span_stack.push(cloze);
+                    }
+                }
+            }
+        }
+
+        last_end = tag_match.end();
+    }
+
+    if !found_tag {
+        return html.into();
+    }
+
+    output.push_str(&html[last_end..]);
+
+    for cloze in span_stack.iter().rev() {
+        if *cloze {
+            output.push('}');
+        }
+    }
+
+    output.into()
+}
+
 fn strip_html_inside_mathjax(text: &str) -> Cow<'_, str> {
     MATHJAX.replace_all(text, |caps: &Captures| -> String {
         format!(
             "{}{}{}",
             caps.get(mathjax_caps::OPENING_TAG).unwrap().as_str(),
-            strip_html_preserving_entities(caps.get(mathjax_caps::INNER_TEXT).unwrap().as_str())
-                .as_ref(),
+            strip_html_preserving_cloze_in_mathjax(
+                caps.get(mathjax_caps::INNER_TEXT).unwrap().as_str(),
+            )
+            .as_ref(),
             caps.get(mathjax_caps::CLOSING_TAG).unwrap().as_str()
         )
     })
@@ -662,6 +774,22 @@ mod test {
         assert_eq!(
             strip_html_inside_mathjax(r"\(<foo>&lt;&gt;</foo>\)"),
             r"\(&lt;&gt;\)"
+        );
+        assert_eq!(
+            strip_html_inside_mathjax(r#"\(<span class="cloze" data-ordinal="1">[...]</span>\)"#),
+            r#"\(\class{cloze}{[...]}\)"#
+        );
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\[<span class="cloze" data-ordinal="1">a <span class="cloze-inactive" data-ordinal="2">b</span> c</span>\]"#
+            ),
+            r#"\[\class{cloze}{a b c}\]"#
+        );
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\(<span class="cloze-inactive" data-ordinal="1">a <span class="cloze" data-ordinal="2">[...]</span> c</span>\)"#
+            ),
+            r#"\(a \class{cloze}{[...]} c\)"#
         );
     }
 
