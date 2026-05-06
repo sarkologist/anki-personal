@@ -6,6 +6,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { wrapInternal } from "@tslib/wrap";
 
     import ClozeButtons from "../ClozeButtons.svelte";
+    import { undecorateFragment } from "../decorated-elements";
     import { context as noteEditorContext } from "../NoteEditor.svelte";
     import type { RichTextInputAPI } from "../rich-text-input";
 
@@ -20,7 +21,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         const richText = await richTextAPI.element;
         const { prefix, suffix } = detail;
 
-        wrapInternal(richText, prefix, suffix, false);
+        wrapInternal(richText, prefix, suffix, false, undecorateFragment);
     }
 </script>
 

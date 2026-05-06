@@ -16,6 +16,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import WithFloating from "$lib/components/WithFloating.svelte";
 
     import { mathjaxConfig } from "../../editable/mathjax-element.svelte";
+    import { undecorateFragment } from "../decorated-elements";
     import { context as noteEditorContext } from "../NoteEditor.svelte";
     import type { RichTextInputAPI } from "../rich-text-input";
     import { editingInputIsRichText } from "../rich-text-input";
@@ -25,7 +26,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     async function surround(front: string, back: string): Promise<void> {
         const element = await richTextAPI.element;
-        wrapInternal(element, front, back, false);
+        wrapInternal(element, front, back, false, undecorateFragment);
     }
 
     function onMathjaxInline(): void {

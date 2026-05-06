@@ -3,6 +3,7 @@
 
 import { BLOCK_ELEMENTS } from "@tslib/dom";
 
+import type { DecoratedElement } from "../editable/decorated";
 import { CustomElementArray } from "../editable/decorated";
 import { FrameElement } from "../editable/frame-element";
 import { FrameEnd, FrameStart } from "../editable/frame-handle";
@@ -10,6 +11,18 @@ import { Mathjax } from "../editable/mathjax-element.svelte";
 import { parsingInstructions } from "./plain-text-input";
 
 const decoratedElements = new CustomElementArray();
+
+export function undecorateFragment(fragment: DocumentFragment): void {
+    for (const decorated of decoratedElements) {
+        for (
+            const element of fragment.querySelectorAll(
+                decorated.tagName,
+            ) as NodeListOf<DecoratedElement>
+        ) {
+            element.undecorate();
+        }
+    }
+}
 
 function registerMathjax() {
     decoratedElements.push(Mathjax);

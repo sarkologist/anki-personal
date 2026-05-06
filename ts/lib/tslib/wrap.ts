@@ -3,6 +3,38 @@
 
 import { getRange, getSelection } from "./cross-browser";
 
+// Avoid range boundaries inside <frame-start>/<frame-end>: execCommand would
+// insert the wrap text inside the handle, then the handle MutationObserver
+// scrambles it.
+function expandRangeOutOfFrameHandles(range: Range): boolean {
+    let changed = false;
+    const startHandle = nearestFrameHandle(range.startContainer);
+    if (startHandle?.parentElement) {
+        range.setStartBefore(startHandle.parentElement);
+        changed = true;
+    }
+    const endHandle = nearestFrameHandle(range.endContainer);
+    if (endHandle?.parentElement) {
+        range.setEndAfter(endHandle.parentElement);
+        changed = true;
+    }
+    return changed;
+}
+
+function nearestFrameHandle(node: Node): Element | null {
+    let n: Node | null = node;
+    while (n) {
+        if (n.nodeType === Node.ELEMENT_NODE) {
+            const tag = (n as Element).tagName;
+            if (tag === "FRAME-START" || tag === "FRAME-END") {
+                return n as Element;
+            }
+        }
+        n = n.parentNode;
+    }
+    return null;
+}
+
 function wrappedExceptForWhitespace(text: string, front: string, back: string): string {
     const normalizedText = text
         .replace(/&nbsp;/g, " ")
@@ -28,6 +60,7 @@ export function wrapInternal(
     front: string,
     back: string,
     plainText: boolean,
+    normalize?: (fragment: DocumentFragment) => void,
 ): void {
     const selection = getSelection(base)!;
     const range = getRange(selection);
@@ -36,8 +69,13 @@ export function wrapInternal(
         return;
     }
 
+    if (expandRangeOutOfFrameHandles(range)) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
     const wasCollapsed = range.collapsed;
     const content = range.cloneContents();
+    normalize?.(content);
     const span = document.createElement("span");
     span.appendChild(content);
 

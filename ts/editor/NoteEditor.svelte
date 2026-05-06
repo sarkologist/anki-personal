@@ -423,6 +423,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         ioMaskEditorVisible,
     } from "../routes/image-occlusion/store";
     import CollapseLabel from "./CollapseLabel.svelte";
+    import { undecorateFragment } from "./decorated-elements";
     import * as oldEditorAdapter from "./old-editor-adapter";
 
     $: isIOImageLoaded = false;
@@ -565,7 +566,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             }
 
             $focusedInput.element.then((element) => {
-                wrapInternal(element, before, after, false);
+                wrapInternal(element, before, after, false, undecorateFragment);
             });
         }
 
