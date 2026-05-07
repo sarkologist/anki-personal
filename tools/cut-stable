@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+# Rebuild local anki/aqt wheels from the current commit and reinstall
+# them into the ~/.anki-stable venv that backs /Applications/Anki.app.
+#
+# Set ANKI_STABLE_VENV to override the venv path.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+VENV=${ANKI_STABLE_VENV:-$HOME/.anki-stable}
+UV=out/launcher/uv
+
+if [[ ! -x "$UV" ]]; then
+    echo "uv not found at $UV; build the launcher once to populate it." >&2
+    exit 1
+fi
+
+if [[ ! -d "$VENV" ]]; then
+    echo "Stable venv missing at $VENV; create it before running this." >&2
+    exit 1
+fi
+
+./ninja wheels
+
+"$UV" pip install --python "$VENV/bin/python" \
+    --reinstall --no-deps out/wheels/*.whl
+
+echo
+echo "Stable Anki updated from $(git rev-parse --short HEAD) ($(git rev-parse --abbrev-ref HEAD))"
