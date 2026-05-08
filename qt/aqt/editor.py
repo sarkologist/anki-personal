@@ -608,6 +608,7 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
         descriptions = [fld.get("description", "") for fld in flds]
         notetype_meta = {"id": self.note.mid, "modTime": note_type["mod"]}
         notetype_templates = [(t["qfmt"], t["afmt"]) for t in note_type["tmpls"]]
+        notetype_css = note_type["css"]
 
         self.widget.show()
 
@@ -634,6 +635,7 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             setIsImageOcclusion({json.dumps(self.current_notetype_is_image_occlusion())});
             setNotetypeMeta({json.dumps(notetype_meta)});
             setNotetypeTemplates({json.dumps(notetype_templates)});
+            setNotetypeCss({json.dumps(notetype_css)});
             setCollapsed({json.dumps(collapsed)});
             setClozeFields({json.dumps(cloze_fields)});
             setPlainTexts({json.dumps(plain_texts)});

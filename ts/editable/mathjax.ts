@@ -35,9 +35,14 @@ export function convertMathjax(
     input: string,
     nightMode: boolean,
     fontSize: number,
+    notetypeCss: string = "",
 ): [string, string] {
     input = revealClozeAnswers(input);
-    const style = getStyle(getCSS(nightMode, fontSize));
+    // SVGs are embedded via <img src="data:image/svg+xml,...">, so the page's
+    // CSS variables don't reach inside. Bake the notetype CSS in: `:root` will
+    // match the <svg> element of the standalone SVG document, and adding the
+    // `nightMode` class lets `.nightMode { ... }` rules apply when relevant.
+    const style = getStyle(getCSS(nightMode, fontSize) + notetypeCss);
 
     if (input.trim().length === 0) {
         return getEmptyIcon(style);
@@ -63,6 +68,9 @@ export function convertMathjax(
         svg.querySelector("text")?.setAttribute("color", "red");
         title = svg.querySelector("title")?.innerHTML ?? "";
     } else {
+        if (nightMode) {
+            svg.classList.add("nightMode");
+        }
         svg.insertBefore(style, svg.children[0]);
     }
 

@@ -25,6 +25,7 @@ function trimBreaks(text: string): string {
 export const mathjaxConfig = {
     enabled: true,
     templateScriptVersion: 0,
+    notetypeCss: "",
 };
 
 interface MathjaxProps {
@@ -123,10 +124,11 @@ export const Mathjax: DecoratedElementConstructor = class Mathjax extends HTMLEl
         this.innerHTML = "";
         this.style.whiteSpace = "normal";
 
+        const inheritedFontSize = parseFloat(getComputedStyle(this).fontSize);
         const props = $state<MathjaxProps>({
             mathjax: this.dataset.mathjax,
             block: this.block,
-            fontSize: 20,
+            fontSize: Number.isFinite(inheritedFontSize) ? inheritedFontSize : 20,
         });
 
         const component = mount(Mathjax_svelte, {

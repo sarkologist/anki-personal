@@ -73,7 +73,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import PlainTextInput from "./plain-text-input";
     import { closeHTMLTags } from "./plain-text-input/PlainTextInput.svelte";
     import PlainTextBadge from "./PlainTextBadge.svelte";
-    import RichTextInput, { editingInputIsRichText } from "./rich-text-input";
+    import RichTextInput, {
+        editingInputIsRichText,
+        type RichTextInputAPI,
+    } from "./rich-text-input";
+    import type { StyleObject } from "./rich-text-input/CustomStyles.svelte";
     import RichTextBadge from "./RichTextBadge.svelte";
     import type { NotetypeIdAndModTime, SessionOptions } from "./types";
     import { EditorState } from "./types";
@@ -280,6 +284,69 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         mathjaxConfig.templateScriptVersion++;
     }
 
+    let currentNotetypeCss = "";
+    const notetypeStyleAdditions = new WeakMap<
+        RichTextInputAPI,
+        Promise<StyleObject>
+    >();
+
+    function ensureNotetypeStyle(api: RichTextInputAPI): Promise<StyleObject> {
+        let pending = notetypeStyleAdditions.get(api);
+        if (!pending) {
+            pending = (async () => {
+                const customStyles = await api.customStyles;
+                if (!customStyles.styleMap.has("notetype")) {
+                    await customStyles.addStyleTag("notetype");
+                }
+                return customStyles.styleMap.get("notetype")!;
+            })();
+            notetypeStyleAdditions.set(api, pending);
+        }
+        return pending;
+    }
+
+    async function applyNotetypeCss(api: RichTextInputAPI): Promise<void> {
+        const styleObj = await ensureNotetypeStyle(api);
+        styleObj.element.textContent = currentNotetypeCss;
+    }
+
+    function applyNotetypeCssToAll(): void {
+        for (const input of richTextInputs) {
+            if (input?.api) {
+                applyNotetypeCss(input.api);
+            }
+        }
+    }
+
+    let documentNotetypeStyle: HTMLStyleElement | null = null;
+
+    function setNotetypeCss(css: string): void {
+        const changed = css !== currentNotetypeCss;
+        currentNotetypeCss = css;
+        applyNotetypeCssToAll();
+
+        // Also inject into document.head so rules that can't match anything
+        // inside a field's shadow root (e.g. `:root`, `.nightMode` — the
+        // latter lives on <body>) still set their custom properties on the
+        // document tree, which then cascade through the shadow boundary
+        // into field content via inheritance.
+        if (!documentNotetypeStyle) {
+            documentNotetypeStyle = document.createElement("style");
+            documentNotetypeStyle.dataset.ankiNotetypeStyle = "";
+            document.head.appendChild(documentNotetypeStyle);
+        }
+        documentNotetypeStyle.textContent = css;
+
+        // MathJax SVGs are embedded via <img src="data:image/svg+xml,...">,
+        // an isolated image document the page cascade can't reach into. Bake
+        // the CSS into the SVG itself and bust the render cache when it
+        // changes.
+        mathjaxConfig.notetypeCss = css;
+        if (changed) {
+            mathjaxConfig.templateScriptVersion++;
+        }
+    }
+
     function getNoteId(): number | null {
         return noteId;
     }
@@ -380,6 +447,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let richTextInputs: RichTextInput[] = [];
     $: richTextInputs = richTextInputs.filter(Boolean);
+    $: {
+        richTextInputs;
+        applyNotetypeCssToAll();
+    }
 
     let plainTextInputs: PlainTextInput[] = [];
     $: plainTextInputs = plainTextInputs.filter(Boolean);
@@ -623,6 +694,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             setNoteId,
             setNotetypeMeta,
             setNotetypeTemplates,
+            setNotetypeCss,
             wrap,
             setMathjaxEnabled,
             setShrinkImages,

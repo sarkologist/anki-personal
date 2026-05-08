@@ -62,6 +62,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 unescapeSomeEntities(mathjax),
                 $pageTheme.isDark,
                 fontSize,
+                mathjaxConfig.notetypeCss,
             );
             [converted, title] = entry;
             cache.set(mathjax, entry);
