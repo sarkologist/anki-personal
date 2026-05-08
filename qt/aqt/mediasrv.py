@@ -786,18 +786,29 @@ def legacy_page_data() -> Response:
     id = int(request.args["id"])
     page = aqt.mw.mediaServer.get_page(id)
     if page:
-        response = Response(page.html, mimetype="text/html")
         # Prevent JS in field content from being executed in the editor, as it would
-        # have access to our internal API, and is a security risk.
+        # have access to our internal API, and is a security risk. A per-request
+        # nonce lets editor code explicitly authorise specific scripts (e.g. the
+        # MathJax setup extracted from notetype templates) without opening the
+        # door to arbitrary inline scripts in field content.
         if page.context == PageContext.EDITOR:
+            nonce = secrets.token_urlsafe(16)
+            html = page.html.replace(
+                "<head>",
+                f'<head>\n    <meta name="anki-csp-nonce" content="{nonce}">',
+                1,
+            )
+            response = Response(html, mimetype="text/html")
             port = aqt.mw.mediaServer.getPort()
             csp_paths = (
                 f"http://127.0.0.1:{port}/_anki/",
                 f"http://127.0.0.1:{port}/_addons/",
             )
             response.headers["Content-Security-Policy"] = (
-                f"script-src {' '.join(csp_paths)}"
+                f"script-src 'nonce-{nonce}' {' '.join(csp_paths)}"
             )
+        else:
+            response = Response(page.html, mimetype="text/html")
         return response
     else:
         return _text_response(HTTPStatus.NOT_FOUND, "page not found")

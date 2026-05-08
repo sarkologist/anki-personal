@@ -38,6 +38,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { convertMathjax, unescapeSomeEntities } from "./mathjax";
     import { CooldownTimer } from "./cooldown-timer";
+    import { mathjaxConfig } from "./mathjax-element.svelte";
 
     export let mathjax: string;
     export let block: boolean;
@@ -48,7 +49,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const debouncer = new CooldownTimer(500);
 
     $: debouncer.schedule(() => {
-        const cache = getCache($pageTheme.isDark, fontSize);
+        const cache = getCache(
+            $pageTheme.isDark,
+            fontSize,
+            mathjaxConfig.templateScriptVersion,
+        );
         const entry = cache.get(mathjax);
         if (entry) {
             [converted, title] = entry;

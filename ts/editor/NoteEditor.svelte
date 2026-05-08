@@ -246,6 +246,40 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
     }
 
+    let lastTemplateScriptKey = "";
+    function setNotetypeTemplates(templates: [string, string][]): void {
+        const key = `${notetypeMeta.id}:${notetypeMeta.modTime}`;
+        if (key === lastTemplateScriptKey) {
+            return;
+        }
+        lastTemplateScriptKey = key;
+
+        const nonce = document
+            .querySelector('meta[name="anki-csp-nonce"]')
+            ?.getAttribute("content") ?? "";
+        const parser = new DOMParser();
+        for (const [qfmt, afmt] of templates) {
+            for (const html of [qfmt, afmt]) {
+                const doc = parser.parseFromString(html, "text/html");
+                for (const oldScript of doc.querySelectorAll("script")) {
+                    if (oldScript.src) {
+                        continue;
+                    }
+                    const newScript = document.createElement("script");
+                    for (const attr of oldScript.attributes) {
+                        newScript.setAttribute(attr.name, attr.value);
+                    }
+                    if (nonce) {
+                        newScript.nonce = nonce;
+                    }
+                    newScript.textContent = oldScript.textContent;
+                    document.body.appendChild(newScript);
+                }
+            }
+        }
+        mathjaxConfig.templateScriptVersion++;
+    }
+
     function getNoteId(): number | null {
         return noteId;
     }
@@ -588,6 +622,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             getNoteId,
             setNoteId,
             setNotetypeMeta,
+            setNotetypeTemplates,
             wrap,
             setMathjaxEnabled,
             setShrinkImages,

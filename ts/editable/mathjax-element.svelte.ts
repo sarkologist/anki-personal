@@ -24,6 +24,7 @@ function trimBreaks(text: string): string {
 
 export const mathjaxConfig = {
     enabled: true,
+    templateScriptVersion: 0,
 };
 
 interface MathjaxProps {
