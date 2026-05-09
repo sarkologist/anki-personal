@@ -36,7 +36,7 @@ from anki.hooks import runFilter
 from anki.httpclient import HttpClient
 from anki.models import NotetypeDict, NotetypeId, StockNotetype
 from anki.notes import Note, NoteFieldsCheckResult, NoteId
-from anki.utils import checksum, is_lin, is_win, namedtmp
+from anki.utils import checksum, is_lin, is_mac, is_win, namedtmp
 from aqt import AnkiQt, colors, gui_hooks
 from aqt.operations import QueryOp
 from aqt.operations.note import update_note
@@ -1592,12 +1592,16 @@ class EditorWebView(AnkiWebView):
             self._on_clipboard_change(mode)
         extended = self._wantsExtendedPaste()
         if html := self._internal_field_text_for_paste:
-            print("reuse internal")
             self.editor.doPaste(html, True, extended)
         else:
             if not (mime := clipboard.mimeData(mode=mode)):
                 return
-            print("use clipboard")
+            # On macOS the QMimeData snapshot can be missing text/html on the
+            # first read after an external clipboard change. Pump the event
+            # loop and re-fetch once before falling back to plain text.
+            if not mime.hasHtml() and is_mac:
+                QApplication.processEvents()
+                mime = clipboard.mimeData(mode=mode) or mime
             html, internal = self._processMime(mime, extended)
             if html:
                 self.editor.doPaste(html, internal, extended)
