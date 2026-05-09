@@ -917,6 +917,8 @@ html {{ {font} }}
         self.page().deleteLater()
 
     def on_theme_did_change(self) -> None:
+        if sip.isdeleted(self):
+            return
         # avoid flashes if page reloaded
         self.page().setBackgroundColor(theme_manager.qcolor(colors.CANVAS))
         # update night-mode class, and legacy nightMode/night-mode body classes
@@ -943,6 +945,8 @@ html {{ {font} }}
         )
 
     def on_body_classes_need_update(self) -> None:
+        if sip.isdeleted(self):
+            return
         from aqt import mw
 
         self.eval(
