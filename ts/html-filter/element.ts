@@ -34,6 +34,8 @@ const allow = (attrs: string[]): FilterMethod => (element: Element): void =>
         element,
     );
 
+const allowClass = (attrs: string[] = []): FilterMethod => allow(["CLASS", ...attrs]);
+
 function unwrapElement(element: Element): void {
     element.replaceWith(...element.childNodes);
 }
@@ -58,33 +60,35 @@ const tagsAllowedBasic: TagsAllowed = {
 
 const tagsAllowedExtended: TagsAllowed = {
     ...tagsAllowedBasic,
-    A: allow(["HREF"]),
-    B: allowNone,
-    BLOCKQUOTE: allowNone,
-    CODE: allowNone,
-    DD: allowNone,
-    DL: allowNone,
-    DT: allowNone,
-    EM: allowNone,
-    FONT: allow(["COLOR"]),
-    H1: allowNone,
-    H2: allowNone,
-    H3: allowNone,
-    I: allowNone,
-    LI: allowNone,
-    OL: allowNone,
-    PRE: allowNone,
-    RP: allowNone,
-    RT: allowNone,
-    RUBY: allowNone,
+    DIV: allowClass(),
+    A: allowClass(["HREF"]),
+    ASIDE: allowClass(),
+    B: allowClass(),
+    BLOCKQUOTE: allowClass(),
+    CODE: allowClass(),
+    DD: allowClass(),
+    DL: allowClass(),
+    DT: allowClass(),
+    EM: allowClass(),
+    FONT: allowClass(["COLOR"]),
+    H1: allowClass(),
+    H2: allowClass(),
+    H3: allowClass(),
+    I: allowClass(),
+    LI: allowClass(),
+    OL: allowClass(),
+    PRE: allowClass(),
+    RP: allowClass(),
+    RT: allowClass(),
+    RUBY: allowClass(),
     SPAN: filterSpan,
-    STRONG: allowNone,
-    TABLE: allowNone,
-    TD: allow(["COLSPAN", "ROWSPAN"]),
-    TH: allow(["COLSPAN", "ROWSPAN"]),
-    TR: allow(["ROWSPAN"]),
-    U: allowNone,
-    UL: allowNone,
+    STRONG: allowClass(),
+    TABLE: allowClass(),
+    TD: allowClass(["COLSPAN", "ROWSPAN"]),
+    TH: allowClass(["COLSPAN", "ROWSPAN"]),
+    TR: allowClass(["ROWSPAN"]),
+    U: allowClass(),
+    UL: allowClass(),
 };
 
 const filterElementTagsAllowed = (tagsAllowed: TagsAllowed) => (element: Element): void => {
