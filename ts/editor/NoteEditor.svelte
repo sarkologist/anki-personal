@@ -237,6 +237,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         for (const pi of plainTextInputs) {
             pi.api.codeMirror.editor.then((editor) => editor.clearHistory());
         }
+        for (const ri of richTextInputs) {
+            ri.api.resetUndo();
+        }
         noteId = ntid;
     }
 

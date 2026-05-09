@@ -23,6 +23,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         editable: ContentEditableAPI;
         customStyles: Promise<Record<string, any>>;
         isClozeField: boolean;
+        /** Force a commit of the current state as a standalone undo step. */
+        pushUndoSnapshot(): void;
+        /** Discard the field's undo history (e.g. when loading a new note). */
+        resetUndo(): void;
     }
 
     function editingInputIsRichText(
@@ -65,8 +69,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 <script lang="ts">
     import { directionKey, fontFamilyKey, fontSizeKey } from "@tslib/context-keys";
     import { promiseWithResolver } from "@tslib/promise";
+    import { registerShortcut } from "@tslib/shortcuts";
     import { singleCallback } from "@tslib/typing";
-    import { getAllContexts, getContext, mount, onMount, tick } from "svelte";
+    import { getAllContexts, getContext, mount, onDestroy, onMount, tick } from "svelte";
     import type { Readable } from "svelte/store";
 
     import { placeCaretAfterContent } from "$lib/domlib/place-caret";
@@ -78,6 +83,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { context as editingAreaContext } from "../EditingArea.svelte";
     import { Flag } from "../helpers";
     import { context as noteEditorContext } from "../NoteEditor.svelte";
+    import { FieldUndo } from "./field-undo";
     import getNormalizingNodeStore from "./normalizing-node-store";
     import useRichTextResolve from "./rich-text-resolve";
     import RichTextStyles from "./RichTextStyles.svelte";
@@ -145,6 +151,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         return null;
     }
 
+    let fieldUndo: FieldUndo | null = null;
+    const undoCleanups: (() => void)[] = [];
+
+    function pushUndoSnapshot(): void {
+        fieldUndo?.flush();
+    }
+
+    function resetUndo(): void {
+        fieldUndo?.reset();
+    }
+
     export const api: RichTextInputAPI = {
         name: "rich-text",
         element: richTextPromise,
@@ -159,7 +176,39 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         editable: {} as ContentEditableAPI,
         customStyles,
         isClozeField,
+        pushUndoSnapshot,
+        resetUndo,
     };
+
+    richTextPromise.then((editable: HTMLElement) => {
+        fieldUndo = new FieldUndo(editable);
+
+        const handle =
+            (action: () => void) => (event: KeyboardEvent): void => {
+                event.preventDefault();
+                event.stopPropagation();
+                action();
+            };
+
+        undoCleanups.push(
+            registerShortcut(handle(() => fieldUndo?.undo()), "Control+Z", {
+                target: editable,
+            }),
+            registerShortcut(handle(() => fieldUndo?.redo()), "Control+Shift+Z", {
+                target: editable,
+            }),
+            registerShortcut(handle(() => fieldUndo?.redo()), "Control+Y", {
+                target: editable,
+            }),
+        );
+    });
+
+    onDestroy(() => {
+        undoCleanups.forEach((cleanup) => cleanup());
+        undoCleanups.length = 0;
+        fieldUndo?.destroy();
+        fieldUndo = null;
+    });
 
     const allContexts = getAllContexts();
 

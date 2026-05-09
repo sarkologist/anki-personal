@@ -66,6 +66,12 @@ function removeFormats(
 export interface SurroundedAPI {
     element: Promise<HTMLElement>;
     inputHandler: InputHandlerAPI;
+    /**
+     * Optionally provided by the input. Called before a programmatic
+     * mutation so that any pending edit is closed off as its own
+     * undo step.
+     */
+    pushUndoSnapshot?(): void;
 }
 
 /**
@@ -270,6 +276,7 @@ export class Surrounder<T = unknown> {
             );
         }
 
+        this.#api?.pushUndoSnapshot?.();
         const clearedRange = removeFormats(range, base, exclusives);
         const matches = isSurroundedInner(clearedRange, base, matcher);
         surroundAndSelect(matches, clearedRange, base, format, selection);
@@ -309,6 +316,7 @@ export class Surrounder<T = unknown> {
             );
         }
 
+        this.#api?.pushUndoSnapshot?.();
         const clearedRange = removeFormats(range, base, exclusives);
         const surroundedRange = surround(clearedRange, base, format);
         selection.removeAllRanges();
@@ -381,6 +389,7 @@ export class Surrounder<T = unknown> {
             return this.#toggleTriggerRemove(base, selection, activeFormats, reformats);
         }
 
+        this.#api?.pushUndoSnapshot?.();
         const surroundedRange = removeFormats(
             range,
             base,
