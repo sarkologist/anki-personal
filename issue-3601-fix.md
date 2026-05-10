@@ -5,6 +5,7 @@ Upstream: https://github.com/ankitects/anki/issues/3601
 ## Repro
 
 Field HTML:
+
 ```html
 <div><div><anki-mathjax></anki-mathjax><blockquote>a</blockquote></div></div>
 ```
@@ -38,7 +39,7 @@ So the block immediately preceding the blockquote is `<anki-frame>`, whose last 
 
 Chromium's `contenteditable` handles "Backspace at the boundary of an empty/about‑to‑be‑empty block adjacent to another block" by mutating the surrounding DOM — typically merging or outdenting the empty block into the previous block. When the previous block is `<anki-frame>`, that mutation moves nodes into / out of the frame and its handles.
 
-Anki's frame `MutationObserver` then "repairs" the structure, and *that repair is what destroys the wrappers and the mathjax*. Two pieces of repair logic over‑react:
+Anki's frame `MutationObserver` then "repairs" the structure, and _that repair is what destroys the wrappers and the mathjax_. Two pieces of repair logic over‑react:
 
 ### Over‑reactive branch ([`ts/editable/frame-element.ts:46-67`](ts/editable/frame-element.ts:46))
 
@@ -67,7 +68,7 @@ for (const node of mutation.removedNodes) {
 }
 ```
 
-The heuristic is: *if a single mutation removed a frame handle and the handle wasn't partially selected, the user intended to delete the whole frame, so remove it.* This treats handle removal as a **proxy for user intent to delete the frame**.
+The heuristic is: _if a single mutation removed a frame handle and the handle wasn't partially selected, the user intended to delete the whole frame, so remove it._ This treats handle removal as a **proxy for user intent to delete the frame**.
 
 That heuristic is wrong when the handle was removed by a browser side‑effect (Chromium's block‑merge during backspace, normalization, BR placeholder insertion, etc.), not by the user. In the #3601 repro the framed `<anki-mathjax>` is still present and intact, but the frame nukes itself anyway, taking the wrapper structure with it as the cascade continues.
 
@@ -109,6 +110,7 @@ for (const node of mutation.removedNodes) {
 ```
 
 Rationale:
+
 - If the user genuinely deleted the whole frame (e.g. selected it and pressed Delete), the framed `<anki-mathjax>` is also gone, and the existing `if (!framed) frameElement.remove()` branch (lines 19‑24) handles it correctly.
 - If only a handle was removed by a browser side‑effect, recreating the handle via `refreshHandles()` is the safe recovery — the frame and its mathjax stay intact.
 - The `partiallySelected` flag and the comment about "deletein" become dead code for this branch; the flag is still read elsewhere ([`ts/editable/frame-handle.ts:341-345`](ts/editable/frame-handle.ts:341)) so leave the field itself in place.

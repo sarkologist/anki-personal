@@ -39,9 +39,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         match.clear((): void => {
             element.classList.remove(existing);
             if (
-                element.tagName === "SPAN"
-                && element.className.length === 0
-                && element.style.cssText.length === 0
+                element.tagName === "SPAN" &&
+                element.className.length === 0 &&
+                element.style.cssText.length === 0
             ) {
                 match.remove();
             }
@@ -62,8 +62,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
 
         const extension = node.extensions.find(
-            (element: HTMLElement | SVGElement): boolean =>
-                element.tagName === "SPAN",
+            (element: HTMLElement | SVGElement): boolean => element.tagName === "SPAN",
         );
 
         if (extension) {
