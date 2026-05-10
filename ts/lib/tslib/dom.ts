@@ -68,6 +68,20 @@ export function elementIsBlock(element: Element): boolean {
     return BLOCK_ELEMENTS.includes(element.tagName) || hasBlockAttribute(element);
 }
 
+/**
+ * Elements that surround/format algorithms should treat as transparent: they
+ * stay in the DOM, but the algorithm walks past them as if they weren't there,
+ * so a single formatting span can extend across them. Used for atomic decorated
+ * elements (e.g. `<anki-frame>` wrapping mathjax) whose internals shouldn't
+ * be split up by formatting, but which should still be coloured/styled when
+ * they fall inside a formatted run.
+ */
+export const TRANSPARENT_ELEMENTS: string[] = [];
+
+export function elementIsTransparent(element: Element): boolean {
+    return TRANSPARENT_ELEMENTS.includes(element.tagName);
+}
+
 export const NO_SPLIT_TAGS = ["RUBY"];
 
 export function elementShouldNotBeSplit(element: Element): boolean {

@@ -11,10 +11,13 @@ import mathIcon from "@mdi/svg/svg/math-integral-box.svg?src";
 
 const parser = new DOMParser();
 
-function getCSS(nightMode: boolean, fontSize: number): string {
-    const color = nightMode ? "white" : "black";
-    /* color is set for Maths, fill for the empty icon */
-    return `svg { color: ${color}; fill: ${color}; font-size: ${fontSize}px; };`;
+function getCSS(fontSize: number): string {
+    /* `color` is set for Maths, `fill` for the empty icon. Both use
+     * `currentColor` so the rendered glyphs inherit colour from whichever
+     * ancestor (e.g. a `<span style="color: red">` from the text-colour
+     * button) is in effect on the host of the inline SVG. Per-glyph fills
+     * emitted by `\color{...}` in the LaTeX source still override this. */
+    return `svg { color: currentColor; fill: currentColor; font-size: ${fontSize}px; }`;
 }
 
 function getStyle(css: string): HTMLStyleElement {
@@ -33,16 +36,16 @@ function getEmptyIcon(style: HTMLStyleElement): [string, string] {
 
 export function convertMathjax(
     input: string,
-    nightMode: boolean,
     fontSize: number,
-    notetypeCss: string = "",
 ): [string, string] {
     input = revealClozeAnswers(input);
-    // SVGs are embedded via <img src="data:image/svg+xml,...">, so the page's
-    // CSS variables don't reach inside. Bake the notetype CSS in: `:root` will
-    // match the <svg> element of the standalone SVG document, and adding the
-    // `nightMode` class lets `.nightMode { ... }` rules apply when relevant.
-    const style = getStyle(getCSS(nightMode, fontSize) + notetypeCss);
+    // The SVG is rendered inline inside a shadow root on <anki-mathjax>, so
+    // the notetype CSS is injected there (not into this string). Inheritable
+    // properties — `color` (for `currentColor`), `font-family`, custom
+    // properties — cross the shadow boundary naturally; opaque selectors in
+    // the notetype CSS are scoped to the shadow root and can't bleed into
+    // the editor's own DOM.
+    const style = getStyle(getCSS(fontSize));
 
     if (input.trim().length === 0) {
         return getEmptyIcon(style);
@@ -68,9 +71,6 @@ export function convertMathjax(
         svg.querySelector("text")?.setAttribute("color", "red");
         title = svg.querySelector("title")?.innerHTML ?? "";
     } else {
-        if (nightMode) {
-            svg.classList.add("nightMode");
-        }
         svg.insertBefore(style, svg.children[0]);
     }
 

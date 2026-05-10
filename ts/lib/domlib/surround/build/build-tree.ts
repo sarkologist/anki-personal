@@ -1,7 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-import { elementIsEmpty, nodeIsElement, nodeIsText } from "@tslib/dom";
+import { elementIsEmpty, elementIsTransparent, nodeIsElement, nodeIsText } from "@tslib/dom";
 
 import type { Match } from "../match-type";
 import type { TreeNode } from "../tree";
@@ -14,6 +14,14 @@ function buildFromElement<T>(
     format: BuildFormat<T>,
     matchAncestors: Match<T>[],
 ): TreeNode[] {
+    if (elementIsTransparent(element)) {
+        // The element stays in the DOM, but is not represented in the tree.
+        // FormattingNodes on either side will see each other as adjacent
+        // siblings (FlatRange.merge spans the indices in between, so any
+        // surroundContents call still wraps this element along with them).
+        return [];
+    }
+
     const match = format.createMatch(element);
 
     if (match.matches) {

@@ -1,7 +1,7 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-import { BLOCK_ELEMENTS } from "@tslib/dom";
+import { BLOCK_ELEMENTS, TRANSPARENT_ELEMENTS } from "@tslib/dom";
 
 import type { DecoratedElement } from "../editable/decorated";
 import { CustomElementArray } from "../editable/decorated";
@@ -37,6 +37,13 @@ function registerFrameElement() {
     /* This will ensure that they are not targeted by surrounding algorithms */
     BLOCK_ELEMENTS.push(FrameStart.tagName.toUpperCase());
     BLOCK_ELEMENTS.push(FrameEnd.tagName.toUpperCase());
+
+    /* The frame itself is transparent to surround algorithms, so a colour
+     * (or other formatting) span applied to text on either side of a framed
+     * element extends across the frame instead of being split by it. The
+     * decorated element inside (e.g. <anki-mathjax>) inherits the resulting
+     * style via the normal CSS cascade. */
+    TRANSPARENT_ELEMENTS.push(FrameElement.tagName.toUpperCase());
 }
 
 registerMathjax();

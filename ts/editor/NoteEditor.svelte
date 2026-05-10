@@ -340,10 +340,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
         documentNotetypeStyle.textContent = css;
 
-        // MathJax SVGs are embedded via <img src="data:image/svg+xml,...">,
-        // an isolated image document the page cascade can't reach into. Bake
-        // the CSS into the SVG itself and bust the render cache when it
-        // changes.
+        // MathJax SVGs are rendered inline inside a shadow root on
+        // <anki-mathjax>, so the editor's main cascade can't reach them.
+        // Inject the notetype CSS into the shadow root so notetype-defined
+        // font, colors, and `.nightMode` rules still affect the math.
         mathjaxConfig.notetypeCss = css;
         if (changed) {
             mathjaxConfig.templateScriptVersion++;

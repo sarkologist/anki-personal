@@ -68,7 +68,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     $: initialize($focusedInput);
 
-    let activeImage: HTMLImageElement | null = null;
+    // The clickable mathjax host. Used to be an <img>; it's now an inline-svg
+    // host element with shadow DOM, but the field name is preserved for
+    // continuity with downstream code (overlay positioning, focus events).
+    let activeImage: HTMLElement | null = null;
     let mathjaxElement: HTMLElement | null = null;
 
     let allowResubscription: Callback;
@@ -83,7 +86,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
      */
     const code = writable("");
 
-    function showOverlay(image: HTMLImageElement, pos?: CodeMirrorLib.Position) {
+    function showOverlay(image: HTMLElement, pos?: CodeMirrorLib.Position) {
         if ($isComposing) {
             // Should be canceled while an IME composition session is active
             return;
@@ -144,7 +147,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         errorMessage = activeImage!.title;
     }
 
-    async function updateImageErrorCallback(image: HTMLImageElement | null) {
+    async function updateImageErrorCallback(image: HTMLElement | null) {
         cleanupImageError?.();
         cleanupImageError = null;
 
@@ -158,7 +161,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: updateImageErrorCallback(activeImage);
 
     async function showOverlayIfMathjaxClicked({ target }: Event): Promise<void> {
-        if (target instanceof HTMLImageElement && target.dataset.anki === "mathjax") {
+        if (
+            target instanceof HTMLElement
+            && target.dataset.anki === "mathjax"
+        ) {
             resetHandle();
             showOverlay(target);
         }
@@ -167,7 +173,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     async function showOnAutofocus({
         detail,
     }: CustomEvent<{
-        image: HTMLImageElement;
+        image: HTMLElement;
         position?: [number, number];
     }>): Promise<void> {
         let position: CodeMirrorLib.Position | undefined = undefined;
@@ -182,7 +188,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     async function showSelectAll({
         detail,
-    }: CustomEvent<HTMLImageElement>): Promise<void> {
+    }: CustomEvent<HTMLElement>): Promise<void> {
         selectAll = true;
         showOverlay(detail);
     }
