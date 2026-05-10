@@ -261,9 +261,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
         lastTemplateScriptKey = key;
 
-        const nonce = document
-            .querySelector('meta[name="anki-csp-nonce"]')
-            ?.getAttribute("content") ?? "";
+        const nonce =
+            document
+                .querySelector('meta[name="anki-csp-nonce"]')
+                ?.getAttribute("content") ?? "";
         const parser = new DOMParser();
         for (const [qfmt, afmt] of templates) {
             for (const html of [qfmt, afmt]) {

@@ -101,9 +101,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         if (notetypeCss) {
             shadow.appendChild(makeStyle(notetypeCss));
         }
-        const fragment = document
-            .createRange()
-            .createContextualFragment(svgMarkup);
+        const fragment = document.createRange().createContextualFragment(svgMarkup);
         shadow.appendChild(fragment);
 
         observer?.disconnect();

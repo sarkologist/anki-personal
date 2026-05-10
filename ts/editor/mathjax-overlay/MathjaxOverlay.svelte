@@ -161,10 +161,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: updateImageErrorCallback(activeImage);
 
     async function showOverlayIfMathjaxClicked({ target }: Event): Promise<void> {
-        if (
-            target instanceof HTMLElement
-            && target.dataset.anki === "mathjax"
-        ) {
+        if (target instanceof HTMLElement && target.dataset.anki === "mathjax") {
             resetHandle();
             showOverlay(target);
         }
@@ -186,9 +183,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         showOverlay(detail.image, position);
     }
 
-    async function showSelectAll({
-        detail,
-    }: CustomEvent<HTMLElement>): Promise<void> {
+    async function showSelectAll({ detail }: CustomEvent<HTMLElement>): Promise<void> {
         selectAll = true;
         showOverlay(detail);
     }

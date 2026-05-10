@@ -71,7 +71,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { promiseWithResolver } from "@tslib/promise";
     import { registerShortcut } from "@tslib/shortcuts";
     import { singleCallback } from "@tslib/typing";
-    import { getAllContexts, getContext, mount, onDestroy, onMount, tick } from "svelte";
+    import {
+        getAllContexts,
+        getContext,
+        mount,
+        onDestroy,
+        onMount,
+        tick,
+    } from "svelte";
     import type { Readable } from "svelte/store";
 
     import { placeCaretAfterContent } from "$lib/domlib/place-caret";
@@ -184,22 +191,35 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         fieldUndo = new FieldUndo(editable);
 
         const handle =
-            (action: () => void) => (event: KeyboardEvent): void => {
+            (action: () => void) =>
+            (event: KeyboardEvent): void => {
                 event.preventDefault();
                 event.stopPropagation();
                 action();
             };
 
         undoCleanups.push(
-            registerShortcut(handle(() => fieldUndo?.undo()), "Control+Z", {
-                target: editable,
-            }),
-            registerShortcut(handle(() => fieldUndo?.redo()), "Control+Shift+Z", {
-                target: editable,
-            }),
-            registerShortcut(handle(() => fieldUndo?.redo()), "Control+Y", {
-                target: editable,
-            }),
+            registerShortcut(
+                handle(() => fieldUndo?.undo()),
+                "Control+Z",
+                {
+                    target: editable,
+                },
+            ),
+            registerShortcut(
+                handle(() => fieldUndo?.redo()),
+                "Control+Shift+Z",
+                {
+                    target: editable,
+                },
+            ),
+            registerShortcut(
+                handle(() => fieldUndo?.redo()),
+                "Control+Y",
+                {
+                    target: editable,
+                },
+            ),
         );
     });
 
