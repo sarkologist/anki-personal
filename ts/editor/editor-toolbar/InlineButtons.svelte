@@ -8,6 +8,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Item from "$lib/components/Item.svelte";
 
     import BoldButton from "./BoldButton.svelte";
+    import HighlightClassButton from "./HighlightClassButton.svelte";
     import HighlightColorButton from "./HighlightColorButton.svelte";
     import ItalicButton from "./ItalicButton.svelte";
     import RemoveFormatButton from "./RemoveFormatButton.svelte";
@@ -48,6 +49,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         <ButtonGroup>
             <TextColorButton color={textColor} />
             <HighlightColorButton color={highlightColor} />
+            <HighlightClassButton />
         </ButtonGroup>
     </Item>
 

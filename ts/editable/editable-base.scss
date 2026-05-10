@@ -1,5 +1,24 @@
 @use "../lib/sass/scrollbar";
 
+// Default values for the priority highlight palette. Override these in your
+// card template (or here, if you want different defaults in the editor) to
+// theme highlights site-wide. Mirror the .nightMode block for dark mode.
+:host {
+    --hl-1: #d40000;
+    --hl-2: #4ead1b;
+    --hl-3: #d5b60a;
+}
+
+:host(.nightMode) {
+    --hl-1: #ff8a8a;
+    --hl-2: #b6ff00;
+    --hl-3: #ffe066;
+}
+
+.hl-1 { color: var(--hl-1); }
+.hl-2 { color: var(--hl-2); }
+.hl-3 { color: var(--hl-3); }
+
 * {
     max-width: 100%;
 }
