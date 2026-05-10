@@ -1,4 +1,4 @@
-# Claude Code Configuration
+# Codex Configuration
 
 ## Project Overview
 
@@ -51,7 +51,7 @@ communicating with the Rust backend (which happens over POST requests).
 
 ## Testing (red/green TDD)
 
-Use red/green test-driven development for new behavior and bug fixes.
+Use red/green test-driven development for new behavior and bug fixes
 
 ## Fixing errors
 
@@ -87,4 +87,4 @@ in build scripts/tests is fine.
 
 ## Individual preferences
 
-See @.claude/user.md
+See @.Codex/user.md
