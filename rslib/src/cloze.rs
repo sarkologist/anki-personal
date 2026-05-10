@@ -544,38 +544,264 @@ fn html_tag_has_class(tag: &str, target_class: &str) -> bool {
         .any(|class| class == target_class)
 }
 
+fn tex_group_end(text: &str, start: usize) -> Option<usize> {
+    debug_assert!(text[start..].starts_with('{'));
+
+    let mut depth = 0usize;
+    let mut idx = start;
+    while idx < text.len() {
+        let rest = &text[idx..];
+        if rest.starts_with('\\') {
+            let next = idx + 1;
+            if next < text.len() {
+                let next_char = text[next..].chars().next().unwrap();
+                if matches!(next_char, '{' | '}') {
+                    idx = next + next_char.len_utf8();
+                    continue;
+                }
+            }
+            idx += 1;
+            continue;
+        }
+
+        let char = rest.chars().next().unwrap();
+        match char {
+            '{' => depth += 1,
+            '}' if depth == 1 => return Some(idx + char.len_utf8()),
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        idx += char.len_utf8();
+    }
+
+    None
+}
+
+fn tex_optional_argument_end(text: &str, start: usize) -> Option<usize> {
+    debug_assert!(text[start..].starts_with('['));
+
+    let mut depth = 0usize;
+    let mut idx = start;
+    while idx < text.len() {
+        let rest = &text[idx..];
+        if rest.starts_with('\\') {
+            let next = idx + 1;
+            if next < text.len() {
+                let next_char = text[next..].chars().next().unwrap();
+                if matches!(next_char, '[' | ']') {
+                    idx = next + next_char.len_utf8();
+                    continue;
+                }
+            }
+            idx += 1;
+            continue;
+        }
+
+        let char = rest.chars().next().unwrap();
+        match char {
+            '[' => depth += 1,
+            ']' if depth == 1 => return Some(idx + char.len_utf8()),
+            ']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        idx += char.len_utf8();
+    }
+
+    None
+}
+
+fn tex_environment_command_end(text: &str, start: usize, command: &str) -> Option<usize> {
+    let rest = &text[start..];
+    if !rest.starts_with(command) {
+        return None;
+    }
+
+    let mut idx = start + command.len();
+    if text[idx..]
+        .chars()
+        .next()
+        .is_some_and(|char| char.is_ascii_alphabetic())
+    {
+        return None;
+    }
+
+    while idx < text.len() {
+        let char = text[idx..].chars().next().unwrap();
+        if char.is_ascii_whitespace() {
+            idx += char.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    if !text[idx..].starts_with('{') {
+        return None;
+    }
+
+    tex_group_end(text, idx)
+}
+
+fn mathjax_alignment_separator_end(text: &str, start: usize) -> Option<usize> {
+    let rest = &text[start..];
+    if rest.starts_with('&') {
+        return Some(start + 1);
+    }
+    if !rest.starts_with(r"\\") {
+        return None;
+    }
+
+    let mut end = start + 2;
+    if text[end..].starts_with('*') {
+        end += 1;
+    }
+    if text[end..].starts_with('[') {
+        if let Some(optional_end) = tex_optional_argument_end(text, end) {
+            end = optional_end;
+        }
+    }
+
+    Some(end)
+}
+
+// MathJax's \class macro can't contain alignment separators that belong to an
+// outer environment, so active clozes need to be split around top-level &/\\.
+fn mathjax_alignment_separators(text: &str) -> Vec<(usize, usize)> {
+    let mut separators = vec![];
+    let mut brace_depth = 0usize;
+    let mut environment_depth = 0usize;
+    let mut idx = 0;
+
+    while idx < text.len() {
+        let rest = &text[idx..];
+
+        if brace_depth == 0 && environment_depth == 0 {
+            if let Some(end) = mathjax_alignment_separator_end(text, idx) {
+                separators.push((idx, end));
+                idx = end;
+                continue;
+            }
+        }
+
+        if rest.starts_with('\\') {
+            if let Some(end) = tex_environment_command_end(text, idx, r"\begin") {
+                environment_depth += 1;
+                idx = end;
+                continue;
+            }
+            if let Some(end) = tex_environment_command_end(text, idx, r"\end") {
+                environment_depth = environment_depth.saturating_sub(1);
+                idx = end;
+                continue;
+            }
+
+            let next = idx + 1;
+            if next < text.len() {
+                let next_char = text[next..].chars().next().unwrap();
+                if matches!(next_char, '{' | '}' | '&' | '\\') {
+                    idx = next + next_char.len_utf8();
+                    continue;
+                }
+            }
+            idx += 1;
+            continue;
+        }
+
+        let char = rest.chars().next().unwrap();
+        match char {
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            _ => {}
+        }
+        idx += char.len_utf8();
+    }
+
+    separators
+}
+
+fn push_mathjax_cloze_segment(segment: &str, output: &mut String) {
+    if segment.trim().is_empty() {
+        output.push_str(segment);
+    } else {
+        output.push_str(r"\class{cloze}{");
+        output.push_str(segment);
+        output.push('}');
+    }
+}
+
+fn wrap_mathjax_cloze_content(content: &str) -> String {
+    let separators = mathjax_alignment_separators(content);
+    if separators.is_empty() {
+        return format!(r"\class{{cloze}}{{{content}}}");
+    }
+
+    let mut output = String::with_capacity(content.len() + r"\class{cloze}{}".len());
+    let mut last_end = 0;
+    for (start, end) in separators {
+        push_mathjax_cloze_segment(&content[last_end..start], &mut output);
+        output.push_str(&content[start..end]);
+        last_end = end;
+    }
+    push_mathjax_cloze_segment(&content[last_end..], &mut output);
+
+    output
+}
+
+struct MathjaxSpan {
+    cloze: bool,
+    content: String,
+}
+
+fn append_mathjax_span(span: MathjaxSpan, output: &mut String) {
+    if span.cloze {
+        output.push_str(&wrap_mathjax_cloze_content(&span.content));
+    } else {
+        output.push_str(&span.content);
+    }
+}
+
 fn strip_html_preserving_cloze_in_mathjax(html: &str) -> Cow<'_, str> {
     if !html.contains('<') {
         return html.into();
     }
 
-    let mut output = String::with_capacity(html.len());
-    let mut span_stack = Vec::new();
+    let mut stack = vec![MathjaxSpan {
+        cloze: false,
+        content: String::with_capacity(html.len()),
+    }];
     let mut last_end = 0;
     let mut found_tag = false;
 
     for tag_match in HTML_TAG_OR_BLOCK.find_iter(html) {
         found_tag = true;
-        output.push_str(&html[last_end..tag_match.start()]);
+        stack
+            .last_mut()
+            .unwrap()
+            .content
+            .push_str(&html[last_end..tag_match.start()]);
 
         let tag = tag_match.as_str();
         if let Some((name, closing)) = html_tag_name(tag) {
             if name.eq_ignore_ascii_case("span") {
                 if closing {
-                    if span_stack.pop().unwrap_or(false) {
-                        output.push('}');
+                    if stack.len() > 1 {
+                        let span = stack.pop().unwrap();
+                        append_mathjax_span(span, &mut stack.last_mut().unwrap().content);
                     }
                 } else {
                     let cloze = html_tag_has_class(tag, "cloze");
-                    if cloze {
-                        output.push_str(r"\class{cloze}{");
-                    }
                     if html_tag_is_self_closing(tag) {
                         if cloze {
-                            output.push('}');
+                            stack
+                                .last_mut()
+                                .unwrap()
+                                .content
+                                .push_str(r"\class{cloze}{}");
                         }
                     } else {
-                        span_stack.push(cloze);
+                        stack.push(MathjaxSpan {
+                            cloze,
+                            content: String::new(),
+                        });
                     }
                 }
             }
@@ -588,15 +814,18 @@ fn strip_html_preserving_cloze_in_mathjax(html: &str) -> Cow<'_, str> {
         return html.into();
     }
 
-    output.push_str(&html[last_end..]);
+    stack
+        .last_mut()
+        .unwrap()
+        .content
+        .push_str(&html[last_end..]);
 
-    for cloze in span_stack.iter().rev() {
-        if *cloze {
-            output.push('}');
-        }
+    while stack.len() > 1 {
+        let span = stack.pop().unwrap();
+        append_mathjax_span(span, &mut stack.last_mut().unwrap().content);
     }
 
-    output.into()
+    stack.pop().unwrap().content.into()
 }
 
 fn strip_html_inside_mathjax(text: &str) -> Cow<'_, str> {
@@ -790,6 +1019,22 @@ mod test {
                 r#"\(<span class="cloze-inactive" data-ordinal="1">a <span class="cloze" data-ordinal="2">[...]</span> c</span>\)"#
             ),
             r#"\(a \class{cloze}{[...]} c\)"#
+        );
+        assert_eq!(
+            strip_html_inside_mathjax(r#"\(<span class="cloze" data-ordinal="1">a \& b</span>\)"#),
+            r#"\(\class{cloze}{a \& b}\)"#
+        );
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\(<span class="cloze" data-ordinal="1">\begin{matrix}a&b\\c&d\end{matrix}</span>\)"#
+            ),
+            r#"\(\class{cloze}{\begin{matrix}a&b\\c&d\end{matrix}}\)"#
+        );
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\[\begin{aligned}a &=<span class="cloze" data-ordinal="1">b \\ & = c</span>\\ &=d\end{aligned}\]"#
+            ),
+            r#"\[\begin{aligned}a &=\class{cloze}{b }\\ &\class{cloze}{ = c}\\ &=d\end{aligned}\]"#
         );
     }
 
