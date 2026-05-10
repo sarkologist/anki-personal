@@ -1,6 +1,6 @@
 # Editor sluggishness with many MathJax elements — investigation plan
 
-**Status:** diagnosis complete, no changes landed yet
+**Status:** diagnosis updated, F1 implemented locally; micro-profile complete
 
 ## Problem
 
@@ -18,13 +18,18 @@ For each candidate fix below:
 4. Record the result in this file (delta in the metric we care about).
 5. Decide: **keep** (commit) or **discard** (revert).
 
-### Profiling setup — TODO
+### Profiling setup
 
-How to get a Chromium DevTools Performance trace from the Anki editor needs to be confirmed before we start. Candidates:
+Confirmed from `./run`: development launches already set
+`QTWEBENGINE_REMOTE_DEBUGGING`, defaulting to `8080`.
 
-- Anki's debug console (Ctrl+Shift+;) gives a Python repl; webview devtools may be reachable via `QWEBENGINE_REMOTE_DEBUGGING` env var.
-- Setting `QTWEBENGINE_REMOTE_DEBUGGING=8888` (or similar) before launching, then opening `http://localhost:8888` in Chrome.
-- Confirm by launching from the worktree (`./run` or whatever the dev launcher is — verify in build/).
+Use an optimized build for meaningful editor measurements:
+
+```sh
+QTWEBENGINE_REMOTE_DEBUGGING=8080 ./tools/runopt
+```
+
+Then open `http://localhost:8080` in Chrome, pick the editor webview, and capture a Performance trace while typing in the synthetic heavy field.
 
 Metric to track: **total scripting time per keystroke** while typing into a synthetic heavy field. Secondary: **input event handler duration** specifically.
 
@@ -37,13 +42,14 @@ Create a note whose Front field contains ~30 MathJax inline expressions plus som
 Per-keystroke chain that scales with field/element count:
 
 1. **`FieldUndo.onMutation`** ([ts/editor/rich-text-input/field-undo.ts:53](ts/editor/rich-text-input/field-undo.ts:53)) — NEW since commit `80224bba1`.
-   - Line 56 reads `this.base.innerHTML` (full decorated serialization, includes every MathJax SVG data URL) and string-compares it against `this.last.html` on every mutation batch.
+   - Line 56 reads `this.base.innerHTML` and string-compares it against `this.last.html` on every mutation batch.
    - During typing the comparison is always false, so the early-return is dead weight; we pay the O(N) cost on every keystroke.
+   - Note: current MathJax SVG output is rendered in a shadow root, so this is not serializing the SVG markup itself. MathJax still hurts indirectly because it inflates the light-DOM wrapper/custom-element structure the editor keeps walking.
    - **Hypothesis:** dominant new contributor to the slowness.
 
 2. **`dom-mirror` cloneNode** ([ts/lib/sveltelib/dom-mirror.ts:60](ts/lib/sveltelib/dom-mirror.ts:60)) — `Range.cloneContents()` deep-clones the entire field on every mutation batch. Pre-existing.
 
-3. **`normalizeFragment`** ([ts/editor/rich-text-input/normalizing-node-store.ts:10](ts/editor/rich-text-input/normalizing-node-store.ts:10)) — runs as `nodes` store preprocess on every `set`. `fragment.normalize()` + 3 separate `querySelectorAll` walks (one per decorated tag). Pre-existing.
+3. **`normalizeFragment`** ([ts/editor/rich-text-input/normalizing-node-store.ts:10](ts/editor/rich-text-input/normalizing-node-store.ts:10)) — runs as `nodes` store preprocess on every `set`. `fragment.normalize()` + a `querySelectorAll` walk per registered decorated tag. Pre-existing. In this checkout, only MathJax is registered as a decorated element.
 
 4. **`fragmentToStored`** ([ts/editor/rich-text-input/transform.ts:52](ts/editor/rich-text-input/transform.ts:52)) — second deep clone via `importNode`, full serialization, regex passes per decorated type. Pre-existing.
 
@@ -76,39 +82,39 @@ private onMutation(): void {
 
 If the post-`restore()` no-op behaviour matters in practice, replace with a "skip next batch" flag set inside `restore()` and consumed by `onMutation` — no innerHTML read needed.
 
-**Status:** not started. Profile result: TBD. Decision: TBD.
+**Status:** implemented locally. Profile result: Chrome headless micro-profile on a 30-MathJax-like field measured old eager compare at median `0.0225 ms` per mutation batch vs new debounce-only path at median `0.00075 ms` per mutation batch, removing about `0.02175 ms` of synchronous work per mutation batch in this fixture (~30x faster for `onMutation()` itself). Decision: keep provisionally; still wants a full Anki editor trace when the Add dialog profiling harness is stable.
 
-### F2. FieldUndo: drive off `inputHandler` events instead of MutationObserver
+### F2. Move rich-text serialization behind the save/blur boundary
 
-**Hypothesis:** filters out internal Svelte/MathJax DOM churn the user doesn't care about, and avoids the parallel observer entirely. The existing `inputHandler` ([ts/lib/sveltelib/input-handler.ts](ts/lib/sveltelib/input-handler.ts)) already broadcasts user-driven `beforeInput`/`afterInput` events.
+**Hypothesis:** the bidirectional binding in [`RichTextInput.svelte:268`](ts/editor/rich-text-input/RichTextInput.svelte:268) serializes → re-parses → re-decorates internally on every keystroke, even though `mirrorFromFragment` is paused while focused (so the result is mostly thrown away by the rich-text side). Moving `fragmentToStored` behind a debounce/flush boundary could eliminate steps 4 and 5 from the critical typing path.
 
-**Risk:** toolbar mutations (Surround) bypass `beforeInput` — that's exactly why FieldUndo was added. We'd need toolbar code to push undo steps explicitly (it already does, via `pushUndoSnapshot`), and to ensure we don't miss paste/IME paths.
+**Risk:** `content` is not only for backend save. It drives plain-text mirroring, empty-description UI, blur payloads, save scheduling, and possible add-on expectations. Any change needs explicit flush points for blur, `saveNow`, toggling plain text, and add-on-observable state.
 
 **Status:** not started. Profile result: TBD. Decision: TBD. (Only pursue if F1 isn't enough.)
 
-### F3. FieldUndo: defer `commit()` body to `requestIdleCallback`
+### F3. FieldUndo: drive off `inputHandler` events instead of MutationObserver
+
+**Hypothesis:** filters out internal Svelte/MathJax DOM churn the user doesn't care about, and avoids the parallel observer entirely. The existing `inputHandler` ([ts/lib/sveltelib/input-handler.ts](ts/lib/sveltelib/input-handler.ts)) already broadcasts user-driven `beforeInput`/`afterInput` events.
+
+**Risk:** many programmatic mutations bypass `inputHandler`. Surround calls already use `pushUndoSnapshot`, but other paths currently do not, including MathJax/LaTeX wrapping, rich-text cloze wrapping, old editor `wrap()`, and `execCommand` toolbar buttons. This needs a full programmatic-edit audit before implementation.
+
+**Status:** not started. Profile result: TBD. Decision: TBD.
+
+### F4. FieldUndo: defer `commit()` body to `requestIdleCallback`
 
 **Hypothesis:** even with F1, `commit()` reads `innerHTML` + `saveSelection`. Wrapping it in `requestIdleCallback` (with a setTimeout fallback) makes worst-case typing latency independent of field size. The 300 ms debounce already gives a budget; idle deferral makes it strictly off the critical path.
 
 **Status:** not started. Profile result: TBD. Decision: TBD.
 
-### F4. Combine the three `querySelectorAll` passes in `normalizeFragment`
+### F5. Combine decorated-element walks in `normalizeFragment`
 
-**Hypothesis:** small win. Replace three full-tree walks with one `querySelectorAll('anki-mathjax, anki-image, anki-frame')` and dispatch by `tagName`.
+**Hypothesis:** small win only if multiple decorated elements are registered. In this checkout, `decoratedElements` only contains MathJax, so there is no three-pass walk to combine.
 
-**Status:** not started. Profile result: TBD. Decision: TBD.
+**Status:** parked unless more decorated elements are added. Profile result: TBD. Decision: TBD.
 
-### F5. Avoid the double clone (dom-mirror + transform)
+### F6. Avoid the double clone (dom-mirror + transform)
 
 **Hypothesis:** [`dom-mirror.ts:60`](ts/lib/sveltelib/dom-mirror.ts:60) clones the field, then [`fragmentToStored`](ts/editor/rich-text-input/transform.ts:53) clones it again via `importNode` to keep `adjustOutputFragment.lastChild.remove()` from mutating the original. We could either (a) snapshot the trailing-`<br>` decision without cloning, or (b) share a single clone for the round-trip.
-
-**Status:** not started. Profile result: TBD. Decision: TBD.
-
-### F6. Bigger refactor: skip the per-keystroke `nodes ↔ content` round-trip while focused
-
-**Hypothesis:** the bidirectional binding in [`RichTextInput.svelte:268`](ts/editor/rich-text-input/RichTextInput.svelte:268) serializes → re-parses → re-decorates internally on every keystroke, even though `mirrorFromFragment` is paused while focused (so the result is thrown away). `content` only needs to be in sync at save time (already 600 ms debounced in `NoteEditor`). Moving `fragmentToStored` behind that same debounce would eliminate steps 4 and 5 above.
-
-**Risk:** touches the plain-text↔rich-text mirroring contract; deserves a proper plan. Don't pursue speculatively.
 
 **Status:** not started. Profile result: TBD. Decision: TBD.
 
@@ -117,3 +123,7 @@ If the post-`restore()` no-op behaviour matters in practice, replace with a "ski
 Append entries as the work proceeds — each agent / session adds at the bottom.
 
 - `2026-05-10` — Plan drafted from initial code read. Profiling setup not yet figured out; that's the next blocker.
+- `2026-05-10` — Assessment pass: confirmed `QTWEBENGINE_REMOTE_DEBUGGING` setup in `./run`, corrected MathJax-shadow-root detail, demoted the inputHandler-only undo idea because programmatic mutation paths are broader than Surround, parked the normalizeFragment multi-pass idea for this checkout, and promoted the rich-text serialization/save-boundary investigation as the next likely target after F1.
+- `2026-05-10` — F1 implemented locally by removing the eager `innerHTML` equality check from `FieldUndo.onMutation()`. `commit()` still performs the equality check after the debounce, preserving no-op restore behavior without serializing on every mutation batch.
+- `2026-05-10` — Verification: `./yarn svelte-check:once` passed; `PATH="$HOME/.cargo/bin:$PATH" ./ninja check:svelte` passed. Full `./check` was attempted with the same PATH fix, but failed in `check:minilints` because commit author `oon.guo.liang@gmail.com` is not listed in `CONTRIBUTORS`; no F1-specific failure was reported before the build stopped.
+- `2026-05-10` — Profiling: launched Anki with `QTWEBENGINE_REMOTE_DEBUGGING=8080` against `/private/tmp/anki-editor-profile-base`, but the temp Add Cards path did not expose an editor target and invoking the toolbar `pycmd("add")` through DevTools crashed the process with `Segmentation fault: 11`. As a fallback, ran a headless Chrome DOM micro-profile of the exact F1 hotspot using a 30-MathJax-like field: old eager `innerHTML` compare median `0.0225 ms`/mutation batch, new debounce-only median `0.00075 ms`/mutation batch, about `0.02175 ms` synchronous work removed per mutation batch. Full editor trace remains pending.

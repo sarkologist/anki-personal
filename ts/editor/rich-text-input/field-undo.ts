@@ -51,12 +51,6 @@ export class FieldUndo {
     }
 
     private onMutation(): void {
-        // Ignore mutations whose net effect leaves us at the last committed
-        // state — most importantly, the mutations we cause via restore().
-        if (this.base.innerHTML === this.last.html) {
-            return;
-        }
-
         if (this.debounceHandle != null) {
             clearTimeout(this.debounceHandle);
         }
