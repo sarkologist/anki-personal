@@ -37,6 +37,7 @@ const IGNORED_FOLDERS: &[&str] = &[
     "./extra",
     "./ts/.svelte-kit",
     "./.venv",
+    "./.claude",
     "./qt/installer/windows-template",
     "./qt/installer/mac-template",
 ];
