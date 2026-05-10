@@ -20,7 +20,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 <script lang="ts">
     import { onDestroy, tick } from "svelte";
-    import { writable } from "svelte/store";
 
     import { convertMathjax, unescapeSomeEntities } from "./mathjax";
     import { CooldownTimer } from "./cooldown-timer";
@@ -52,9 +51,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let host: HTMLElement;
     let shadow: ShadowRoot | null = null;
-    const imageHeight = writable(0);
-
-    $: verticalCenter = -$imageHeight / 2 + fontSize / 4;
 
     let observer: ResizeObserver | null = null;
 
@@ -63,8 +59,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     // driven by --font-size, which crosses the shadow boundary as a normal
     // custom property.
     const INTERNAL_CSS = [
-        ":host { display: inline-block; vertical-align: var(--vertical-center, baseline); }",
-        ":host(.block) { display: block; margin: 1rem auto; transform: scale(1.1); }",
+        // - `overflow: hidden` shifts the inline-block's baseline to its
+        //   bottom margin edge (per CSS spec). Without it, the host's baseline
+        //   is its line baseline (somewhere in the middle), and mirroring
+        //   MathJax's SVG-level `vertical-align: -i ex` onto the host wouldn't
+        //   land the math baseline on the parent text baseline.
+        // - `line-height: 0` collapses the strut so the host's box hugs the
+        //   SVG. Otherwise short math (no descender, small SVG) leaves the
+        //   font's strut descent below the SVG, so the host bottom sits
+        //   *below* the SVG bottom and the math floats above the text line.
+        ":host { display: inline-block; overflow: hidden; line-height: 0; vertical-align: var(--vertical-center, baseline); }",
+        // `width: fit-content` is needed so `margin: auto` actually centers:
+        // the host is a <span>, not a replaced element, so without it
+        // `display: block` would fill the parent width and the auto margins
+        // would collapse to zero, leaving the math flush-left.
+        ":host(.block) { display: block; width: fit-content; margin: 1rem auto; transform: scale(1.1); }",
         ":host(.empty) { vertical-align: text-bottom; }",
         ":host(.empty) svg { width: var(--font-size); height: var(--font-size); }",
     ].join("\n");
@@ -98,17 +107,28 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         shadow.appendChild(fragment);
 
         observer?.disconnect();
-        const svg = shadow.querySelector("svg");
+        const svg = shadow.querySelector("svg") as SVGSVGElement | null;
         if (svg) {
-            observer = new ResizeObserver((entries) => {
-                for (const entry of entries) {
-                    imageHeight.set(entry.contentRect.height);
-                    // Forward the resize on the host so external listeners
-                    // (e.g. the mathjax overlay's error tooltip) keep working.
-                    setTimeout(() => host.dispatchEvent(new Event("resize")));
-                }
+            // Mirror MathJax's own SVG `vertical-align: -X.XXXex` onto the
+            // host so the math's typographic baseline ends up aligned with the
+            // parent text baseline — the same alignment MathJax produces in
+            // the reviewer/preview where the SVG isn't wrapped. Combined with
+            // `overflow: hidden` on the host (baseline = bottom margin edge),
+            // a host vertical-align of `-i ex` puts the host bottom at `i ex`
+            // below the parent baseline, which is exactly where the SVG
+            // bottom — and thus the math baseline `i ex` above it — line up.
+            const va = svg.style.verticalAlign;
+            if (va) {
+                host.style.setProperty("--vertical-center", va);
+            } else {
+                host.style.removeProperty("--vertical-center");
+            }
+            // Forward the resize on the host so external listeners (e.g. the
+            // mathjax overlay's error tooltip) keep working.
+            observer = new ResizeObserver(() => {
+                setTimeout(() => host.dispatchEvent(new Event("resize")));
             });
-            observer.observe(svg);
+            observer.observe(host);
         }
     }
 
@@ -156,7 +176,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     class:block
     class:empty
     class="mathjax"
-    style:--vertical-center="{verticalCenter}px"
     style:--font-size="{fontSize}px"
     {title}
     data-anki="mathjax"
