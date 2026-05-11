@@ -20,6 +20,7 @@ import { bridgeCommand } from "@tslib/bridgecommand";
 import { registerPackage } from "@tslib/runtime-require";
 
 import { allImagesLoaded, preloadAnswerImages } from "./images";
+import { replaceEditorMathjaxElements } from "./mathjax";
 import { preloadResources } from "./preload";
 
 declare const MathJax: any;
@@ -143,6 +144,7 @@ export async function _updateQA(
     }
 
     await _runHook(onUpdateHook);
+    replaceEditorMathjaxElements(qa);
 
     // dynamic toolbar background
     bridgeCommand("updateToolbar");
