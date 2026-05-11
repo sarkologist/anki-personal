@@ -85,6 +85,12 @@ when possible.
 in rslib, use error/mod.rs's AnkiError/Result and snafu. In our other Rust modules, prefer anyhow + additional context where appropriate. Unwrapping
 in build scripts/tests is fine.
 
+## Commit workflow
+
+After completing work, create a git commit unless the user says not to or the
+current interaction is quick development iteration that should remain
+uncommitted. Keep unrelated local changes out of the commit.
+
 ## Individual preferences
 
 See @.claude/user.md
