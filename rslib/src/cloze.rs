@@ -643,6 +643,11 @@ fn tex_environment_command_end(text: &str, start: usize, command: &str) -> Optio
 
 fn mathjax_alignment_separator_end(text: &str, start: usize) -> Option<usize> {
     let rest = &text[start..];
+    for escaped_ampersand in ["&amp;", "&AMP;", "&#38;", "&#x26;", "&#X26;"] {
+        if rest.starts_with(escaped_ampersand) {
+            return Some(start + escaped_ampersand.len());
+        }
+    }
     if rest.starts_with('&') {
         return Some(start + 1);
     }
@@ -1035,6 +1040,12 @@ mod test {
                 r#"\[\begin{aligned}a &=<span class="cloze" data-ordinal="1">b \\ & = c</span>\\ &=d\end{aligned}\]"#
             ),
             r#"\[\begin{aligned}a &=\class{cloze}{b }\\ &\class{cloze}{ = c}\\ &=d\end{aligned}\]"#
+        );
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\[\begin{aligned}a &amp;=<span class="cloze" data-ordinal="1">b \\ &amp;= c</span>\end{aligned}\]"#
+            ),
+            r#"\[\begin{aligned}a &amp;=\class{cloze}{b }\\ &amp;\class{cloze}{= c}\end{aligned}\]"#
         );
     }
 
