@@ -126,6 +126,8 @@ audio = (
     "WEBM",
 )
 
+EDITOR_SAVE_TIMEOUT_MS = 5000
+
 
 class EditorMode(Enum):
     ADD_CARDS = 0
@@ -697,9 +699,40 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             # calling code may not expect the callback to fire immediately
             self.mw.progress.single_shot(10, callback)
             return
-        self.web.evalWithCallback("saveNow(%d)" % keepFocus, lambda res: callback())
+        if not self.web:
+            self.mw.progress.single_shot(10, callback)
+            return
+
+        completed = False
+
+        def finish() -> None:
+            nonlocal completed
+
+            if completed:
+                return
+
+            completed = True
+            callback()
+
+        def on_timeout() -> None:
+            if completed:
+                return
+
+            print("editor save timed out; continuing")
+            finish()
+
+        self.web.evalWithCallback("saveNow(%d)" % keepFocus, lambda res: finish())
+        self.mw.progress.single_shot(EDITOR_SAVE_TIMEOUT_MS, on_timeout)
 
     saveNow = call_after_note_saved
+
+    def recover_webview_after_crash(self) -> None:
+        if not self.web or not self.note:
+            return
+
+        focus_to = self.currentField
+        self.setupWeb()
+        self.loadNote(focusTo=focus_to)
 
     def _check_and_update_duplicate_display_async(self) -> None:
         note = self.note
@@ -1528,7 +1561,16 @@ class EditorWebView(AnkiWebView):
         clip = self.editor.mw.app.clipboard()
         assert clip is not None
         clip.dataChanged.connect(self._on_clipboard_change)
+        qconnect(
+            self.page().renderProcessTerminated, self._on_render_process_terminated
+        )
         gui_hooks.editor_web_view_did_init(self)
+
+    def _on_render_process_terminated(self, status: Any, exit_code: int) -> None:
+        print(
+            f"editor webview render process terminated: {status}, exit code {exit_code}"
+        )
+        self.editor.recover_webview_after_crash()
 
     def user_cut_or_copied(self) -> None:
         self._store_field_content_on_next_clipboard_change = True

@@ -136,6 +136,7 @@ class Browser(QMainWindow):
         self._previewer: Previewer | None = None
         self._card_info = BrowserCardInfo(self.mw)
         self._closeEventHasCleanedUp = False
+        self.singleCard = False
         self.auto_layout = True
         self.aspect_ratio = 0.0
         self.form = aqt.forms.browser.Ui_Dialog()
@@ -216,6 +217,46 @@ class Browser(QMainWindow):
             self.setUpdatesEnabled(True)
             self.table.redraw_cells()
             self.sidebar.refresh_if_needed()
+            self._refresh_editor_web_view_surface()
+
+    def _set_splitter_orientation(self, orientation: Qt.Orientation) -> None:
+        if self.form.splitter.orientation() == orientation:
+            return
+
+        self.form.splitter.setOrientation(orientation)
+        self._refresh_editor_web_view_surface(reset_surface=True)
+
+    def _refresh_editor_web_view_surface(self, *, reset_surface: bool = False) -> None:
+        editor = getattr(self, "editor", None)
+        if self._closeEventHasCleanedUp or not editor:
+            return
+
+        web = editor.web
+        if not web:
+            return
+
+        def refresh() -> None:
+            current_editor = getattr(self, "editor", None)
+            if (
+                self._closeEventHasCleanedUp
+                or not current_editor
+                or current_editor.web is not web
+                or not web.isVisible()
+            ):
+                return
+
+            focused = QApplication.focusWidget()
+            if reset_surface:
+                web.hide()
+                web.show()
+
+            web.update()
+            web.repaint()
+
+            if focused and focused.window() is self:
+                focused.setFocus()
+
+        self.mw.progress.timer(0, refresh, False, parent=web)
 
     def set_layout(self, mode: BrowserLayout, init: bool = False) -> None:
         self.mw.pm.set_browser_layout(mode)
@@ -233,14 +274,14 @@ class Browser(QMainWindow):
             self.form.actionLayoutAuto.setChecked(False)
 
             if mode == BrowserLayout.VERTICAL:
-                self.form.splitter.setOrientation(Qt.Orientation.Vertical)
+                self._set_splitter_orientation(Qt.Orientation.Vertical)
                 self.form.actionLayoutVertical.setChecked(True)
                 self.form.actionLayoutHorizontal.setChecked(False)
                 if not init:
                     tooltip(tr.qt_misc_layout_vertical_enabled())
 
             elif mode == BrowserLayout.HORIZONTAL:
-                self.form.splitter.setOrientation(Qt.Orientation.Horizontal)
+                self._set_splitter_orientation(Qt.Orientation.Horizontal)
                 self.form.actionLayoutHorizontal.setChecked(True)
                 self.form.actionLayoutVertical.setChecked(False)
                 if not init:
@@ -249,9 +290,9 @@ class Browser(QMainWindow):
     def maybe_update_layout(self, aspect_ratio: float, force: bool = False) -> None:
         if force or math.floor(aspect_ratio) != math.floor(self.aspect_ratio):
             if aspect_ratio < 1:
-                self.form.splitter.setOrientation(Qt.Orientation.Vertical)
+                self._set_splitter_orientation(Qt.Orientation.Vertical)
             else:
-                self.form.splitter.setOrientation(Qt.Orientation.Horizontal)
+                self._set_splitter_orientation(Qt.Orientation.Horizontal)
 
     def resizeEvent(self, event: QResizeEvent | None) -> None:
         assert event is not None
@@ -643,6 +684,7 @@ class Browser(QMainWindow):
             self.editor.set_note(self.card.note(), focusTo=self.focusTo)
             self.focusTo = None
             self.editor.card = self.card
+            self._refresh_editor_web_view_surface(reset_surface=True)
         else:
             self.editor.set_note(None)
         self._renderPreview()
