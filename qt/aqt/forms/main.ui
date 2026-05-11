@@ -161,6 +161,9 @@
    <property name="statusTip">
     <string>qt_misc_check_the_files_in_the_media</string>
    </property>
+   <property name="shortcut">
+    <string notr="true">Ctrl+Shift+M</string>
+   </property>
   </action>
   <action name="actionDonate">
    <property name="text">
@@ -215,6 +218,9 @@
   <action name="actionEmptyCards">
    <property name="text">
     <string>qt_misc_empty_cards</string>
+   </property>
+   <property name="shortcut">
+    <string notr="true">Ctrl+Shift+E</string>
    </property>
   </action>
   <action name="actionCreateFiltered">
