@@ -9,6 +9,8 @@ import "mathjax/es5/tex-svg-full";
 
 import mathIcon from "@mdi/svg/svg/math-integral-box.svg?src";
 
+import { revealMathjaxClozeAnswers } from "./mathjax-cloze";
+
 const parser = new DOMParser();
 
 function getCSS(fontSize: number): string {
@@ -89,7 +91,5 @@ export function unescapeSomeEntities(value: string): string {
 }
 
 function revealClozeAnswers(input: string): string {
-    // one-line version of regex in cloze.rs
-    const regex = /\{\{c(\d+)::(.*?)(?:::(.*?))?\}\}/gis;
-    return input.replace(regex, "[$2]");
+    return revealMathjaxClozeAnswers(input);
 }
