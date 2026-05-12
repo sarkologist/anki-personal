@@ -713,10 +713,16 @@
    <property name="text">
     <string>qt_accel_zoom_editor_in</string>
    </property>
+   <property name="shortcut">
+    <string notr="true">Ctrl+Shift++</string>
+   </property>
   </action>
   <action name="actionZoomOut">
    <property name="text">
     <string>qt_accel_zoom_editor_out</string>
+   </property>
+   <property name="shortcut">
+    <string notr="true">Ctrl+Shift+_</string>
    </property>
   </action>
   <action name="actionResetZoom">
