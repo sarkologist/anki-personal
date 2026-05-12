@@ -5,6 +5,7 @@ import { fragmentToString, nodeContainsInlineContent, nodeIsElement } from "@tsl
 import { createDummyDoc } from "@tslib/parsing";
 
 import { decoratedElements } from "../decorated-elements";
+import { escapeMathjaxClozeEntities } from "../mathjax-cloze-entities";
 
 function adjustInputHTML(html: string): string {
     for (const component of decoratedElements) {
@@ -46,7 +47,7 @@ function adjustOutputHTML(html: string): string {
         html = component.toStored(html);
     }
 
-    return html;
+    return escapeMathjaxClozeEntities(html);
 }
 
 export function fragmentToStored(fragment: DocumentFragment): string {

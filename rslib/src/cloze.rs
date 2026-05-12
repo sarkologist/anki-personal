@@ -894,6 +894,20 @@ mod test {
     }
 
     #[test]
+    fn entity_escaped_mathjax_cloze_braces() {
+        let field = r"\({{c1::\sqrt{\frac{a}{b&#125;&#125;}}\)";
+
+        assert_eq!(
+            cloze_numbers_in_string(field),
+            vec![1].into_iter().collect::<HashSet<u16>>()
+        );
+        assert_eq!(
+            reveal_cloze_text(field, 1, false),
+            r#"\(<span class="cloze" data-ordinal="1">\sqrt{\frac{a}{b&#125;&#125;</span>\)"#
+        );
+    }
+
+    #[test]
     fn cloze_only() {
         assert_eq!(reveal_cloze_text_only("foo", 1, true), "");
         assert_eq!(reveal_cloze_text_only("foo {{c1::bar}}", 1, true), "...");
