@@ -36,6 +36,7 @@ from aqt.webview import AnkiWebView
 
 from .activity import CodexActivityRenderer
 from .codex_client import CodexCliAgent, project_root_status, resolve_codex_path
+from .model_options import MODEL_OPTIONS, model_option_index, model_options_with_legacy
 from .patches import (
     EditorSnapshot,
     FieldSnapshot,
@@ -213,9 +214,11 @@ class EditorAgentPane(QWidget):
         self.codex_path_edit = QLineEdit()
         self.codex_path_edit.setPlaceholderText(resolve_codex_path(""))
         form.addRow("Codex CLI", self.codex_path_edit)
-        self.model_edit = QLineEdit()
-        self.model_edit.setPlaceholderText("Codex default")
-        form.addRow("Model", self.model_edit)
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(False)
+        for label, value in MODEL_OPTIONS:
+            self.model_combo.addItem(label, value)
+        form.addRow("Model", self.model_combo)
         layout.addLayout(form)
 
         project_row = QHBoxLayout()
@@ -278,7 +281,7 @@ class EditorAgentPane(QWidget):
     def _load_settings(self) -> None:
         config = _config()
         self.codex_path_edit.setText(str(config["codex_path"]))
-        self.model_edit.setText(str(config["model"]))
+        self._set_model_choice(str(config["model"]))
         self._set_project_folder_choices(
             str(config["project_folder"]),
             config["recent_project_folders"],
@@ -289,7 +292,7 @@ class EditorAgentPane(QWidget):
         config = _config()
         project_folder = self._project_folder_text()
         config["codex_path"] = self.codex_path_edit.text().strip()
-        config["model"] = self.model_edit.text().strip()
+        config["model"] = self._model_text()
         config["project_folder"] = project_folder
         config["recent_project_folders"] = remember_project_folder(
             project_folder,
@@ -300,6 +303,16 @@ class EditorAgentPane(QWidget):
             project_folder,
             config["recent_project_folders"],
         )
+
+    def _set_model_choice(self, model: str) -> None:
+        self.model_combo.clear()
+        for label, value in model_options_with_legacy(model):
+            self.model_combo.addItem(label, value)
+        self.model_combo.setCurrentIndex(model_option_index(model))
+
+    def _model_text(self) -> str:
+        data = self.model_combo.currentData()
+        return str(data).strip() if data is not None else ""
 
     def _set_project_folder_choices(
         self,
@@ -401,7 +414,7 @@ class EditorAgentPane(QWidget):
             return
 
         config = _config()
-        model = self.model_edit.text().strip() or str(config["model"])
+        model = self._model_text() or str(config["model"])
         project_root = self._project_folder_text()
         codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
         self.send_button.setEnabled(False)

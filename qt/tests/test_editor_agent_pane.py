@@ -25,6 +25,11 @@ from editor_agent_pane.codex_client import (  # noqa: E402
     CodexCliAgent,
     resolve_codex_path,
 )
+from editor_agent_pane.model_options import (  # noqa: E402
+    MODEL_OPTIONS,
+    model_option_index,
+    model_options_with_legacy,
+)
 from editor_agent_pane.patches import (  # noqa: E402
     EditorSnapshot,
     FieldSnapshot,
@@ -101,6 +106,33 @@ class FakePopen:
     def kill(self) -> None:
         self.killed = True
         self.returncode = -9
+
+
+def test_agent_model_options_include_default_and_known_models() -> None:
+    assert MODEL_OPTIONS == (
+        ("Codex default", ""),
+        ("gpt-5.5", "gpt-5.5"),
+        ("gpt-5.4", "gpt-5.4"),
+        ("gpt-5.4-mini", "gpt-5.4-mini"),
+        ("gpt-5.3-codex", "gpt-5.3-codex"),
+        ("gpt-5.3-codex-spark", "gpt-5.3-codex-spark"),
+        ("gpt-5.2", "gpt-5.2"),
+    )
+    assert model_option_index("") == 0
+
+
+def test_agent_model_options_round_trip_known_models() -> None:
+    for expected_index, (_label, model) in enumerate(MODEL_OPTIONS):
+        assert model_options_with_legacy(model) == MODEL_OPTIONS
+        assert model_option_index(model) == expected_index
+
+
+def test_agent_model_options_preserve_unknown_legacy_model() -> None:
+    options = model_options_with_legacy(" gpt-legacy ")
+
+    assert options[:-1] == MODEL_OPTIONS
+    assert options[-1] == ("gpt-legacy", "gpt-legacy")
+    assert model_option_index("gpt-legacy") == len(options) - 1
 
 
 def test_read_source_file_rejects_traversal_and_absolute_path(tmp_path: Path) -> None:
