@@ -22,7 +22,10 @@ from editor_agent_pane.activity import (  # noqa: E402
     compact_activity_transcript,
 )
 from editor_agent_pane.codex_client import (  # noqa: E402
+    PROJECT_FOLDER_ACCESS_READ_ONLY,
+    PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
     CodexCliAgent,
+    project_root_status,
     resolve_codex_path,
 )
 from editor_agent_pane.model_options import (  # noqa: E402
@@ -220,6 +223,18 @@ def test_remember_project_folder_moves_selection_to_front_and_limits() -> None:
     assert remembered[:3] == ["/project/5", "/project/0", "/project/1"]
     assert len(remembered) == MAX_RECENT_PROJECT_FOLDERS
     assert remember_project_folder("", ["/project/1"]) == ["/project/1"]
+
+
+def test_project_root_status_reflects_access_mode(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    assert project_root_status(str(project), PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE) == (
+        f"Writable project folder: {project.resolve()}"
+    )
+    assert project_root_status(str(project), PROJECT_FOLDER_ACCESS_READ_ONLY) == (
+        f"Read-only project folder: {project.resolve()}"
+    )
 
 
 def test_sanitize_html_allows_formatting_and_mathjax() -> None:
@@ -420,7 +435,7 @@ def test_validate_note_patch_can_replace_all_tags() -> None:
     assert patch.tag_patch.apply(snapshot().tags) == ("fresh",)
 
 
-def test_codex_agent_uses_read_only_cli_and_parses_patch(
+def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -486,7 +501,9 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
 
     command = captured["command"]
     assert command[:2] == ["/usr/local/bin/codex", "exec"]
-    assert command[command.index("--sandbox") + 1] == "read-only"
+    assert (
+        command[command.index("--sandbox") + 1] == PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE
+    )
     assert "--json" in command
     assert "--ask-for-approval" not in command
     assert command[command.index("--cd") + 1] == str(project.resolve())
@@ -497,6 +514,11 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
     assert captured["stderr"] == subprocess.PIPE
     assert "Current editor context is JSON" in captured["process"].stdin.text
     assert "Improve this" in captured["process"].stdin.text
+    assert "may inspect and edit files" in captured["process"].stdin.text
+    assert (
+        "Keep file changes inside that project folder" in captured["process"].stdin.text
+    )
+    assert "Do not modify files" not in captured["process"].stdin.text
     assert "Do not include hidden chain-of-thought" in captured["process"].stdin.text
     assert "briefly in message/message_html why" in captured["process"].stdin.text
     assert result.text == "Looks better with a shorter front."
@@ -507,6 +529,55 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
         "turn.started",
         "exec_command_begin",
     ]
+
+
+def test_codex_agent_can_use_read_only_project_access(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        captured["command"] = command
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(
+            '{"message": "No changes.", "message_html": "<p>No changes.</p>", "patch": null}',
+            encoding="utf-8",
+        )
+        process = FakePopen(stdout='{"type":"turn.completed"}\n')
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model="",
+        timeout_seconds=123,
+        project_folder_access=PROJECT_FOLDER_ACCESS_READ_ONLY,
+    ).send(
+        prompt="Explain this",
+        snapshot=snapshot(),
+        project_root=str(project),
+        history=[],
+    )
+
+    command = captured["command"]
+    assert command[command.index("--sandbox") + 1] == PROJECT_FOLDER_ACCESS_READ_ONLY
+    assert "read-only shell commands" in captured["process"].stdin.text
+    assert "Do not modify files" in captured["process"].stdin.text
+    assert "may inspect and edit files" not in captured["process"].stdin.text
+    assert result.text == "No changes."
 
 
 def test_codex_agent_passes_optional_model(

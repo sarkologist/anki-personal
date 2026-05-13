@@ -35,7 +35,15 @@ from aqt.utils import showWarning, tooltip
 from aqt.webview import AnkiWebView
 
 from .activity import CodexActivityRenderer
-from .codex_client import CodexCliAgent, project_root_status, resolve_codex_path
+from .codex_client import (
+    DEFAULT_PROJECT_FOLDER_ACCESS,
+    PROJECT_FOLDER_ACCESS_READ_ONLY,
+    PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
+    CodexCliAgent,
+    normalize_project_folder_access,
+    project_root_status,
+    resolve_codex_path,
+)
 from .model_options import MODEL_OPTIONS, model_option_index, model_options_with_legacy
 from .patches import (
     EditorSnapshot,
@@ -69,10 +77,15 @@ DEFAULT_CONFIG = {
     "codex_path": "",
     "model": "",
     "project_folder": "",
+    "project_folder_access": DEFAULT_PROJECT_FOLDER_ACCESS,
     "recent_project_folders": [],
     "timeout_seconds": 300,
     "splitter_sizes": DEFAULT_SPLITTER_SIZES,
 }
+PROJECT_FOLDER_ACCESS_OPTIONS = (
+    ("Writable project folder", PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE),
+    ("Read-only project folder", PROJECT_FOLDER_ACCESS_READ_ONLY),
+)
 
 _installed = False
 _panes: weakref.WeakKeyDictionary[Editor, "EditorAgentPane"] = (
@@ -96,6 +109,9 @@ def _config() -> dict[str, Any]:
     config = {key: saved.get(key, default) for key, default in DEFAULT_CONFIG.items()}
     if "codex_path" not in saved and config["model"] == "gpt-5.2":
         config["model"] = ""
+    config["project_folder_access"] = normalize_project_folder_access(
+        str(config["project_folder_access"])
+    )
     return config
 
 
@@ -220,6 +236,15 @@ class EditorAgentPane(QWidget):
         for label, value in MODEL_OPTIONS:
             self.model_combo.addItem(label, value)
         form.addRow("Model", self.model_combo)
+        self.access_combo = QComboBox()
+        self.access_combo.setEditable(False)
+        for label, value in PROJECT_FOLDER_ACCESS_OPTIONS:
+            self.access_combo.addItem(label, value)
+        qconnect(
+            self.access_combo.currentIndexChanged,
+            lambda _index: self.refresh_context_label(),
+        )
+        form.addRow("Access", self.access_combo)
         layout.addLayout(form)
 
         project_row = QHBoxLayout()
@@ -228,7 +253,7 @@ class EditorAgentPane(QWidget):
         self.project_edit.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         project_line_edit = self.project_edit.lineEdit()
         assert project_line_edit is not None
-        project_line_edit.setPlaceholderText("Optional read-only project folder")
+        project_line_edit.setPlaceholderText("Optional project folder")
         qconnect(
             self.project_edit.currentTextChanged,
             lambda _text: self.refresh_context_label(),
@@ -287,6 +312,7 @@ class EditorAgentPane(QWidget):
             str(config["project_folder"]),
             config["recent_project_folders"],
         )
+        self._set_project_folder_access(str(config["project_folder_access"]))
         self.text_splitter.setSizes(_validated_splitter_sizes(config["splitter_sizes"]))
 
     def _save_settings(self) -> None:
@@ -295,6 +321,7 @@ class EditorAgentPane(QWidget):
         config["codex_path"] = self.codex_path_edit.text().strip()
         config["model"] = self._model_text()
         config["project_folder"] = project_folder
+        config["project_folder_access"] = self._project_folder_access()
         config["recent_project_folders"] = remember_project_folder(
             project_folder,
             config["recent_project_folders"],
@@ -314,6 +341,18 @@ class EditorAgentPane(QWidget):
     def _model_text(self) -> str:
         data = self.model_combo.currentData()
         return str(data).strip() if data is not None else ""
+
+    def _set_project_folder_access(self, project_folder_access: str) -> None:
+        access = normalize_project_folder_access(project_folder_access)
+        for index in range(self.access_combo.count()):
+            if self.access_combo.itemData(index) == access:
+                self.access_combo.setCurrentIndex(index)
+                return
+        self.access_combo.setCurrentIndex(0)
+
+    def _project_folder_access(self) -> str:
+        data = self.access_combo.currentData()
+        return normalize_project_folder_access(str(data) if data is not None else "")
 
     def _set_project_folder_choices(
         self,
@@ -364,9 +403,13 @@ class EditorAgentPane(QWidget):
         except Exception:
             notetype_name = str(note.mid)
         mode = _editor_mode_name(self.editor)
+        project_status = project_root_status(
+            self._project_folder_text(),
+            self._project_folder_access(),
+        )
         self.context_label.setText(
             f"{mode} - note {int(note.id) if note.id else 'new'} - "
-            f"{notetype_name}\n{project_root_status(self._project_folder_text())}"
+            f"{notetype_name}\n{project_status}"
         )
 
     def _append_transcript(self, fragment: str) -> None:
@@ -417,6 +460,7 @@ class EditorAgentPane(QWidget):
         config = _config()
         model = self._model_text() or str(config["model"])
         project_root = self._project_folder_text()
+        project_folder_access = self._project_folder_access()
         codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
         self.send_button.setEnabled(False)
         self.apply_button.setEnabled(False)
@@ -440,6 +484,7 @@ class EditorAgentPane(QWidget):
                 codex_path=codex_path,
                 model=model,
                 timeout_seconds=int(config["timeout_seconds"]),
+                project_folder_access=project_folder_access,
             )
             result = agent.send(
                 prompt=prompt,

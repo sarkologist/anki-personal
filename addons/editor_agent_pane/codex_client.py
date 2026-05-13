@@ -19,6 +19,25 @@ from .patches import EditorSnapshot, NotePatch, validate_note_patch
 from .sources import SourceAccessError, resolve_project_root
 
 DEFAULT_CODEX_APP_PATH = "/Applications/Codex.app/Contents/Resources/codex"
+PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE = "workspace-write"
+PROJECT_FOLDER_ACCESS_READ_ONLY = "read-only"
+DEFAULT_PROJECT_FOLDER_ACCESS = PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE
+PROJECT_FOLDER_ACCESS_MODES = (
+    PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
+    PROJECT_FOLDER_ACCESS_READ_ONLY,
+)
+
+PROJECT_ACCESS_INSTRUCTIONS = {
+    PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE: (
+        "If a project folder is selected, you may inspect and edit files in it. "
+        "Keep file changes inside that project folder. Do not run network commands."
+    ),
+    PROJECT_FOLDER_ACCESS_READ_ONLY: (
+        "You may inspect the selected project folder with read-only shell commands "
+        "such as rg, sed, awk, and cat. Do not modify files. Do not run network "
+        "commands."
+    ),
+}
 
 
 CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
@@ -95,8 +114,7 @@ Recent conversation:
 User request:
 {user_prompt}
 
-You may inspect the selected project folder with read-only shell commands such
-as rg, sed, awk, and cat. Do not modify files. Do not run network commands.
+{project_access_instructions}
 
 Return a JSON object matching the supplied schema:
 - message: conversational answer for the user as plain text.
@@ -150,10 +168,14 @@ class CodexCliAgent:
         codex_path: str,
         model: str,
         timeout_seconds: int,
+        project_folder_access: str = DEFAULT_PROJECT_FOLDER_ACCESS,
     ) -> None:
         self.codex_path = resolve_codex_path(codex_path)
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds
+        self.project_folder_access = normalize_project_folder_access(
+            project_folder_access
+        )
 
     def send(
         self,
@@ -215,7 +237,7 @@ class CodexCliAgent:
             self.codex_path,
             "exec",
             "--sandbox",
-            "read-only",
+            self.project_folder_access,
             "--skip-git-repo-check",
             "--ephemeral",
             "--color",
@@ -251,6 +273,9 @@ class CodexCliAgent:
             context_json=json.dumps(snapshot.as_tool_result(), ensure_ascii=False),
             history=history_text,
             user_prompt=prompt,
+            project_access_instructions=PROJECT_ACCESS_INSTRUCTIONS[
+                self.project_folder_access
+            ],
         )
 
     def _run(
@@ -349,6 +374,13 @@ def resolve_codex_path(configured_path: str) -> str:
     return "codex"
 
 
+def normalize_project_folder_access(project_folder_access: str) -> str:
+    access = project_folder_access.strip()
+    if access in PROJECT_FOLDER_ACCESS_MODES:
+        return access
+    return DEFAULT_PROJECT_FOLDER_ACCESS
+
+
 def _parse_json_object(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
@@ -406,11 +438,17 @@ def _format_codex_error(completed: _CodexProcessResult) -> str:
     return f"Codex CLI failed with exit code {completed.returncode}: {details[-1200:]}"
 
 
-def project_root_status(project_root: str) -> str:
+def project_root_status(
+    project_root: str,
+    project_folder_access: str = DEFAULT_PROJECT_FOLDER_ACCESS,
+) -> str:
     if not project_root.strip():
         return "No project folder selected; Codex will use card context only."
     try:
         root = resolve_project_root(project_root)
     except SourceAccessError as exc:
         return str(exc)
-    return f"Read-only project folder: {root}"
+    access = normalize_project_folder_access(project_folder_access)
+    if access == PROJECT_FOLDER_ACCESS_READ_ONLY:
+        return f"Read-only project folder: {root}"
+    return f"Writable project folder: {root}"
