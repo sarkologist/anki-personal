@@ -2,5 +2,6 @@
     "codex_path": "",
     "model": "",
     "project_folder": "",
-    "timeout_seconds": 300
+    "timeout_seconds": 300,
+    "splitter_sizes": [420, 150, 80]
 }

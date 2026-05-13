@@ -8,6 +8,7 @@ direct OpenAI API billing.
 - `model`: Optional Codex model override. Leave blank to use Codex's default for your signed-in account.
 - `project_folder`: Optional read-only source folder for the agent.
 - `timeout_seconds`: Maximum time to wait for a Codex CLI response.
+- `splitter_sizes`: Saved transcript/proposal/prompt pane sizes.
 
 Run `codex login` first and choose ChatGPT sign-in. The add-on invokes
 `codex exec` with a read-only sandbox. Anki never applies note changes without

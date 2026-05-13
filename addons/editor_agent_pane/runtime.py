@@ -24,6 +24,7 @@ from aqt.qt import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QSplitter,
     Qt,
     QTextCursor,
     QVBoxLayout,
@@ -43,11 +44,13 @@ from .patches import (
 
 ADDON = "editor_agent_pane"
 TOGGLE_COMMAND = "editorAgentPane"
+DEFAULT_SPLITTER_SIZES = [420, 150, 80]
 DEFAULT_CONFIG = {
     "codex_path": "",
     "model": "",
     "project_folder": "",
     "timeout_seconds": 300,
+    "splitter_sizes": DEFAULT_SPLITTER_SIZES,
 }
 
 _installed = False
@@ -78,6 +81,18 @@ def _write_config(config: dict[str, Any]) -> None:
     merged = dict(DEFAULT_CONFIG)
     merged.update(config)
     aqt.mw.addonManager.writeConfig(ADDON, merged)
+
+
+def _validated_splitter_sizes(value: Any) -> list[int]:
+    if not isinstance(value, list) or len(value) != len(DEFAULT_SPLITTER_SIZES):
+        return list(DEFAULT_SPLITTER_SIZES)
+
+    sizes: list[int] = []
+    for size in value:
+        if not isinstance(size, int) or size < 1:
+            return list(DEFAULT_SPLITTER_SIZES)
+        sizes.append(size)
+    return sizes
 
 
 def _add_editor_button(buttons: list[str], editor: Editor) -> None:
@@ -156,6 +171,7 @@ class EditorAgentPane(QWidget):
 
         self._build_ui()
         self._load_settings()
+        qconnect(self.text_splitter.splitterMoved, self._save_splitter_sizes)
         self.refresh_context_label()
 
     def _build_ui(self) -> None:
@@ -190,13 +206,26 @@ class EditorAgentPane(QWidget):
         self.transcript = QPlainTextEdit()
         self.transcript.setReadOnly(True)
         self.transcript.setPlaceholderText("Ask about the current card or source material.")
-        layout.addWidget(self.transcript, 1)
 
         self.proposal = QPlainTextEdit()
         self.proposal.setReadOnly(True)
         self.proposal.setPlaceholderText("Proposed note changes appear here.")
-        self.proposal.setMaximumHeight(180)
-        layout.addWidget(self.proposal)
+        self.proposal.setMinimumHeight(60)
+
+        self.prompt = PromptEdit(self._send, self)
+        self.prompt.setPlaceholderText("Message")
+        self.prompt.setMinimumHeight(50)
+
+        self.text_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.text_splitter.setChildrenCollapsible(False)
+        self.text_splitter.addWidget(self.transcript)
+        self.text_splitter.addWidget(self.proposal)
+        self.text_splitter.addWidget(self.prompt)
+        self.text_splitter.setStretchFactor(0, 6)
+        self.text_splitter.setStretchFactor(1, 2)
+        self.text_splitter.setStretchFactor(2, 1)
+        self.text_splitter.setSizes(list(DEFAULT_SPLITTER_SIZES))
+        layout.addWidget(self.text_splitter, 1)
 
         action_row = QHBoxLayout()
         self.apply_button = QPushButton("Apply proposal")
@@ -207,11 +236,6 @@ class EditorAgentPane(QWidget):
         action_row.addWidget(self.apply_button)
         action_row.addWidget(discard_button)
         layout.addLayout(action_row)
-
-        self.prompt = PromptEdit(self._send, self)
-        self.prompt.setPlaceholderText("Message")
-        self.prompt.setMaximumHeight(90)
-        layout.addWidget(self.prompt)
 
         send_row = QHBoxLayout()
         self.send_button = QPushButton("Send")
@@ -225,12 +249,18 @@ class EditorAgentPane(QWidget):
         self.codex_path_edit.setText(str(config["codex_path"]))
         self.model_edit.setText(str(config["model"]))
         self.project_edit.setText(str(config["project_folder"]))
+        self.text_splitter.setSizes(_validated_splitter_sizes(config["splitter_sizes"]))
 
     def _save_settings(self) -> None:
         config = _config()
         config["codex_path"] = self.codex_path_edit.text().strip()
         config["model"] = self.model_edit.text().strip()
         config["project_folder"] = self.project_edit.text().strip()
+        _write_config(config)
+
+    def _save_splitter_sizes(self, _pos: int, _index: int) -> None:
+        config = _config()
+        config["splitter_sizes"] = self.text_splitter.sizes()
         _write_config(config)
 
     def _browse_project(self) -> None:
