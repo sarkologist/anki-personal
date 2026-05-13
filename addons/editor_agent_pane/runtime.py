@@ -60,6 +60,7 @@ from .surface import (
     render_user_message,
     surface_body,
 )
+from .ui_text import AGENT_BUTTON_LABEL, AGENT_BUTTON_TIP, AGENT_PANE_SHORTCUT
 
 ADDON = "editor_agent_pane"
 TOGGLE_COMMAND = "editorAgentPane"
@@ -123,9 +124,9 @@ def _add_editor_button(buttons: list[str], editor: Editor) -> None:
             None,
             TOGGLE_COMMAND,
             _toggle_pane,
-            tip="Open the editor agent pane",
-            label="Agent",
-            keys="Ctrl+Alt+Shift+E",
+            tip=AGENT_BUTTON_TIP,
+            label=AGENT_BUTTON_LABEL,
+            keys=AGENT_PANE_SHORTCUT,
             disables=False,
         )
     )
