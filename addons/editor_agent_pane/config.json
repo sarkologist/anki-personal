@@ -3,5 +3,5 @@
     "model": "",
     "project_folder": "",
     "timeout_seconds": 300,
-    "splitter_sizes": [420, 150, 80]
+    "splitter_sizes": [570, 80]
 }

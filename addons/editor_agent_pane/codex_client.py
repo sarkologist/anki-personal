@@ -25,6 +25,7 @@ CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "message": {"type": "string"},
+        "message_html": {"type": "string"},
         "patch": {
             "anyOf": [
                 {"type": "null"},
@@ -78,7 +79,7 @@ CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
             ]
         },
     },
-    "required": ["message", "patch"],
+    "required": ["message", "message_html", "patch"],
     "additionalProperties": False,
 }
 
@@ -98,7 +99,12 @@ You may inspect the selected project folder with read-only shell commands such
 as rg, sed, awk, and cat. Do not modify files. Do not run network commands.
 
 Return a JSON object matching the supplied schema:
-- message: conversational answer for the user.
+- message: conversational answer for the user as plain text.
+- message_html: the same answer as sanitized-subset HTML for rendering in
+  Anki. Use ordinary semantic tags like p, ul, ol, li, strong, em, code, pre,
+  blockquote, table, and a. Use MathJax delimiters like \\(...\\) or \\[...\\]
+  for math. Do not include scripts, styles, iframes, event handlers, images, or
+  javascript: links.
 - patch: null unless you are proposing changes to the current note.
 
 When proposing a patch:
@@ -114,6 +120,7 @@ When proposing a patch:
 @dataclass(frozen=True)
 class AgentResult:
     text: str
+    html: str
     proposals: tuple[NotePatch, ...]
     event_count: int = 0
 
@@ -175,12 +182,14 @@ class CodexCliAgent:
             raw = output_path.read_text(encoding="utf-8")
             data = _parse_json_object(raw)
             message = str(data.get("message") or "").strip()
+            message_html = str(data.get("message_html") or "").strip()
             patch_data = data.get("patch")
             proposals: tuple[NotePatch, ...] = ()
             if patch_data is not None:
                 proposals = (validate_note_patch(patch_data, snapshot),)
             return AgentResult(
                 text=message,
+                html=message_html,
                 proposals=proposals,
                 event_count=completed.event_count,
             )

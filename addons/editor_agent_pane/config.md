@@ -8,12 +8,13 @@ direct OpenAI API billing.
 - `model`: Optional Codex model override. Leave blank to use Codex's default for your signed-in account.
 - `project_folder`: Optional read-only source folder for the agent.
 - `timeout_seconds`: Maximum time to wait for a Codex CLI response.
-- `splitter_sizes`: Saved transcript/proposal/prompt pane sizes.
+- `splitter_sizes`: Saved rich agent surface/prompt pane sizes.
 
 Run `codex login` first and choose ChatGPT sign-in. The add-on invokes
 `codex exec --json` with a read-only sandbox, streams live activity while it is
-running, then compacts that activity when the final response arrives. Anki never
-applies note changes without your approval.
+running, then compacts that activity when the final response arrives. Assistant
+responses and proposal previews render as sanitized HTML with MathJax support.
+Anki never applies note changes without your approval.
 
 To smoke-test the real CLI integration manually, run the editor agent pane tests
 with `ANKI_CODEX_CLI_INTEGRATION=1`. Optionally set `ANKI_CODEX_CLI_PATH` to a

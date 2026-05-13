@@ -31,10 +31,17 @@ from editor_agent_pane.patches import (  # noqa: E402
     PatchValidationError,
     validate_note_patch,
 )
+from editor_agent_pane.sanitize import sanitize_html  # noqa: E402
 from editor_agent_pane.sources import (  # noqa: E402
     SourceAccessError,
     read_source_file,
     search_source_files,
+)
+from editor_agent_pane.surface import (  # noqa: E402
+    render_assistant_message,
+    render_error_message,
+    render_proposal_diff,
+    render_user_message,
 )
 
 
@@ -149,6 +156,44 @@ def test_search_source_files_is_bounded(tmp_path: Path) -> None:
     assert hits[0].line == 1
 
 
+def test_sanitize_html_allows_formatting_and_mathjax() -> None:
+    assert (
+        sanitize_html("<p>Use <strong>canonical</strong> divisors \\[K_X\\].</p>")
+        == "<p>Use <strong>canonical</strong> divisors \\[K_X\\].</p>"
+    )
+
+
+def test_sanitize_html_strips_scripts_events_and_unsafe_links() -> None:
+    assert sanitize_html(
+        '<script>alert(1)</script><p onclick="evil()">Hi</p>'
+        '<a href="javascript:alert(1)" title="unsafe">bad</a>'
+        '<a href="https://example.test/?a=1&b=2">good</a>'
+    ) == (
+        '<p>Hi</p><a title="unsafe">bad</a>'
+        '<a href="https://example.test/?a=1&amp;b=2" rel="noopener noreferrer">good</a>'
+    )
+
+
+def test_sanitize_html_escapes_unknown_tags() -> None:
+    assert sanitize_html("<custom data-x='1'>x</custom>") == (
+        "&lt;custom data-x=&#x27;1&#x27;&gt;x&lt;/custom&gt;"
+    )
+
+
+def test_surface_rendering_helpers_escape_and_sanitize() -> None:
+    assert "&lt;b&gt;hi&lt;/b&gt;<br>again" in render_user_message("<b>hi</b>\nagain")
+    assert "<script>" not in render_assistant_message(
+        "<p>Math \\(x^2\\)</p><script>bad()</script>",
+        "fallback",
+    )
+    assert "\\(x^2\\)" in render_assistant_message(
+        "<p>Math \\(x^2\\)</p><script>bad()</script>",
+        "fallback",
+    )
+    assert "&lt;boom&gt;" in render_error_message("<boom>")
+    assert "&lt;div&gt;" in render_proposal_diff("---\n+<div>")
+
+
 def test_validate_note_patch_accepts_current_note_fields_and_tags() -> None:
     patch = validate_note_patch(
         {
@@ -256,6 +301,7 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
             """
             {
               "message": "Looks better with a shorter front.",
+              "message_html": "<p>Looks <strong>better</strong> with a shorter front.</p>",
               "patch": {
                 "summary": "Shorten front",
                 "note_id": 123,
@@ -305,6 +351,7 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
     assert "Current editor context is JSON" in captured["process"].stdin.text
     assert "Improve this" in captured["process"].stdin.text
     assert result.text == "Looks better with a shorter front."
+    assert result.html == "<p>Looks <strong>better</strong> with a shorter front.</p>"
     assert result.proposals[0].field_updates == {"Front": "new front"}
     assert result.event_count == 2
     assert [event["type"] for event in events] == [
@@ -331,7 +378,7 @@ def test_codex_agent_passes_optional_model(
         captured["command"] = command
         output_path = Path(command[command.index("--output-last-message") + 1])
         output_path.write_text(
-            '{"message": "No changes.", "patch": null}',
+            '{"message": "No changes.", "message_html": "<p>No changes.</p>", "patch": null}',
             encoding="utf-8",
         )
         return FakePopen(stdout='{"type":"turn.completed"}\n')
@@ -352,6 +399,7 @@ def test_codex_agent_passes_optional_model(
     command = captured["command"]
     assert command[command.index("--model") + 1] == "gpt-5-codex"
     assert result.text == "No changes."
+    assert result.html == "<p>No changes.</p>"
     assert result.proposals == ()
     assert result.event_count == 1
 
@@ -434,7 +482,7 @@ def test_codex_agent_streams_malformed_json_event(
     ) -> FakePopen:
         output_path = Path(command[command.index("--output-last-message") + 1])
         output_path.write_text(
-            '{"message": "No changes.", "patch": null}',
+            '{"message": "No changes.", "message_html": "<p>No changes.</p>", "patch": null}',
             encoding="utf-8",
         )
         return FakePopen(stdout='not json\n{"type":"turn.completed"}\n')
@@ -547,7 +595,8 @@ def test_codex_cli_json_stream_smoke(tmp_path: Path) -> None:
     ).send(
         prompt=(
             "Reply with one brief sentence about the source file. Do not propose "
-            "note changes; use patch null."
+            "note changes; use patch null. Include simple paragraph HTML in "
+            "message_html."
         ),
         snapshot=snapshot(),
         project_root=str(project),
@@ -556,6 +605,7 @@ def test_codex_cli_json_stream_smoke(tmp_path: Path) -> None:
     )
 
     assert result.text
+    assert result.html
     assert result.proposals == ()
     assert events
     assert source.read_text(encoding="utf-8") == (

@@ -26,14 +26,14 @@ from aqt.qt import (
     QPushButton,
     QSplitter,
     Qt,
-    QTextCursor,
     QVBoxLayout,
     QWidget,
     qconnect,
 )
 from aqt.utils import showWarning, tooltip
+from aqt.webview import AnkiWebView
 
-from .activity import CodexActivityRenderer, compact_activity_transcript
+from .activity import CodexActivityRenderer
 from .codex_client import CodexCliAgent, project_root_status, resolve_codex_path
 from .patches import (
     EditorSnapshot,
@@ -42,10 +42,25 @@ from .patches import (
     PatchValidationError,
     render_patch_diff,
 )
+from .surface import (
+    js_append_to_activity,
+    js_append_transcript,
+    js_clear_proposal,
+    js_replace_element,
+    js_set_proposal,
+    render_activity_line,
+    render_activity_start,
+    render_activity_summary,
+    render_assistant_message,
+    render_error_message,
+    render_proposal_diff,
+    render_user_message,
+    surface_body,
+)
 
 ADDON = "editor_agent_pane"
 TOGGLE_COMMAND = "editorAgentPane"
-DEFAULT_SPLITTER_SIZES = [420, 150, 80]
+DEFAULT_SPLITTER_SIZES = [570, 80]
 DEFAULT_CONFIG = {
     "codex_path": "",
     "model": "",
@@ -155,7 +170,8 @@ class EditorAgentPane(QWidget):
         self.history: list[tuple[str, str]] = []
         self.pending_patch: NotePatch | None = None
         self.pending_snapshot: EditorSnapshot | None = None
-        self._activity_start: int | None = None
+        self._activity_id: str | None = None
+        self._activity_counter = 0
         self._activity_open = False
 
         self.dock = QDockWidget("Agent", editor.parentWindow)
@@ -206,14 +222,15 @@ class EditorAgentPane(QWidget):
         project_row.addWidget(browse)
         layout.addLayout(project_row)
 
-        self.transcript = QPlainTextEdit()
-        self.transcript.setReadOnly(True)
-        self.transcript.setPlaceholderText("Ask about the current card or source material.")
-
-        self.proposal = QPlainTextEdit()
-        self.proposal.setReadOnly(True)
-        self.proposal.setPlaceholderText("Proposed note changes appear here.")
-        self.proposal.setMinimumHeight(60)
+        self.surface = AnkiWebView(self)
+        self.surface.stdHtml(
+            surface_body(),
+            js=[
+                "js/mathjax.js",
+                "js/vendor/mathjax/tex-chtml-full.js",
+            ],
+            context=self,
+        )
 
         self.prompt = PromptEdit(self._send, self)
         self.prompt.setPlaceholderText("Message")
@@ -221,12 +238,10 @@ class EditorAgentPane(QWidget):
 
         self.text_splitter = QSplitter(Qt.Orientation.Vertical)
         self.text_splitter.setChildrenCollapsible(False)
-        self.text_splitter.addWidget(self.transcript)
-        self.text_splitter.addWidget(self.proposal)
+        self.text_splitter.addWidget(self.surface)
         self.text_splitter.addWidget(self.prompt)
         self.text_splitter.setStretchFactor(0, 6)
-        self.text_splitter.setStretchFactor(1, 2)
-        self.text_splitter.setStretchFactor(2, 1)
+        self.text_splitter.setStretchFactor(1, 1)
         self.text_splitter.setSizes(list(DEFAULT_SPLITTER_SIZES))
         layout.addWidget(self.text_splitter, 1)
 
@@ -300,26 +315,31 @@ class EditorAgentPane(QWidget):
             f"{notetype_name}\n{project_root_status(self.project_edit.text())}"
         )
 
-    def _append_transcript(self, text: str) -> None:
-        self.transcript.moveCursor(QTextCursor.MoveOperation.End)
-        self.transcript.insertPlainText(text)
-        self.transcript.moveCursor(QTextCursor.MoveOperation.End)
+    def _append_transcript(self, fragment: str) -> None:
+        self.surface.eval(js_append_transcript(fragment))
 
     def _replace_activity_with_summary(self, summary: str) -> None:
-        self.transcript.setPlainText(
-            compact_activity_transcript(
-                self.transcript.toPlainText(),
-                self._activity_start,
-                summary,
+        if self._activity_id:
+            self.surface.eval(
+                js_replace_element(
+                    self._activity_id,
+                    render_activity_summary(self._activity_id, summary),
+                )
             )
-        )
-        self.transcript.moveCursor(QTextCursor.MoveOperation.End)
-        self._activity_start = None
+        self._activity_id = None
         self._activity_open = False
 
     def _append_activity_line(self, line: str) -> None:
-        if self._activity_open:
-            self._append_transcript(f"{line}\n")
+        if self._activity_open and self._activity_id:
+            self.surface.eval(
+                js_append_to_activity(self._activity_id, render_activity_line(line))
+            )
+
+    def _clear_proposal(self) -> None:
+        self.surface.eval(js_clear_proposal())
+
+    def _set_proposal(self, diff: str) -> None:
+        self.surface.eval(js_set_proposal(render_proposal_diff(diff)))
 
     def _send(self) -> None:
         prompt = self.prompt.toPlainText().strip()
@@ -327,7 +347,7 @@ class EditorAgentPane(QWidget):
             return
         self.prompt.clear()
         self._save_settings()
-        self._append_transcript(f"\nYou: {prompt}\nAssistant: ")
+        self._append_transcript(render_user_message(prompt))
         self.editor.call_after_note_saved(
             lambda: self._start_agent_request(prompt),
             keepFocus=True,
@@ -348,11 +368,11 @@ class EditorAgentPane(QWidget):
         self.apply_button.setEnabled(False)
         self.pending_patch = None
         self.pending_snapshot = None
-        self.proposal.clear()
-        self._append_transcript("\n[Codex CLI running in read-only mode]\n")
-        self._activity_start = len(self.transcript.toPlainText())
+        self._clear_proposal()
+        self._activity_counter += 1
+        self._activity_id = f"agent-activity-{self._activity_counter}"
         self._activity_open = True
-        self._append_transcript("[Live Codex activity]\n")
+        self._append_transcript(render_activity_start(self._activity_id))
         activity = CodexActivityRenderer()
         assert aqt.mw is not None
         taskman = aqt.mw.taskman
@@ -361,7 +381,7 @@ class EditorAgentPane(QWidget):
             line = activity.record(event)
             taskman.run_on_main(lambda line=line: self._append_activity_line(line))
 
-        def task() -> tuple[str, tuple[NotePatch, ...], str]:
+        def task() -> tuple[str, str, tuple[NotePatch, ...], str]:
             agent = CodexCliAgent(
                 codex_path=codex_path,
                 model=model,
@@ -374,25 +394,24 @@ class EditorAgentPane(QWidget):
                 history=self.history,
                 event_callback=on_stream_event,
             )
-            return result.text, result.proposals, activity.compact_summary()
+            return result.text, result.html, result.proposals, activity.compact_summary()
 
         def on_done(future: Future) -> None:
             self.send_button.setEnabled(True)
             try:
-                text, proposals, activity_summary = future.result()
+                text, message_html, proposals, activity_summary = future.result()
             except Exception as exc:
                 self._activity_open = False
-                self._append_transcript(f"\nError: {exc}\n")
+                self._append_transcript(render_error_message(str(exc)))
                 return
             self._replace_activity_with_summary(activity_summary)
-            if text:
-                self._append_transcript(text)
-            self._append_transcript("\n")
+            if text or message_html:
+                self._append_transcript(render_assistant_message(message_html, text))
             self.history.append((prompt, text))
             if proposals:
                 self.pending_patch = proposals[-1]
                 self.pending_snapshot = snapshot
-                self.proposal.setPlainText(render_patch_diff(snapshot, proposals[-1]))
+                self._set_proposal(render_patch_diff(snapshot, proposals[-1]))
                 self.apply_button.setEnabled(True)
 
         taskman.run_in_background(task, on_done, uses_collection=False)
@@ -400,7 +419,7 @@ class EditorAgentPane(QWidget):
     def _discard_pending_patch(self) -> None:
         self.pending_patch = None
         self.pending_snapshot = None
-        self.proposal.clear()
+        self._clear_proposal()
         self.apply_button.setEnabled(False)
 
     def _apply_pending_patch(self) -> None:
