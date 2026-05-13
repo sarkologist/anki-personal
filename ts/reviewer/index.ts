@@ -19,6 +19,7 @@ globalThis.anki.setupImageCloze = imageOcclusionAPI.setup; // deprecated
 import { bridgeCommand } from "@tslib/bridgecommand";
 import { registerPackage } from "@tslib/runtime-require";
 
+import { locateActiveCloze } from "./cloze-locator";
 import { allImagesLoaded, preloadAnswerImages } from "./images";
 import { replaceEditorMathjaxElements } from "./mathjax";
 import { preloadResources } from "./preload";
@@ -182,7 +183,10 @@ export function _showQuestion(q: string, a: string, bodyclass: string): void {
                     typeans.focus();
                 }
                 // preload images
-                allImagesLoaded().then(() => preloadAnswerImages(a));
+                allImagesLoaded().then(() => {
+                    locateActiveCloze();
+                    preloadAnswerImages(a);
+                });
             },
         )
     );

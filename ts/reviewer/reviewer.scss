@@ -97,6 +97,29 @@ code#typeans {
     background: #ccc;
 }
 
+.anki-active-cloze-highlight {
+    outline: 2px solid rgba(255 193 7 / 0.95);
+    outline-offset: 3px;
+    box-shadow: 0 0 0 6px rgba(255 193 7 / 0.25);
+    animation: anki-active-cloze-highlight 1.2s ease-out;
+}
+
+@keyframes anki-active-cloze-highlight {
+    from {
+        outline-color: rgba(255 193 7 / 1);
+        box-shadow: 0 0 0 8px rgba(255 193 7 / 0.45);
+    }
+
+    to {
+        outline-color: rgba(255 193 7 / 0.35);
+        box-shadow: 0 0 0 2px rgba(255 193 7 / 0);
+    }
+}
+
+.reduce-motion .anki-active-cloze-highlight {
+    animation: none;
+}
+
 button {
     margin: 1em 0.5em;
 }
