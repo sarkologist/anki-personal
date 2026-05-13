@@ -152,11 +152,8 @@ def validate_note_patch(raw: dict[str, Any], snapshot: EditorSnapshot) -> NotePa
     if not isinstance(raw_tags, dict):
         raise PatchValidationError("tags must be an object.")
 
-    replace = (
-        _normalize_tags(raw_tags["replace"], "tags.replace")
-        if "replace" in raw_tags
-        else None
-    )
+    raw_replace = raw_tags.get("replace")
+    replace = None if raw_replace is None else _normalize_tags(raw_replace, "tags.replace")
     tag_patch = TagPatch(
         replace=replace,
         add=_normalize_tags(raw_tags.get("add"), "tags.add"),

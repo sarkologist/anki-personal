@@ -112,7 +112,7 @@ def test_validate_note_patch_accepts_current_note_fields_and_tags() -> None:
             "note_id": 123,
             "notetype_id": 7,
             "field_updates": [{"name": "Front", "html": "new front"}],
-            "tags": {"add": ["agent"], "remove": ["remove-me"]},
+            "tags": {"replace": None, "add": ["agent"], "remove": ["remove-me"]},
         },
         snapshot(),
     )
@@ -170,6 +170,20 @@ def test_validate_note_patch_rejects_whitespace_tags() -> None:
         )
 
 
+def test_validate_note_patch_can_replace_all_tags() -> None:
+    patch = validate_note_patch(
+        {
+            "summary": "Retag",
+            "notetype_id": 7,
+            "field_updates": [{"name": "Front", "html": "new front"}],
+            "tags": {"replace": ["fresh"], "add": [], "remove": []},
+        },
+        snapshot(),
+    )
+
+    assert patch.tag_patch.apply(snapshot().tags) == ("fresh",)
+
+
 def test_codex_agent_uses_read_only_cli_and_parses_patch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -200,7 +214,7 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
                 "note_id": 123,
                 "notetype_id": 7,
                 "field_updates": [{"name": "Front", "html": "new front"}],
-                "tags": {"add": ["agent"], "remove": []}
+                "tags": {"replace": null, "add": ["agent"], "remove": []}
               }
             }
             """,
@@ -296,6 +310,40 @@ def test_codex_agent_surfaces_login_failure(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(RuntimeError, match="codex login"):
+        CodexCliAgent(
+            codex_path="codex",
+            model="",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+        )
+
+
+def test_codex_agent_surfaces_schema_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr='ERROR: {"type":"error","error":{"code":"invalid_json_schema","message":"required is required"}}',
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="rejected the response schema"):
         CodexCliAgent(
             codex_path="codex",
             model="",

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -46,7 +47,7 @@ CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
                             "type": "object",
                             "properties": {
                                 "replace": {
-                                    "type": "array",
+                                    "type": ["array", "null"],
                                     "items": {"type": "string"},
                                 },
                                 "add": {
@@ -58,6 +59,7 @@ CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
                                     "items": {"type": "string"},
                                 },
                             },
+                            "required": ["replace", "add", "remove"],
                             "additionalProperties": False,
                         },
                     },
@@ -100,6 +102,8 @@ When proposing a patch:
 - Target only the current note.
 - Use exact field names from the editor context.
 - Preserve HTML where appropriate.
+- Include tags.replace, tags.add, and tags.remove. Use null for tags.replace
+  unless you intend to replace the complete tag list.
 - The patch will only be shown to the user; Anki applies it after approval.
 """
 
@@ -257,6 +261,10 @@ def _format_codex_error(completed: subprocess.CompletedProcess[str]) -> str:
     stderr = completed.stderr.strip()
     stdout = completed.stdout.strip()
     details = stderr or stdout or "no output"
+    if "invalid_json_schema" in details:
+        if match := re.search(r'"message":\s*"([^"]+)"', details):
+            return f"Codex CLI rejected the response schema: {match.group(1)}"
+        return "Codex CLI rejected the response schema."
     if "not logged in" in details.lower() or "login" in details.lower():
         return "Codex CLI is not logged in. Run `codex login` and choose ChatGPT sign-in."
     return f"Codex CLI failed with exit code {completed.returncode}: {details[-1200:]}"
