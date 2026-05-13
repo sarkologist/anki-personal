@@ -13,6 +13,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { blockIcon, deleteIcon, inlineIcon } from "$lib/components/icons";
 
     import ClozeButtons from "../ClozeButtons.svelte";
+    import MathjaxHighlightButtons from "./MathjaxHighlightButtons.svelte";
 
     export let isBlock: boolean;
     export let isClozeField: boolean;
@@ -44,6 +45,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {#if isClozeField}
         <ClozeButtons on:surround alwaysEnabled={true} />
     {/if}
+
+    <MathjaxHighlightButtons on:surround />
 
     <ButtonGroup>
         <IconButton
