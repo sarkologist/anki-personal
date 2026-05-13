@@ -8,9 +8,12 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from queue import Empty, Queue
+from threading import Thread
+from typing import Any, Callable, TextIO
 
 from .patches import EditorSnapshot, NotePatch, validate_note_patch
 from .sources import SourceAccessError, resolve_project_root
@@ -112,6 +115,19 @@ When proposing a patch:
 class AgentResult:
     text: str
     proposals: tuple[NotePatch, ...]
+    event_count: int = 0
+
+
+@dataclass(frozen=True)
+class _CodexProcessResult:
+    command: list[str]
+    returncode: int
+    stdout: str
+    stderr: str
+    event_count: int
+
+
+CodexEventCallback = Callable[[dict[str, Any]], None]
 
 
 class CodexCliAgent:
@@ -133,6 +149,7 @@ class CodexCliAgent:
         snapshot: EditorSnapshot,
         project_root: str,
         history: list[tuple[str, str]],
+        event_callback: CodexEventCallback | None = None,
     ) -> AgentResult:
         with tempfile.TemporaryDirectory(prefix="anki-codex-agent-") as temp_dir:
             temp = Path(temp_dir)
@@ -144,7 +161,11 @@ class CodexCliAgent:
 
             cwd = self._working_directory(project_root, temp)
             command = self._command(cwd, schema_path, output_path)
-            completed = self._run(command, self._prompt(prompt, snapshot, history))
+            completed = self._run(
+                command,
+                self._prompt(prompt, snapshot, history),
+                event_callback=event_callback,
+            )
 
             if completed.returncode != 0:
                 raise RuntimeError(_format_codex_error(completed))
@@ -158,7 +179,11 @@ class CodexCliAgent:
             proposals: tuple[NotePatch, ...] = ()
             if patch_data is not None:
                 proposals = (validate_note_patch(patch_data, snapshot),)
-            return AgentResult(text=message, proposals=proposals)
+            return AgentResult(
+                text=message,
+                proposals=proposals,
+                event_count=completed.event_count,
+            )
 
     def _working_directory(self, project_root: str, fallback: Path) -> Path:
         if project_root.strip():
@@ -180,6 +205,7 @@ class CodexCliAgent:
             "--ephemeral",
             "--color",
             "never",
+            "--json",
             "--cd",
             str(cwd),
             "--output-schema",
@@ -216,22 +242,87 @@ class CodexCliAgent:
         self,
         command: list[str],
         prompt: str,
-    ) -> subprocess.CompletedProcess[str]:
+        *,
+        event_callback: CodexEventCallback | None,
+    ) -> _CodexProcessResult:
         try:
-            return subprocess.run(
+            process = subprocess.Popen(
                 command,
-                input=prompt,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                capture_output=True,
-                timeout=self.timeout_seconds,
-                check=False,
+                bufsize=1,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
                 "Could not find Codex CLI. Set the Codex CLI path in the pane."
             ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("Codex CLI timed out.") from exc
+
+        assert process.stdout is not None
+        assert process.stderr is not None
+        lines: Queue[tuple[str, str | None]] = Queue()
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        event_count = 0
+        stdout_done = False
+        stderr_done = False
+
+        stdout_reader = _start_reader(process.stdout, "stdout", lines)
+        stderr_reader = _start_reader(process.stderr, "stderr", lines)
+
+        try:
+            if process.stdin is not None:
+                process.stdin.write(prompt)
+                process.stdin.close()
+        except BrokenPipeError:
+            pass
+
+        deadline = time.monotonic() + self.timeout_seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.kill()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+                stdout_reader.join(timeout=1)
+                stderr_reader.join(timeout=1)
+                raise RuntimeError("Codex CLI timed out.")
+
+            try:
+                stream_name, line = lines.get(timeout=min(0.05, remaining))
+            except Empty:
+                stream_name = ""
+                line = ""
+
+            if stream_name == "stdout":
+                if line is None:
+                    stdout_done = True
+                else:
+                    stdout_chunks.append(line)
+                    if event := _parse_stream_event(line):
+                        event_count += 1
+                        if event_callback is not None:
+                            event_callback(event)
+            elif stream_name == "stderr":
+                if line is None:
+                    stderr_done = True
+                else:
+                    stderr_chunks.append(line)
+
+            returncode = process.poll()
+            if returncode is not None and stdout_done and stderr_done:
+                stdout_reader.join(timeout=1)
+                stderr_reader.join(timeout=1)
+                return _CodexProcessResult(
+                    command=command,
+                    returncode=returncode,
+                    stdout="".join(stdout_chunks),
+                    stderr="".join(stderr_chunks),
+                    event_count=event_count,
+                )
 
 
 def resolve_codex_path(configured_path: str) -> str:
@@ -257,7 +348,37 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     return parsed
 
 
-def _format_codex_error(completed: subprocess.CompletedProcess[str]) -> str:
+def _start_reader(
+    stream: TextIO,
+    stream_name: str,
+    lines: Queue[tuple[str, str | None]],
+) -> Thread:
+    def read_lines() -> None:
+        try:
+            for line in stream:
+                lines.put((stream_name, line))
+        finally:
+            lines.put((stream_name, None))
+
+    thread = Thread(target=read_lines, daemon=True)
+    thread.start()
+    return thread
+
+
+def _parse_stream_event(line: str) -> dict[str, Any] | None:
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return {"type": "malformed_json", "line": line}
+    if isinstance(event, dict):
+        return event
+    return {"type": "unknown_json", "value": event}
+
+
+def _format_codex_error(completed: _CodexProcessResult) -> str:
     stderr = completed.stderr.strip()
     stdout = completed.stdout.strip()
     details = stderr or stdout or "no output"

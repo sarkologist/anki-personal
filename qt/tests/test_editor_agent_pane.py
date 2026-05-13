@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import io
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +17,10 @@ ADDONS = ROOT / "addons"
 if str(ADDONS) not in sys.path:
     sys.path.insert(0, str(ADDONS))
 
+from editor_agent_pane.activity import (  # noqa: E402
+    CodexActivityRenderer,
+    compact_activity_transcript,
+)
 from editor_agent_pane.codex_client import (  # noqa: E402
     CodexCliAgent,
     resolve_codex_path,
@@ -44,6 +50,44 @@ def snapshot() -> EditorSnapshot:
         ),
         tags=("keep", "remove-me"),
     )
+
+
+class FakeStdin:
+    def __init__(self) -> None:
+        self.text = ""
+        self.closed = False
+
+    def write(self, text: str) -> int:
+        self.text += text
+        return len(text)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakePopen:
+    def __init__(
+        self,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+        returncode: int | None = 0,
+    ) -> None:
+        self.stdin = FakeStdin()
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
+        self.returncode = returncode
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode or 0
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
 
 
 def test_read_source_file_rejects_traversal_and_absolute_path(tmp_path: Path) -> None:
@@ -192,18 +236,21 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
     project.mkdir()
     captured: dict[str, Any] = {}
 
-    def fake_run(
+    def fake_popen(
         command: list[str],
         *,
-        input: str,
+        stdin: int,
+        stdout: int,
+        stderr: int,
         text: bool,
-        capture_output: bool,
-        timeout: int,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
+        bufsize: int,
+    ) -> FakePopen:
         captured["command"] = command
-        captured["input"] = input
-        captured["timeout"] = timeout
+        captured["stdin"] = stdin
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        captured["text"] = text
+        captured["bufsize"] = bufsize
         output_path = Path(command[command.index("--output-last-message") + 1])
         output_path.write_text(
             """
@@ -220,9 +267,17 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
             """,
             encoding="utf-8",
         )
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        process = FakePopen(
+            stdout=(
+                '{"type":"turn.started"}\n'
+                '{"type":"exec_command_begin","cmd":"rg canonical"}\n'
+            )
+        )
+        captured["process"] = process
+        return process
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    events: list[dict[str, Any]] = []
 
     result = CodexCliAgent(
         codex_path="/usr/local/bin/codex",
@@ -233,20 +288,29 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
         snapshot=snapshot(),
         project_root=str(project),
         history=[],
+        event_callback=events.append,
     )
 
     command = captured["command"]
     assert command[:2] == ["/usr/local/bin/codex", "exec"]
     assert command[command.index("--sandbox") + 1] == "read-only"
+    assert "--json" in command
     assert "--ask-for-approval" not in command
     assert command[command.index("--cd") + 1] == str(project.resolve())
     assert "--model" not in command
     assert command[-1] == "-"
-    assert captured["timeout"] == 123
-    assert "Current editor context is JSON" in captured["input"]
-    assert "Improve this" in captured["input"]
+    assert captured["stdin"] == subprocess.PIPE
+    assert captured["stdout"] == subprocess.PIPE
+    assert captured["stderr"] == subprocess.PIPE
+    assert "Current editor context is JSON" in captured["process"].stdin.text
+    assert "Improve this" in captured["process"].stdin.text
     assert result.text == "Looks better with a shorter front."
     assert result.proposals[0].field_updates == {"Front": "new front"}
+    assert result.event_count == 2
+    assert [event["type"] for event in events] == [
+        "turn.started",
+        "exec_command_begin",
+    ]
 
 
 def test_codex_agent_passes_optional_model(
@@ -255,24 +319,24 @@ def test_codex_agent_passes_optional_model(
 ) -> None:
     captured: dict[str, Any] = {}
 
-    def fake_run(
+    def fake_popen(
         command: list[str],
         *,
-        input: str,
+        stdin: int,
+        stdout: int,
+        stderr: int,
         text: bool,
-        capture_output: bool,
-        timeout: int,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
+        bufsize: int,
+    ) -> FakePopen:
         captured["command"] = command
         output_path = Path(command[command.index("--output-last-message") + 1])
         output_path.write_text(
             '{"message": "No changes.", "patch": null}',
             encoding="utf-8",
         )
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return FakePopen(stdout='{"type":"turn.completed"}\n')
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
     result = CodexCliAgent(
         codex_path="codex",
@@ -289,25 +353,24 @@ def test_codex_agent_passes_optional_model(
     assert command[command.index("--model") + 1] == "gpt-5-codex"
     assert result.text == "No changes."
     assert result.proposals == ()
+    assert result.event_count == 1
 
 
 def test_codex_agent_surfaces_login_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_run(
+    def fake_popen(
         command: list[str],
         *,
-        input: str,
+        stdin: int,
+        stdout: int,
+        stderr: int,
         text: bool,
-        capture_output: bool,
-        timeout: int,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            command, 1, stdout="", stderr="not logged in"
-        )
+        bufsize: int,
+    ) -> FakePopen:
+        return FakePopen(stderr="not logged in", returncode=1)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
     with pytest.raises(RuntimeError, match="codex login"):
         CodexCliAgent(
@@ -325,23 +388,24 @@ def test_codex_agent_surfaces_login_failure(
 def test_codex_agent_surfaces_schema_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_run(
+    def fake_popen(
         command: list[str],
         *,
-        input: str,
+        stdin: int,
+        stdout: int,
+        stderr: int,
         text: bool,
-        capture_output: bool,
-        timeout: int,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            command,
-            1,
-            stdout="",
-            stderr='ERROR: {"type":"error","error":{"code":"invalid_json_schema","message":"required is required"}}',
+        bufsize: int,
+    ) -> FakePopen:
+        return FakePopen(
+            stderr=(
+                'ERROR: {"type":"error","error":{"code":"invalid_json_schema",'
+                '"message":"required is required"}}'
+            ),
+            returncode=1,
         )
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
     with pytest.raises(RuntimeError, match="rejected the response schema"):
         CodexCliAgent(
@@ -354,6 +418,162 @@ def test_codex_agent_surfaces_schema_error(
             project_root="",
             history=[],
         )
+
+
+def test_codex_agent_streams_malformed_json_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(
+            '{"message": "No changes.", "patch": null}',
+            encoding="utf-8",
+        )
+        return FakePopen(stdout='not json\n{"type":"turn.completed"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    events: list[dict[str, Any]] = []
+
+    result = CodexCliAgent(
+        codex_path="codex",
+        model="",
+        timeout_seconds=300,
+    ).send(
+        prompt="Explain",
+        snapshot=snapshot(),
+        project_root="",
+        history=[],
+        event_callback=events.append,
+    )
+
+    assert result.event_count == 2
+    assert events[0] == {"type": "malformed_json", "line": "not json"}
+    assert events[1] == {"type": "turn.completed"}
+
+
+def test_codex_agent_kills_timed_out_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        process = FakePopen(returncode=None)
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        CodexCliAgent(
+            codex_path="codex",
+            model="",
+            timeout_seconds=0,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+        )
+
+    assert captured["process"].killed
+
+
+def test_codex_activity_renderer_compacts_verbose_activity() -> None:
+    renderer = CodexActivityRenderer()
+
+    live_lines = [
+        renderer.record({"type": "turn.started"}),
+        renderer.record({"type": "exec_command_begin", "cmd": "rg canonical"}),
+        renderer.record({"type": "exec_command_output", "output": "line 1\nline 2"}),
+        renderer.record({"type": "reasoning", "summary": "Checking the source."}),
+        renderer.record({"type": "unexpected.future.event"}),
+    ]
+
+    assert live_lines == [
+        "[status] turn started",
+        "[tool] rg canonical",
+        "[output] line 1 line 2",
+        "[reasoning] Checking the source.",
+        "[event] unexpected.future.event",
+    ]
+    assert renderer.compact_summary() == (
+        "[Codex activity: 5 stream events, 1 tool call, 1 output chunk, "
+        "1 reasoning update, 1 other event type]\n"
+    )
+
+
+def test_compact_activity_transcript_replaces_live_tail() -> None:
+    transcript = "You: Explain\nAssistant: [Live Codex activity]\n[tool] rg canonical\n"
+    start = transcript.index("[Live Codex activity]")
+
+    assert compact_activity_transcript(
+        transcript, start, "[Codex activity: done]\n"
+    ) == ("You: Explain\nAssistant: [Codex activity: done]\n")
+
+
+def test_codex_cli_json_stream_smoke(tmp_path: Path) -> None:
+    if os.environ.get("ANKI_CODEX_CLI_INTEGRATION") != "1":
+        pytest.skip("set ANKI_CODEX_CLI_INTEGRATION=1 to run real Codex CLI smoke")
+
+    repo_status_before = _git_status()
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "source.md"
+    source.write_text(
+        "A canonical divisor is attached to top forms.\n", encoding="utf-8"
+    )
+    events: list[dict[str, Any]] = []
+
+    result = CodexCliAgent(
+        codex_path=os.environ.get("ANKI_CODEX_CLI_PATH", ""),
+        model="",
+        timeout_seconds=120,
+    ).send(
+        prompt=(
+            "Reply with one brief sentence about the source file. Do not propose "
+            "note changes; use patch null."
+        ),
+        snapshot=snapshot(),
+        project_root=str(project),
+        history=[],
+        event_callback=events.append,
+    )
+
+    assert result.text
+    assert result.proposals == ()
+    assert events
+    assert source.read_text(encoding="utf-8") == (
+        "A canonical divisor is attached to top forms.\n"
+    )
+    assert _git_status() == repo_status_before
+
+
+def _git_status() -> str:
+    if not (ROOT / ".git").exists():
+        return ""
+    return subprocess.run(
+        ["git", "status", "--short"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
 
 
 def test_resolve_codex_path_prefers_configured_value() -> None:

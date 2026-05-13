@@ -33,6 +33,7 @@ from aqt.qt import (
 )
 from aqt.utils import showWarning, tooltip
 
+from .activity import CodexActivityRenderer, compact_activity_transcript
 from .codex_client import CodexCliAgent, project_root_status, resolve_codex_path
 from .patches import (
     EditorSnapshot,
@@ -154,6 +155,8 @@ class EditorAgentPane(QWidget):
         self.history: list[tuple[str, str]] = []
         self.pending_patch: NotePatch | None = None
         self.pending_snapshot: EditorSnapshot | None = None
+        self._activity_start: int | None = None
+        self._activity_open = False
 
         self.dock = QDockWidget("Agent", editor.parentWindow)
         self.dock.setObjectName("EditorAgentPane")
@@ -302,6 +305,22 @@ class EditorAgentPane(QWidget):
         self.transcript.insertPlainText(text)
         self.transcript.moveCursor(QTextCursor.MoveOperation.End)
 
+    def _replace_activity_with_summary(self, summary: str) -> None:
+        self.transcript.setPlainText(
+            compact_activity_transcript(
+                self.transcript.toPlainText(),
+                self._activity_start,
+                summary,
+            )
+        )
+        self.transcript.moveCursor(QTextCursor.MoveOperation.End)
+        self._activity_start = None
+        self._activity_open = False
+
+    def _append_activity_line(self, line: str) -> None:
+        if self._activity_open:
+            self._append_transcript(f"{line}\n")
+
     def _send(self) -> None:
         prompt = self.prompt.toPlainText().strip()
         if not prompt:
@@ -331,8 +350,18 @@ class EditorAgentPane(QWidget):
         self.pending_snapshot = None
         self.proposal.clear()
         self._append_transcript("\n[Codex CLI running in read-only mode]\n")
+        self._activity_start = len(self.transcript.toPlainText())
+        self._activity_open = True
+        self._append_transcript("[Live Codex activity]\n")
+        activity = CodexActivityRenderer()
+        assert aqt.mw is not None
+        taskman = aqt.mw.taskman
 
-        def task() -> tuple[str, tuple[NotePatch, ...]]:
+        def on_stream_event(event: dict[str, Any]) -> None:
+            line = activity.record(event)
+            taskman.run_on_main(lambda line=line: self._append_activity_line(line))
+
+        def task() -> tuple[str, tuple[NotePatch, ...], str]:
             agent = CodexCliAgent(
                 codex_path=codex_path,
                 model=model,
@@ -343,16 +372,19 @@ class EditorAgentPane(QWidget):
                 snapshot=snapshot,
                 project_root=project_root,
                 history=self.history,
+                event_callback=on_stream_event,
             )
-            return result.text, result.proposals
+            return result.text, result.proposals, activity.compact_summary()
 
         def on_done(future: Future) -> None:
             self.send_button.setEnabled(True)
             try:
-                text, proposals = future.result()
+                text, proposals, activity_summary = future.result()
             except Exception as exc:
+                self._activity_open = False
                 self._append_transcript(f"\nError: {exc}\n")
                 return
+            self._replace_activity_with_summary(activity_summary)
             if text:
                 self._append_transcript(text)
             self._append_transcript("\n")
@@ -363,8 +395,7 @@ class EditorAgentPane(QWidget):
                 self.proposal.setPlainText(render_patch_diff(snapshot, proposals[-1]))
                 self.apply_button.setEnabled(True)
 
-        assert aqt.mw is not None
-        aqt.mw.taskman.run_in_background(task, on_done, uses_collection=False)
+        taskman.run_in_background(task, on_done, uses_collection=False)
 
     def _discard_pending_patch(self) -> None:
         self.pending_patch = None

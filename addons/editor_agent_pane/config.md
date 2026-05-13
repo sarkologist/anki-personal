@@ -11,5 +11,10 @@ direct OpenAI API billing.
 - `splitter_sizes`: Saved transcript/proposal/prompt pane sizes.
 
 Run `codex login` first and choose ChatGPT sign-in. The add-on invokes
-`codex exec` with a read-only sandbox. Anki never applies note changes without
-your approval.
+`codex exec --json` with a read-only sandbox, streams live activity while it is
+running, then compacts that activity when the final response arrives. Anki never
+applies note changes without your approval.
+
+To smoke-test the real CLI integration manually, run the editor agent pane tests
+with `ANKI_CODEX_CLI_INTEGRATION=1`. Optionally set `ANKI_CODEX_CLI_PATH` to a
+specific Codex binary.
