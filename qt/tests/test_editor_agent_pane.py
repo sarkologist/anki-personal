@@ -56,6 +56,7 @@ from editor_agent_pane.surface import (  # noqa: E402
 )
 from editor_agent_pane.ui_text import (  # noqa: E402
     AGENT_BUTTON_LABEL,
+    AGENT_BUTTON_TIP,
     AGENT_PANE_SHORTCUT,
 )
 
@@ -139,8 +140,9 @@ def test_agent_model_options_preserve_unknown_legacy_model() -> None:
     assert model_option_index("gpt-legacy") == len(options) - 1
 
 
-def test_agent_button_label_includes_shortcut() -> None:
-    assert AGENT_BUTTON_LABEL == f"Agent ({AGENT_PANE_SHORTCUT})"
+def test_agent_button_tooltip_includes_shortcut() -> None:
+    assert AGENT_BUTTON_LABEL == "Agent"
+    assert AGENT_BUTTON_TIP == f"Open the editor agent pane ({AGENT_PANE_SHORTCUT})"
 
 
 def test_read_source_file_rejects_traversal_and_absolute_path(tmp_path: Path) -> None:
