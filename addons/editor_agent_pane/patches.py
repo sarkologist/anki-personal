@@ -1,0 +1,212 @@
+# Copyright: Ankitects Pty Ltd and contributors
+# License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+
+from __future__ import annotations
+
+import difflib
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+TAG_RE = re.compile(r"^[^\s]+$")
+
+
+class PatchValidationError(ValueError):
+    """Raised when an agent-proposed patch is not safe for the current note."""
+
+
+@dataclass(frozen=True)
+class FieldSnapshot:
+    name: str
+    html: str
+
+
+@dataclass(frozen=True)
+class EditorSnapshot:
+    mode: str
+    note_id: int | None
+    notetype_id: int
+    notetype_name: str
+    fields: tuple[FieldSnapshot, ...]
+    tags: tuple[str, ...]
+    current_field: str | None = None
+    card_id: int | None = None
+
+    def field_names(self) -> tuple[str, ...]:
+        return tuple(field.name for field in self.fields)
+
+    def field_html(self, name: str) -> str:
+        for field_snapshot in self.fields:
+            if field_snapshot.name == name:
+                return field_snapshot.html
+        raise KeyError(name)
+
+    def as_tool_result(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "note_id": self.note_id,
+            "notetype_id": self.notetype_id,
+            "notetype_name": self.notetype_name,
+            "fields": [
+                {"name": field_snapshot.name, "html": field_snapshot.html}
+                for field_snapshot in self.fields
+            ],
+            "tags": list(self.tags),
+            "current_field": self.current_field,
+            "card_id": self.card_id,
+        }
+
+
+@dataclass(frozen=True)
+class TagPatch:
+    replace: tuple[str, ...] | None = None
+    add: tuple[str, ...] = ()
+    remove: tuple[str, ...] = ()
+
+    def apply(self, current_tags: tuple[str, ...]) -> tuple[str, ...]:
+        tags = list(self.replace if self.replace is not None else current_tags)
+        for tag in self.remove:
+            tags = [existing for existing in tags if existing != tag]
+        for tag in self.add:
+            if tag not in tags:
+                tags.append(tag)
+        return tuple(tags)
+
+    def has_changes(self) -> bool:
+        return self.replace is not None or bool(self.add) or bool(self.remove)
+
+
+@dataclass(frozen=True)
+class NotePatch:
+    summary: str
+    note_id: int | None
+    notetype_id: int
+    field_updates: dict[str, str] = field(default_factory=dict)
+    tag_patch: TagPatch = field(default_factory=TagPatch)
+
+    def has_changes(self) -> bool:
+        return bool(self.field_updates) or self.tag_patch.has_changes()
+
+
+def _normalize_tags(value: Any, key: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise PatchValidationError(f"{key} must be a list of tags.")
+    normalized: list[str] = []
+    for raw_tag in value:
+        if not isinstance(raw_tag, str):
+            raise PatchValidationError(f"{key} must contain strings.")
+        tag = raw_tag.strip()
+        if not tag:
+            continue
+        if not TAG_RE.match(tag):
+            raise PatchValidationError(f"Tag contains whitespace: {tag!r}.")
+        if tag not in normalized:
+            normalized.append(tag)
+    return tuple(normalized)
+
+
+def validate_note_patch(raw: dict[str, Any], snapshot: EditorSnapshot) -> NotePatch:
+    if not isinstance(raw, dict):
+        raise PatchValidationError("Patch must be a JSON object.")
+
+    raw_note_id = raw.get("note_id")
+    note_id = int(raw_note_id) if raw_note_id not in (None, "") else None
+    if snapshot.note_id not in (None, 0) and note_id not in (None, snapshot.note_id):
+        raise PatchValidationError("Patch targets a different note.")
+
+    raw_notetype_id = raw.get("notetype_id", snapshot.notetype_id)
+    try:
+        notetype_id = int(raw_notetype_id)
+    except (TypeError, ValueError) as exc:
+        raise PatchValidationError("Patch notetype_id must be an integer.") from exc
+    if notetype_id != snapshot.notetype_id:
+        raise PatchValidationError("Patch targets a different note type.")
+
+    known_fields = set(snapshot.field_names())
+    field_updates: dict[str, str] = {}
+    raw_updates = raw.get("field_updates", [])
+    if raw_updates is None:
+        raw_updates = []
+    if not isinstance(raw_updates, list):
+        raise PatchValidationError("field_updates must be a list.")
+    for update in raw_updates:
+        if not isinstance(update, dict):
+            raise PatchValidationError("Each field update must be an object.")
+        name = update.get("name")
+        html = update.get("html")
+        if not isinstance(name, str) or not name:
+            raise PatchValidationError("Field update name must be a string.")
+        if name not in known_fields:
+            raise PatchValidationError(f"Unknown field: {name}.")
+        if name in field_updates:
+            raise PatchValidationError(f"Duplicate field update: {name}.")
+        if not isinstance(html, str):
+            raise PatchValidationError(f"Field update for {name} must contain html.")
+        field_updates[name] = html
+
+    raw_tags = raw.get("tags", {})
+    if raw_tags is None:
+        raw_tags = {}
+    if not isinstance(raw_tags, dict):
+        raise PatchValidationError("tags must be an object.")
+
+    replace = (
+        _normalize_tags(raw_tags["replace"], "tags.replace")
+        if "replace" in raw_tags
+        else None
+    )
+    tag_patch = TagPatch(
+        replace=replace,
+        add=_normalize_tags(raw_tags.get("add"), "tags.add"),
+        remove=_normalize_tags(raw_tags.get("remove"), "tags.remove"),
+    )
+
+    summary = raw.get("summary", "")
+    if not isinstance(summary, str):
+        raise PatchValidationError("summary must be a string.")
+    patch = NotePatch(
+        summary=summary.strip() or "Proposed note update",
+        note_id=note_id,
+        notetype_id=notetype_id,
+        field_updates=field_updates,
+        tag_patch=tag_patch,
+    )
+    if not patch.has_changes():
+        raise PatchValidationError("Patch does not contain any changes.")
+    return patch
+
+
+def render_patch_diff(snapshot: EditorSnapshot, patch: NotePatch) -> str:
+    lines = [patch.summary, ""]
+    for field_name, new_html in patch.field_updates.items():
+        old_html = snapshot.field_html(field_name)
+        lines.append(f"Field: {field_name}")
+        lines.extend(
+            difflib.unified_diff(
+                old_html.splitlines(),
+                new_html.splitlines(),
+                fromfile="current",
+                tofile="proposed",
+                lineterm="",
+            )
+        )
+        lines.append("")
+
+    if patch.tag_patch.has_changes():
+        old_tags = tuple(snapshot.tags)
+        new_tags = patch.tag_patch.apply(old_tags)
+        lines.append("Tags")
+        lines.extend(
+            difflib.unified_diff(
+                [" ".join(old_tags)],
+                [" ".join(new_tags)],
+                fromfile="current",
+                tofile="proposed",
+                lineterm="",
+            )
+        )
+        lines.append("")
+
+    return "\n".join(lines).strip()
