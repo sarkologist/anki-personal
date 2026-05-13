@@ -40,7 +40,6 @@ from .patches import (
     FieldSnapshot,
     NotePatch,
     PatchValidationError,
-    render_patch_diff,
 )
 from .surface import (
     js_append_to_activity,
@@ -338,8 +337,8 @@ class EditorAgentPane(QWidget):
     def _clear_proposal(self) -> None:
         self.surface.eval(js_clear_proposal())
 
-    def _set_proposal(self, diff: str) -> None:
-        self.surface.eval(js_set_proposal(render_proposal_diff(diff)))
+    def _set_proposal(self, snapshot: EditorSnapshot, patch: NotePatch) -> None:
+        self.surface.eval(js_set_proposal(render_proposal_diff(snapshot, patch)))
 
     def _send(self) -> None:
         prompt = self.prompt.toPlainText().strip()
@@ -411,7 +410,7 @@ class EditorAgentPane(QWidget):
             if proposals:
                 self.pending_patch = proposals[-1]
                 self.pending_snapshot = snapshot
-                self._set_proposal(render_patch_diff(snapshot, proposals[-1]))
+                self._set_proposal(snapshot, proposals[-1])
                 self.apply_button.setEnabled(True)
 
         taskman.run_in_background(task, on_done, uses_collection=False)

@@ -191,7 +191,77 @@ def test_surface_rendering_helpers_escape_and_sanitize() -> None:
         "fallback",
     )
     assert "&lt;boom&gt;" in render_error_message("<boom>")
-    assert "&lt;div&gt;" in render_proposal_diff("---\n+<div>")
+
+
+def test_render_proposal_diff_includes_sanitized_field_preview_and_diff() -> None:
+    current = EditorSnapshot(
+        mode="browse",
+        note_id=123,
+        notetype_id=7,
+        notetype_name="Basic",
+        fields=(
+            FieldSnapshot(
+                name="Front",
+                html='<p onclick="evil()">old \\(x\\)</p><script>bad()</script>',
+            ),
+        ),
+        tags=(),
+    )
+    patch = validate_note_patch(
+        {
+            "summary": "Improve field",
+            "note_id": 123,
+            "notetype_id": 7,
+            "field_updates": [
+                {
+                    "name": "Front",
+                    "html": '<p>new \\[K_X\\]</p><a href="https://example.test">ok</a>',
+                }
+            ],
+            "tags": {"replace": None, "add": [], "remove": []},
+        },
+        current,
+    )
+
+    rendered = render_proposal_diff(current, patch)
+    preview = rendered.split('<div class="agent-diff-heading">', maxsplit=1)[0]
+
+    assert "Improve field" in rendered
+    assert '<div class="agent-preview-heading">Current</div>' in rendered
+    assert '<div class="agent-preview-heading">Proposed</div>' in rendered
+    assert "<p>old \\(x\\)</p>" in preview
+    assert "<p>new \\[K_X\\]</p>" in preview
+    assert "<script>" not in preview
+    assert "onclick" not in preview
+    assert 'href="https://example.test"' in preview
+    assert "agent-diff-file" in rendered
+    assert "agent-diff-hunk" in rendered
+    assert "agent-diff-del" in rendered
+    assert "agent-diff-add" in rendered
+    assert "+&lt;p&gt;new \\[K_X\\]&lt;/p&gt;" in rendered
+
+
+def test_render_proposal_diff_includes_tag_preview_and_diff() -> None:
+    patch = validate_note_patch(
+        {
+            "summary": "Retag",
+            "note_id": 123,
+            "notetype_id": 7,
+            "field_updates": [],
+            "tags": {"replace": None, "add": ["agent"], "remove": ["remove-me"]},
+        },
+        snapshot(),
+    )
+
+    rendered = render_proposal_diff(snapshot(), patch)
+
+    assert "Tags" in rendered
+    assert '<span class="agent-tag">keep</span>' in rendered
+    assert '<span class="agent-tag">agent</span>' in rendered
+    assert (
+        '<div class="agent-diff-row agent-diff-del">-keep remove-me</div>' in rendered
+    )
+    assert '<div class="agent-diff-row agent-diff-add">+keep agent</div>' in rendered
 
 
 def test_validate_note_patch_accepts_current_note_fields_and_tags() -> None:
