@@ -31,6 +31,11 @@ from editor_agent_pane.patches import (  # noqa: E402
     PatchValidationError,
     validate_note_patch,
 )
+from editor_agent_pane.recent_folders import (  # noqa: E402
+    MAX_RECENT_PROJECT_FOLDERS,
+    project_folder_choices,
+    remember_project_folder,
+)
 from editor_agent_pane.sanitize import sanitize_html  # noqa: E402
 from editor_agent_pane.sources import (  # noqa: E402
     SourceAccessError,
@@ -154,6 +159,24 @@ def test_search_source_files_is_bounded(tmp_path: Path) -> None:
     assert len(hits) == 3
     assert hits[0].path == "file0.md"
     assert hits[0].line == 1
+
+
+def test_project_folder_choices_include_current_and_clean_history() -> None:
+    assert project_folder_choices(
+        " /current ",
+        ["/two", " /one ", "/two", "", 123],
+    ) == ["/current", "/two", "/one"]
+    assert project_folder_choices(" /one ", ["/two", "/one"]) == ["/one", "/two"]
+
+
+def test_remember_project_folder_moves_selection_to_front_and_limits() -> None:
+    existing = [f"/project/{index}" for index in range(MAX_RECENT_PROJECT_FOLDERS + 2)]
+
+    remembered = remember_project_folder(" /project/5 ", existing)
+
+    assert remembered[:3] == ["/project/5", "/project/0", "/project/1"]
+    assert len(remembered) == MAX_RECENT_PROJECT_FOLDERS
+    assert remember_project_folder("", ["/project/1"]) == ["/project/1"]
 
 
 def test_sanitize_html_allows_formatting_and_mathjax() -> None:

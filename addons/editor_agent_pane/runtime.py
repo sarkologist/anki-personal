@@ -15,6 +15,7 @@ from aqt.editor import Editor, EditorMode
 from aqt.operations.note import update_note
 from aqt.qt import (
     QAction,
+    QComboBox,
     QDockWidget,
     QFileDialog,
     QFormLayout,
@@ -41,6 +42,7 @@ from .patches import (
     NotePatch,
     PatchValidationError,
 )
+from .recent_folders import project_folder_choices, remember_project_folder
 from .surface import (
     js_append_to_activity,
     js_append_transcript,
@@ -64,12 +66,15 @@ DEFAULT_CONFIG = {
     "codex_path": "",
     "model": "",
     "project_folder": "",
+    "recent_project_folders": [],
     "timeout_seconds": 300,
     "splitter_sizes": DEFAULT_SPLITTER_SIZES,
 }
 
 _installed = False
-_panes: weakref.WeakKeyDictionary[Editor, "EditorAgentPane"] = weakref.WeakKeyDictionary()
+_panes: weakref.WeakKeyDictionary[Editor, "EditorAgentPane"] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def install() -> None:
@@ -213,8 +218,16 @@ class EditorAgentPane(QWidget):
         layout.addLayout(form)
 
         project_row = QHBoxLayout()
-        self.project_edit = QLineEdit()
-        self.project_edit.setPlaceholderText("Optional read-only project folder")
+        self.project_edit = QComboBox()
+        self.project_edit.setEditable(True)
+        self.project_edit.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        project_line_edit = self.project_edit.lineEdit()
+        assert project_line_edit is not None
+        project_line_edit.setPlaceholderText("Optional read-only project folder")
+        qconnect(
+            self.project_edit.currentTextChanged,
+            lambda _text: self.refresh_context_label(),
+        )
         browse = QPushButton("Browse")
         qconnect(browse.clicked, self._browse_project)
         project_row.addWidget(self.project_edit, 1)
@@ -265,15 +278,41 @@ class EditorAgentPane(QWidget):
         config = _config()
         self.codex_path_edit.setText(str(config["codex_path"]))
         self.model_edit.setText(str(config["model"]))
-        self.project_edit.setText(str(config["project_folder"]))
+        self._set_project_folder_choices(
+            str(config["project_folder"]),
+            config["recent_project_folders"],
+        )
         self.text_splitter.setSizes(_validated_splitter_sizes(config["splitter_sizes"]))
 
     def _save_settings(self) -> None:
         config = _config()
+        project_folder = self._project_folder_text()
         config["codex_path"] = self.codex_path_edit.text().strip()
         config["model"] = self.model_edit.text().strip()
-        config["project_folder"] = self.project_edit.text().strip()
+        config["project_folder"] = project_folder
+        config["recent_project_folders"] = remember_project_folder(
+            project_folder,
+            config["recent_project_folders"],
+        )
         _write_config(config)
+        self._set_project_folder_choices(
+            project_folder,
+            config["recent_project_folders"],
+        )
+
+    def _set_project_folder_choices(
+        self,
+        project_folder: str,
+        recent_folders: Any,
+    ) -> None:
+        self.project_edit.clear()
+        self.project_edit.addItems(
+            project_folder_choices(project_folder, recent_folders)
+        )
+        self.project_edit.setEditText(project_folder.strip())
+
+    def _project_folder_text(self) -> str:
+        return self.project_edit.currentText().strip()
 
     def _save_splitter_sizes(self, _pos: int, _index: int) -> None:
         config = _config()
@@ -281,7 +320,7 @@ class EditorAgentPane(QWidget):
         _write_config(config)
 
     def _browse_project(self) -> None:
-        start = self.project_edit.text().strip() or os.path.expanduser("~")
+        start = self._project_folder_text() or os.path.expanduser("~")
         folder = QFileDialog.getExistingDirectory(
             self,
             "Select project folder",
@@ -289,8 +328,9 @@ class EditorAgentPane(QWidget):
             QFileDialog.Option.ShowDirsOnly,
         )
         if folder:
-            self.project_edit.setText(folder)
+            self.project_edit.setEditText(folder)
             self._save_settings()
+            self.refresh_context_label()
 
     def toggle(self) -> None:
         self.dock.setVisible(not self.dock.isVisible())
@@ -311,7 +351,7 @@ class EditorAgentPane(QWidget):
         mode = _editor_mode_name(self.editor)
         self.context_label.setText(
             f"{mode} - note {int(note.id) if note.id else 'new'} - "
-            f"{notetype_name}\n{project_root_status(self.project_edit.text())}"
+            f"{notetype_name}\n{project_root_status(self._project_folder_text())}"
         )
 
     def _append_transcript(self, fragment: str) -> None:
@@ -361,7 +401,7 @@ class EditorAgentPane(QWidget):
 
         config = _config()
         model = self.model_edit.text().strip() or str(config["model"])
-        project_root = self.project_edit.text().strip()
+        project_root = self._project_folder_text()
         codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
         self.send_button.setEnabled(False)
         self.apply_button.setEnabled(False)
@@ -393,7 +433,12 @@ class EditorAgentPane(QWidget):
                 history=self.history,
                 event_callback=on_stream_event,
             )
-            return result.text, result.html, result.proposals, activity.compact_summary()
+            return (
+                result.text,
+                result.html,
+                result.proposals,
+                activity.compact_summary(),
+            )
 
         def on_done(future: Future) -> None:
             self.send_button.setEnabled(True)
@@ -475,7 +520,9 @@ def apply_patch_to_editor(editor: Editor, patch: NotePatch) -> None:
     if patch.note_id not in (None, int(note.id) if note.id else None):
         raise PatchValidationError("The current note has changed since the proposal.")
     if patch.notetype_id != int(note.mid):
-        raise PatchValidationError("The current note type has changed since the proposal.")
+        raise PatchValidationError(
+            "The current note type has changed since the proposal."
+        )
 
     names = [str(name) for name, _html in note.items()]
     for field_name, html in patch.field_updates.items():

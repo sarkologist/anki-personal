@@ -7,6 +7,7 @@ direct OpenAI API billing.
 - `codex_path`: Optional path to the Codex CLI. Leave blank to use `/Applications/Codex.app/Contents/Resources/codex` when present, otherwise `codex` from `PATH`.
 - `model`: Optional Codex model override. Leave blank to use Codex's default for your signed-in account.
 - `project_folder`: Optional read-only source folder for the agent.
+- `recent_project_folders`: Recently used source folders shown in the project folder pulldown.
 - `timeout_seconds`: Maximum time to wait for a Codex CLI response.
 - `splitter_sizes`: Saved rich agent surface/prompt pane sizes.
 

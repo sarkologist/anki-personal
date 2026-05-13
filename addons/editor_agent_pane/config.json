@@ -2,6 +2,7 @@
     "codex_path": "",
     "model": "",
     "project_folder": "",
+    "recent_project_folders": [],
     "timeout_seconds": 300,
     "splitter_sizes": [570, 80]
 }
