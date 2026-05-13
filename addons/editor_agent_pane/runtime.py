@@ -46,6 +46,7 @@ from .recent_folders import project_folder_choices, remember_project_folder
 from .surface import (
     js_append_to_activity,
     js_append_transcript,
+    js_apply_agent_proposal,
     js_clear_proposal,
     js_replace_element,
     js_set_proposal,
@@ -517,6 +518,8 @@ def apply_patch_to_editor(editor: Editor, patch: NotePatch) -> None:
     note = editor.note
     if note is None:
         raise PatchValidationError("No current note.")
+    if editor.web is None:
+        raise PatchValidationError("Editor webview is not available.")
     if patch.note_id not in (None, int(note.id) if note.id else None):
         raise PatchValidationError("The current note has changed since the proposal.")
     if patch.notetype_id != int(note.mid):
@@ -525,21 +528,28 @@ def apply_patch_to_editor(editor: Editor, patch: NotePatch) -> None:
         )
 
     names = [str(name) for name, _html in note.items()]
+    field_updates = []
     for field_name, html in patch.field_updates.items():
         try:
             index = names.index(field_name)
         except ValueError as exc:
             raise PatchValidationError(f"Unknown field: {field_name}.") from exc
+        field_updates.append({"index": index, "html": html})
         note.fields[index] = html
 
-    note.tags = list(patch.tag_patch.apply(tuple(note.tags)))
+    tags = None
+    if patch.tag_patch.has_changes():
+        tags = list(patch.tag_patch.apply(tuple(note.tags)))
+        note.tags = tags
 
-    if editor.editorMode is EditorMode.ADD_CARDS:
-        editor.loadNoteKeepingFocus()
-    else:
-        update_note(parent=editor.widget, note=note).success(
-            lambda _changes: editor.loadNoteKeepingFocus()
-        ).run_in_background(initiator=editor)
+    editor.web.eval(js_apply_agent_proposal(field_updates, tags))
+    if field_updates:
+        editor.checkValid()
+
+    if editor.editorMode is not EditorMode.ADD_CARDS:
+        update_note(parent=editor.widget, note=note).run_in_background(
+            initiator=editor
+        )
 
 
 def _editor_mode_name(editor: Editor) -> str:

@@ -317,6 +317,17 @@ def js_clear_proposal() -> str:
     return "window.agentPane.clearProposal();"
 
 
+def js_apply_agent_proposal(
+    field_updates: Iterable[dict[str, object]],
+    tags: list[str] | None,
+) -> str:
+    payload = {
+        "fields": list(field_updates),
+        "tags": tags,
+    }
+    return f"applyAgentProposal({json.dumps(payload)});"
+
+
 def _message(role: str, body: str, *, css_class: str) -> str:
     return f"""
 <section class="agent-message {css_class}">

@@ -106,10 +106,14 @@ export function openCodeMirror(
 export function setupCodeMirror(
     editor: CodeMirror.Editor,
     code: Readable<string>,
-): void {
+): { subscribe(): void; unsubscribe(): void } {
     const { subscribe, unsubscribe } = storeSubscribe(
         code,
-        (value: string): void => editor.setValue(value),
+        (value: string): void => {
+            if (editor.getValue() !== value) {
+                editor.setValue(value);
+            }
+        },
         false,
     );
 
@@ -141,4 +145,5 @@ export function setupCodeMirror(
     });
 
     subscribe();
+    return { subscribe, unsubscribe };
 }

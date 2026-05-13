@@ -13,6 +13,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export interface PlainTextInputAPI extends EditingInputAPI {
         name: "plain-text";
         moveCaretToEnd(): void;
+        setStoredContentWithUndo(storedHtml: string): Promise<void>;
         toggle(): boolean;
         codeMirror: CodeMirrorAPI;
     }
@@ -71,6 +72,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         editor.setCursor(editor.lineCount(), 0);
     }
 
+    async function setStoredContentWithUndo(storedHtml: string): Promise<void> {
+        await codeMirror.replaceValueWithUndo(
+            removeProhibitedTags(storedToUndecorated(storedHtml)),
+        );
+    }
+
     async function refocus(): Promise<void> {
         const editor = (await codeMirror.editor) as any;
         editor.display.input.blur();
@@ -99,6 +106,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         focus,
         focusable: !hidden,
         moveCaretToEnd,
+        setStoredContentWithUndo,
         refocus,
         toggle,
         getInputAPI,

@@ -7,6 +7,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export interface CodeMirrorAPI {
         readonly editor: Promise<CodeMirrorLib.Editor>;
+        replaceValueWithUndo(value: string): Promise<void>;
         setOption<T extends keyof CodeMirrorLib.EditorConfiguration>(
             key: T,
             value: CodeMirrorLib.EditorConfiguration[T],
@@ -51,6 +52,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         editor.setOption(key, value);
     }
 
+    let storeAccess: ReturnType<typeof setupCodeMirror> | null = null;
+
+    async function replaceValueWithUndo(value: string): Promise<void> {
+        const editor = await editorPromise;
+        if (editor.getValue() === value) {
+            return;
+        }
+        const wasFocused = editor.hasFocus();
+        const lastLine = editor.lastLine();
+        const end = {
+            line: lastLine,
+            ch: editor.getLine(lastLine).length,
+        };
+
+        storeAccess?.unsubscribe();
+        editor.operation(() => {
+            editor.replaceRange(value, { line: 0, ch: 0 }, end, "agentProposal");
+        });
+        if (!wasFocused) {
+            storeAccess?.subscribe();
+        }
+    }
+
     const direction = getContext<Writable<"ltr" | "rtl">>(directionKey);
 
     let apiPartial: Partial<CodeMirrorAPI>;
@@ -58,6 +82,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     Object.assign(apiPartial, {
         editor: editorPromise,
+        replaceValueWithUndo,
         setOption,
     });
 
@@ -65,7 +90,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     onMount(async () => {
         const editor = await editorPromise;
-        setupCodeMirror(editor, code);
+        storeAccess = setupCodeMirror(editor, code);
         editor.on("change", () => dispatch("change", editor.getValue()));
         editor.on("focus", (codeMirror, event) =>
             dispatch("focus", { codeMirror, event }),

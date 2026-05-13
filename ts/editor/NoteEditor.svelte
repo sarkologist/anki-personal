@@ -391,12 +391,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     const fieldSave = new ChangeTimer();
+    let suppressFieldSave = false;
 
     function transformContentBeforeSave(content: string): string {
         return content.replace(/ data-editor-shrink="(true|false)"/g, "");
     }
 
     function updateField(index: number, content: string): void {
+        if (suppressFieldSave) {
+            return;
+        }
+
         fieldSave.schedule(
             () =>
                 bridgeCommand(
@@ -417,6 +422,57 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         closeMathjaxEditor?.();
         $commitTagEdits();
         saveFieldNow();
+    }
+
+    interface AgentFieldUpdate {
+        index: number;
+        html: string;
+    }
+
+    interface AgentProposalApplication {
+        fields?: AgentFieldUpdate[];
+        tags?: string[] | null;
+    }
+
+    async function applyAgentFieldUpdateWithUndo(
+        update: AgentFieldUpdate,
+    ): Promise<void> {
+        const { index, html } = update;
+        if (!Number.isInteger(index) || index < 0 || index >= fieldStores.length) {
+            throw new Error(`Invalid field index: ${index}`);
+        }
+        if (get(fieldStores[index]) === html) {
+            return;
+        }
+
+        richTextInputs[index]?.api.pushUndoSnapshot();
+        if (plainTextInputs[index] && !plainTextsHidden[index]) {
+            await plainTextInputs[index].api.setStoredContentWithUndo(html);
+        } else {
+            fieldStores[index].set(html);
+        }
+        await tick();
+        richTextInputs[index]?.api.pushUndoSnapshot();
+    }
+
+    async function applyAgentProposal({
+        fields = [],
+        tags = null,
+    }: AgentProposalApplication): Promise<void> {
+        suppressFieldSave = true;
+        try {
+            for (const update of fields) {
+                await applyAgentFieldUpdateWithUndo(update);
+            }
+            if (tags !== null) {
+                setTags(tags);
+                lastSavedTags = tags;
+            }
+            await tick();
+        } finally {
+            suppressFieldSave = false;
+            fieldSave.clear();
+        }
     }
 
     export function saveOnPageHide() {
@@ -693,6 +749,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             setBackgrounds,
             setClozeHint,
             saveNow,
+            applyAgentProposal,
             focusIfField,
             getNoteId,
             setNoteId,

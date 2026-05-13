@@ -43,6 +43,7 @@ from editor_agent_pane.sources import (  # noqa: E402
     search_source_files,
 )
 from editor_agent_pane.surface import (  # noqa: E402
+    js_apply_agent_proposal,
     render_assistant_message,
     render_error_message,
     render_proposal_diff,
@@ -214,6 +215,17 @@ def test_surface_rendering_helpers_escape_and_sanitize() -> None:
         "fallback",
     )
     assert "&lt;boom&gt;" in render_error_message("<boom>")
+
+
+def test_js_apply_agent_proposal_targets_editor_undo_path() -> None:
+    js = js_apply_agent_proposal(
+        [{"index": 0, "html": '<b data-x="1">new</b>'}],
+        ["keep", "agent"],
+    )
+
+    assert js.startswith("applyAgentProposal(")
+    assert '"fields": [{"index": 0, "html": "<b data-x=\\"1\\">new</b>"}]' in js
+    assert '"tags": ["keep", "agent"]' in js
 
 
 def test_render_proposal_diff_includes_sanitized_field_preview_and_diff() -> None:
