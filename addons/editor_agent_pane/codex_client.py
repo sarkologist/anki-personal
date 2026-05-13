@@ -107,10 +107,16 @@ Return a JSON object matching the supplied schema:
   javascript: links.
 - patch: null unless you are proposing changes to the current note.
 
+Do not include hidden chain-of-thought or private scratchpad reasoning. It is
+fine to include a concise rationale or evidence summary in message and
+message_html, especially when proposing a patch.
+
 When proposing a patch:
 - Target only the current note.
 - Use exact field names from the editor context.
 - Preserve HTML where appropriate.
+- Explain briefly in message/message_html why the proposed change improves the
+  note.
 - Include tags.replace, tags.add, and tags.remove. Use null for tags.replace
   unless you intend to replace the complete tag list.
 - The patch will only be shown to the user; Anki applies it after approval.

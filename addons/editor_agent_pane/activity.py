@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 MAX_PREVIEW_CHARS = 500
+MAX_SUMMARY_ITEMS = 3
 
 
 @dataclass
@@ -19,6 +20,9 @@ class CodexActivityRenderer:
     reasoning_count: int = 0
     error_count: int = 0
     unknown_types: set[str] = field(default_factory=set)
+    commands: list[str] = field(default_factory=list)
+    reasoning_summaries: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
     def record(self, event: dict[str, Any]) -> str:
         self.event_count += 1
@@ -32,7 +36,9 @@ class CodexActivityRenderer:
 
         if "error" in event_type_lower:
             self.error_count += 1
-            return f"[error] {_preview(_first_text(event) or event_type)}"
+            text = _preview(_first_text(event) or event_type)
+            self._remember(self.errors, text)
+            return f"[error] {text}"
 
         if _looks_like_output(event_type_lower, payload):
             self.output_count += 1
@@ -40,13 +46,17 @@ class CodexActivityRenderer:
 
         if _looks_like_command(event_type_lower, payload):
             self.command_count += 1
-            return f"[tool] {_preview(_command_text(payload) or _first_text(event) or event_type)}"
+            text = _preview(_command_text(payload) or _first_text(event) or event_type)
+            self._remember(self.commands, text)
+            return f"[tool] {text}"
 
         if "reasoning" in event_type_lower:
             self.reasoning_count += 1
             summary = _summary_text(event) or _summary_text(payload)
             if summary:
-                return f"[reasoning] {_preview(summary)}"
+                text = _preview(summary)
+                self._remember(self.reasoning_summaries, text)
+                return f"[reasoning] {text}"
             return "[reasoning] updated"
 
         if "message" in event_type_lower or "response" in event_type_lower:
@@ -64,21 +74,35 @@ class CodexActivityRenderer:
 
     def compact_summary(self) -> str:
         parts = [f"{self.event_count} stream event{_plural(self.event_count)}"]
-        if self.command_count:
+        if self.commands:
+            parts.append(f"tools: {_summary_list(self.commands, self.command_count)}")
+        elif self.command_count:
             parts.append(f"{self.command_count} tool call{_plural(self.command_count)}")
         if self.output_count:
             parts.append(f"{self.output_count} output chunk{_plural(self.output_count)}")
-        if self.reasoning_count:
+        if self.reasoning_summaries:
+            parts.append(
+                f"reasoning: {_summary_list(self.reasoning_summaries, self.reasoning_count)}"
+            )
+        elif self.reasoning_count:
             parts.append(
                 f"{self.reasoning_count} reasoning update{_plural(self.reasoning_count)}"
             )
         if self.message_count:
             parts.append(f"{self.message_count} message update{_plural(self.message_count)}")
-        if self.error_count:
+        if self.errors:
+            parts.append(f"errors: {_summary_list(self.errors, self.error_count)}")
+        elif self.error_count:
             parts.append(f"{self.error_count} error event{_plural(self.error_count)}")
         if self.unknown_types:
-            parts.append(f"{len(self.unknown_types)} other event type{_plural(len(self.unknown_types))}")
+            parts.append(
+                f"{len(self.unknown_types)} other event type{_plural(len(self.unknown_types))}"
+            )
         return f"[Codex activity: {', '.join(parts)}]\n"
+
+    def _remember(self, values: list[str], value: str) -> None:
+        if value and len(values) < MAX_SUMMARY_ITEMS:
+            values.append(value)
 
 
 def compact_activity_transcript(
@@ -190,3 +214,11 @@ def _preview(text: str) -> str:
 
 def _plural(count: int) -> str:
     return "" if count == 1 else "s"
+
+
+def _summary_list(values: list[str], total_count: int) -> str:
+    shown = "; ".join(values)
+    extra_count = total_count - len(values)
+    if extra_count > 0:
+        shown += f"; +{extra_count} more"
+    return shown

@@ -420,6 +420,8 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
     assert captured["stderr"] == subprocess.PIPE
     assert "Current editor context is JSON" in captured["process"].stdin.text
     assert "Improve this" in captured["process"].stdin.text
+    assert "Do not include hidden chain-of-thought" in captured["process"].stdin.text
+    assert "briefly in message/message_html why" in captured["process"].stdin.text
     assert result.text == "Looks better with a shorter front."
     assert result.html == "<p>Looks <strong>better</strong> with a shorter front.</p>"
     assert result.proposals[0].field_updates == {"Front": "new front"}
@@ -631,8 +633,8 @@ def test_codex_activity_renderer_compacts_verbose_activity() -> None:
         "[event] unexpected.future.event",
     ]
     assert renderer.compact_summary() == (
-        "[Codex activity: 5 stream events, 1 tool call, 1 output chunk, "
-        "1 reasoning update, 1 other event type]\n"
+        "[Codex activity: 5 stream events, tools: rg canonical, 1 output chunk, "
+        "reasoning: Checking the source., 1 other event type]\n"
     )
 
 
