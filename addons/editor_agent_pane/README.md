@@ -4,7 +4,7 @@ Repo-local Anki add-on prototype for an editor-side OpenAI chat pane.
 
 To try it manually, copy or symlink `addons/editor_agent_pane` into your Anki
 profile's `addons21` folder, restart Anki, and open Add Cards, Browser, or Edit
-Current. Use the `Agent` editor toolbar button, or `Ctrl+Shift+A`, to show the
+Current. Use the `Agent` editor toolbar button, or `Ctrl+Alt+Shift+E`, to show the
 pane.
 
 The add-on reads `OPENAI_API_KEY` from the environment. You can also enter an

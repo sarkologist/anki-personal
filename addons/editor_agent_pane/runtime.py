@@ -87,7 +87,7 @@ def _add_editor_button(buttons: list[str], editor: Editor) -> None:
             _toggle_pane,
             tip="Open the editor agent pane",
             label="Agent",
-            keys="Ctrl+Shift+A",
+            keys="Ctrl+Alt+Shift+E",
             disables=False,
         )
     )
