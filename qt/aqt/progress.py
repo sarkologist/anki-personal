@@ -26,6 +26,7 @@ class ProgressManager:
         self.blockUpdates = False
         self._show_timer: QTimer | None = None
         self._busy_cursor_timer: QTimer | None = None
+        self._busy_cursor_set = False
         self._win: ProgressDialog | None = None
         self._levels = 0
         self._backend_timer: QTimer | None = None
@@ -305,10 +306,17 @@ class ProgressManager:
         self._shown = 0
 
     def _set_busy_cursor(self) -> None:
+        # Local macOS builds have hit native crashes in Qt's cursor image handling.
+        if is_mac:
+            return
+
         self.mw.app.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        self._busy_cursor_set = True
 
     def _restore_cursor(self) -> None:
-        self.app.restoreOverrideCursor()
+        if self._busy_cursor_set:
+            self.app.restoreOverrideCursor()
+            self._busy_cursor_set = False
 
     def busy(self) -> int:
         "True if processing."
