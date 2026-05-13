@@ -172,8 +172,6 @@ class CodexCliAgent:
             "exec",
             "--sandbox",
             "read-only",
-            "--ask-for-approval",
-            "never",
             "--skip-git-repo-check",
             "--ephemeral",
             "--color",
@@ -272,4 +270,3 @@ def project_root_status(project_root: str) -> str:
     except SourceAccessError as exc:
         return str(exc)
     return f"Read-only project folder: {root}"
-

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import weakref
+from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any
 
@@ -116,6 +117,21 @@ def _toggle_pane(editor: Editor) -> None:
     pane.toggle()
 
 
+class PromptEdit(QPlainTextEdit):
+    def __init__(self, send_callback: Callable[[], None], parent: QWidget) -> None:
+        super().__init__(parent)
+        self._send_callback = send_callback
+
+    def keyPressEvent(self, event: Any) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
+            event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+        ):
+            self._send_callback()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class EditorAgentPane(QWidget):
     def __init__(self, editor: Editor) -> None:
         super().__init__(editor.parentWindow)
@@ -192,7 +208,7 @@ class EditorAgentPane(QWidget):
         action_row.addWidget(discard_button)
         layout.addLayout(action_row)
 
-        self.prompt = QPlainTextEdit()
+        self.prompt = PromptEdit(self._send, self)
         self.prompt.setPlaceholderText("Message")
         self.prompt.setMaximumHeight(90)
         layout.addWidget(self.prompt)

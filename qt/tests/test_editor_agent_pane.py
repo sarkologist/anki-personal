@@ -224,7 +224,7 @@ def test_codex_agent_uses_read_only_cli_and_parses_patch(
     command = captured["command"]
     assert command[:2] == ["/usr/local/bin/codex", "exec"]
     assert command[command.index("--sandbox") + 1] == "read-only"
-    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert "--ask-for-approval" not in command
     assert command[command.index("--cd") + 1] == str(project.resolve())
     assert "--model" not in command
     assert command[-1] == "-"

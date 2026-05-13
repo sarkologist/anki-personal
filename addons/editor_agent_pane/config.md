@@ -10,5 +10,5 @@ direct OpenAI API billing.
 - `timeout_seconds`: Maximum time to wait for a Codex CLI response.
 
 Run `codex login` first and choose ChatGPT sign-in. The add-on invokes
-`codex exec` with a read-only sandbox and never applies note changes without
-your approval in Anki.
+`codex exec` with a read-only sandbox. Anki never applies note changes without
+your approval.
