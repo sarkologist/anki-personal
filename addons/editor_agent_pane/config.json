@@ -1,7 +1,6 @@
 {
-    "model": "gpt-5.2",
+    "codex_path": "",
+    "model": "",
     "project_folder": "",
-    "max_source_file_bytes": 65536,
-    "max_source_search_results": 8,
-    "max_source_files_scanned": 400
+    "timeout_seconds": 300
 }

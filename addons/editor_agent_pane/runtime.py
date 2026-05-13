@@ -31,7 +31,7 @@ from aqt.qt import (
 )
 from aqt.utils import showWarning, tooltip
 
-from .openai_client import ResponsesAgent, ToolEnvironment
+from .codex_client import CodexCliAgent, project_root_status, resolve_codex_path
 from .patches import (
     EditorSnapshot,
     FieldSnapshot,
@@ -43,11 +43,10 @@ from .patches import (
 ADDON = "editor_agent_pane"
 TOGGLE_COMMAND = "editorAgentPane"
 DEFAULT_CONFIG = {
-    "model": "gpt-5.2",
+    "codex_path": "",
+    "model": "",
     "project_folder": "",
-    "max_source_file_bytes": 65536,
-    "max_source_search_results": 8,
-    "max_source_files_scanned": 400,
+    "timeout_seconds": 300,
 }
 
 _installed = False
@@ -66,9 +65,10 @@ def install() -> None:
 
 def _config() -> dict[str, Any]:
     assert aqt.mw is not None
-    config = dict(DEFAULT_CONFIG)
     saved = aqt.mw.addonManager.getConfig(ADDON) or {}
-    config.update(saved)
+    config = {key: saved.get(key, default) for key, default in DEFAULT_CONFIG.items()}
+    if "codex_path" not in saved and config["model"] == "gpt-5.2":
+        config["model"] = ""
     return config
 
 
@@ -120,7 +120,7 @@ class EditorAgentPane(QWidget):
     def __init__(self, editor: Editor) -> None:
         super().__init__(editor.parentWindow)
         self.editor = editor
-        self.previous_response_id: str | None = None
+        self.history: list[tuple[str, str]] = []
         self.pending_patch: NotePatch | None = None
         self.pending_snapshot: EditorSnapshot | None = None
 
@@ -154,12 +154,12 @@ class EditorAgentPane(QWidget):
 
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
+        self.codex_path_edit = QLineEdit()
+        self.codex_path_edit.setPlaceholderText(resolve_codex_path(""))
+        form.addRow("Codex CLI", self.codex_path_edit)
         self.model_edit = QLineEdit()
+        self.model_edit.setPlaceholderText("Codex default")
         form.addRow("Model", self.model_edit)
-        self.api_key_edit = QLineEdit()
-        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key_edit.setPlaceholderText("OPENAI_API_KEY or session key")
-        form.addRow("API key", self.api_key_edit)
         layout.addLayout(form)
 
         project_row = QHBoxLayout()
@@ -206,12 +206,14 @@ class EditorAgentPane(QWidget):
 
     def _load_settings(self) -> None:
         config = _config()
+        self.codex_path_edit.setText(str(config["codex_path"]))
         self.model_edit.setText(str(config["model"]))
         self.project_edit.setText(str(config["project_folder"]))
 
     def _save_settings(self) -> None:
         config = _config()
-        config["model"] = self.model_edit.text().strip() or DEFAULT_CONFIG["model"]
+        config["codex_path"] = self.codex_path_edit.text().strip()
+        config["model"] = self.model_edit.text().strip()
         config["project_folder"] = self.project_edit.text().strip()
         _write_config(config)
 
@@ -245,7 +247,8 @@ class EditorAgentPane(QWidget):
             notetype_name = str(note.mid)
         mode = _editor_mode_name(self.editor)
         self.context_label.setText(
-            f"{mode} - note {int(note.id) if note.id else 'new'} - {notetype_name}"
+            f"{mode} - note {int(note.id) if note.id else 'new'} - "
+            f"{notetype_name}\n{project_root_status(self.project_edit.text())}"
         )
 
     def _append_transcript(self, text: str) -> None:
@@ -266,13 +269,6 @@ class EditorAgentPane(QWidget):
         )
 
     def _start_agent_request(self, prompt: str) -> None:
-        api_key = self.api_key_edit.text().strip() or os.environ.get("OPENAI_API_KEY", "")
-        if not api_key:
-            self._append_transcript(
-                "\nSet OPENAI_API_KEY or enter an API key in the pane.\n"
-            )
-            return
-
         try:
             snapshot = editor_snapshot(self.editor)
         except RuntimeError as exc:
@@ -282,53 +278,39 @@ class EditorAgentPane(QWidget):
         config = _config()
         model = self.model_edit.text().strip() or str(config["model"])
         project_root = self.project_edit.text().strip()
+        codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
         self.send_button.setEnabled(False)
         self.apply_button.setEnabled(False)
         self.pending_patch = None
         self.pending_snapshot = None
         self.proposal.clear()
-        streamed_text = {"any": False}
+        self._append_transcript("\n[Codex CLI running in read-only mode]\n")
 
-        def on_delta(delta: str) -> None:
-            streamed_text["any"] = True
-            assert aqt.mw is not None
-            aqt.mw.taskman.run_on_main(lambda: self._append_transcript(delta))
-
-        def on_tool(name: str) -> None:
-            assert aqt.mw is not None
-            aqt.mw.taskman.run_on_main(
-                lambda name=name: self._append_transcript(f"\n[tool: {name}]\n")
+        def task() -> tuple[str, tuple[NotePatch, ...]]:
+            agent = CodexCliAgent(
+                codex_path=codex_path,
+                model=model,
+                timeout_seconds=int(config["timeout_seconds"]),
             )
-
-        def task() -> tuple[str, tuple[NotePatch, ...], str | None]:
-            env = ToolEnvironment(
+            result = agent.send(
+                prompt=prompt,
                 snapshot=snapshot,
                 project_root=project_root,
-                max_source_file_bytes=int(config["max_source_file_bytes"]),
-                max_source_search_results=int(config["max_source_search_results"]),
-                max_source_files_scanned=int(config["max_source_files_scanned"]),
+                history=self.history,
             )
-            agent = ResponsesAgent(
-                api_key=api_key,
-                model=model,
-                previous_response_id=self.previous_response_id,
-                on_delta=on_delta,
-                on_tool=on_tool,
-            )
-            result = agent.send(prompt, env)
-            return result.text, result.proposals, result.response_id
+            return result.text, result.proposals
 
         def on_done(future: Future) -> None:
             self.send_button.setEnabled(True)
             try:
-                text, proposals, response_id = future.result()
+                text, proposals = future.result()
             except Exception as exc:
                 self._append_transcript(f"\nError: {exc}\n")
                 return
-            self.previous_response_id = response_id
-            if text and not streamed_text["any"]:
+            if text:
                 self._append_transcript(text)
             self._append_transcript("\n")
+            self.history.append((prompt, text))
             if proposals:
                 self.pending_patch = proposals[-1]
                 self.pending_snapshot = snapshot

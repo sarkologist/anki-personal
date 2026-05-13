@@ -1,11 +1,14 @@
 # Editor Agent Pane
 
-This prototype adds an editor-side chat pane backed by the OpenAI Responses API.
+This prototype adds an editor-side chat pane backed by the Codex CLI. Sign in to
+Codex with ChatGPT to use your ChatGPT Codex subscription entitlement instead of
+direct OpenAI API billing.
 
-- `model`: OpenAI model name. The default is a high-quality agentic model, but you can change it if your account uses a different model.
+- `codex_path`: Optional path to the Codex CLI. Leave blank to use `/Applications/Codex.app/Contents/Resources/codex` when present, otherwise `codex` from `PATH`.
+- `model`: Optional Codex model override. Leave blank to use Codex's default for your signed-in account.
 - `project_folder`: Optional read-only source folder for the agent.
-- `max_source_file_bytes`: Maximum bytes read from a single source file.
-- `max_source_search_results`: Maximum source-search hits returned to the agent.
-- `max_source_files_scanned`: Maximum number of files scanned per search.
+- `timeout_seconds`: Maximum time to wait for a Codex CLI response.
 
-The add-on does not persist API keys. Set `OPENAI_API_KEY` in the environment, or enter a key in the pane for the current Anki session.
+Run `codex login` first and choose ChatGPT sign-in. The add-on invokes
+`codex exec` with a read-only sandbox and never applies note changes without
+your approval in Anki.

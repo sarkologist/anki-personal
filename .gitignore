@@ -20,6 +20,7 @@ ts/.svelte-kit
 .yarn
 .claude/settings.local.json
 .claude/user.md
+addons/editor_agent_pane/meta.json
 .venv
 docs/_build/
 docs/autoapi/

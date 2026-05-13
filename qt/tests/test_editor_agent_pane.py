@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,6 +15,10 @@ ADDONS = ROOT / "addons"
 if str(ADDONS) not in sys.path:
     sys.path.insert(0, str(ADDONS))
 
+from editor_agent_pane.codex_client import (  # noqa: E402
+    CodexCliAgent,
+    resolve_codex_path,
+)
 from editor_agent_pane.patches import (  # noqa: E402
     EditorSnapshot,
     FieldSnapshot,
@@ -162,3 +168,145 @@ def test_validate_note_patch_rejects_whitespace_tags() -> None:
             },
             snapshot(),
         )
+
+
+def test_codex_agent_uses_read_only_cli_and_parses_patch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    captured: dict[str, Any] = {}
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        captured["input"] = input
+        captured["timeout"] = timeout
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(
+            """
+            {
+              "message": "Looks better with a shorter front.",
+              "patch": {
+                "summary": "Shorten front",
+                "note_id": 123,
+                "notetype_id": 7,
+                "field_updates": [{"name": "Front", "html": "new front"}],
+                "tags": {"add": ["agent"], "remove": []}
+              }
+            }
+            """,
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model="",
+        timeout_seconds=123,
+    ).send(
+        prompt="Improve this",
+        snapshot=snapshot(),
+        project_root=str(project),
+        history=[],
+    )
+
+    command = captured["command"]
+    assert command[:2] == ["/usr/local/bin/codex", "exec"]
+    assert command[command.index("--sandbox") + 1] == "read-only"
+    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert command[command.index("--cd") + 1] == str(project.resolve())
+    assert "--model" not in command
+    assert command[-1] == "-"
+    assert captured["timeout"] == 123
+    assert "Current editor context is JSON" in captured["input"]
+    assert "Improve this" in captured["input"]
+    assert result.text == "Looks better with a shorter front."
+    assert result.proposals[0].field_updates == {"Front": "new front"}
+
+
+def test_codex_agent_passes_optional_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        captured["command"] = command
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(
+            '{"message": "No changes.", "patch": null}',
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = CodexCliAgent(
+        codex_path="codex",
+        model="gpt-5-codex",
+        timeout_seconds=300,
+    ).send(
+        prompt="Explain",
+        snapshot=snapshot(),
+        project_root="",
+        history=[("Earlier", "Earlier answer")],
+    )
+
+    command = captured["command"]
+    assert command[command.index("--model") + 1] == "gpt-5-codex"
+    assert result.text == "No changes."
+    assert result.proposals == ()
+
+
+def test_codex_agent_surfaces_login_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(
+        command: list[str],
+        *,
+        input: str,
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="not logged in"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="codex login"):
+        CodexCliAgent(
+            codex_path="codex",
+            model="",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+        )
+
+
+def test_resolve_codex_path_prefers_configured_value() -> None:
+    assert resolve_codex_path("/custom/codex") == "/custom/codex"
