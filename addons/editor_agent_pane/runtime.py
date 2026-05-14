@@ -63,6 +63,7 @@ from .surface import (
     js_append_transcript,
     js_apply_agent_proposal,
     js_clear_proposal,
+    js_clear_transcript,
     js_replace_element,
     js_set_proposal,
     render_activity_line,
@@ -109,6 +110,7 @@ def install() -> None:
     gui_hooks.editor_did_init_buttons.append(_add_editor_button)
     gui_hooks.editor_did_init.append(_add_editor_menu_action)
     gui_hooks.editor_did_load_note.append(_on_editor_did_load_note)
+    gui_hooks.browser_did_change_row.append(_on_browser_did_change_row)
 
 
 def _config() -> dict[str, Any]:
@@ -176,7 +178,13 @@ def _add_editor_menu_action(editor: Editor) -> None:
 
 def _on_editor_did_load_note(editor: Editor) -> None:
     if pane := _panes.get(editor):
-        pane.refresh_context_label()
+        pane.on_editor_context_changed()
+
+
+def _on_browser_did_change_row(browser: Any) -> None:
+    editor = getattr(browser, "editor", None)
+    if editor is not None and (pane := _panes.get(editor)):
+        pane.on_editor_context_changed()
 
 
 def _toggle_pane(editor: Editor) -> None:
@@ -213,6 +221,8 @@ class EditorAgentPane(QWidget):
         self._activity_counter = 0
         self._activity_open = False
         self._agent_stop_event: Event | None = None
+        self._context_generation = 0
+        self._last_browser_note_id = self._current_browser_note_id()
 
         self.dock = QDockWidget("Agent", editor.parentWindow)
         self.dock.setObjectName("EditorAgentPane")
@@ -471,6 +481,40 @@ class EditorAgentPane(QWidget):
             f"{notetype_name}\n{project_status}"
         )
 
+    def on_editor_context_changed(self) -> None:
+        self.refresh_context_label()
+        if self.editor.editorMode is not EditorMode.BROWSER:
+            return
+        note_id = self._current_browser_note_id()
+        if note_id == self._last_browser_note_id:
+            return
+        self._last_browser_note_id = note_id
+        self._clear_chat_context()
+
+    def _current_browser_note_id(self) -> int | None:
+        if self.editor.editorMode is not EditorMode.BROWSER:
+            return None
+        note = self.editor.note
+        if not note or not note.id:
+            return None
+        return int(note.id)
+
+    def _clear_chat_context(self) -> None:
+        self._context_generation += 1
+        if self._agent_stop_event is not None:
+            self._agent_stop_event.set()
+            self._agent_stop_event = None
+        self.history.clear()
+        self.pending_patch = None
+        self.pending_snapshot = None
+        self._activity_id = None
+        self._activity_open = False
+        self.send_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.apply_button.setEnabled(False)
+        self.surface.eval(js_clear_transcript())
+        self._clear_proposal()
+
     def _append_transcript(self, fragment: str) -> None:
         self.surface.eval(js_append_transcript(fragment))
 
@@ -493,6 +537,10 @@ class EditorAgentPane(QWidget):
                 js_append_to_activity(self._activity_id, render_activity_line(line))
             )
 
+    def _append_activity_line_if_current(self, generation: int, line: str) -> None:
+        if generation == self._context_generation:
+            self._append_activity_line(line)
+
     def _clear_proposal(self) -> None:
         self.surface.eval(js_clear_proposal())
 
@@ -503,7 +551,9 @@ class EditorAgentPane(QWidget):
         notetype: dict[str, Any],
     ) -> None:
         renderer = LegacyLatexPreviewRenderer(col=self.editor.mw.col, notetype=notetype)
-        self.surface.eval(js_set_proposal(render_proposal_diff(snapshot, patch, renderer.render)))
+        self.surface.eval(
+            js_set_proposal(render_proposal_diff(snapshot, patch, renderer.render))
+        )
 
     def _send(self) -> None:
         if self._agent_stop_event is not None:
@@ -514,12 +564,17 @@ class EditorAgentPane(QWidget):
         self.prompt.clear()
         self._save_settings()
         self._append_transcript(render_user_message(prompt))
+        generation = self._context_generation
         self.editor.call_after_note_saved(
-            lambda: self._start_agent_request(prompt),
+            lambda: self._start_agent_request(prompt, generation),
             keepFocus=True,
         )
 
-    def _start_agent_request(self, prompt: str) -> None:
+    def _start_agent_request(self, prompt: str, generation: int | None = None) -> None:
+        if generation is None:
+            generation = self._context_generation
+        if generation != self._context_generation:
+            return
         try:
             snapshot = editor_snapshot(self.editor)
             notetype = dict(self.editor.note_type())
@@ -535,6 +590,7 @@ class EditorAgentPane(QWidget):
         codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
         stream_reasoning_summaries = self._stream_reasoning_summaries()
         stop_event = Event()
+        history = list(self.history)
         self._agent_stop_event = stop_event
         self.send_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -556,7 +612,11 @@ class EditorAgentPane(QWidget):
         def on_stream_event(event: dict[str, Any]) -> None:
             line = activity.record(event)
             if line is not None:
-                taskman.run_on_main(lambda line=line: self._append_activity_line(line))
+                taskman.run_on_main(
+                    lambda line=line, generation=generation: (
+                        self._append_activity_line_if_current(generation, line)
+                    )
+                )
 
         def task() -> tuple[str, str, tuple[NotePatch, ...], str, tuple[str, ...]]:
             agent = CodexCliAgent(
@@ -571,7 +631,7 @@ class EditorAgentPane(QWidget):
                 prompt=prompt,
                 snapshot=snapshot,
                 project_root=project_root,
-                history=self.history,
+                history=history,
                 event_callback=on_stream_event,
                 run_logger=run_logger,
                 stop_requested=stop_event.is_set,
@@ -585,39 +645,62 @@ class EditorAgentPane(QWidget):
             )
 
         def on_done(future: Future) -> None:
-            if self._agent_stop_event is stop_event:
-                self._agent_stop_event = None
-                self.send_button.setEnabled(True)
-                self.stop_button.setEnabled(False)
-            try:
-                (
-                    text,
-                    message_html,
-                    proposals,
-                    activity_summary,
-                    activity_details,
-                ) = future.result()
-            except AgentStopped:
-                self._replace_activity_with_summary(
-                    "Codex run stopped.",
-                    tuple(activity.detail_lines),
-                )
-                return
-            except Exception as exc:
-                self._activity_open = False
-                self._append_transcript(render_error_message(str(exc)))
-                return
-            self._replace_activity_with_summary(activity_summary, activity_details)
-            if text or message_html:
-                self._append_transcript(render_assistant_message(message_html, text))
-            self.history.append((prompt, text))
-            if proposals:
-                self.pending_patch = proposals[-1]
-                self.pending_snapshot = snapshot
-                self._set_proposal(snapshot, proposals[-1], notetype)
-                self.apply_button.setEnabled(True)
+            self._handle_agent_done(
+                future,
+                generation=generation,
+                stop_event=stop_event,
+                prompt=prompt,
+                snapshot=snapshot,
+                notetype=notetype,
+                activity=activity,
+            )
 
         taskman.run_in_background(task, on_done, uses_collection=False)
+
+    def _handle_agent_done(
+        self,
+        future: Future,
+        *,
+        generation: int,
+        stop_event: Event,
+        prompt: str,
+        snapshot: EditorSnapshot,
+        notetype: dict[str, Any],
+        activity: CodexActivityRenderer,
+    ) -> None:
+        if generation != self._context_generation:
+            return
+        if self._agent_stop_event is stop_event:
+            self._agent_stop_event = None
+            self.send_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+        try:
+            (
+                text,
+                message_html,
+                proposals,
+                activity_summary,
+                activity_details,
+            ) = future.result()
+        except AgentStopped:
+            self._replace_activity_with_summary(
+                "Codex run stopped.",
+                tuple(activity.detail_lines),
+            )
+            return
+        except Exception as exc:
+            self._activity_open = False
+            self._append_transcript(render_error_message(str(exc)))
+            return
+        self._replace_activity_with_summary(activity_summary, activity_details)
+        if text or message_html:
+            self._append_transcript(render_assistant_message(message_html, text))
+        self.history.append((prompt, text))
+        if proposals:
+            self.pending_patch = proposals[-1]
+            self.pending_snapshot = snapshot
+            self._set_proposal(snapshot, proposals[-1], notetype)
+            self.apply_button.setEnabled(True)
 
     def _stop_running_agent(self) -> None:
         if self._agent_stop_event is None:
@@ -636,12 +719,15 @@ class EditorAgentPane(QWidget):
         patch = self.pending_patch
         if patch is None:
             return
+        generation = self._context_generation
         self.editor.call_after_note_saved(
-            lambda: self._apply_patch_after_save(patch),
+            lambda: self._apply_patch_after_save(patch, generation),
             keepFocus=True,
         )
 
-    def _apply_patch_after_save(self, patch: NotePatch) -> None:
+    def _apply_patch_after_save(self, patch: NotePatch, generation: int) -> None:
+        if generation != self._context_generation:
+            return
         try:
             apply_patch_to_editor(self.editor, patch)
         except PatchValidationError as exc:

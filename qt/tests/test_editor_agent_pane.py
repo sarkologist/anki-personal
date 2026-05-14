@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import importlib
 import io
 import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 from typing import Any, Callable
 
@@ -67,6 +69,7 @@ from editor_agent_pane.sources import (  # noqa: E402
 )
 from editor_agent_pane.surface import (  # noqa: E402
     js_apply_agent_proposal,
+    js_clear_transcript,
     render_activity_summary,
     render_assistant_message,
     render_error_message,
@@ -213,6 +216,269 @@ class FakeMediaManager:
         assert mid == 7
         assert include_remote is False
         return list(self._refs_by_html.get(string, []))
+
+
+class FakeSurface:
+    def __init__(self) -> None:
+        self.evals: list[str] = []
+
+    def eval(self, js: str) -> None:
+        self.evals.append(js)
+
+
+class FakeButton:
+    def __init__(self, enabled: bool = False) -> None:
+        self.enabled = enabled
+
+    def setEnabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+
+class FutureThatMustNotBeRead:
+    def __init__(self) -> None:
+        self.read = False
+
+    def result(self) -> object:
+        self.read = True
+        raise AssertionError("stale agent completion should be ignored")
+
+
+def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
+    sys.modules.pop("editor_agent_pane.runtime", None)
+
+    class Widget:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    class EditorMode:
+        ADD_CARDS = object()
+        BROWSER = object()
+
+    class Qt:
+        class DockWidgetArea:
+            LeftDockWidgetArea = 1
+            RightDockWidgetArea = 2
+
+        class Key:
+            Key_Return = 1
+            Key_Enter = 2
+
+        class KeyboardModifier:
+            ShiftModifier = 4
+
+        class Orientation:
+            Vertical = 1
+
+    class QFileDialog:
+        class Option:
+            ShowDirsOnly = 1
+
+    aqt_module = types.ModuleType("aqt")
+    aqt_module.__path__ = []
+    gui_hooks = types.SimpleNamespace(
+        browser_did_change_row=[],
+        editor_did_init=[],
+        editor_did_init_buttons=[],
+        editor_did_load_note=[],
+    )
+    aqt_module.gui_hooks = gui_hooks
+    aqt_module.mw = None
+
+    editor_module = types.ModuleType("aqt.editor")
+    editor_module.Editor = Widget
+    editor_module.EditorMode = EditorMode
+    aqt_module.editor = editor_module
+
+    operations_module = types.ModuleType("aqt.operations")
+    operations_module.__path__ = []
+    note_module = types.ModuleType("aqt.operations.note")
+    note_module.update_note = lambda *args, **kwargs: None
+    operations_module.note = note_module
+    aqt_module.operations = operations_module
+
+    qt_module = types.ModuleType("aqt.qt")
+    for name in (
+        "QAction",
+        "QCheckBox",
+        "QComboBox",
+        "QDockWidget",
+        "QFormLayout",
+        "QHBoxLayout",
+        "QLabel",
+        "QLineEdit",
+        "QMainWindow",
+        "QPlainTextEdit",
+        "QPushButton",
+        "QSplitter",
+        "QVBoxLayout",
+        "QWidget",
+    ):
+        setattr(qt_module, name, Widget)
+    qt_module.QFileDialog = QFileDialog
+    qt_module.Qt = Qt
+    qt_module.qconnect = lambda *args, **kwargs: None
+
+    utils_module = types.ModuleType("aqt.utils")
+    utils_module.openFolder = lambda *args, **kwargs: None
+    utils_module.showWarning = lambda *args, **kwargs: None
+    utils_module.tooltip = lambda *args, **kwargs: None
+
+    webview_module = types.ModuleType("aqt.webview")
+    webview_module.AnkiWebView = Widget
+
+    monkeypatch.setitem(sys.modules, "aqt", aqt_module)
+    monkeypatch.setitem(sys.modules, "aqt.gui_hooks", gui_hooks)
+    monkeypatch.setitem(sys.modules, "aqt.editor", editor_module)
+    monkeypatch.setitem(sys.modules, "aqt.operations", operations_module)
+    monkeypatch.setitem(sys.modules, "aqt.operations.note", note_module)
+    monkeypatch.setitem(sys.modules, "aqt.qt", qt_module)
+    monkeypatch.setitem(sys.modules, "aqt.utils", utils_module)
+    monkeypatch.setitem(sys.modules, "aqt.webview", webview_module)
+
+    return importlib.import_module("editor_agent_pane.runtime")
+
+
+def _pane_for_runtime(
+    runtime: Any,
+    *,
+    mode: object,
+    current_note_id: int | None,
+    last_browser_note_id: int | None,
+) -> Any:
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    note = None
+    if current_note_id is not None:
+        note = types.SimpleNamespace(id=current_note_id)
+    pane.editor = types.SimpleNamespace(editorMode=mode, note=note)
+    pane.history = [("old prompt", "old answer")]
+    pane.pending_patch = object()
+    pane.pending_snapshot = object()
+    pane._activity_id = "agent-activity-1"
+    pane._activity_open = True
+    pane._agent_stop_event = None
+    pane._context_generation = 0
+    pane._last_browser_note_id = last_browser_note_id
+    pane.surface = FakeSurface()
+    pane.send_button = FakeButton(False)
+    pane.stop_button = FakeButton(True)
+    pane.apply_button = FakeButton(True)
+    pane.refresh_calls = 0
+
+    def refresh_context_label() -> None:
+        pane.refresh_calls += 1
+
+    pane.refresh_context_label = refresh_context_label
+    return pane
+
+
+def test_browser_note_change_clears_agent_chat_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.BROWSER,
+        current_note_id=456,
+        last_browser_note_id=123,
+    )
+
+    pane.on_editor_context_changed()
+
+    assert pane.refresh_calls == 1
+    assert pane._last_browser_note_id == 456
+    assert pane._context_generation == 1
+    assert pane.history == []
+    assert pane.pending_patch is None
+    assert pane.pending_snapshot is None
+    assert pane._activity_id is None
+    assert pane._activity_open is False
+    assert pane.send_button.enabled is True
+    assert pane.stop_button.enabled is False
+    assert pane.apply_button.enabled is False
+    assert pane.surface.evals == [
+        "window.agentPane.clearTranscript();",
+        "window.agentPane.clearProposal();",
+    ]
+
+
+def test_browser_same_note_keeps_agent_chat_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.BROWSER,
+        current_note_id=123,
+        last_browser_note_id=123,
+    )
+
+    pane.on_editor_context_changed()
+
+    assert pane.refresh_calls == 1
+    assert pane.history == [("old prompt", "old answer")]
+    assert pane.pending_patch is not None
+    assert pane._context_generation == 0
+    assert pane.surface.evals == []
+
+
+def test_non_browser_note_change_keeps_agent_chat_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.ADD_CARDS,
+        current_note_id=456,
+        last_browser_note_id=123,
+    )
+
+    pane.on_editor_context_changed()
+
+    assert pane.refresh_calls == 1
+    assert pane.history == [("old prompt", "old answer")]
+    assert pane.pending_patch is not None
+    assert pane._context_generation == 0
+    assert pane.surface.evals == []
+
+
+def test_browser_note_change_cancels_active_run_and_ignores_stale_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.BROWSER,
+        current_note_id=None,
+        last_browser_note_id=123,
+    )
+    stop_event = runtime.Event()
+    pane._agent_stop_event = stop_event
+
+    pane.on_editor_context_changed()
+
+    assert stop_event.is_set()
+    assert pane._agent_stop_event is None
+    assert pane._context_generation == 1
+
+    pane._start_agent_request("old prompt", generation=0)
+
+    stale_future = FutureThatMustNotBeRead()
+    pane._handle_agent_done(
+        stale_future,
+        generation=0,
+        stop_event=stop_event,
+        prompt="old",
+        snapshot=snapshot(),
+        notetype={},
+        activity=object(),
+    )
+
+    assert stale_future.read is False
+    assert pane.history == []
+    assert pane.surface.evals == [
+        "window.agentPane.clearTranscript();",
+        "window.agentPane.clearProposal();",
+    ]
 
 
 def test_agent_model_options_include_default_and_known_models() -> None:
@@ -429,6 +695,10 @@ def test_js_apply_agent_proposal_targets_editor_undo_path() -> None:
     assert js.startswith("applyAgentProposal(")
     assert '"fields": [{"index": 0, "html": "<b data-x=\\"1\\">new</b>"}]' in js
     assert '"tags": ["keep", "agent"]' in js
+
+
+def test_js_clear_transcript_targets_agent_surface() -> None:
+    assert js_clear_transcript() == "window.agentPane.clearTranscript();"
 
 
 def test_collect_note_images_filters_and_deduplicates_local_media(

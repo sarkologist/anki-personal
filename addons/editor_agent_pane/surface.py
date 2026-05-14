@@ -215,6 +215,9 @@ window.agentPane = (() => {
         appendTranscript(html) {
             appendHtml(transcript, html);
         },
+        clearTranscript() {
+            transcript.innerHTML = "";
+        },
         appendToActivity(id, html) {
             const activity = document.getElementById(id);
             if (!activity) {
@@ -320,6 +323,10 @@ def render_proposal_diff(
 
 def js_append_transcript(fragment: str) -> str:
     return f"window.agentPane.appendTranscript({json.dumps(fragment)});"
+
+
+def js_clear_transcript() -> str:
+    return "window.agentPane.clearTranscript();"
 
 
 def js_append_to_activity(activity_id: str, fragment: str) -> str:
