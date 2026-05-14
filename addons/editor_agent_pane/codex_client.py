@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -26,6 +27,8 @@ from .patches import EditorSnapshot, NotePatch, validate_note_patch
 from .sources import SourceAccessError, resolve_project_root
 
 DEFAULT_CODEX_APP_PATH = "/Applications/Codex.app/Contents/Resources/codex"
+CODEX_HOME_ENV = "CODEX_HOME"
+CODEX_AUTH_FILENAME = "auth.json"
 PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE = "workspace-write"
 PROJECT_FOLDER_ACCESS_READ_ONLY = "read-only"
 DEFAULT_PROJECT_FOLDER_ACCESS = PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE
@@ -33,6 +36,7 @@ PROJECT_FOLDER_ACCESS_MODES = (
     PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
     PROJECT_FOLDER_ACCESS_READ_ONLY,
 )
+MODELS_WITHOUT_REASONING_SUMMARIES = frozenset({"gpt-5.3-codex-spark"})
 
 PROJECT_ACCESS_INSTRUCTIONS = {
     PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE: (
@@ -230,6 +234,7 @@ class CodexCliAgent:
         )
         with tempfile.TemporaryDirectory(prefix="anki-codex-agent-") as temp_dir:
             temp = Path(temp_dir)
+            codex_home = prepare_isolated_codex_home(temp / "codex-home")
             schema_path = temp / "response.schema.json"
             output_path = temp / "last-message.json"
             schema_path.write_text(
@@ -264,6 +269,7 @@ class CodexCliAgent:
                 completed = self._run(
                     command,
                     self._prompt(prompt, snapshot, history),
+                    env=_codex_subprocess_env(codex_home),
                     event_callback=event_callback,
                     run_logger=run_logger,
                     stop_requested=stop_requested,
@@ -379,7 +385,10 @@ class CodexCliAgent:
             "--color",
             "never",
             "-c",
-            _model_reasoning_summary_config(self.stream_reasoning_summaries),
+            _model_reasoning_summary_config(
+                self.model,
+                self.stream_reasoning_summaries,
+            ),
             "--json",
             "--cd",
             str(cwd),
@@ -424,6 +433,7 @@ class CodexCliAgent:
         command: list[str],
         prompt: str,
         *,
+        env: dict[str, str],
         event_callback: CodexEventCallback | None,
         run_logger: AgentRunLogger | None,
         stop_requested: StopRequestedCallback | None,
@@ -436,6 +446,7 @@ class CodexCliAgent:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
+                env=env,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
@@ -559,8 +570,37 @@ def normalize_project_folder_access(project_folder_access: str) -> str:
     return DEFAULT_PROJECT_FOLDER_ACCESS
 
 
-def _model_reasoning_summary_config(stream_reasoning_summaries: bool) -> str:
-    summary_mode = "concise" if stream_reasoning_summaries else "none"
+def prepare_isolated_codex_home(target: Path) -> Path:
+    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    source_auth = _source_codex_home() / CODEX_AUTH_FILENAME
+    if source_auth.exists():
+        copied_auth = target / CODEX_AUTH_FILENAME
+        shutil.copy2(source_auth, copied_auth)
+        copied_auth.chmod(0o600)
+    return target
+
+
+def _source_codex_home() -> Path:
+    if configured := os.environ.get(CODEX_HOME_ENV):
+        return Path(configured).expanduser()
+    return Path.home() / ".codex"
+
+
+def _codex_subprocess_env(codex_home: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env[CODEX_HOME_ENV] = str(codex_home)
+    return env
+
+
+def _model_reasoning_summary_config(
+    model: str,
+    stream_reasoning_summaries: bool,
+) -> str:
+    summary_mode = (
+        "concise"
+        if stream_reasoning_summaries and model not in MODELS_WITHOUT_REASONING_SUMMARIES
+        else "none"
+    )
     return f'model_reasoning_summary="{summary_mode}"'
 
 
