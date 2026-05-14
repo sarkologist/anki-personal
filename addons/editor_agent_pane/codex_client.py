@@ -174,6 +174,11 @@ class _CodexProcessResult:
 
 
 CodexEventCallback = Callable[[dict[str, Any]], None]
+StopRequestedCallback = Callable[[], bool]
+
+
+class AgentStopped(RuntimeError):
+    pass
 
 
 class CodexCliAgent:
@@ -205,6 +210,7 @@ class CodexCliAgent:
         history: list[tuple[str, str]],
         event_callback: CodexEventCallback | None = None,
         run_logger: AgentRunLogger | None = None,
+        stop_requested: StopRequestedCallback | None = None,
     ) -> AgentResult:
         _log_agent_event(
             run_logger,
@@ -260,7 +266,11 @@ class CodexCliAgent:
                     self._prompt(prompt, snapshot, history),
                     event_callback=event_callback,
                     run_logger=run_logger,
+                    stop_requested=stop_requested,
                 )
+            except AgentStopped:
+                _log_agent_event(run_logger, "run_stopped")
+                raise
             except Exception as exc:
                 _log_agent_event(
                     run_logger,
@@ -416,6 +426,7 @@ class CodexCliAgent:
         *,
         event_callback: CodexEventCallback | None,
         run_logger: AgentRunLogger | None,
+        stop_requested: StopRequestedCallback | None,
     ) -> _CodexProcessResult:
         try:
             process = subprocess.Popen(
@@ -501,6 +512,22 @@ class CodexCliAgent:
                     stderr="".join(stderr_chunks),
                     event_count=event_count,
                 )
+
+            if stop_requested is not None and stop_requested():
+                _log_agent_event(run_logger, "stop_terminate")
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    _log_agent_event(run_logger, "stop_kill")
+                    process.kill()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        pass
+                stdout_reader.join(timeout=1)
+                stderr_reader.join(timeout=1)
+                raise AgentStopped("Codex run stopped.")
 
 
 def _log_agent_event(

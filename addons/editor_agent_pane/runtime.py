@@ -7,6 +7,7 @@ import os
 import weakref
 from collections.abc import Callable
 from concurrent.futures import Future
+from threading import Event
 from typing import Any
 
 import aqt
@@ -41,6 +42,7 @@ from .codex_client import (
     DEFAULT_PROJECT_FOLDER_ACCESS,
     PROJECT_FOLDER_ACCESS_READ_ONLY,
     PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
+    AgentStopped,
     CodexCliAgent,
     normalize_project_folder_access,
     project_root_status,
@@ -210,6 +212,7 @@ class EditorAgentPane(QWidget):
         self._activity_id: str | None = None
         self._activity_counter = 0
         self._activity_open = False
+        self._agent_stop_event: Event | None = None
 
         self.dock = QDockWidget("Agent", editor.parentWindow)
         self.dock.setObjectName("EditorAgentPane")
@@ -331,9 +334,13 @@ class EditorAgentPane(QWidget):
         layout.addLayout(action_row)
 
         send_row = QHBoxLayout()
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setEnabled(False)
+        qconnect(self.stop_button.clicked, self._stop_running_agent)
         self.send_button = QPushButton("Send")
         qconnect(self.send_button.clicked, self._send)
         send_row.addStretch(1)
+        send_row.addWidget(self.stop_button)
         send_row.addWidget(self.send_button)
         layout.addLayout(send_row)
 
@@ -499,6 +506,8 @@ class EditorAgentPane(QWidget):
         self.surface.eval(js_set_proposal(render_proposal_diff(snapshot, patch, renderer.render)))
 
     def _send(self) -> None:
+        if self._agent_stop_event is not None:
+            return
         prompt = self.prompt.toPlainText().strip()
         if not prompt:
             return
@@ -525,7 +534,10 @@ class EditorAgentPane(QWidget):
         custom_instructions = self._custom_instructions_text()
         codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
         stream_reasoning_summaries = self._stream_reasoning_summaries()
+        stop_event = Event()
+        self._agent_stop_event = stop_event
         self.send_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
         self.apply_button.setEnabled(False)
         self.pending_patch = None
         self.pending_snapshot = None
@@ -562,6 +574,7 @@ class EditorAgentPane(QWidget):
                 history=self.history,
                 event_callback=on_stream_event,
                 run_logger=run_logger,
+                stop_requested=stop_event.is_set,
             )
             return (
                 result.text,
@@ -572,7 +585,10 @@ class EditorAgentPane(QWidget):
             )
 
         def on_done(future: Future) -> None:
-            self.send_button.setEnabled(True)
+            if self._agent_stop_event is stop_event:
+                self._agent_stop_event = None
+                self.send_button.setEnabled(True)
+                self.stop_button.setEnabled(False)
             try:
                 (
                     text,
@@ -581,6 +597,12 @@ class EditorAgentPane(QWidget):
                     activity_summary,
                     activity_details,
                 ) = future.result()
+            except AgentStopped:
+                self._replace_activity_with_summary(
+                    "Codex run stopped.",
+                    tuple(activity.detail_lines),
+                )
+                return
             except Exception as exc:
                 self._activity_open = False
                 self._append_transcript(render_error_message(str(exc)))
@@ -596,6 +618,13 @@ class EditorAgentPane(QWidget):
                 self.apply_button.setEnabled(True)
 
         taskman.run_in_background(task, on_done, uses_collection=False)
+
+    def _stop_running_agent(self) -> None:
+        if self._agent_stop_event is None:
+            return
+        self._agent_stop_event.set()
+        self.stop_button.setEnabled(False)
+        self._append_activity_line("[status] stopping Codex")
 
     def _discard_pending_patch(self) -> None:
         self.pending_patch = None

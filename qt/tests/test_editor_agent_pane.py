@@ -30,6 +30,7 @@ from editor_agent_pane.agent_log import (  # noqa: E402
 from editor_agent_pane.codex_client import (  # noqa: E402
     PROJECT_FOLDER_ACCESS_READ_ONLY,
     PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
+    AgentStopped,
     CodexCliAgent,
     project_root_status,
     resolve_codex_path,
@@ -123,13 +124,16 @@ class FakePopen:
         stderr: str = "",
         returncode: int | None = 0,
         on_kill: Callable[[], None] | None = None,
+        on_terminate: Callable[[], None] | None = None,
     ) -> None:
         self.stdin = FakeStdin()
         self.stdout = io.StringIO(stdout)
         self.stderr = io.StringIO(stderr)
         self.returncode = returncode
         self.killed = False
+        self.terminated = False
         self.on_kill = on_kill
+        self.on_terminate = on_terminate
 
     def poll(self) -> int | None:
         return self.returncode
@@ -142,6 +146,12 @@ class FakePopen:
             self.on_kill()
         self.killed = True
         self.returncode = -9
+
+    def terminate(self) -> None:
+        if self.on_terminate is not None:
+            self.on_terminate()
+        self.terminated = True
+        self.returncode = -15
 
 
 def write_codex_response(command: list[str], payload: dict[str, Any] | str) -> Path:
@@ -1103,6 +1113,60 @@ def test_codex_agent_logs_timeout_before_killing_process(
     assert failure["stage"] == "run"
     assert failure["error_type"] == "RuntimeError"
     assert "timed out" in failure["error_preview"]
+
+
+def test_codex_agent_stops_running_process_without_failure_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    records_at_terminate: list[list[str]] = []
+    run_logger = FakeRunLogger()
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        process = FakePopen(
+            stdout='{"type":"turn.started"}\n',
+            returncode=None,
+            on_terminate=lambda: records_at_terminate.append(
+                [record["event"] for record in run_logger.records]
+            ),
+        )
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    def stop_requested() -> bool:
+        return any(record["event"] == "stream_event" for record in run_logger.records)
+
+    with pytest.raises(AgentStopped, match="stopped"):
+        CodexCliAgent(
+            codex_path="codex",
+            model="",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+            stop_requested=stop_requested,
+        )
+
+    assert captured["process"].terminated
+    assert not captured["process"].killed
+    assert records_at_terminate == [
+        ["run_start", "cli_launch", "stream_event", "stop_terminate"]
+    ]
+    assert run_logger.first("run_stopped")["event"] == "run_stopped"
+    assert "run_failure" not in [record["event"] for record in run_logger.records]
 
 
 def test_codex_agent_logs_nonzero_cli_exit(
