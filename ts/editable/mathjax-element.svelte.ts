@@ -6,6 +6,7 @@ import { on } from "@tslib/events";
 import { placeCaretAfter, placeCaretBefore } from "$lib/domlib/place-caret";
 
 import { mount, tick } from "svelte";
+import { autoDecorationSuspended } from "./decorated";
 import type { DecoratedElement, DecoratedElementConstructor } from "./decorated";
 import { FrameElement, frameElement } from "./frame-element";
 import Mathjax_svelte from "./Mathjax.svelte";
@@ -76,8 +77,11 @@ export const Mathjax: DecoratedElementConstructor = class Mathjax extends HTMLEl
     }
 
     connectedCallback(): void {
+        if (autoDecorationSuspended()) {
+            return;
+        }
+
         this.decorate();
-        this.addEventListeners();
     }
 
     disconnectedCallback(): void {
@@ -155,6 +159,8 @@ export const Mathjax: DecoratedElementConstructor = class Mathjax extends HTMLEl
 
         this.setAttribute("contentEditable", "false");
         this.setAttribute("decorated", "true");
+        this.removeEventListeners();
+        this.addEventListeners();
     }
 
     undecorate(): void {

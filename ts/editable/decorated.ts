@@ -20,6 +20,21 @@ export interface DecoratedElement extends HTMLElement {
     undecorate(): void;
 }
 
+let decorationSuspensionDepth = 0;
+
+export function autoDecorationSuspended(): boolean {
+    return decorationSuspensionDepth > 0;
+}
+
+export function withAutoDecorationSuspended<T>(callback: () => T): T {
+    decorationSuspensionDepth++;
+    try {
+        return callback();
+    } finally {
+        decorationSuspensionDepth--;
+    }
+}
+
 interface WithTagName {
     tagName: string;
 }

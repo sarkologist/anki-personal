@@ -4,7 +4,7 @@
 import { BLOCK_ELEMENTS, TRANSPARENT_ELEMENTS } from "@tslib/dom";
 
 import type { DecoratedElement } from "../editable/decorated";
-import { CustomElementArray } from "../editable/decorated";
+import { CustomElementArray, withAutoDecorationSuspended } from "../editable/decorated";
 import { FrameElement } from "../editable/frame-element";
 import { FrameEnd, FrameStart } from "../editable/frame-handle";
 import { LegacyLatex } from "../editable/legacy-latex-element.svelte";
@@ -13,16 +13,59 @@ import { parsingInstructions } from "./plain-text-input";
 
 const decoratedElements = new CustomElementArray();
 
-export function undecorateFragment(fragment: DocumentFragment): void {
+function decoratedElementMatches(
+    root: ParentNode,
+    tagName: string,
+): DecoratedElement[] {
+    const elements: DecoratedElement[] = [];
+
+    if (root instanceof Element && root.matches(tagName)) {
+        elements.push(root as DecoratedElement);
+    }
+
+    elements.push(
+        ...(root.querySelectorAll(tagName) as NodeListOf<DecoratedElement>),
+    );
+
+    return elements;
+}
+
+function undecorateElements(root: ParentNode): void {
     for (const decorated of decoratedElements) {
-        for (
-            const element of fragment.querySelectorAll(
-                decorated.tagName,
-            ) as NodeListOf<DecoratedElement>
-        ) {
+        for (const element of decoratedElementMatches(root, decorated.tagName)) {
             element.undecorate();
         }
     }
+}
+
+function decorateElements(root: ParentNode): void {
+    for (const decorated of decoratedElements) {
+        for (const element of decoratedElementMatches(root, decorated.tagName)) {
+            element.decorate();
+            if (!element.hasAttribute("decorated")) {
+                // First pass may only wrap the element in an <anki-frame>.
+                element.decorate();
+            }
+        }
+    }
+}
+
+export function undecorateFragment(fragment: DocumentFragment): void {
+    undecorateElements(fragment);
+}
+
+export function execCommandWithUndecoratedElements(
+    root: HTMLElement,
+    command: "indent" | "outdent",
+): void {
+    withAutoDecorationSuspended(() => {
+        undecorateElements(root);
+        try {
+            document.execCommand(command);
+        } finally {
+            decorateElements(root);
+        }
+    });
 }
 
 function registerMathjax() {

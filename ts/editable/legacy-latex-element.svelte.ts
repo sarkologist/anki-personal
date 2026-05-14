@@ -6,6 +6,7 @@ import { on } from "@tslib/events";
 import { placeCaretAfter, placeCaretBefore } from "$lib/domlib/place-caret";
 
 import { mount, tick } from "svelte";
+import { autoDecorationSuspended } from "./decorated";
 import type { DecoratedElement, DecoratedElementConstructor } from "./decorated";
 import { FrameElement, frameElement } from "./frame-element";
 import type { LegacyLatexKind } from "./legacy-latex-preview";
@@ -71,8 +72,11 @@ export const LegacyLatex: DecoratedElementConstructor = class LegacyLatex extend
     }
 
     connectedCallback(): void {
+        if (autoDecorationSuspended()) {
+            return;
+        }
+
         this.decorate();
-        this.addEventListeners();
     }
 
     disconnectedCallback(): void {
@@ -147,6 +151,8 @@ export const LegacyLatex: DecoratedElementConstructor = class LegacyLatex extend
 
         this.setAttribute("contentEditable", "false");
         this.setAttribute("decorated", "true");
+        this.removeEventListeners();
+        this.addEventListeners();
     }
 
     undecorate(): void {

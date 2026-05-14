@@ -4,7 +4,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script lang="ts">
     import * as tr from "@generated/ftl";
-    import { getListItem } from "@tslib/dom";
     import { preventDefault } from "@tslib/events";
     import { getPlatformString, registerShortcut } from "@tslib/shortcuts";
     import { onMount } from "svelte";
@@ -32,8 +31,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     } from "$lib/components/icons";
     import Popover from "$lib/components/Popover.svelte";
     import WithFloating from "$lib/components/WithFloating.svelte";
-    import { execCommand } from "$lib/domlib";
 
+    import { execCommandWithUndecoratedElements } from "../decorated-elements";
     import { context } from "../NoteEditor.svelte";
     import { editingInputIsRichText } from "../rich-text-input";
     import CommandIconButton from "./CommandIconButton.svelte";
@@ -41,31 +40,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let api = {};
 
     const outdentKeyCombination = "Control+Shift+,";
-    function outdentListItem() {
-        if (getListItem(document.activeElement!.shadowRoot!)) {
-            execCommand("outdent");
-        } else {
-            alert("Indent/unindent currently only works with lists.");
+    async function editIndent(command: "indent" | "outdent"): Promise<void> {
+        if (!$focusedInput || !editingInputIsRichText($focusedInput)) {
+            return;
         }
+
+        const input = $focusedInput;
+        const element = await input.element;
+
+        input.pushUndoSnapshot();
+        execCommandWithUndecoratedElements(element, command);
+        input.focus();
     }
 
     const indentKeyCombination = "Control+Shift+.";
-    function indentListItem() {
-        if (getListItem(document.activeElement!.shadowRoot!)) {
-            execCommand("indent");
-        } else {
-            alert("Indent/unindent currently only works with lists.");
-        }
-    }
 
     onMount(() => {
         registerShortcut((event: KeyboardEvent) => {
             preventDefault(event);
-            indentListItem();
+            void editIndent("indent");
         }, indentKeyCombination);
         registerShortcut((event: KeyboardEvent) => {
             preventDefault(event);
-            outdentListItem();
+            void editIndent("outdent");
         }, outdentKeyCombination);
     });
 
@@ -196,7 +193,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 )})"
                                 {disabled}
                                 flipX={rtl}
-                                on:click={outdentListItem}
+                                on:click={() => editIndent("outdent")}
                                 --border-left-radius="5px"
                                 --border-right-radius="0px"
                             >
@@ -209,7 +206,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                 )})"
                                 {disabled}
                                 flipX={rtl}
-                                on:click={indentListItem}
+                                on:click={() => editIndent("indent")}
                                 --border-right-radius="5px"
                             >
                                 <Icon icon={indentIcon} />
