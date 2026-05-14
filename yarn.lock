@@ -1519,12 +1519,19 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@types/jquery@npm:*, @types/jquery@npm:^3.5.0":
+"@types/jquery@npm:*":
   version: 3.5.32
   resolution: "@types/jquery@npm:3.5.32"
   dependencies:
     "@types/sizzle": "npm:*"
   checksum: 10c0/4a17ad6819b89026c21323656ab01b0b263f9d470910a87c8740920ff98319d503c7352b85b50134a39724ecbfccabc73aa4c741dfdd460cf8bbe714f9259054
+  languageName: node
+  linkType: hard
+
+"@types/jquery@npm:^4.0.0":
+  version: 4.0.0
+  resolution: "@types/jquery@npm:4.0.0"
+  checksum: 10c0/3e453accf2786e6ea5a5fb4b7f8c2298f42d3bc22253cc5a14f4d4a1a5ccc461db7af5a5df92a0b0c03c75a1968d2deda06597b63f8118613f88f27452911275
   languageName: node
   linkType: hard
 
@@ -1957,7 +1964,7 @@ __metadata:
     "@types/d3": "npm:^7.0.0"
     "@types/diff": "npm:^5.0.0"
     "@types/fabric": "npm:^5.3.7"
-    "@types/jquery": "npm:^3.5.0"
+    "@types/jquery": "npm:^4.0.0"
     "@types/jqueryui": "npm:^1.12.13"
     "@types/lodash-es": "npm:^4.17.4"
     "@types/marked": "npm:^5.0.0"
@@ -1982,7 +1989,7 @@ __metadata:
     fabric: "npm:^5.3.0"
     hammerjs: "npm:^2.0.8"
     intl-pluralrules: "npm:^2.0.0"
-    jquery: "npm:^3.5.1"
+    jquery: "npm:^4.0.0"
     jquery-ui-dist: "npm:^1.12.1"
     license-checker-rseidelsohn: "npm:=4.3.0"
     lodash-es: "npm:^4.17.23"
@@ -4733,10 +4740,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"jquery@npm:>=1.8.0 <4.0.0, jquery@npm:^3.5.1":
+"jquery@npm:>=1.8.0 <4.0.0":
   version: 3.7.1
   resolution: "jquery@npm:3.7.1"
   checksum: 10c0/808cfbfb758438560224bf26e17fcd5afc7419170230c810dd11f5c1792e2263e2970cca8d659eb84fcd9acc301edb6d310096e450277d54be4f57071b0c82d9
+  languageName: node
+  linkType: hard
+
+"jquery@npm:^4.0.0":
+  version: 4.0.0
+  resolution: "jquery@npm:4.0.0"
+  checksum: 10c0/06d8d0f51121af5a691f8b59c74823157bb5b60eea915b30eaa920d6c0ffd91e60ba81e9b97bd8203f331f9dd8d0ec9a4b010935ea314bdd2f15453c29bc780b
   languageName: node
   linkType: hard
 
