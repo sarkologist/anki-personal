@@ -76,6 +76,7 @@ DEFAULT_SPLITTER_SIZES = [570, 80]
 DEFAULT_CONFIG = {
     "codex_path": "",
     "model": "",
+    "custom_instructions": "",
     "project_folder": "",
     "project_folder_access": DEFAULT_PROJECT_FOLDER_ACCESS,
     "recent_project_folders": [],
@@ -264,6 +265,20 @@ class EditorAgentPane(QWidget):
         project_row.addWidget(browse)
         layout.addLayout(project_row)
 
+        instructions_header = QHBoxLayout()
+        instructions_label = QLabel("Instructions")
+        instructions_reset = QPushButton("Reset")
+        qconnect(instructions_reset.clicked, self._reset_custom_instructions)
+        instructions_header.addWidget(instructions_label)
+        instructions_header.addStretch(1)
+        instructions_header.addWidget(instructions_reset)
+        layout.addLayout(instructions_header)
+        self.instructions_edit = QPlainTextEdit()
+        self.instructions_edit.setPlaceholderText("Optional custom instructions")
+        self.instructions_edit.setMinimumHeight(70)
+        self.instructions_edit.setMaximumHeight(110)
+        layout.addWidget(self.instructions_edit)
+
         self.surface = AnkiWebView(self)
         self.surface.stdHtml(
             surface_body(),
@@ -313,6 +328,7 @@ class EditorAgentPane(QWidget):
             config["recent_project_folders"],
         )
         self._set_project_folder_access(str(config["project_folder_access"]))
+        self.instructions_edit.setPlainText(str(config["custom_instructions"] or ""))
         self.text_splitter.setSizes(_validated_splitter_sizes(config["splitter_sizes"]))
 
     def _save_settings(self) -> None:
@@ -320,6 +336,7 @@ class EditorAgentPane(QWidget):
         project_folder = self._project_folder_text()
         config["codex_path"] = self.codex_path_edit.text().strip()
         config["model"] = self._model_text()
+        config["custom_instructions"] = self._custom_instructions_text()
         config["project_folder"] = project_folder
         config["project_folder_access"] = self._project_folder_access()
         config["recent_project_folders"] = remember_project_folder(
@@ -367,6 +384,13 @@ class EditorAgentPane(QWidget):
 
     def _project_folder_text(self) -> str:
         return self.project_edit.currentText().strip()
+
+    def _custom_instructions_text(self) -> str:
+        return self.instructions_edit.toPlainText().strip()
+
+    def _reset_custom_instructions(self) -> None:
+        self.instructions_edit.clear()
+        self._save_settings()
 
     def _save_splitter_sizes(self, _pos: int, _index: int) -> None:
         config = _config()
@@ -461,6 +485,7 @@ class EditorAgentPane(QWidget):
         model = self._model_text() or str(config["model"])
         project_root = self._project_folder_text()
         project_folder_access = self._project_folder_access()
+        custom_instructions = self._custom_instructions_text()
         codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
         self.send_button.setEnabled(False)
         self.apply_button.setEnabled(False)
@@ -485,6 +510,7 @@ class EditorAgentPane(QWidget):
                 model=model,
                 timeout_seconds=int(config["timeout_seconds"]),
                 project_folder_access=project_folder_access,
+                custom_instructions=custom_instructions,
             )
             result = agent.send(
                 prompt=prompt,

@@ -6,6 +6,7 @@ direct OpenAI API billing.
 
 - `codex_path`: Optional path to the Codex CLI. Leave blank to use `/Applications/Codex.app/Contents/Resources/codex` when present, otherwise `codex` from `PATH`.
 - `model`: Optional Codex model override selected from the Model pulldown. `Codex default` stores an empty value and uses Codex's default for your signed-in account.
+- `custom_instructions`: Optional user instructions inserted into the agent prompt. The add-on still appends the fixed editor context, JSON response contract, and patch safety rules.
 - `project_folder`: Optional source folder for the agent.
 - `project_folder_access`: Project folder sandbox mode. `workspace-write` lets
   the agent edit files in the selected folder; `read-only` keeps it inspect-only.

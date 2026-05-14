@@ -531,6 +531,56 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
     ]
 
 
+def test_codex_agent_includes_custom_instructions_and_keeps_fixed_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(
+            '{"message": "No changes.", "message_html": "<p>No changes.</p>", "patch": null}',
+            encoding="utf-8",
+        )
+        process = FakePopen(stdout='{"type":"turn.completed"}\n')
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model="",
+        timeout_seconds=123,
+        custom_instructions="Prefer concise wording for cloze cards.",
+    ).send(
+        prompt="Improve this",
+        snapshot=snapshot(),
+        project_root=str(project),
+        history=[],
+    )
+
+    stdin_text = captured["process"].stdin.text
+    assert "User-customized instructions:" in stdin_text
+    assert "Prefer concise wording for cloze cards." in stdin_text
+    assert stdin_text.index("Prefer concise wording") < stdin_text.index(
+        "Return a JSON object matching the supplied schema"
+    )
+    assert "Do not include hidden chain-of-thought" in stdin_text
+    assert "When proposing a patch:" in stdin_text
+
+
 def test_codex_agent_can_use_read_only_project_access(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

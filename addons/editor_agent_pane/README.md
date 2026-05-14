@@ -12,5 +12,7 @@ Run `codex login` first and choose ChatGPT sign-in. The add-on shells out to
 key.
 
 The selected project folder is writable by default; use the Access menu to switch
-it to read-only mode. Press Enter to send and Shift+Enter for a newline. Proposed
-note edits are shown as a diff and require explicit approval.
+it to read-only mode. Add optional custom instructions in the pane to steer the
+agent while keeping the fixed JSON response and patch safety rules in place.
+Press Enter to send and Shift+Enter for a newline. Proposed note edits are shown
+as a diff and require explicit approval.

@@ -105,6 +105,9 @@ CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
 
 PROMPT_TEMPLATE = """You are helping from inside an Anki editor pane.
 
+User-customized instructions:
+{custom_instructions}
+
 Current editor context is JSON:
 {context_json}
 
@@ -169,6 +172,7 @@ class CodexCliAgent:
         model: str,
         timeout_seconds: int,
         project_folder_access: str = DEFAULT_PROJECT_FOLDER_ACCESS,
+        custom_instructions: str = "",
     ) -> None:
         self.codex_path = resolve_codex_path(codex_path)
         self.model = model.strip()
@@ -176,6 +180,7 @@ class CodexCliAgent:
         self.project_folder_access = normalize_project_folder_access(
             project_folder_access
         )
+        self.custom_instructions = custom_instructions.strip()
 
     def send(
         self,
@@ -270,6 +275,7 @@ class CodexCliAgent:
         else:
             history_text = "(none)"
         return PROMPT_TEMPLATE.format(
+            custom_instructions=self.custom_instructions or "(none)",
             context_json=json.dumps(snapshot.as_tool_result(), ensure_ascii=False),
             history=history_text,
             user_prompt=prompt,
