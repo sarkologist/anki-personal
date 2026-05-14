@@ -45,6 +45,7 @@ from .codex_client import (
     project_root_status,
     resolve_codex_path,
 )
+from .latex_preview import LegacyLatexPreviewRenderer
 from .model_options import MODEL_OPTIONS, model_option_index, model_options_with_legacy
 from .note_images import collect_note_images
 from .patches import (
@@ -479,8 +480,14 @@ class EditorAgentPane(QWidget):
     def _clear_proposal(self) -> None:
         self.surface.eval(js_clear_proposal())
 
-    def _set_proposal(self, snapshot: EditorSnapshot, patch: NotePatch) -> None:
-        self.surface.eval(js_set_proposal(render_proposal_diff(snapshot, patch)))
+    def _set_proposal(
+        self,
+        snapshot: EditorSnapshot,
+        patch: NotePatch,
+        notetype: dict[str, Any],
+    ) -> None:
+        renderer = LegacyLatexPreviewRenderer(col=self.editor.mw.col, notetype=notetype)
+        self.surface.eval(js_set_proposal(render_proposal_diff(snapshot, patch, renderer.render)))
 
     def _send(self) -> None:
         prompt = self.prompt.toPlainText().strip()
@@ -497,6 +504,7 @@ class EditorAgentPane(QWidget):
     def _start_agent_request(self, prompt: str) -> None:
         try:
             snapshot = editor_snapshot(self.editor)
+            notetype = dict(self.editor.note_type())
         except RuntimeError as exc:
             showWarning(str(exc), parent=self)
             return
@@ -573,7 +581,7 @@ class EditorAgentPane(QWidget):
             if proposals:
                 self.pending_patch = proposals[-1]
                 self.pending_snapshot = snapshot
-                self._set_proposal(snapshot, proposals[-1])
+                self._set_proposal(snapshot, proposals[-1], notetype)
                 self.apply_button.setEnabled(True)
 
         taskman.run_in_background(task, on_done, uses_collection=False)

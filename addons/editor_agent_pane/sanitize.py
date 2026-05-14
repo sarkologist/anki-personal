@@ -54,10 +54,11 @@ SAFE_LINK_SCHEMES = {"http", "https", "mailto"}
 
 
 class HtmlSanitizer(HTMLParser):
-    def __init__(self) -> None:
+    def __init__(self, latex_image_srcs: dict[str, str] | None = None) -> None:
         super().__init__(convert_charrefs=False)
         self._parts: list[str] = []
         self._skip_stack: list[str] = []
+        self._latex_image_srcs = latex_image_srcs or {}
 
     def sanitize(self, value: str) -> str:
         self.feed(value)
@@ -71,6 +72,12 @@ class HtmlSanitizer(HTMLParser):
             return
         if self._skipping():
             return
+        if tag == "img" and self._latex_image_srcs:
+            if safe_attrs := self._safe_latex_img_attrs(attrs):
+                self._parts.append(f"<img{safe_attrs}>")
+            else:
+                self._parts.append(html.escape(self.get_starttag_text() or "<img>"))
+            return
         if tag not in ALLOWED_TAGS:
             self._parts.append(html.escape(self.get_starttag_text() or f"<{tag}>"))
             return
@@ -82,6 +89,12 @@ class HtmlSanitizer(HTMLParser):
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         if tag in SKIP_CONTENT_TAGS or self._skipping():
+            return
+        if tag == "img" and self._latex_image_srcs:
+            if safe_attrs := self._safe_latex_img_attrs(attrs):
+                self._parts.append(f"<img{safe_attrs}>")
+            else:
+                self._parts.append(html.escape(self.get_starttag_text() or "<img/>"))
             return
         if tag not in ALLOWED_TAGS:
             self._parts.append(html.escape(self.get_starttag_text() or f"<{tag}/>"))
@@ -99,6 +112,8 @@ class HtmlSanitizer(HTMLParser):
             return
         if tag in ALLOWED_TAGS and tag not in VOID_TAGS:
             self._parts.append(f"</{tag}>")
+        elif tag == "img" and self._latex_image_srcs:
+            return
         elif tag not in SKIP_CONTENT_TAGS:
             self._parts.append(html.escape(f"</{tag}>"))
 
@@ -134,9 +149,31 @@ class HtmlSanitizer(HTMLParser):
             f' {key}="{html.escape(value, quote=True)}"' for key, value in safe
         )
 
+    def _safe_latex_img_attrs(self, attrs: list[tuple[str, str | None]]) -> str:
+        attr_dict = {key.lower(): value for key, value in attrs if value is not None}
+        class_names = set((attr_dict.get("class") or "").split())
+        source = attr_dict.get("src") or ""
+        data_url = self._latex_image_srcs.get(source)
+        if "latex" not in class_names or not data_url:
+            return ""
+        safe = [
+            ("class", "latex"),
+            ("alt", attr_dict.get("alt", "")),
+            ("src", data_url),
+        ]
+        return "".join(
+            f' {key}="{html.escape(value, quote=True)}"' for key, value in safe
+        )
+
 
 def sanitize_html(value: str) -> str:
     return HtmlSanitizer().sanitize(value)
+
+
+def sanitize_html_for_agent_preview(
+    value: str, latex_image_srcs: dict[str, str]
+) -> str:
+    return HtmlSanitizer(latex_image_srcs=latex_image_srcs).sanitize(value)
 
 
 def _safe_href(value: str | None) -> str:

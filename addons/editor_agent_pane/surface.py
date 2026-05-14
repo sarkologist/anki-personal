@@ -6,10 +6,12 @@ from __future__ import annotations
 import difflib
 import html
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from .patches import EditorSnapshot, NotePatch
 from .sanitize import sanitize_html
+
+PreviewRenderer = Callable[[str], str]
 
 
 def surface_body() -> str:
@@ -137,6 +139,10 @@ def surface_body() -> str:
 .agent-empty {
     color: var(--fg-subtle, #666);
     font-style: italic;
+}
+.agent-latex-error {
+    color: var(--fg-danger, #b00020);
+    margin-top: 8px;
 }
 .agent-unified-diff {
     border: 1px solid var(--border, #ccc);
@@ -290,9 +296,14 @@ def render_activity_summary(
 """
 
 
-def render_proposal_diff(snapshot: EditorSnapshot, patch: NotePatch) -> str:
+def render_proposal_diff(
+    snapshot: EditorSnapshot,
+    patch: NotePatch,
+    preview_renderer: PreviewRenderer | None = None,
+) -> str:
+    render_preview = preview_renderer or sanitize_html
     changes = [
-        _render_field_change(snapshot, field_name, new_html)
+        _render_field_change(snapshot, field_name, new_html, render_preview)
         for field_name, new_html in patch.field_updates.items()
     ]
     if patch.tag_patch.has_changes():
@@ -358,7 +369,10 @@ def _escaped_text(text: str) -> str:
 
 
 def _render_field_change(
-    snapshot: EditorSnapshot, field_name: str, new_html: str
+    snapshot: EditorSnapshot,
+    field_name: str,
+    new_html: str,
+    render_preview: PreviewRenderer,
 ) -> str:
     old_html = snapshot.field_html(field_name)
     diff = difflib.unified_diff(
@@ -371,7 +385,7 @@ def _render_field_change(
     return f"""
 <section class="agent-change">
     <div class="agent-change-title">Field: {html.escape(field_name)}</div>
-    {_render_preview_grid(sanitize_html(old_html), sanitize_html(new_html))}
+    {_render_preview_grid(render_preview(old_html), render_preview(new_html))}
     {_render_unified_diff(diff)}
 </section>
 """

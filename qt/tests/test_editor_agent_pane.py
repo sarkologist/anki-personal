@@ -29,6 +29,12 @@ from editor_agent_pane.codex_client import (  # noqa: E402
     project_root_status,
     resolve_codex_path,
 )
+from editor_agent_pane.latex_preview import (  # noqa: E402
+    LatexPreviewError,
+    LegacyLatexPreviewRenderer,
+    PreviewExtractedLatex,
+    PreviewExtractedLatexOutput,
+)
 from editor_agent_pane.model_options import (  # noqa: E402
     MODEL_OPTIONS,
     model_option_index,
@@ -80,6 +86,15 @@ def snapshot() -> EditorSnapshot:
         ),
         tags=("keep", "remove-me"),
     )
+
+
+class _MediaThatMustNotBeWritten:
+    def write_data(self, _filename: str, _data: bytes) -> None:
+        raise AssertionError("proposal preview must not write generated LaTeX media")
+
+
+class _CollectionThatMustNotReceiveMediaWrites:
+    media = _MediaThatMustNotBeWritten()
 
 
 class FakeStdin:
@@ -458,6 +473,161 @@ def test_render_proposal_diff_includes_sanitized_field_preview_and_diff() -> Non
     assert "agent-diff-del" in rendered
     assert "agent-diff-add" in rendered
     assert "+&lt;p&gt;new \\[K_X\\]&lt;/p&gt;" in rendered
+
+
+def test_render_proposal_diff_renders_legacy_latex_preview_as_data_images() -> None:
+    current = EditorSnapshot(
+        mode="browse",
+        note_id=123,
+        notetype_id=7,
+        notetype_name="Basic",
+        fields=(
+            FieldSnapshot(
+                name="Front",
+                html="<p>old [$]x^2[/$]</p><script>bad()</script>",
+            ),
+        ),
+        tags=(),
+    )
+    patch = validate_note_patch(
+        {
+            "summary": "Render latex",
+            "note_id": 123,
+            "notetype_id": 7,
+            "field_updates": [
+                {
+                    "name": "Front",
+                    "html": '<p onclick="evil()">new [$$]y[/$$]</p>',
+                }
+            ],
+            "tags": {"replace": None, "add": [], "remove": []},
+        },
+        current,
+    )
+    rendered_images: list[str] = []
+
+    def extract_latex(text: str, svg: bool) -> PreviewExtractedLatexOutput:
+        assert not svg
+        extracted: list[PreviewExtractedLatex] = []
+        rendered = text
+        if "[$]x^2[/$]" in rendered:
+            rendered = rendered.replace(
+                "[$]x^2[/$]",
+                '<img class=latex alt="$x^2$" src="latex-inline.png">',
+            )
+            extracted.append(PreviewExtractedLatex("latex-inline.png", "$x^2$"))
+        if "[$$]y[/$$]" in rendered:
+            rendered = rendered.replace(
+                "[$$]y[/$$]",
+                '<img class=latex alt="display y" src="latex-display.png">',
+            )
+            extracted.append(PreviewExtractedLatex("latex-display.png", "display y"))
+        return PreviewExtractedLatexOutput(rendered, tuple(extracted))
+
+    def render_latex_image(
+        extracted: PreviewExtractedLatex,
+        header: str,
+        footer: str,
+        svg: bool,
+    ) -> bytes:
+        assert header == "header"
+        assert footer == "footer"
+        assert not svg
+        rendered_images.append(extracted.filename)
+        return f"image:{extracted.filename}".encode()
+
+    renderer = LegacyLatexPreviewRenderer(
+        col=_CollectionThatMustNotReceiveMediaWrites(),
+        notetype={"latexPre": "header", "latexPost": "footer", "latexsvg": False},
+        extract_latex=extract_latex,
+        render_latex_image=render_latex_image,
+        latex_enabled=True,
+    )
+
+    rendered = render_proposal_diff(current, patch, renderer.render)
+    preview = rendered.split('<div class="agent-diff-heading">', maxsplit=1)[0]
+
+    assert rendered_images == ["latex-inline.png", "latex-display.png"]
+    assert '<img class="latex" alt="$x^2$" src="data:image/png;base64,' in preview
+    assert '<img class="latex" alt="display y" src="data:image/png;base64,' in preview
+    assert "<script>" not in preview
+    assert "onclick" not in preview
+    assert "[$]x^2[/$]" in rendered
+    assert "[$$]y[/$$]" in rendered
+    assert "+&lt;p onclick=&quot;evil()&quot;&gt;new [$$]y[/$$]&lt;/p&gt;" in rendered
+
+
+def test_legacy_latex_preview_deduplicates_rendered_images() -> None:
+    rendered_images: list[str] = []
+
+    def extract_latex(text: str, svg: bool) -> PreviewExtractedLatexOutput:
+        return PreviewExtractedLatexOutput(
+            html=text.replace(
+                "[$]x[/$]",
+                '<img class=latex alt="$x$" src="latex-shared.svg">',
+            ),
+            latex=(PreviewExtractedLatex("latex-shared.svg", "$x$"),),
+        )
+
+    def render_latex_image(
+        extracted: PreviewExtractedLatex,
+        _header: str,
+        _footer: str,
+        svg: bool,
+    ) -> bytes:
+        assert svg
+        rendered_images.append(extracted.filename)
+        return b"<svg></svg>"
+
+    renderer = LegacyLatexPreviewRenderer(
+        col=_CollectionThatMustNotReceiveMediaWrites(),
+        notetype={"latexPre": "", "latexPost": "", "latexsvg": True},
+        extract_latex=extract_latex,
+        render_latex_image=render_latex_image,
+        latex_enabled=True,
+    )
+
+    first = renderer.render("one [$]x[/$]")
+    second = renderer.render("two [$]x[/$]")
+
+    assert rendered_images == ["latex-shared.svg"]
+    assert 'src="data:image/svg+xml;base64,' in first
+    assert 'src="data:image/svg+xml;base64,' in second
+
+
+def test_legacy_latex_preview_falls_back_when_generation_fails() -> None:
+    def extract_latex(text: str, svg: bool) -> PreviewExtractedLatexOutput:
+        return PreviewExtractedLatexOutput(
+            html=text.replace(
+                "[$]x[/$]",
+                '<img class=latex alt="$x$" src="latex-failed.png">',
+            ),
+            latex=(PreviewExtractedLatex("latex-failed.png", "$x$"),),
+        )
+
+    def render_latex_image(
+        _extracted: PreviewExtractedLatex,
+        _header: str,
+        _footer: str,
+        _svg: bool,
+    ) -> bytes:
+        raise LatexPreviewError("<b>latex failed</b><script>bad()</script>")
+
+    renderer = LegacyLatexPreviewRenderer(
+        col=_CollectionThatMustNotReceiveMediaWrites(),
+        notetype={"latexPre": "", "latexPost": "", "latexsvg": False},
+        extract_latex=extract_latex,
+        render_latex_image=render_latex_image,
+        latex_enabled=True,
+    )
+
+    rendered = renderer.render('<p onclick="evil()">[$]x[/$]</p>')
+
+    assert "[$]x[/$]" in rendered
+    assert "<img" not in rendered
+    assert "onclick" not in rendered
+    assert "<b>latex failed</b>" in rendered
+    assert "<script>" not in rendered
 
 
 def test_render_proposal_diff_includes_tag_preview_and_diff() -> None:
