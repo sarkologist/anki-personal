@@ -53,7 +53,7 @@ jobs:
       release_name: ${{ steps.validate.outputs.release_name }}
       is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -166,7 +166,7 @@ jobs:
     timeout-minutes: 90
     environment: ${{ inputs.sign == true && 'release' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
 
@@ -197,13 +197,13 @@ jobs:
           security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/AuthKey.p8"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-installer-macos
           path: out/installer/logs/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: installer-macos
           path: out/installer/dist/
@@ -211,7 +211,7 @@ jobs:
       - name: Build wheels
         run: ./ninja wheels:anki
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-macos
           path: out/wheels/anki-*.whl
@@ -222,7 +222,7 @@ jobs:
     timeout-minutes: 90
     environment: ${{ inputs.sign == true && 'release' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
 
@@ -253,13 +253,13 @@ jobs:
           security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP/AuthKey.p8"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-installer-macos-intel
           path: out/installer/logs/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: installer-macos-intel
           path: out/installer/dist/
@@ -267,7 +267,7 @@ jobs:
       - name: Build wheels
         run: ./ninja wheels:anki
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-macos-intel
           path: out/wheels/anki-*.whl
@@ -278,7 +278,7 @@ jobs:
     timeout-minutes: 90
     environment: ${{ inputs.sign == true && 'release' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
 
@@ -288,7 +288,7 @@ jobs:
       - name: Build app
         run: tools\ninja installer:build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-installer-windows
@@ -302,7 +302,7 @@ jobs:
 
       - name: Sign app binary
         if: inputs.sign == true
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@v1.2.0
         with:
           endpoint: https://eus.codesigning.azure.net/
           signing-account-name: anki-signing
@@ -332,7 +332,7 @@ jobs:
 
       - name: Sign MSI
         if: inputs.sign == true
-        uses: azure/artifact-signing-action@v1
+        uses: azure/artifact-signing-action@v1.2.0
         with:
           endpoint: https://eus.codesigning.azure.net/
           signing-account-name: anki-signing
@@ -355,7 +355,7 @@ jobs:
           }
           Write-Host "MSI signed successfully: $($sig.SignerCertificate.Subject)"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: installer-windows
           path: out/installer/dist/
@@ -363,7 +363,7 @@ jobs:
       - name: Build wheels
         run: tools\ninja wheels:anki
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-windows
           path: out/wheels/anki-*.whl
@@ -376,7 +376,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
 
@@ -386,13 +386,13 @@ jobs:
       - name: Build installer
         run: ./tools/build-installer
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-installer-linux-x86
           path: out/installer/logs/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: installer-linux-x86
           path: out/installer/dist/
@@ -401,7 +401,7 @@ jobs:
       - name: Build wheels
         run: ./ninja wheels
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-linux-x86
           path: out/wheels/*.whl
@@ -411,7 +411,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
 
@@ -423,7 +423,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends libc6-dev-arm64-cross gcc-aarch64-linux-gnu
           ./tools/build-arm-lin
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-linux-arm
           path: out/wheels/anki-*.whl
@@ -437,7 +437,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
 
@@ -447,13 +447,13 @@ jobs:
       - name: Build installer
         run: ./tools/build-installer
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-installer-linux-arm
           path: out/installer/logs/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: installer-linux-arm
           path: out/installer/dist/
@@ -474,11 +474,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: installer-*
           path: dist
@@ -523,7 +523,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           path: wheels
@@ -551,7 +551,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           path: wheels
