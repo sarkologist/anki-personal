@@ -86,6 +86,7 @@ from aqt.utils import (
     disallow_full_screen,
     getFile,
     getOnlyText,
+    no_arg_trigger,
     openHelp,
     openLink,
     restoreGeom,
@@ -521,6 +522,7 @@ class AnkiQt(QMainWindow):
         # show main window
         restoreGeom(self, "mainWindow")
         restoreState(self, "mainWindow")
+        self.web.setZoomFactor(self.pm.main_window_zoom_factor())
         # titlebar
         self.setWindowTitle(f"{self.pm.name} - Anki")
         # show and raise window for osx
@@ -584,6 +586,7 @@ class AnkiQt(QMainWindow):
         self.cleanup_sound()
         saveGeom(self, "mainWindow")
         saveState(self, "mainWindow")
+        self.pm.set_main_window_zoom_factor(self.web.zoomFactor())
         self.pm.save()
         self.hide()
 
@@ -1472,15 +1475,9 @@ title="{}" {}>{}</button>""".format(
         qconnect(m.actionPreferences.triggered, self.onPrefs)
 
         # View
-        qconnect(
-            m.actionZoomIn.triggered,
-            lambda: self.web.setZoomFactor(self.web.zoomFactor() + 0.1),
-        )
-        qconnect(
-            m.actionZoomOut.triggered,
-            lambda: self.web.setZoomFactor(self.web.zoomFactor() - 0.1),
-        )
-        qconnect(m.actionResetZoom.triggered, lambda: self.web.setZoomFactor(1))
+        qconnect(m.actionZoomIn.triggered, self.onZoomIn)
+        qconnect(m.actionZoomOut.triggered, self.onZoomOut)
+        qconnect(m.actionResetZoom.triggered, self.onResetZoom)
         # app-wide shortcut
         qconnect(m.actionFullScreen.triggered, self.on_toggle_full_screen)
         m.actionFullScreen.setShortcut(
@@ -1493,6 +1490,22 @@ title="{}" {}>{}</button>""".format(
 
     # View
     ##########################################################################
+
+    @no_arg_trigger
+    def onZoomIn(self) -> None:
+        self._set_main_window_zoom_factor(self.web.zoomFactor() + 0.1)
+
+    @no_arg_trigger
+    def onZoomOut(self) -> None:
+        self._set_main_window_zoom_factor(self.web.zoomFactor() - 0.1)
+
+    @no_arg_trigger
+    def onResetZoom(self) -> None:
+        self._set_main_window_zoom_factor(1)
+
+    def _set_main_window_zoom_factor(self, factor: float) -> None:
+        self.pm.set_main_window_zoom_factor(factor)
+        self.web.setZoomFactor(self.pm.main_window_zoom_factor())
 
     def on_toggle_full_screen(self) -> None:
         if disallow_full_screen():

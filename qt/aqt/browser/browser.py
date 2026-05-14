@@ -156,6 +156,7 @@ class Browser(QMainWindow):
         self.setupMenus()
         self.setupHooks()
         self.setupEditor()
+        self._editor_web_view().setZoomFactor(self.mw.pm.browser_editor_zoom_factor())
         gui_hooks.browser_will_show(self)
 
         # restoreXXX() should be called after all child widgets have been created
@@ -353,22 +354,9 @@ class Browser(QMainWindow):
 
         # view
         qconnect(f.actionFullScreen.triggered, self.mw.on_toggle_full_screen)
-        qconnect(
-            f.actionZoomIn.triggered,
-            lambda: self._editor_web_view().setZoomFactor(
-                self._editor_web_view().zoomFactor() + 0.1
-            ),
-        )
-        qconnect(
-            f.actionZoomOut.triggered,
-            lambda: self._editor_web_view().setZoomFactor(
-                self._editor_web_view().zoomFactor() - 0.1
-            ),
-        )
-        qconnect(
-            f.actionResetZoom.triggered,
-            lambda: self._editor_web_view().setZoomFactor(1),
-        )
+        qconnect(f.actionZoomIn.triggered, self.onZoomIn)
+        qconnect(f.actionZoomOut.triggered, self.onZoomOut)
+        qconnect(f.actionResetZoom.triggered, self.onResetZoom)
         qconnect(
             self.form.actionLayoutAuto.triggered,
             lambda: self.set_layout(BrowserLayout.AUTO),
@@ -449,6 +437,22 @@ class Browser(QMainWindow):
         assert editor_web_view is not None
         return editor_web_view
 
+    @no_arg_trigger
+    def onZoomIn(self) -> None:
+        self._set_browser_editor_zoom_factor(self._editor_web_view().zoomFactor() + 0.1)
+
+    @no_arg_trigger
+    def onZoomOut(self) -> None:
+        self._set_browser_editor_zoom_factor(self._editor_web_view().zoomFactor() - 0.1)
+
+    @no_arg_trigger
+    def onResetZoom(self) -> None:
+        self._set_browser_editor_zoom_factor(1)
+
+    def _set_browser_editor_zoom_factor(self, factor: float) -> None:
+        self.mw.pm.set_browser_editor_zoom_factor(factor)
+        self._editor_web_view().setZoomFactor(self.mw.pm.browser_editor_zoom_factor())
+
     def closeEvent(self, evt: QCloseEvent | None) -> None:
         assert evt is not None
 
@@ -466,6 +470,7 @@ class Browser(QMainWindow):
 
         self._cleanup_preview()
         self._card_info.close()
+        self.mw.pm.set_browser_editor_zoom_factor(self._editor_web_view().zoomFactor())
         self.editor.cleanup()
         self.table.cleanup()
         self.sidebar.cleanup()

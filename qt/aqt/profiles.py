@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import io
+import math
 import os
 import pickle
 import random
@@ -118,6 +119,10 @@ profileConf: dict[str, Any] = dict(
     stripHTML=True,
     deleteMedia=False,
 )
+
+DEFAULT_WEBENGINE_ZOOM_FACTOR = 1.0
+MIN_WEBENGINE_ZOOM_FACTOR = 0.25
+MAX_WEBENGINE_ZOOM_FACTOR = 5.0
 
 
 class LoadMetaResult:
@@ -538,6 +543,36 @@ create table if not exists profiles
 
     def setUiScale(self, scale: float) -> None:
         self.meta["uiScale"] = scale
+
+    def main_window_zoom_factor(self) -> float:
+        return self._webengine_zoom_factor("mainWindowZoomFactor")
+
+    def set_main_window_zoom_factor(self, factor: float) -> None:
+        self._set_webengine_zoom_factor("mainWindowZoomFactor", factor)
+
+    def browser_editor_zoom_factor(self) -> float:
+        return self._webengine_zoom_factor("browserEditorZoomFactor")
+
+    def set_browser_editor_zoom_factor(self, factor: float) -> None:
+        self._set_webengine_zoom_factor("browserEditorZoomFactor", factor)
+
+    def _webengine_zoom_factor(self, key: str) -> float:
+        return self._clamped_webengine_zoom_factor(
+            self.meta.get(key, DEFAULT_WEBENGINE_ZOOM_FACTOR)
+        )
+
+    def _set_webengine_zoom_factor(self, key: str, factor: float) -> None:
+        self.meta[key] = self._clamped_webengine_zoom_factor(factor)
+
+    def _clamped_webengine_zoom_factor(self, factor: object) -> float:
+        if isinstance(factor, bool) or not isinstance(factor, (int, float)):
+            return DEFAULT_WEBENGINE_ZOOM_FACTOR
+
+        factor = float(factor)
+        if not math.isfinite(factor):
+            return DEFAULT_WEBENGINE_ZOOM_FACTOR
+
+        return min(MAX_WEBENGINE_ZOOM_FACTOR, max(MIN_WEBENGINE_ZOOM_FACTOR, factor))
 
     def reduce_motion(self) -> bool:
         return self.meta.get("reduce_motion", True)
