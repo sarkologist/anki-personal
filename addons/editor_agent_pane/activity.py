@@ -9,6 +9,19 @@ from typing import Any
 
 MAX_PREVIEW_CHARS = 500
 MAX_SUMMARY_ITEMS = 3
+SAFE_METADATA_KEYS = (
+    "status",
+    "phase",
+    "name",
+    "action",
+    "query",
+    "url",
+    "pattern",
+    "duration_ms",
+    "result_count",
+    "results_count",
+    "count",
+)
 
 
 @dataclass
@@ -20,8 +33,10 @@ class CodexActivityRenderer:
     message_count: int = 0
     reasoning_count: int = 0
     error_count: int = 0
+    web_count: int = 0
     unknown_types: set[str] = field(default_factory=set)
     commands: list[str] = field(default_factory=list)
+    web_actions: list[str] = field(default_factory=list)
     reasoning_summaries: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     detail_lines: list[str] = field(default_factory=list)
@@ -42,6 +57,12 @@ class CodexActivityRenderer:
             text = _preview(_first_text(event) or event_type)
             self._remember(self.errors, text)
             return self._line(f"[error] {text}")
+
+        if is_web_search_event(event_type_lower, payload):
+            self.web_count += 1
+            text = web_search_activity_text(event_type, event, payload) or "activity"
+            self._remember(self.web_actions, text)
+            return self._line(f"[web] {text}")
 
         if _looks_like_output(event_type_lower, payload):
             self.output_count += 1
@@ -74,10 +95,18 @@ class CodexActivityRenderer:
             return self._line(f"[message] {event_type}")
 
         if event_type_lower.endswith(("started", "completed")):
-            return self._line(f"[status] {event_type.replace('.', ' ')}")
+            detail = safe_event_metadata_text(event, payload)
+            line = f"[status] {event_type.replace('.', ' ')}"
+            if detail:
+                line += f" ({detail})"
+            return self._line(line)
 
         self.unknown_types.add(event_type)
-        return self._line(f"[event] {event_type}")
+        detail = safe_event_metadata_text(event, payload)
+        line = f"[event] {event_type}"
+        if detail:
+            line += f" ({detail})"
+        return self._line(line)
 
     def compact_summary(self) -> str:
         parts = [f"{self.event_count} stream event{_plural(self.event_count)}"]
@@ -85,6 +114,10 @@ class CodexActivityRenderer:
             parts.append(f"tools: {_summary_list(self.commands, self.command_count)}")
         elif self.command_count:
             parts.append(f"{self.command_count} tool call{_plural(self.command_count)}")
+        if self.web_actions:
+            parts.append(f"web: {_summary_list(self.web_actions, self.web_count)}")
+        elif self.web_count:
+            parts.append(f"{self.web_count} web update{_plural(self.web_count)}")
         if self.output_count:
             parts.append(f"{self.output_count} output chunk{_plural(self.output_count)}")
         if self.reasoning_summaries:
@@ -179,6 +212,90 @@ def _is_wrapper_event_type(event_type: object) -> bool:
     )
 
 
+def is_web_search_event(event_type_lower: str, payload: dict[str, Any]) -> bool:
+    payload_type = str(payload.get("type", "")).lower()
+    return "web_search" in event_type_lower or "web_search" in payload_type
+
+
+def web_search_activity_text(
+    event_type: str,
+    event: dict[str, Any],
+    payload: dict[str, Any],
+) -> str:
+    event_type_lower = event_type.lower()
+    action = _action_payload(event, payload)
+    action_type = _action_type(action, event, payload)
+    query = _query_text(action, payload, event)
+    url = _first_scalar(action, "url", "uri") or _first_scalar(
+        payload, "url", "uri"
+    ) or _first_scalar(event, "url", "uri")
+    pattern = _first_scalar(action, "pattern", "find_text", "term") or _first_scalar(
+        payload, "pattern", "find_text", "term"
+    ) or _first_scalar(event, "pattern", "find_text", "term")
+
+    if event_type_lower.endswith("_end") or event_type_lower.endswith(".end"):
+        duration = _duration_text(
+            _first_scalar(event, "duration_ms", "elapsed_ms")
+            or _first_scalar(payload, "duration_ms", "elapsed_ms")
+        )
+        if duration:
+            return f"completed in {duration}"
+        return "completed"
+
+    if action_type in ("find_in_page", "find", "find_on_page") or pattern:
+        if pattern and url:
+            return f"find in page: {_preview(pattern)} ({_preview(url)})"
+        if pattern:
+            return f"find in page: {_preview(pattern)}"
+        if url:
+            return f"find in page: {_preview(url)}"
+        return "find in page"
+
+    if action_type in ("search", "queries") or query:
+        if query:
+            return f"search: {_preview(query)}"
+        return "search"
+
+    if action_type in ("open_page", "open", "open_url") or url:
+        if url:
+            return f"open page: {_preview(url)}"
+        return "open page"
+
+    if event_type_lower in ("web_search", "web_search_begin"):
+        return "search"
+
+    if action_type:
+        return action_type.replace("_", " ")
+    return ""
+
+
+def safe_event_metadata_text(event: dict[str, Any], payload: dict[str, Any]) -> str:
+    action = _action_payload(event, payload)
+    pairs: list[tuple[str, str]] = []
+
+    for key in SAFE_METADATA_KEYS:
+        if key == "action":
+            value = _action_type(action, event, payload)
+        elif key == "query":
+            value = _query_text(action, payload, event)
+        elif key == "url":
+            value = _first_scalar(action, "url", "uri") or _first_scalar(
+                payload, "url", "uri"
+            ) or _first_scalar(event, "url", "uri")
+        elif key == "pattern":
+            value = _first_scalar(action, "pattern", "find_text", "term") or (
+                _first_scalar(payload, "pattern", "find_text", "term")
+                or _first_scalar(event, "pattern", "find_text", "term")
+            )
+        else:
+            value = _first_scalar(payload, key) or _first_scalar(event, key)
+
+        if value:
+            pairs.append((key, _preview(value)))
+
+    return ", ".join(f"{key}={value}" for key, value in pairs)
+
+
 def _looks_like_command(event_type_lower: str, payload: dict[str, Any]) -> bool:
     payload_type = str(payload.get("type", "")).lower()
     return (
@@ -220,6 +337,91 @@ def _command_text(payload: dict[str, Any]) -> str:
             return f"{name} {json.dumps(arguments, ensure_ascii=False)}"
         return name
     return ""
+
+
+def _action_payload(event: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    for source in (payload, event):
+        action = source.get("action")
+        if isinstance(action, dict):
+            return action
+    return {}
+
+
+def _action_type(
+    action: dict[str, Any],
+    event: dict[str, Any],
+    payload: dict[str, Any],
+) -> str:
+    return (
+        _first_scalar(action, "type", "action", "kind")
+        or _first_scalar(payload, "action_type", "action_kind")
+        or _first_scalar(event, "action_type", "action_kind")
+        or _scalar_action(payload)
+        or _scalar_action(event)
+    )
+
+
+def _scalar_action(value: dict[str, Any]) -> str:
+    action = value.get("action")
+    if isinstance(action, str):
+        return action
+    return ""
+
+
+def _query_text(*values: dict[str, Any]) -> str:
+    for value in values:
+        for key in ("query", "queries", "search_query", "search_queries"):
+            text = _metadata_value_text(value.get(key))
+            if text:
+                return text
+    return ""
+
+
+def _metadata_value_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        parts = [
+            text
+            for item in value
+            if (text := _metadata_value_text(_query_item_value(item)))
+        ]
+        return "; ".join(parts)
+    if isinstance(value, dict):
+        return _query_text(value) or _first_scalar(value, "q", "text", "value")
+    return ""
+
+
+def _query_item_value(item: Any) -> Any:
+    if isinstance(item, dict):
+        for key in ("query", "q", "text", "value"):
+            if key in item:
+                return item[key]
+    return item
+
+
+def _first_scalar(value: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        item = value.get(key)
+        if isinstance(item, str):
+            return item
+        if isinstance(item, (int, float)):
+            return str(item)
+    return ""
+
+
+def _duration_text(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        duration_ms = float(value)
+    except ValueError:
+        return value
+    if duration_ms >= 1000:
+        return f"{duration_ms / 1000:.1f}s"
+    return f"{duration_ms:g}ms"
 
 
 def _summary_text(value: dict[str, Any]) -> str:

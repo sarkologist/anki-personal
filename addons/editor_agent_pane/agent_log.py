@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from .activity import is_web_search_event, web_search_activity_text
+
 MAX_PREVIEW_CHARS = 500
 
 
@@ -92,6 +94,12 @@ def stream_event_log_payload(event: dict[str, Any]) -> dict[str, Any]:
         log_payload["error_preview"] = text_preview(
             _first_text(event) or _first_text(payload) or event_type
         )
+        return log_payload
+
+    if is_web_search_event(event_type_lower, payload):
+        text = web_search_activity_text(event_type, event, payload)
+        if text:
+            log_payload["web_preview"] = text_preview(text)
         return log_payload
 
     if _looks_like_output(event_type_lower, payload):

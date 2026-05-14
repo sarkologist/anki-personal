@@ -1241,6 +1241,17 @@ def test_codex_agent_logs_redacted_success_lifecycle(
                 + "\n"
                 + json.dumps(
                     {
+                        "type": "web_search_begin",
+                        "action": {
+                            "type": "search",
+                            "query": "anki latest release",
+                        },
+                        "content": "private web search content",
+                    }
+                )
+                + "\n"
+                + json.dumps(
+                    {
                         "type": "response_item",
                         "payload": {
                             "type": "reasoning",
@@ -1304,6 +1315,7 @@ def test_codex_agent_logs_redacted_success_lifecycle(
     stream_records = run_logger.all("stream_event")
     tool = next(record for record in stream_records if "tool_preview" in record)
     output = next(record for record in stream_records if "output_preview" in record)
+    web = next(record for record in stream_records if "web_preview" in record)
     reasoning = next(
         record for record in stream_records if record["type"] == "reasoning"
     )
@@ -1313,6 +1325,7 @@ def test_codex_agent_logs_redacted_success_lifecycle(
     assert "\n" not in output["output_preview"]
     assert len(output["output_preview"]) == MAX_PREVIEW_CHARS
     assert output["output_preview"].endswith("...")
+    assert web["web_preview"] == "search: anki latest release"
     assert reasoning["has_reasoning_summary"] is True
     assert reasoning["reasoning_summary_preview"] == "Checked the source."
     assert message["message_chars"] == len("private assistant message")
@@ -1320,8 +1333,8 @@ def test_codex_agent_logs_redacted_success_lifecycle(
 
     finish = run_logger.first("run_finish")
     assert finish["returncode"] == 0
-    assert finish["event_count"] == 6
-    assert finish["stdout_lines"] == 6
+    assert finish["event_count"] == 7
+    assert finish["stdout_lines"] == 7
     assert finish["stderr_lines"] == 0
     assert finish["final_response_present"] is True
     assert finish["message_chars"] == len("No changes.")
@@ -1333,6 +1346,7 @@ def test_codex_agent_logs_redacted_success_lifecycle(
     assert "secret field html" not in serialized
     assert "secret previous user" not in serialized
     assert "secret previous assistant" not in serialized
+    assert "private web search content" not in serialized
     assert "raw private reasoning" not in serialized
     assert "private assistant message" not in serialized
 
@@ -2037,6 +2051,107 @@ def test_codex_activity_renderer_compacts_verbose_activity() -> None:
         "[Codex activity: 5 stream events, tools: rg canonical, 1 output chunk, "
         "reasoning: Checking the source., 1 other event type]\n"
     )
+
+
+def test_codex_activity_renderer_streams_web_search_details() -> None:
+    renderer = CodexActivityRenderer()
+
+    live_lines = [
+        renderer.record({"type": "web_search"}),
+        renderer.record({"type": "web_search", "query": "anki 24.11 release"}),
+        renderer.record(
+            {
+                "type": "web_search_begin",
+                "action": {
+                    "type": "search",
+                    "queries": ["fsrs optimizer", "anki fsrs"],
+                },
+            }
+        ),
+        renderer.record(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "web_search_call",
+                    "action": {
+                        "type": "open_page",
+                        "url": "https://docs.ankiweb.net/searching.html",
+                    },
+                    "status": "in_progress",
+                },
+            }
+        ),
+        renderer.record(
+            {
+                "type": "item.started",
+                "item": {
+                    "type": "web_search_call",
+                    "action": {
+                        "type": "find_in_page",
+                        "pattern": "filtered deck",
+                        "url": "https://docs.ankiweb.net/filtered-decks.html",
+                    },
+                },
+            }
+        ),
+        renderer.record({"type": "web_search_end", "duration_ms": 1234}),
+    ]
+
+    assert live_lines == [
+        "[web] search",
+        "[web] search: anki 24.11 release",
+        "[web] search: fsrs optimizer; anki fsrs",
+        "[web] open page: https://docs.ankiweb.net/searching.html",
+        (
+            "[web] find in page: filtered deck "
+            "(https://docs.ankiweb.net/filtered-decks.html)"
+        ),
+        "[web] completed in 1.2s",
+    ]
+    assert renderer.compact_summary() == (
+        "[Codex activity: 6 stream events, web: search; search: anki 24.11 "
+        "release; search: fsrs optimizer; anki fsrs; +3 more]\n"
+    )
+
+
+def test_codex_activity_renderer_adds_safe_status_event_metadata() -> None:
+    renderer = CodexActivityRenderer()
+
+    status_line = renderer.record(
+        {
+            "type": "item.started",
+            "status": "in_progress",
+            "phase": "run",
+            "name": "inspect",
+            "query": "visible query",
+            "result_count": 2,
+            "content": "private content",
+            "raw_content": "raw private reasoning",
+            "encrypted_content": "encrypted-private-reasoning",
+        }
+    )
+    event_line = renderer.record(
+        {
+            "type": "unexpected.future.event",
+            "action": {"type": "search", "query": "safe query"},
+            "url": "https://example.com",
+            "content": "private event content",
+        }
+    )
+
+    assert status_line == (
+        "[status] item started (status=in_progress, phase=run, name=inspect, "
+        "query=visible query, result_count=2)"
+    )
+    assert event_line == (
+        "[event] unexpected.future.event (action=search, query=safe query, "
+        "url=https://example.com)"
+    )
+    rendered = "\n".join(renderer.detail_lines)
+    assert "private content" not in rendered
+    assert "raw private reasoning" not in rendered
+    assert "encrypted-private-reasoning" not in rendered
+    assert "private event content" not in rendered
 
 
 def test_codex_activity_renderer_streams_nested_reasoning_summary_only() -> None:

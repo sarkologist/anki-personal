@@ -20,10 +20,13 @@ direct OpenAI API billing.
 
 Run `codex login` first and choose ChatGPT sign-in. The add-on invokes
 `codex exec --json` with the selected project folder access, streams live
-activity while it is running, optionally includes reasoning summaries, then
-compacts that activity when the final response arrives. Assistant responses and
-proposal previews render as sanitized HTML with MathJax support. Anki never
-applies note changes without your approval.
+activity while it is running, including tool, web-search, status, and safe event
+metadata when Codex provides it, then compacts that activity when the final
+response arrives. Reasoning display is still limited to the concise summary
+fields controlled by `stream_reasoning_summaries`; hidden chain-of-thought and
+private scratchpad content are not displayed. Assistant responses and proposal
+previews render as sanitized HTML with MathJax support. Anki never applies note
+changes without your approval.
 
 To smoke-test the real CLI integration manually, run the editor agent pane tests
 with `ANKI_CODEX_CLI_INTEGRATION=1`. Optionally set `ANKI_CODEX_CLI_PATH` to a
