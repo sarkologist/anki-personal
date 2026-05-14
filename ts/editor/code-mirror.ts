@@ -28,6 +28,7 @@ export const latex = {
 export const htmlanki = {
     name: "htmlmixed",
     tags: {
+        "anki-latex": [[null, null, latex]],
         "anki-mathjax": [[null, null, latex]],
     },
 };

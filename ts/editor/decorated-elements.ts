@@ -7,6 +7,7 @@ import type { DecoratedElement } from "../editable/decorated";
 import { CustomElementArray } from "../editable/decorated";
 import { FrameElement } from "../editable/frame-element";
 import { FrameEnd, FrameStart } from "../editable/frame-handle";
+import { LegacyLatex } from "../editable/legacy-latex-element.svelte";
 import { Mathjax } from "../editable/mathjax-element.svelte";
 import { parsingInstructions } from "./plain-text-input";
 
@@ -29,6 +30,11 @@ function registerMathjax() {
     parsingInstructions.push("<style>anki-mathjax { white-space: pre; }</style>");
 }
 
+function registerLegacyLatex() {
+    decoratedElements.push(LegacyLatex);
+    parsingInstructions.push("<style>anki-latex { white-space: pre; }</style>");
+}
+
 function registerFrameElement() {
     customElements.define(FrameElement.tagName, FrameElement);
     customElements.define(FrameStart.tagName, FrameStart);
@@ -46,6 +52,7 @@ function registerFrameElement() {
     TRANSPARENT_ELEMENTS.push(FrameElement.tagName.toUpperCase());
 }
 
+registerLegacyLatex();
 registerMathjax();
 registerFrameElement();
 
