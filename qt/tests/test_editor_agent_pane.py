@@ -1105,7 +1105,6 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         captured["command"] = command
         captured["stdin"] = stdin
@@ -1188,69 +1187,6 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
     ]
 
 
-def test_codex_agent_uses_isolated_codex_home(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    source_codex_home = tmp_path / "source-codex-home"
-    source_codex_home.mkdir()
-    (source_codex_home / "auth.json").write_text(
-        '{"token":"fake"}',
-        encoding="utf-8",
-    )
-    (source_codex_home / "skills" / "thesis-figure-skill").mkdir(parents=True)
-    monkeypatch.setenv("CODEX_HOME", str(source_codex_home))
-
-    project = tmp_path / "project"
-    project.mkdir()
-    captured: dict[str, Any] = {}
-
-    def fake_popen(
-        command: list[str],
-        *,
-        stdin: int,
-        stdout: int,
-        stderr: int,
-        text: bool,
-        bufsize: int,
-        env: dict[str, str] | None = None,
-    ) -> FakePopen:
-        assert env is not None
-        captured["env"] = env
-        codex_home = Path(env["CODEX_HOME"])
-        assert codex_home != source_codex_home
-        assert codex_home.name == "codex-home"
-        assert (codex_home / "auth.json").read_text(encoding="utf-8") == (
-            '{"token":"fake"}'
-        )
-        assert not (codex_home / "skills" / "thesis-figure-skill").exists()
-        write_codex_response(
-            command,
-            {
-                "message": "No changes.",
-                "message_html": "<p>No changes.</p>",
-                "patch": None,
-            },
-        )
-        return FakePopen(stdout='{"type":"turn.completed"}\n')
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-
-    result = CodexCliAgent(
-        codex_path="/usr/local/bin/codex",
-        model="",
-        timeout_seconds=123,
-    ).send(
-        prompt="Explain",
-        snapshot=snapshot(),
-        project_root=str(project),
-        history=[],
-    )
-
-    assert result.text == "No changes."
-    assert captured["env"]["CODEX_HOME"] != str(source_codex_home)
-
-
 def test_codex_agent_logs_redacted_success_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1288,7 +1224,6 @@ def test_codex_agent_logs_redacted_success_lifecycle(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         write_codex_response(
             command,
@@ -1431,7 +1366,6 @@ def test_codex_agent_logs_timeout_before_killing_process(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         process = FakePopen(
             returncode=None,
@@ -1480,7 +1414,6 @@ def test_codex_agent_stops_running_process_without_failure_log(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         process = FakePopen(
             stdout='{"type":"turn.started"}\n',
@@ -1531,7 +1464,6 @@ def test_codex_agent_logs_nonzero_cli_exit(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         return FakePopen(
             stdout='{"type":"turn.started"}\n',
@@ -1575,7 +1507,6 @@ def test_codex_agent_logs_missing_final_response(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         return FakePopen(stdout='{"type":"turn.completed"}\n')
 
@@ -1616,7 +1547,6 @@ def test_codex_agent_logs_final_json_parse_failure_without_raw_response(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         write_codex_response(command, raw_response)
         return FakePopen(stdout='{"type":"turn.completed"}\n')
@@ -1655,7 +1585,6 @@ def test_codex_agent_logs_patch_validation_failure(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         write_codex_response(
             command,
@@ -1710,7 +1639,6 @@ def test_codex_agent_can_disable_reasoning_summaries(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         captured["command"] = command
         output_path = Path(command[command.index("--output-last-message") + 1])
@@ -1752,7 +1680,6 @@ def test_codex_agent_disables_reasoning_summaries_for_spark_model(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         captured["command"] = command
         write_codex_response(
@@ -1799,7 +1726,6 @@ def test_codex_agent_includes_custom_instructions_and_keeps_fixed_contract(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         output_path = Path(command[command.index("--output-last-message") + 1])
         output_path.write_text(
@@ -1879,7 +1805,6 @@ def test_codex_agent_attaches_note_images_and_explains_image_index(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         captured["command"] = command
         output_path = Path(command[command.index("--output-last-message") + 1])
@@ -1933,7 +1858,6 @@ def test_codex_agent_can_use_read_only_project_access(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         captured["command"] = command
         output_path = Path(command[command.index("--output-last-message") + 1])
@@ -1981,7 +1905,6 @@ def test_codex_agent_passes_optional_model(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         captured["command"] = command
         output_path = Path(command[command.index("--output-last-message") + 1])
@@ -2023,7 +1946,6 @@ def test_codex_agent_surfaces_login_failure(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         return FakePopen(stderr="not logged in", returncode=1)
 
@@ -2053,7 +1975,6 @@ def test_codex_agent_surfaces_schema_error(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         return FakePopen(
             stderr=(
@@ -2089,7 +2010,6 @@ def test_codex_agent_streams_malformed_json_event(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         output_path = Path(command[command.index("--output-last-message") + 1])
         output_path.write_text(
@@ -2131,7 +2051,6 @@ def test_codex_agent_kills_timed_out_process(
         stderr: int,
         text: bool,
         bufsize: int,
-        env: dict[str, str] | None = None,
     ) -> FakePopen:
         process = FakePopen(returncode=None)
         captured["process"] = process
