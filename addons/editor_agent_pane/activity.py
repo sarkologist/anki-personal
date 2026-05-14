@@ -13,6 +13,7 @@ MAX_SUMMARY_ITEMS = 3
 
 @dataclass
 class CodexActivityRenderer:
+    stream_reasoning_summaries: bool = True
     event_count: int = 0
     command_count: int = 0
     output_count: int = 0
@@ -24,7 +25,7 @@ class CodexActivityRenderer:
     reasoning_summaries: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
-    def record(self, event: dict[str, Any]) -> str:
+    def record(self, event: dict[str, Any]) -> str | None:
         self.event_count += 1
         event_type = _event_type(event)
         event_type_lower = event_type.lower()
@@ -52,6 +53,8 @@ class CodexActivityRenderer:
 
         if "reasoning" in event_type_lower:
             self.reasoning_count += 1
+            if not self.stream_reasoning_summaries:
+                return None
             summary = _summary_text(event) or _summary_text(payload)
             if summary:
                 text = _preview(summary)
@@ -115,6 +118,14 @@ def compact_activity_transcript(
 
 def _event_type(event: dict[str, Any]) -> str:
     event_type = event.get("type")
+    payload = _payload(event)
+    payload_type = payload.get("type") if payload is not event else None
+    if (
+        isinstance(payload_type, str)
+        and payload_type
+        and event_type in ("event_msg", "response_item")
+    ):
+        return payload_type
     if isinstance(event_type, str) and event_type:
         return event_type
     nested = event.get("event")
@@ -126,7 +137,7 @@ def _event_type(event: dict[str, Any]) -> str:
 
 
 def _payload(event: dict[str, Any]) -> dict[str, Any]:
-    for key in ("item", "event", "msg", "message", "call"):
+    for key in ("payload", "item", "event", "msg", "message", "call"):
         value = event.get(key)
         if isinstance(value, dict):
             return value

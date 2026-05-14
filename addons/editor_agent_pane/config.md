@@ -11,14 +11,18 @@ direct OpenAI API billing.
 - `project_folder_access`: Project folder sandbox mode. `workspace-write` lets
   the agent edit files in the selected folder; `read-only` keeps it inspect-only.
 - `recent_project_folders`: Recently used source folders shown in the project folder pulldown.
+- `stream_reasoning_summaries`: Whether live Codex reasoning summary events are
+  shown in the activity stream. This only uses summary fields from the JSON
+  stream; hidden chain-of-thought/private scratchpad content is not displayed.
 - `timeout_seconds`: Maximum time to wait for a Codex CLI response.
 - `splitter_sizes`: Saved rich agent surface/prompt pane sizes.
 
 Run `codex login` first and choose ChatGPT sign-in. The add-on invokes
 `codex exec --json` with the selected project folder access, streams live
-activity while it is running, then compacts that activity when the final response
-arrives. Assistant responses and proposal previews render as sanitized HTML with
-MathJax support. Anki never applies note changes without your approval.
+activity while it is running, optionally includes reasoning summaries, then
+compacts that activity when the final response arrives. Assistant responses and
+proposal previews render as sanitized HTML with MathJax support. Anki never
+applies note changes without your approval.
 
 To smoke-test the real CLI integration manually, run the editor agent pane tests
 with `ANKI_CODEX_CLI_INTEGRATION=1`. Optionally set `ANKI_CODEX_CLI_PATH` to a

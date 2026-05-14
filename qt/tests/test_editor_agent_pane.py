@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import subprocess
 import sys
@@ -146,6 +147,12 @@ def test_agent_model_options_preserve_unknown_legacy_model() -> None:
 def test_agent_button_tooltip_includes_shortcut() -> None:
     assert AGENT_BUTTON_LABEL == "Agent"
     assert AGENT_BUTTON_TIP == f"Open the editor agent pane ({AGENT_PANE_SHORTCUT})"
+
+
+def test_agent_config_streams_reasoning_summaries_by_default() -> None:
+    config = json.loads((ROOT / "addons/editor_agent_pane/config.json").read_text())
+
+    assert config["stream_reasoning_summaries"] is True
 
 
 def test_read_source_file_rejects_traversal_and_absolute_path(tmp_path: Path) -> None:
@@ -833,6 +840,70 @@ def test_codex_activity_renderer_compacts_verbose_activity() -> None:
     assert renderer.compact_summary() == (
         "[Codex activity: 5 stream events, tools: rg canonical, 1 output chunk, "
         "reasoning: Checking the source., 1 other event type]\n"
+    )
+
+
+def test_codex_activity_renderer_streams_nested_reasoning_summary_only() -> None:
+    renderer = CodexActivityRenderer()
+
+    line = renderer.record(
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": ["Checking", "the source."],
+                "content": "raw private reasoning",
+                "encrypted_content": "encrypted-private-reasoning",
+            },
+        }
+    )
+
+    assert line == "[reasoning] Checking the source."
+    assert "raw private reasoning" not in line
+    assert "encrypted-private-reasoning" not in line
+    assert renderer.compact_summary() == (
+        "[Codex activity: 1 stream event, reasoning: Checking the source.]\n"
+    )
+
+
+def test_codex_activity_renderer_ignores_reasoning_content_without_summary() -> None:
+    renderer = CodexActivityRenderer()
+
+    line = renderer.record(
+        {
+            "type": "reasoning",
+            "content": "raw private reasoning",
+            "encrypted_content": "encrypted-private-reasoning",
+        }
+    )
+
+    assert line == "[reasoning] updated"
+    assert "raw private reasoning" not in line
+    assert "encrypted-private-reasoning" not in line
+    assert renderer.reasoning_summaries == []
+
+
+def test_codex_activity_renderer_can_hide_reasoning_summaries() -> None:
+    renderer = CodexActivityRenderer(stream_reasoning_summaries=False)
+
+    line = renderer.record(
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": "Checking the source.",
+                "content": "raw private reasoning",
+                "encrypted_content": "encrypted-private-reasoning",
+            },
+        }
+    )
+
+    assert line is None
+    assert renderer.event_count == 1
+    assert renderer.reasoning_count == 1
+    assert renderer.reasoning_summaries == []
+    assert renderer.compact_summary() == (
+        "[Codex activity: 1 stream event, 1 reasoning update]\n"
     )
 
 

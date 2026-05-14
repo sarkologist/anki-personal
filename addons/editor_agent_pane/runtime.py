@@ -15,6 +15,7 @@ from aqt.editor import Editor, EditorMode
 from aqt.operations.note import update_note
 from aqt.qt import (
     QAction,
+    QCheckBox,
     QComboBox,
     QDockWidget,
     QFileDialog,
@@ -80,6 +81,7 @@ DEFAULT_CONFIG = {
     "project_folder": "",
     "project_folder_access": DEFAULT_PROJECT_FOLDER_ACCESS,
     "recent_project_folders": [],
+    "stream_reasoning_summaries": True,
     "timeout_seconds": 300,
     "splitter_sizes": DEFAULT_SPLITTER_SIZES,
 }
@@ -113,7 +115,15 @@ def _config() -> dict[str, Any]:
     config["project_folder_access"] = normalize_project_folder_access(
         str(config["project_folder_access"])
     )
+    config["stream_reasoning_summaries"] = _bool_config(
+        config["stream_reasoning_summaries"],
+        True,
+    )
     return config
+
+
+def _bool_config(value: Any, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
 
 
 def _write_config(config: dict[str, Any]) -> None:
@@ -246,6 +256,8 @@ class EditorAgentPane(QWidget):
             lambda _index: self.refresh_context_label(),
         )
         form.addRow("Access", self.access_combo)
+        self.reasoning_checkbox = QCheckBox("Show reasoning summaries")
+        form.addRow("", self.reasoning_checkbox)
         layout.addLayout(form)
 
         project_row = QHBoxLayout()
@@ -328,6 +340,7 @@ class EditorAgentPane(QWidget):
             config["recent_project_folders"],
         )
         self._set_project_folder_access(str(config["project_folder_access"]))
+        self.reasoning_checkbox.setChecked(bool(config["stream_reasoning_summaries"]))
         self.instructions_edit.setPlainText(str(config["custom_instructions"] or ""))
         self.text_splitter.setSizes(_validated_splitter_sizes(config["splitter_sizes"]))
 
@@ -339,6 +352,7 @@ class EditorAgentPane(QWidget):
         config["custom_instructions"] = self._custom_instructions_text()
         config["project_folder"] = project_folder
         config["project_folder_access"] = self._project_folder_access()
+        config["stream_reasoning_summaries"] = self._stream_reasoning_summaries()
         config["recent_project_folders"] = remember_project_folder(
             project_folder,
             config["recent_project_folders"],
@@ -370,6 +384,9 @@ class EditorAgentPane(QWidget):
     def _project_folder_access(self) -> str:
         data = self.access_combo.currentData()
         return normalize_project_folder_access(str(data) if data is not None else "")
+
+    def _stream_reasoning_summaries(self) -> bool:
+        return self.reasoning_checkbox.isChecked()
 
     def _set_project_folder_choices(
         self,
@@ -487,6 +504,7 @@ class EditorAgentPane(QWidget):
         project_folder_access = self._project_folder_access()
         custom_instructions = self._custom_instructions_text()
         codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
+        stream_reasoning_summaries = self._stream_reasoning_summaries()
         self.send_button.setEnabled(False)
         self.apply_button.setEnabled(False)
         self.pending_patch = None
@@ -496,13 +514,16 @@ class EditorAgentPane(QWidget):
         self._activity_id = f"agent-activity-{self._activity_counter}"
         self._activity_open = True
         self._append_transcript(render_activity_start(self._activity_id))
-        activity = CodexActivityRenderer()
+        activity = CodexActivityRenderer(
+            stream_reasoning_summaries=stream_reasoning_summaries
+        )
         assert aqt.mw is not None
         taskman = aqt.mw.taskman
 
         def on_stream_event(event: dict[str, Any]) -> None:
             line = activity.record(event)
-            taskman.run_on_main(lambda line=line: self._append_activity_line(line))
+            if line is not None:
+                taskman.run_on_main(lambda line=line: self._append_activity_line(line))
 
         def task() -> tuple[str, str, tuple[NotePatch, ...], str]:
             agent = CodexCliAgent(
