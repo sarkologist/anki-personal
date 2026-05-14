@@ -805,7 +805,7 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
     assert "--ask-for-approval" not in command
     assert command[command.index("--cd") + 1] == str(project.resolve())
     assert "-c" in command
-    assert 'model_reasoning_summary="auto"' in command
+    assert 'model_reasoning_summary="concise"' in command
     assert "--model" not in command
     assert command[-1] == "-"
     assert captured["stdin"] == subprocess.PIPE
@@ -1324,13 +1324,13 @@ def test_codex_activity_renderer_streams_wrapped_empty_reasoning_summary() -> No
         }
     )
 
-    assert line == "[reasoning] updated"
+    assert line == "[reasoning] activity"
     assert "raw private reasoning" not in line
     assert "encrypted-private-reasoning" not in line
     assert renderer.compact_summary() == (
-        "[Codex activity: 1 stream event, 1 reasoning update]\n"
+        "[Codex activity: 1 stream event, 1 reasoning activity update]\n"
     )
-    assert renderer.detail_lines == ["[reasoning] updated"]
+    assert renderer.detail_lines == ["[reasoning] activity"]
 
 
 def test_codex_activity_renderer_ignores_reasoning_content_without_summary() -> None:
@@ -1344,11 +1344,11 @@ def test_codex_activity_renderer_ignores_reasoning_content_without_summary() -> 
         }
     )
 
-    assert line == "[reasoning] updated"
+    assert line == "[reasoning] activity"
     assert "raw private reasoning" not in line
     assert "encrypted-private-reasoning" not in line
     assert renderer.reasoning_summaries == []
-    assert renderer.detail_lines == ["[reasoning] updated"]
+    assert renderer.detail_lines == ["[reasoning] activity"]
 
 
 def test_codex_activity_renderer_can_hide_reasoning_summaries() -> None:
@@ -1371,7 +1371,7 @@ def test_codex_activity_renderer_can_hide_reasoning_summaries() -> None:
     assert renderer.reasoning_count == 1
     assert renderer.reasoning_summaries == []
     assert renderer.compact_summary() == (
-        "[Codex activity: 1 stream event, 1 reasoning update]\n"
+        "[Codex activity: 1 stream event, 1 reasoning activity update]\n"
     )
 
 

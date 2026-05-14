@@ -64,7 +64,7 @@ class CodexActivityRenderer:
                 text = _preview(summary)
                 self._remember(self.reasoning_summaries, text)
                 return self._line(f"[reasoning] {text}")
-            return self._line("[reasoning] updated")
+            return self._line("[reasoning] activity")
 
         if "message" in event_type_lower or "response" in event_type_lower:
             self.message_count += 1
@@ -93,7 +93,7 @@ class CodexActivityRenderer:
             )
         elif self.reasoning_count:
             parts.append(
-                f"{self.reasoning_count} reasoning update{_plural(self.reasoning_count)}"
+                f"{self.reasoning_count} reasoning activity update{_plural(self.reasoning_count)}"
             )
         if self.message_count:
             parts.append(f"{self.message_count} message update{_plural(self.message_count)}")

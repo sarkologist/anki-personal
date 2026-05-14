@@ -405,7 +405,7 @@ def normalize_project_folder_access(project_folder_access: str) -> str:
 
 
 def _model_reasoning_summary_config(stream_reasoning_summaries: bool) -> str:
-    summary_mode = "auto" if stream_reasoning_summaries else "none"
+    summary_mode = "concise" if stream_reasoning_summaries else "none"
     return f'model_reasoning_summary="{summary_mode}"'
 
 
