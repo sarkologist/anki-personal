@@ -32,10 +32,11 @@ from aqt.qt import (
     QWidget,
     qconnect,
 )
-from aqt.utils import showWarning, tooltip
+from aqt.utils import openFolder, showWarning, tooltip
 from aqt.webview import AnkiWebView
 
 from .activity import CodexActivityRenderer
+from .agent_log import JsonLineAgentRunLogger, ensure_agent_log_folder
 from .codex_client import (
     DEFAULT_PROJECT_FOLDER_ACCESS,
     PROJECT_FOLDER_ACCESS_READ_ONLY,
@@ -260,6 +261,9 @@ class EditorAgentPane(QWidget):
         form.addRow("Access", self.access_combo)
         self.reasoning_checkbox = QCheckBox("Show reasoning summaries")
         form.addRow("", self.reasoning_checkbox)
+        open_logs = QPushButton("Open logs")
+        qconnect(open_logs.clicked, self._open_logs_folder)
+        form.addRow("Logs", open_logs)
         layout.addLayout(form)
 
         project_row = QHBoxLayout()
@@ -429,6 +433,11 @@ class EditorAgentPane(QWidget):
             self._save_settings()
             self.refresh_context_label()
 
+    def _open_logs_folder(self) -> None:
+        assert aqt.mw is not None
+        path = ensure_agent_log_folder(aqt.mw.addonManager, ADDON)
+        openFolder(str(path))
+
     def toggle(self) -> None:
         self.dock.setVisible(not self.dock.isVisible())
         if self.dock.isVisible():
@@ -530,6 +539,7 @@ class EditorAgentPane(QWidget):
         )
         assert aqt.mw is not None
         taskman = aqt.mw.taskman
+        run_logger = JsonLineAgentRunLogger(aqt.mw.addonManager.get_logger(ADDON))
 
         def on_stream_event(event: dict[str, Any]) -> None:
             line = activity.record(event)
@@ -551,6 +561,7 @@ class EditorAgentPane(QWidget):
                 project_root=project_root,
                 history=self.history,
                 event_callback=on_stream_event,
+                run_logger=run_logger,
             )
             return (
                 result.text,

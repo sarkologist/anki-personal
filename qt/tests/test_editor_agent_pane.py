@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -21,6 +21,11 @@ if str(ADDONS) not in sys.path:
 from editor_agent_pane.activity import (  # noqa: E402
     CodexActivityRenderer,
     compact_activity_transcript,
+)
+from editor_agent_pane.agent_log import (  # noqa: E402
+    MAX_PREVIEW_CHARS,
+    JsonLineAgentRunLogger,
+    ensure_agent_log_folder,
 )
 from editor_agent_pane.codex_client import (  # noqa: E402
     PROJECT_FOLDER_ACCESS_READ_ONLY,
@@ -117,12 +122,14 @@ class FakePopen:
         stdout: str = "",
         stderr: str = "",
         returncode: int | None = 0,
+        on_kill: Callable[[], None] | None = None,
     ) -> None:
         self.stdin = FakeStdin()
         self.stdout = io.StringIO(stdout)
         self.stderr = io.StringIO(stderr)
         self.returncode = returncode
         self.killed = False
+        self.on_kill = on_kill
 
     def poll(self) -> int | None:
         return self.returncode
@@ -131,8 +138,52 @@ class FakePopen:
         return self.returncode or 0
 
     def kill(self) -> None:
+        if self.on_kill is not None:
+            self.on_kill()
         self.killed = True
         self.returncode = -9
+
+
+def write_codex_response(command: list[str], payload: dict[str, Any] | str) -> Path:
+    output_path = Path(command[command.index("--output-last-message") + 1])
+    text = payload if isinstance(payload, str) else json.dumps(payload)
+    output_path.write_text(text, encoding="utf-8")
+    return output_path
+
+
+class FakeRunLogger:
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    def record(self, event: str, **payload: Any) -> None:
+        self.records.append({"event": event, **payload})
+
+    def first(self, event: str) -> dict[str, Any]:
+        for record in self.records:
+            if record["event"] == event:
+                return record
+        raise AssertionError(f"missing log event: {event}")
+
+    def all(self, event: str) -> list[dict[str, Any]]:
+        return [record for record in self.records if record["event"] == event]
+
+
+class CapturingLogger:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def info(self, message: str) -> None:
+        self.messages.append(message)
+
+
+class FakeAddonManagerForLogs:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.requested_addons: list[str] = []
+
+    def logs_folder(self, addon: str) -> Path:
+        self.requested_addons.append(addon)
+        return self.path
 
 
 class FakeMediaManager:
@@ -190,6 +241,32 @@ def test_agent_config_streams_reasoning_summaries_by_default() -> None:
     config = json.loads((ROOT / "addons/editor_agent_pane/config.json").read_text())
 
     assert config["stream_reasoning_summaries"] is True
+
+
+def test_json_line_agent_run_logger_writes_structured_json() -> None:
+    logger = CapturingLogger()
+    run_logger = JsonLineAgentRunLogger(logger=logger, run_id="run-123")
+
+    run_logger.record("run_start", count=1, path=Path("/tmp/agent/log"))
+
+    assert len(logger.messages) == 1
+    entry = json.loads(logger.messages[0])
+    assert entry["run_id"] == "run-123"
+    assert entry["event"] == "run_start"
+    assert isinstance(entry["ts"], float)
+    assert entry["count"] == 1
+    assert entry["path"] == "/tmp/agent/log"
+
+
+def test_agent_log_folder_helper_creates_addon_folder(tmp_path: Path) -> None:
+    log_folder = tmp_path / "logs" / "addons" / "editor_agent_pane"
+    addon_manager = FakeAddonManagerForLogs(log_folder)
+
+    path = ensure_agent_log_folder(addon_manager, "editor_agent_pane")
+
+    assert path == log_folder
+    assert path.is_dir()
+    assert addon_manager.requested_addons == ["editor_agent_pane"]
 
 
 def test_read_source_file_rejects_traversal_and_absolute_path(tmp_path: Path) -> None:
@@ -828,6 +905,376 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
         "turn.started",
         "exec_command_begin",
     ]
+
+
+def test_codex_agent_logs_redacted_success_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    image_path = tmp_path / "one.jpg"
+    image_path.write_bytes(b"image")
+    current = EditorSnapshot(
+        mode="browse",
+        note_id=123,
+        notetype_id=7,
+        notetype_name="Basic",
+        fields=(
+            FieldSnapshot(name="Front", html="<p>secret field html</p>"),
+            FieldSnapshot(name="Back", html="ordinary back"),
+        ),
+        tags=("keep", "agent"),
+        images=(
+            NoteImageSnapshot(
+                attachment_index=1,
+                filename="one.jpg",
+                fields=("Front",),
+                path=str(image_path),
+            ),
+        ),
+    )
+    long_output = "line one\n" + ("x" * 700)
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        write_codex_response(
+            command,
+            {
+                "message": "No changes.",
+                "message_html": "<p>No changes.</p>",
+                "patch": None,
+            },
+        )
+        return FakePopen(
+            stdout=(
+                '{"type":"turn.started"}\n'
+                '{"type":"exec_command_begin","cmd":["rg","canonical"]}\n'
+                + json.dumps({"type": "exec_command_output", "output": long_output})
+                + "\n"
+                + json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "reasoning",
+                            "summary": [{"text": "Checked the source."}],
+                            "content": "raw private reasoning",
+                        },
+                    }
+                )
+                + "\n"
+                + json.dumps(
+                    {
+                        "type": "assistant_message",
+                        "content": "private assistant message",
+                    }
+                )
+                + "\n"
+                + json.dumps({"type": "error", "message": "stream error happened"})
+                + "\n"
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    result = CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model="gpt-5.4",
+        timeout_seconds=123,
+    ).send(
+        prompt="secret prompt text",
+        snapshot=current,
+        project_root=str(project),
+        history=[("secret previous user", "secret previous assistant")],
+        run_logger=run_logger,
+    )
+
+    assert result.text == "No changes."
+    start = run_logger.first("run_start")
+    assert start["model"] == "gpt-5.4"
+    assert start["sandbox"] == PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE
+    assert start["timeout_seconds"] == 123
+    assert start["note_id"] == 123
+    assert start["notetype_id"] == 7
+    assert start["field_count"] == 2
+    assert start["tag_count"] == 2
+    assert start["image_count"] == 1
+    assert start["prompt_chars"] == len("secret prompt text")
+    assert start["history_count"] == 1
+    assert start["history_user_chars"] == len("secret previous user")
+    assert start["history_assistant_chars"] == len("secret previous assistant")
+
+    launch = run_logger.first("cli_launch")
+    assert launch["cwd"] == str(project.resolve())
+    assert launch["command"]["program"] == "codex"
+    assert launch["command"]["subcommand"] == "exec"
+    assert launch["command"]["sandbox"] == PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE
+    assert launch["command"]["image_count"] == 1
+    assert launch["command"]["image_basenames"] == ["one.jpg"]
+    assert launch["command"]["output_last_message_basename"] == "last-message.json"
+
+    stream_records = run_logger.all("stream_event")
+    tool = next(record for record in stream_records if "tool_preview" in record)
+    output = next(record for record in stream_records if "output_preview" in record)
+    reasoning = next(
+        record for record in stream_records if record["type"] == "reasoning"
+    )
+    message = next(record for record in stream_records if "message_chars" in record)
+    error = next(record for record in stream_records if "error_preview" in record)
+    assert tool["tool_preview"] == "rg canonical"
+    assert "\n" not in output["output_preview"]
+    assert len(output["output_preview"]) == MAX_PREVIEW_CHARS
+    assert output["output_preview"].endswith("...")
+    assert reasoning["has_reasoning_summary"] is True
+    assert reasoning["reasoning_summary_preview"] == "Checked the source."
+    assert message["message_chars"] == len("private assistant message")
+    assert error["error_preview"] == "stream error happened"
+
+    finish = run_logger.first("run_finish")
+    assert finish["returncode"] == 0
+    assert finish["event_count"] == 6
+    assert finish["stdout_lines"] == 6
+    assert finish["stderr_lines"] == 0
+    assert finish["final_response_present"] is True
+    assert finish["message_chars"] == len("No changes.")
+    assert finish["message_html_chars"] == len("<p>No changes.</p>")
+    assert finish["proposal_count"] == 0
+
+    serialized = json.dumps(run_logger.records)
+    assert "secret prompt text" not in serialized
+    assert "secret field html" not in serialized
+    assert "secret previous user" not in serialized
+    assert "secret previous assistant" not in serialized
+    assert "raw private reasoning" not in serialized
+    assert "private assistant message" not in serialized
+
+
+def test_codex_agent_logs_timeout_before_killing_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    records_at_kill: list[list[str]] = []
+    run_logger = FakeRunLogger()
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        process = FakePopen(
+            returncode=None,
+            on_kill=lambda: records_at_kill.append(
+                [record["event"] for record in run_logger.records]
+            ),
+        )
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        CodexCliAgent(
+            codex_path="codex",
+            model="",
+            timeout_seconds=0,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+        )
+
+    assert captured["process"].killed
+    assert records_at_kill == [["run_start", "cli_launch", "timeout_kill"]]
+    failure = run_logger.first("run_failure")
+    assert failure["stage"] == "run"
+    assert failure["error_type"] == "RuntimeError"
+    assert "timed out" in failure["error_preview"]
+
+
+def test_codex_agent_logs_nonzero_cli_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        return FakePopen(
+            stdout='{"type":"turn.started"}\n',
+            stderr="first stderr line\nsecond stderr line",
+            returncode=2,
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    with pytest.raises(RuntimeError, match="exit code 2"):
+        CodexCliAgent(
+            codex_path="codex",
+            model="",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+        )
+
+    failure = run_logger.first("run_failure")
+    assert failure["stage"] == "cli_exit"
+    assert failure["returncode"] == 2
+    assert failure["event_count"] == 1
+    assert failure["stdout_lines"] == 1
+    assert failure["stderr_lines"] == 2
+    assert failure["stderr_preview"] == "first stderr line second stderr line"
+
+
+def test_codex_agent_logs_missing_final_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        return FakePopen(stdout='{"type":"turn.completed"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    with pytest.raises(RuntimeError, match="did not write"):
+        CodexCliAgent(
+            codex_path="codex",
+            model="",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+        )
+
+    failure = run_logger.first("run_failure")
+    assert failure["stage"] == "missing_final_response"
+    assert failure["returncode"] == 0
+    assert failure["event_count"] == 1
+    assert failure["stdout_lines"] == 1
+    assert failure["stderr_lines"] == 0
+
+
+def test_codex_agent_logs_final_json_parse_failure_without_raw_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_response = "not json with secret final response"
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        write_codex_response(command, raw_response)
+        return FakePopen(stdout='{"type":"turn.completed"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    with pytest.raises(RuntimeError, match="non-JSON"):
+        CodexCliAgent(
+            codex_path="codex",
+            model="",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+        )
+
+    failure = run_logger.first("run_failure")
+    assert failure["stage"] == "final_json_parse"
+    assert failure["output_chars"] == len(raw_response)
+    assert failure["error_type"] == "RuntimeError"
+    assert raw_response not in json.dumps(run_logger.records)
+
+
+def test_codex_agent_logs_patch_validation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        write_codex_response(
+            command,
+            {
+                "message": "Proposed a patch.",
+                "message_html": "<p>Proposed a patch.</p>",
+                "patch": {
+                    "summary": "Wrong note type",
+                    "note_id": 123,
+                    "notetype_id": 999,
+                    "field_updates": [],
+                    "tags": {"replace": None, "add": [], "remove": []},
+                },
+            },
+        )
+        return FakePopen(stdout='{"type":"turn.completed"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    with pytest.raises(PatchValidationError, match="different note type"):
+        CodexCliAgent(
+            codex_path="codex",
+            model="",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+        )
+
+    failure = run_logger.first("run_failure")
+    assert failure["stage"] == "patch_validation"
+    assert failure["returncode"] == 0
+    assert failure["event_count"] == 1
+    assert failure["error_type"] == "PatchValidationError"
 
 
 def test_codex_agent_can_disable_reasoning_summaries(

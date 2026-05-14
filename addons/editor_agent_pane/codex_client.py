@@ -15,6 +15,13 @@ from queue import Empty, Queue
 from threading import Thread
 from typing import Any, Callable, TextIO
 
+from .agent_log import (
+    AgentRunLogger,
+    command_log_payload,
+    line_count,
+    stream_event_log_payload,
+    text_preview,
+)
 from .patches import EditorSnapshot, NotePatch, validate_note_patch
 from .sources import SourceAccessError, resolve_project_root
 
@@ -197,7 +204,24 @@ class CodexCliAgent:
         project_root: str,
         history: list[tuple[str, str]],
         event_callback: CodexEventCallback | None = None,
+        run_logger: AgentRunLogger | None = None,
     ) -> AgentResult:
+        _log_agent_event(
+            run_logger,
+            "run_start",
+            model=self.model or "default",
+            sandbox=self.project_folder_access,
+            timeout_seconds=self.timeout_seconds,
+            note_id=snapshot.note_id,
+            notetype_id=snapshot.notetype_id,
+            field_count=len(snapshot.fields),
+            tag_count=len(snapshot.tags),
+            image_count=len(snapshot.images),
+            prompt_chars=len(prompt),
+            history_count=len(history),
+            history_user_chars=sum(len(user) for user, _assistant in history),
+            history_assistant_chars=sum(len(assistant) for _user, assistant in history),
+        )
         with tempfile.TemporaryDirectory(prefix="anki-codex-agent-") as temp_dir:
             temp = Path(temp_dir)
             schema_path = temp / "response.schema.json"
@@ -206,32 +230,116 @@ class CodexCliAgent:
                 json.dumps(CODEX_OUTPUT_SCHEMA), encoding="utf-8"
             )
 
-            cwd = self._working_directory(project_root, temp)
+            try:
+                cwd = self._working_directory(project_root, temp)
+            except Exception as exc:
+                _log_agent_event(
+                    run_logger,
+                    "run_failure",
+                    stage="working_directory",
+                    error_type=type(exc).__name__,
+                    error_preview=text_preview(str(exc)),
+                )
+                raise
             command = self._command(
                 cwd,
                 schema_path,
                 output_path,
                 snapshot.image_paths(),
             )
-            completed = self._run(
-                command,
-                self._prompt(prompt, snapshot, history),
-                event_callback=event_callback,
+            _log_agent_event(
+                run_logger,
+                "cli_launch",
+                temp_dir=temp_dir,
+                cwd=str(cwd),
+                command=command_log_payload(command),
             )
+            try:
+                completed = self._run(
+                    command,
+                    self._prompt(prompt, snapshot, history),
+                    event_callback=event_callback,
+                    run_logger=run_logger,
+                )
+            except Exception as exc:
+                _log_agent_event(
+                    run_logger,
+                    "run_failure",
+                    stage="run",
+                    error_type=type(exc).__name__,
+                    error_preview=text_preview(str(exc)),
+                )
+                raise
 
             if completed.returncode != 0:
+                _log_agent_event(
+                    run_logger,
+                    "run_failure",
+                    stage="cli_exit",
+                    returncode=completed.returncode,
+                    event_count=completed.event_count,
+                    stdout_lines=line_count(completed.stdout),
+                    stderr_lines=line_count(completed.stderr),
+                    stderr_preview=text_preview(completed.stderr),
+                )
                 raise RuntimeError(_format_codex_error(completed))
             if not output_path.exists():
+                _log_agent_event(
+                    run_logger,
+                    "run_failure",
+                    stage="missing_final_response",
+                    returncode=completed.returncode,
+                    event_count=completed.event_count,
+                    stdout_lines=line_count(completed.stdout),
+                    stderr_lines=line_count(completed.stderr),
+                )
                 raise RuntimeError("Codex did not write a final response.")
 
             raw = output_path.read_text(encoding="utf-8")
-            data = _parse_json_object(raw)
+            try:
+                data = _parse_json_object(raw)
+            except Exception as exc:
+                _log_agent_event(
+                    run_logger,
+                    "run_failure",
+                    stage="final_json_parse",
+                    returncode=completed.returncode,
+                    event_count=completed.event_count,
+                    output_chars=len(raw),
+                    error_type=type(exc).__name__,
+                    error_preview=text_preview(str(exc)),
+                )
+                raise
             message = str(data.get("message") or "").strip()
             message_html = str(data.get("message_html") or "").strip()
             patch_data = data.get("patch")
             proposals: tuple[NotePatch, ...] = ()
             if patch_data is not None:
-                proposals = (validate_note_patch(patch_data, snapshot),)
+                try:
+                    proposals = (validate_note_patch(patch_data, snapshot),)
+                except Exception as exc:
+                    _log_agent_event(
+                        run_logger,
+                        "run_failure",
+                        stage="patch_validation",
+                        returncode=completed.returncode,
+                        event_count=completed.event_count,
+                        error_type=type(exc).__name__,
+                        error_preview=text_preview(str(exc)),
+                    )
+                    raise
+            _log_agent_event(
+                run_logger,
+                "run_finish",
+                returncode=completed.returncode,
+                event_count=completed.event_count,
+                stdout_lines=line_count(completed.stdout),
+                stderr_lines=line_count(completed.stderr),
+                final_response_present=True,
+                message_chars=len(message),
+                message_html_chars=len(message_html),
+                proposal_count=len(proposals),
+            )
             return AgentResult(
                 text=message,
                 html=message_html,
@@ -307,6 +415,7 @@ class CodexCliAgent:
         prompt: str,
         *,
         event_callback: CodexEventCallback | None,
+        run_logger: AgentRunLogger | None,
     ) -> _CodexProcessResult:
         try:
             process = subprocess.Popen(
@@ -345,6 +454,7 @@ class CodexCliAgent:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                _log_agent_event(run_logger, "timeout_kill")
                 process.kill()
                 try:
                     process.wait(timeout=2)
@@ -367,6 +477,11 @@ class CodexCliAgent:
                     stdout_chunks.append(line)
                     if event := _parse_stream_event(line):
                         event_count += 1
+                        _log_agent_event(
+                            run_logger,
+                            "stream_event",
+                            **stream_event_log_payload(event),
+                        )
                         if event_callback is not None:
                             event_callback(event)
             elif stream_name == "stderr":
@@ -386,6 +501,19 @@ class CodexCliAgent:
                     stderr="".join(stderr_chunks),
                     event_count=event_count,
                 )
+
+
+def _log_agent_event(
+    run_logger: AgentRunLogger | None,
+    event: str,
+    **payload: Any,
+) -> None:
+    if run_logger is None:
+        return
+    try:
+        run_logger.record(event, **payload)
+    except Exception:
+        pass
 
 
 def resolve_codex_path(configured_path: str) -> str:
