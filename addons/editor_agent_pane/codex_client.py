@@ -111,6 +111,11 @@ User-customized instructions:
 Current editor context is JSON:
 {context_json}
 
+If context_json.images is non-empty, the referenced note images have been
+attached to this initial prompt.
+context_json.images[n] corresponds to attached image number n + 1. Each entry
+records the Anki media filename plus the note fields that reference that image.
+
 Recent conversation:
 {history}
 
@@ -200,7 +205,12 @@ class CodexCliAgent:
             )
 
             cwd = self._working_directory(project_root, temp)
-            command = self._command(cwd, schema_path, output_path)
+            command = self._command(
+                cwd,
+                schema_path,
+                output_path,
+                snapshot.image_paths(),
+            )
             completed = self._run(
                 command,
                 self._prompt(prompt, snapshot, history),
@@ -237,6 +247,7 @@ class CodexCliAgent:
         cwd: Path,
         schema_path: Path,
         output_path: Path,
+        image_paths: tuple[str, ...],
     ) -> list[str]:
         command = [
             self.codex_path,
@@ -255,6 +266,8 @@ class CodexCliAgent:
             "--output-last-message",
             str(output_path),
         ]
+        for path in image_paths:
+            command.extend(["--image", path])
         if self.model:
             command.extend(["--model", self.model])
         command.append("-")

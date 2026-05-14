@@ -34,9 +34,11 @@ from editor_agent_pane.model_options import (  # noqa: E402
     model_option_index,
     model_options_with_legacy,
 )
+from editor_agent_pane.note_images import collect_note_images  # noqa: E402
 from editor_agent_pane.patches import (  # noqa: E402
     EditorSnapshot,
     FieldSnapshot,
+    NoteImageSnapshot,
     PatchValidationError,
     validate_note_patch,
 )
@@ -115,6 +117,25 @@ class FakePopen:
     def kill(self) -> None:
         self.killed = True
         self.returncode = -9
+
+
+class FakeMediaManager:
+    def __init__(self, media_dir: Path, refs_by_html: dict[str, list[str]]) -> None:
+        self._media_dir = media_dir
+        self._refs_by_html = refs_by_html
+
+    def dir(self) -> str:
+        return str(self._media_dir)
+
+    def files_in_str(
+        self,
+        mid: int,
+        string: str,
+        include_remote: bool = False,
+    ) -> list[str]:
+        assert mid == 7
+        assert include_remote is False
+        return list(self._refs_by_html.get(string, []))
 
 
 def test_agent_model_options_include_default_and_known_models() -> None:
@@ -290,6 +311,89 @@ def test_js_apply_agent_proposal_targets_editor_undo_path() -> None:
     assert js.startswith("applyAgentProposal(")
     assert '"fields": [{"index": 0, "html": "<b data-x=\\"1\\">new</b>"}]' in js
     assert '"tags": ["keep", "agent"]' in js
+
+
+def test_collect_note_images_filters_and_deduplicates_local_media(
+    tmp_path: Path,
+) -> None:
+    media_dir = tmp_path / "collection.media"
+    media_dir.mkdir()
+    (media_dir / "one.jpg").write_bytes(b"one")
+    (media_dir / "space name.png").write_bytes(b"space")
+    (media_dir / "nested").mkdir()
+    (media_dir / "nested" / "inside.gif").write_bytes(b"inside")
+    (media_dir / "unicode-\u4eca\u65e5.webp").write_bytes(b"unicode")
+    (media_dir / "audio.mp3").write_bytes(b"audio")
+    (tmp_path / "outside.jpg").write_bytes(b"outside")
+    fields = (
+        FieldSnapshot(name="Front", html="front-html"),
+        FieldSnapshot(name="Back", html="back-html"),
+    )
+    media = FakeMediaManager(
+        media_dir,
+        {
+            "front-html": [
+                "one.jpg",
+                "space%20name.png",
+                "nested/inside.gif",
+                "audio.mp3",
+                "missing.jpg",
+                "../outside.jpg",
+                "data:image/png;base64,AAAA",
+                "https://example.test/remote.jpg",
+            ],
+            "back-html": [
+                "one.jpg",
+                "unicode-%E4%BB%8A%E6%97%A5.webp",
+                "nested/inside.gif",
+            ],
+        },
+    )
+
+    images = collect_note_images(media, 7, fields)
+
+    assert [
+        (image.attachment_index, image.filename, image.fields) for image in images
+    ] == [
+        (1, "one.jpg", ("Front", "Back")),
+        (2, "space name.png", ("Front",)),
+        (3, "nested/inside.gif", ("Front", "Back")),
+        (4, "unicode-\u4eca\u65e5.webp", ("Back",)),
+    ]
+    assert [Path(image.path).resolve() for image in images] == [
+        (media_dir / "one.jpg").resolve(),
+        (media_dir / "space name.png").resolve(),
+        (media_dir / "nested" / "inside.gif").resolve(),
+        (media_dir / "unicode-\u4eca\u65e5.webp").resolve(),
+    ]
+
+
+def test_editor_snapshot_serializes_image_metadata_without_absolute_paths(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "collection.media" / "one.jpg"
+    image = NoteImageSnapshot(
+        attachment_index=1,
+        filename="one.jpg",
+        fields=("Front",),
+        path=str(image_path),
+    )
+    current = EditorSnapshot(
+        mode="browse",
+        note_id=123,
+        notetype_id=7,
+        notetype_name="Basic",
+        fields=(FieldSnapshot(name="Front", html='<img src="one.jpg">'),),
+        tags=(),
+        images=(image,),
+    )
+
+    serialized = current.as_tool_result()
+
+    assert serialized["images"] == [
+        {"attachment_index": 1, "filename": "one.jpg", "fields": ["Front"]}
+    ]
+    assert str(tmp_path) not in json.dumps(serialized)
 
 
 def test_render_proposal_diff_includes_sanitized_field_preview_and_diff() -> None:
@@ -586,6 +690,88 @@ def test_codex_agent_includes_custom_instructions_and_keeps_fixed_contract(
     )
     assert "Do not include hidden chain-of-thought" in stdin_text
     assert "When proposing a patch:" in stdin_text
+
+
+def test_codex_agent_attaches_note_images_and_explains_image_index(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    image_one = tmp_path / "one.jpg"
+    image_two = tmp_path / "two.png"
+    image_one.write_bytes(b"one")
+    image_two.write_bytes(b"two")
+    current = EditorSnapshot(
+        mode="browse",
+        note_id=123,
+        notetype_id=7,
+        notetype_name="Basic",
+        fields=(
+            FieldSnapshot(name="Front", html='<img src="one.jpg">'),
+            FieldSnapshot(name="Back", html='<img src="two.png">'),
+        ),
+        tags=(),
+        images=(
+            NoteImageSnapshot(
+                attachment_index=1,
+                filename="one.jpg",
+                fields=("Front",),
+                path=str(image_one),
+            ),
+            NoteImageSnapshot(
+                attachment_index=2,
+                filename="two.png",
+                fields=("Back",),
+                path=str(image_two),
+            ),
+        ),
+    )
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        captured["command"] = command
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(
+            '{"message": "No changes.", "message_html": "<p>No changes.</p>", "patch": null}',
+            encoding="utf-8",
+        )
+        process = FakePopen(stdout='{"type":"turn.completed"}\n')
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model="",
+        timeout_seconds=123,
+    ).send(
+        prompt="Explain the pictures",
+        snapshot=current,
+        project_root=str(project),
+        history=[],
+    )
+
+    command = captured["command"]
+    assert command.count("--image") == 2
+    first_image_flag = command.index("--image")
+    second_image_flag = command.index("--image", first_image_flag + 1)
+    assert command[first_image_flag + 1] == str(image_one)
+    assert command[second_image_flag + 1] == str(image_two)
+    stdin_text = captured["process"].stdin.text
+    assert "context_json.images[n]" in stdin_text
+    assert "attached image number n + 1" in stdin_text
+    assert '"filename": "one.jpg"' in stdin_text
+    assert str(tmp_path) not in stdin_text
 
 
 def test_codex_agent_can_use_read_only_project_access(

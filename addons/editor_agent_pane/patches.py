@@ -22,6 +22,21 @@ class FieldSnapshot:
 
 
 @dataclass(frozen=True)
+class NoteImageSnapshot:
+    attachment_index: int
+    filename: str
+    fields: tuple[str, ...]
+    path: str
+
+    def as_tool_result(self) -> dict[str, Any]:
+        return {
+            "attachment_index": self.attachment_index,
+            "filename": self.filename,
+            "fields": list(self.fields),
+        }
+
+
+@dataclass(frozen=True)
 class EditorSnapshot:
     mode: str
     note_id: int | None
@@ -31,6 +46,7 @@ class EditorSnapshot:
     tags: tuple[str, ...]
     current_field: str | None = None
     card_id: int | None = None
+    images: tuple[NoteImageSnapshot, ...] = ()
 
     def field_names(self) -> tuple[str, ...]:
         return tuple(field.name for field in self.fields)
@@ -54,7 +70,13 @@ class EditorSnapshot:
             "tags": list(self.tags),
             "current_field": self.current_field,
             "card_id": self.card_id,
+            "images": [
+                image_snapshot.as_tool_result() for image_snapshot in self.images
+            ],
         }
+
+    def image_paths(self) -> tuple[str, ...]:
+        return tuple(image_snapshot.path for image_snapshot in self.images)
 
 
 @dataclass(frozen=True)

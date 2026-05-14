@@ -46,6 +46,7 @@ from .codex_client import (
     resolve_codex_path,
 )
 from .model_options import MODEL_OPTIONS, model_option_index, model_options_with_legacy
+from .note_images import collect_note_images
 from .patches import (
     EditorSnapshot,
     FieldSnapshot,
@@ -608,6 +609,8 @@ def editor_snapshot(editor: Editor) -> EditorSnapshot:
     if editor.card is not None:
         card_id = int(editor.card.id)
 
+    images = collect_note_images(editor.mw.col.media, int(note.mid), fields)
+
     return EditorSnapshot(
         mode=_editor_mode_name(editor),
         note_id=int(note.id) if note.id else None,
@@ -617,6 +620,7 @@ def editor_snapshot(editor: Editor) -> EditorSnapshot:
         tags=tuple(note.tags),
         current_field=current_field,
         card_id=card_id,
+        images=images,
     )
 
 
