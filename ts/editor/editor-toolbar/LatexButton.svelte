@@ -39,7 +39,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     function onMathjaxBlock(): void {
         if (mathjaxConfig.enabled) {
-            surround('<anki-mathjax block="true" focusonmount>', "</anki-matjax>");
+            surround('<anki-mathjax block="true" focusonmount>', "</anki-mathjax>");
         } else {
             surround("\\[", "\\]");
         }
@@ -58,11 +58,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function onLatexEquation(): void {
-        surround("[$]", "[/$]");
+        surround('<anki-latex data-latex-kind="inline" focusonmount>', "</anki-latex>");
     }
 
     function onLatexMathEnv(): void {
-        surround("[$$]", "[/$$]");
+        surround(
+            '<anki-latex data-latex-kind="display" focusonmount>',
+            "</anki-latex>",
+        );
     }
 
     type LatexItem = [() => void, string, string];

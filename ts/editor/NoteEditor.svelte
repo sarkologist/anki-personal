@@ -66,6 +66,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import EditorField from "./EditorField.svelte";
     import Fields from "./Fields.svelte";
     import ImageOverlay from "./image-overlay";
+    import LatexOverlay from "./latex-overlay";
+    import { closeLatexEditor } from "./latex-overlay/LatexEditor.svelte";
     import { shrinkImagesByDefault } from "./image-overlay/ImageOverlay.svelte";
     import MathjaxOverlay from "./mathjax-overlay";
     import { closeMathjaxEditor } from "./mathjax-overlay/MathjaxEditor.svelte";
@@ -420,6 +422,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     function saveNow(): void {
         closeMathjaxEditor?.();
+        closeLatexEditor?.();
         $commitTagEdits();
         saveFieldNow();
     }
@@ -957,6 +960,7 @@ the AddCards dialog) should be implemented in the user of this component.
             {/each}
 
             <MathjaxOverlay />
+            <LatexOverlay />
             <ImageOverlay maxWidth={250} maxHeight={125} />
         </Fields>
 

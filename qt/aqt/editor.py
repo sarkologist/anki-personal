@@ -38,6 +38,10 @@ from anki.models import NotetypeDict, NotetypeId, StockNotetype
 from anki.notes import Note, NoteFieldsCheckResult, NoteId
 from anki.utils import checksum, is_lin, is_mac, is_win, namedtmp
 from aqt import AnkiQt, colors, gui_hooks
+from aqt.editor_latex_preview import (
+    LegacyLatexPreviewResult,
+    render_legacy_latex_preview,
+)
 from aqt.operations import QueryOp
 from aqt.operations.note import update_note
 from aqt.operations.notetype import update_notetype_legacy
@@ -186,6 +190,7 @@ class Editor:
         self.state: EditorState = EditorState.INITIAL
         # used for the io mask editor's context menu
         self.last_io_image_path: str | None = None
+        self._latex_preview_cache: dict[str, LegacyLatexPreviewResult] = {}
         self._init_links()
         self.setupOuter()
         self.add_webview()
@@ -557,6 +562,10 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
                     self, NoteId(int(path_or_nid))
                 )
 
+        elif cmd.startswith("renderLatexPreview"):
+            (_, request_data) = cmd.split(":", 1)
+            return self._render_latex_preview(json.loads(request_data))
+
         elif cmd in self._links:
             return self._links[cmd](self)
 
@@ -571,6 +580,102 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
     ) -> None:
         self.state = new_state
         gui_hooks.editor_state_did_change(self, new_state, old_state)
+
+    def _latex_preview_notetype_config(self) -> dict[str, Any]:
+        notetype = self.note_type()
+        return {
+            "latexPre": notetype.get("latexPre", ""),
+            "latexPost": notetype.get("latexPost", ""),
+            "latexsvg": bool(notetype.get("latexsvg", False)),
+        }
+
+    def _latex_preview_cache_key(
+        self,
+        *,
+        kind: str,
+        html_text: str,
+        notetype: dict[str, Any],
+    ) -> str:
+        return json.dumps(
+            {
+                "kind": kind,
+                "html": html_text,
+                "latexPre": notetype["latexPre"],
+                "latexPost": notetype["latexPost"],
+                "latexsvg": notetype["latexsvg"],
+            },
+            sort_keys=True,
+        )
+
+    def _latex_preview_bridge_result(
+        self,
+        request_id: str,
+        result: LegacyLatexPreviewResult,
+    ) -> dict[str, Any]:
+        if result.ok:
+            return {
+                "requestId": request_id,
+                "ok": True,
+                "dataUrl": result.data_url,
+                "alt": result.alt,
+                "svg": result.svg,
+            }
+
+        return {
+            "requestId": request_id,
+            "ok": False,
+            "errorText": result.error_text,
+        }
+
+    def _send_latex_preview_result(
+        self,
+        request_id: str,
+        result: LegacyLatexPreviewResult,
+    ) -> None:
+        self.web.eval(
+            "globalThis.receiveLatexPreviewResult?.(%s);"
+            % json.dumps(self._latex_preview_bridge_result(request_id, result))
+        )
+
+    def _render_latex_preview(self, request: dict[str, Any]) -> dict[str, Any]:
+        request_id = str(request["requestId"])
+        kind = str(request.get("kind", "inline"))
+        html_text = str(request.get("html", ""))
+        notetype = self._latex_preview_notetype_config()
+        cache_key = self._latex_preview_cache_key(
+            kind=kind,
+            html_text=html_text,
+            notetype=notetype,
+        )
+
+        if cached := self._latex_preview_cache.get(cache_key):
+            return {
+                "status": "ready",
+                "result": self._latex_preview_bridge_result(request_id, cached),
+            }
+
+        def on_done(result: LegacyLatexPreviewResult) -> None:
+            self._latex_preview_cache[cache_key] = result
+            self._send_latex_preview_result(request_id, result)
+
+        def on_failure(exception: Exception) -> None:
+            self._send_latex_preview_result(
+                request_id,
+                LegacyLatexPreviewResult(error_text=str(exception)),
+            )
+
+        QueryOp(
+            parent=self.parentWindow,
+            op=lambda col: render_legacy_latex_preview(
+                col,
+                notetype,
+                kind,
+                html_text,
+            ),
+            success=on_done,
+        ).failure(on_failure).run_in_background()
+
+        return {"status": "pending"}
 
     # Setting/unsetting the current note
     ######################################################################
