@@ -54,6 +54,14 @@ def surface_body() -> str:
 .agent-activity.agent-activity-compact {
     font-family: inherit;
 }
+.agent-activity-details summary {
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+.agent-activity-details .agent-body {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    margin-top: 6px;
+}
 .agent-error .agent-body {
     color: var(--fg-danger, #b00020);
     white-space: pre-wrap;
@@ -265,11 +273,19 @@ def render_activity_line(line: str) -> str:
     return f"<div>{html.escape(line)}</div>"
 
 
-def render_activity_summary(activity_id: str, summary: str) -> str:
+def render_activity_summary(
+    activity_id: str,
+    summary: str,
+    detail_lines: Iterable[str] = (),
+) -> str:
+    details = "".join(render_activity_line(line) for line in detail_lines)
     return f"""
 <section class="agent-activity agent-activity-compact" id="{html.escape(activity_id, quote=True)}">
     <div class="agent-role">Codex</div>
-    <div class="agent-body">{_escaped_text(summary.strip())}</div>
+    <details class="agent-activity-details">
+        <summary>{html.escape(summary.strip())}</summary>
+        <div class="agent-body">{details}</div>
+    </details>
 </section>
 """
 

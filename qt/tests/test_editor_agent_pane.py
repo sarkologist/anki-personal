@@ -55,6 +55,7 @@ from editor_agent_pane.sources import (  # noqa: E402
 )
 from editor_agent_pane.surface import (  # noqa: E402
     js_apply_agent_proposal,
+    render_activity_summary,
     render_assistant_message,
     render_error_message,
     render_proposal_diff,
@@ -300,6 +301,21 @@ def test_surface_rendering_helpers_escape_and_sanitize() -> None:
         "fallback",
     )
     assert "&lt;boom&gt;" in render_error_message("<boom>")
+
+
+def test_render_activity_summary_can_expand_escaped_details() -> None:
+    rendered = render_activity_summary(
+        "agent-activity-1",
+        "[Codex activity: done]",
+        ["[tool] rg <unsafe>", "[reasoning] checked & done"],
+    )
+
+    assert "<details" in rendered
+    assert "<summary>" in rendered
+    assert "[Codex activity: done]" in rendered
+    assert "[tool] rg &lt;unsafe&gt;" in rendered
+    assert "[reasoning] checked &amp; done" in rendered
+    assert "<unsafe>" not in rendered
 
 
 def test_js_apply_agent_proposal_targets_editor_undo_path() -> None:
@@ -618,6 +634,8 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
     assert "--json" in command
     assert "--ask-for-approval" not in command
     assert command[command.index("--cd") + 1] == str(project.resolve())
+    assert "-c" in command
+    assert 'model_reasoning_summary="auto"' in command
     assert "--model" not in command
     assert command[-1] == "-"
     assert captured["stdin"] == subprocess.PIPE
@@ -640,6 +658,47 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
         "turn.started",
         "exec_command_begin",
     ]
+
+
+def test_codex_agent_can_disable_reasoning_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        captured["command"] = command
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(
+            '{"message": "No changes.", "message_html": "<p>No changes.</p>", "patch": null}',
+            encoding="utf-8",
+        )
+        return FakePopen(stdout='{"type":"turn.completed"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model="",
+        timeout_seconds=123,
+        stream_reasoning_summaries=False,
+    ).send(
+        prompt="Improve this",
+        snapshot=snapshot(),
+        project_root=str(tmp_path),
+        history=[],
+    )
+
+    command = captured["command"]
+    assert command[command.index("-c") + 1] == 'model_reasoning_summary="none"'
 
 
 def test_codex_agent_includes_custom_instructions_and_keeps_fixed_contract(
@@ -1037,7 +1096,10 @@ def test_codex_activity_renderer_streams_nested_reasoning_summary_only() -> None
             "type": "response_item",
             "payload": {
                 "type": "reasoning",
-                "summary": ["Checking", "the source."],
+                "summary": [
+                    {"type": "summary_text", "text": "Checking"},
+                    {"type": "summary_text", "text": "the source."},
+                ],
                 "content": "raw private reasoning",
                 "encrypted_content": "encrypted-private-reasoning",
             },
@@ -1050,6 +1112,55 @@ def test_codex_activity_renderer_streams_nested_reasoning_summary_only() -> None
     assert renderer.compact_summary() == (
         "[Codex activity: 1 stream event, reasoning: Checking the source.]\n"
     )
+    assert renderer.detail_lines == ["[reasoning] Checking the source."]
+
+
+def test_codex_activity_renderer_streams_item_completed_reasoning() -> None:
+    renderer = CodexActivityRenderer()
+
+    line = renderer.record(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "reasoning",
+                "summary": "Checking the source.",
+                "content": "raw private reasoning",
+                "encrypted_content": "encrypted-private-reasoning",
+            },
+        }
+    )
+
+    assert line == "[reasoning] Checking the source."
+    assert "raw private reasoning" not in line
+    assert "encrypted-private-reasoning" not in line
+    assert renderer.detail_lines == ["[reasoning] Checking the source."]
+
+
+def test_codex_activity_renderer_streams_wrapped_empty_reasoning_summary() -> None:
+    renderer = CodexActivityRenderer()
+
+    line = renderer.record(
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "item.completed",
+                "item": {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": "raw private reasoning",
+                    "encrypted_content": "encrypted-private-reasoning",
+                },
+            },
+        }
+    )
+
+    assert line == "[reasoning] updated"
+    assert "raw private reasoning" not in line
+    assert "encrypted-private-reasoning" not in line
+    assert renderer.compact_summary() == (
+        "[Codex activity: 1 stream event, 1 reasoning update]\n"
+    )
+    assert renderer.detail_lines == ["[reasoning] updated"]
 
 
 def test_codex_activity_renderer_ignores_reasoning_content_without_summary() -> None:
@@ -1067,6 +1178,7 @@ def test_codex_activity_renderer_ignores_reasoning_content_without_summary() -> 
     assert "raw private reasoning" not in line
     assert "encrypted-private-reasoning" not in line
     assert renderer.reasoning_summaries == []
+    assert renderer.detail_lines == ["[reasoning] updated"]
 
 
 def test_codex_activity_renderer_can_hide_reasoning_summaries() -> None:

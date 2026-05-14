@@ -11,9 +11,10 @@ direct OpenAI API billing.
 - `project_folder_access`: Project folder sandbox mode. `workspace-write` lets
   the agent edit files in the selected folder; `read-only` keeps it inspect-only.
 - `recent_project_folders`: Recently used source folders shown in the project folder pulldown.
-- `stream_reasoning_summaries`: Whether live Codex reasoning summary events are
-  shown in the activity stream. This only uses summary fields from the JSON
-  stream; hidden chain-of-thought/private scratchpad content is not displayed.
+- `stream_reasoning_summaries`: Whether the pane asks Codex for reasoning
+  summaries and shows summary events in the activity stream. This only uses
+  summary fields from the JSON stream; hidden chain-of-thought/private
+  scratchpad content is not displayed.
 - `timeout_seconds`: Maximum time to wait for a Codex CLI response.
 - `splitter_sizes`: Saved rich agent surface/prompt pane sizes.
 

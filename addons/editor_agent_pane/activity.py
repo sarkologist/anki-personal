@@ -24,32 +24,36 @@ class CodexActivityRenderer:
     commands: list[str] = field(default_factory=list)
     reasoning_summaries: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    detail_lines: list[str] = field(default_factory=list)
 
     def record(self, event: dict[str, Any]) -> str | None:
         self.event_count += 1
-        event_type = _event_type(event)
+        event_type, payload = _event_view(event)
         event_type_lower = event_type.lower()
-        payload = _payload(event)
 
         if event_type == "malformed_json":
             self.unknown_types.add(event_type)
-            return f"[event] malformed JSON: {_preview(str(event.get('line', '')))}"
+            return self._line(
+                f"[event] malformed JSON: {_preview(str(event.get('line', '')))}"
+            )
 
         if "error" in event_type_lower:
             self.error_count += 1
             text = _preview(_first_text(event) or event_type)
             self._remember(self.errors, text)
-            return f"[error] {text}"
+            return self._line(f"[error] {text}")
 
         if _looks_like_output(event_type_lower, payload):
             self.output_count += 1
-            return f"[output] {_preview(_first_text(payload) or _first_text(event) or event_type)}"
+            return self._line(
+                f"[output] {_preview(_first_text(payload) or _first_text(event) or event_type)}"
+            )
 
         if _looks_like_command(event_type_lower, payload):
             self.command_count += 1
             text = _preview(_command_text(payload) or _first_text(event) or event_type)
             self._remember(self.commands, text)
-            return f"[tool] {text}"
+            return self._line(f"[tool] {text}")
 
         if "reasoning" in event_type_lower:
             self.reasoning_count += 1
@@ -59,21 +63,21 @@ class CodexActivityRenderer:
             if summary:
                 text = _preview(summary)
                 self._remember(self.reasoning_summaries, text)
-                return f"[reasoning] {text}"
-            return "[reasoning] updated"
+                return self._line(f"[reasoning] {text}")
+            return self._line("[reasoning] updated")
 
         if "message" in event_type_lower or "response" in event_type_lower:
             self.message_count += 1
             text = _first_text(event) or _first_text(payload)
             if text:
-                return f"[message] {_preview(text)}"
-            return f"[message] {event_type}"
+                return self._line(f"[message] {_preview(text)}")
+            return self._line(f"[message] {event_type}")
 
         if event_type_lower.endswith(("started", "completed")):
-            return f"[status] {event_type.replace('.', ' ')}"
+            return self._line(f"[status] {event_type.replace('.', ' ')}")
 
         self.unknown_types.add(event_type)
-        return f"[event] {event_type}"
+        return self._line(f"[event] {event_type}")
 
     def compact_summary(self) -> str:
         parts = [f"{self.event_count} stream event{_plural(self.event_count)}"]
@@ -107,6 +111,10 @@ class CodexActivityRenderer:
         if value and len(values) < MAX_SUMMARY_ITEMS:
             values.append(value)
 
+    def _line(self, line: str) -> str:
+        self.detail_lines.append(line)
+        return line
+
 
 def compact_activity_transcript(
     transcript: str, activity_start: int | None, replacement: str
@@ -117,31 +125,58 @@ def compact_activity_transcript(
 
 
 def _event_type(event: dict[str, Any]) -> str:
+    return _event_view(event)[0]
+
+
+def _event_view(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     event_type = event.get("type")
     payload = _payload(event)
     payload_type = payload.get("type") if payload is not event else None
     if (
         isinstance(payload_type, str)
         and payload_type
-        and event_type in ("event_msg", "response_item")
+        and event_type
+        in ("event_msg", "response_item", "item.completed", "item_completed")
     ):
-        return payload_type
+        return payload_type, payload
     if isinstance(event_type, str) and event_type:
-        return event_type
+        return event_type, payload
     nested = event.get("event")
     if isinstance(nested, dict):
         nested_type = nested.get("type")
         if isinstance(nested_type, str) and nested_type:
-            return nested_type
-    return "unknown"
+            return nested_type, payload
+    return "unknown", payload
 
 
 def _payload(event: dict[str, Any]) -> dict[str, Any]:
+    current = event
+    for _ in range(8):
+        nested = _nested_payload(current)
+        if nested is None:
+            return current
+        if current is event or _is_wrapper_event_type(current.get("type")):
+            current = nested
+            continue
+        return current
+    return current
+
+
+def _nested_payload(event: dict[str, Any]) -> dict[str, Any] | None:
     for key in ("payload", "item", "event", "msg", "message", "call"):
         value = event.get(key)
         if isinstance(value, dict):
             return value
-    return event
+    return None
+
+
+def _is_wrapper_event_type(event_type: object) -> bool:
+    return event_type in (
+        "event_msg",
+        "response_item",
+        "item.completed",
+        "item_completed",
+    )
 
 
 def _looks_like_command(event_type_lower: str, payload: dict[str, Any]) -> bool:
@@ -193,7 +228,18 @@ def _summary_text(value: dict[str, Any]) -> str:
         if isinstance(text, str):
             return text
         if isinstance(text, list):
-            return " ".join(str(item) for item in text)
+            return " ".join(_summary_item_text(item) for item in text).strip()
+    return ""
+
+
+def _summary_item_text(item: Any) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        for key in ("summary", "reasoning_summary", "text"):
+            text = item.get(key)
+            if isinstance(text, str):
+                return text
     return ""
 
 

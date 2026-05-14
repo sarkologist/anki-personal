@@ -457,12 +457,14 @@ class EditorAgentPane(QWidget):
     def _append_transcript(self, fragment: str) -> None:
         self.surface.eval(js_append_transcript(fragment))
 
-    def _replace_activity_with_summary(self, summary: str) -> None:
+    def _replace_activity_with_summary(
+        self, summary: str, detail_lines: tuple[str, ...]
+    ) -> None:
         if self._activity_id:
             self.surface.eval(
                 js_replace_element(
                     self._activity_id,
-                    render_activity_summary(self._activity_id, summary),
+                    render_activity_summary(self._activity_id, summary, detail_lines),
                 )
             )
         self._activity_id = None
@@ -526,13 +528,14 @@ class EditorAgentPane(QWidget):
             if line is not None:
                 taskman.run_on_main(lambda line=line: self._append_activity_line(line))
 
-        def task() -> tuple[str, str, tuple[NotePatch, ...], str]:
+        def task() -> tuple[str, str, tuple[NotePatch, ...], str, tuple[str, ...]]:
             agent = CodexCliAgent(
                 codex_path=codex_path,
                 model=model,
                 timeout_seconds=int(config["timeout_seconds"]),
                 project_folder_access=project_folder_access,
                 custom_instructions=custom_instructions,
+                stream_reasoning_summaries=stream_reasoning_summaries,
             )
             result = agent.send(
                 prompt=prompt,
@@ -546,17 +549,24 @@ class EditorAgentPane(QWidget):
                 result.html,
                 result.proposals,
                 activity.compact_summary(),
+                tuple(activity.detail_lines),
             )
 
         def on_done(future: Future) -> None:
             self.send_button.setEnabled(True)
             try:
-                text, message_html, proposals, activity_summary = future.result()
+                (
+                    text,
+                    message_html,
+                    proposals,
+                    activity_summary,
+                    activity_details,
+                ) = future.result()
             except Exception as exc:
                 self._activity_open = False
                 self._append_transcript(render_error_message(str(exc)))
                 return
-            self._replace_activity_with_summary(activity_summary)
+            self._replace_activity_with_summary(activity_summary, activity_details)
             if text or message_html:
                 self._append_transcript(render_assistant_message(message_html, text))
             self.history.append((prompt, text))

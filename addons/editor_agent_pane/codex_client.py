@@ -178,6 +178,7 @@ class CodexCliAgent:
         timeout_seconds: int,
         project_folder_access: str = DEFAULT_PROJECT_FOLDER_ACCESS,
         custom_instructions: str = "",
+        stream_reasoning_summaries: bool = True,
     ) -> None:
         self.codex_path = resolve_codex_path(codex_path)
         self.model = model.strip()
@@ -186,6 +187,7 @@ class CodexCliAgent:
             project_folder_access
         )
         self.custom_instructions = custom_instructions.strip()
+        self.stream_reasoning_summaries = stream_reasoning_summaries
 
     def send(
         self,
@@ -258,6 +260,8 @@ class CodexCliAgent:
             "--ephemeral",
             "--color",
             "never",
+            "-c",
+            _model_reasoning_summary_config(self.stream_reasoning_summaries),
             "--json",
             "--cd",
             str(cwd),
@@ -398,6 +402,11 @@ def normalize_project_folder_access(project_folder_access: str) -> str:
     if access in PROJECT_FOLDER_ACCESS_MODES:
         return access
     return DEFAULT_PROJECT_FOLDER_ACCESS
+
+
+def _model_reasoning_summary_config(stream_reasoning_summaries: bool) -> str:
+    summary_mode = "auto" if stream_reasoning_summaries else "none"
+    return f'model_reasoning_summary="{summary_mode}"'
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
