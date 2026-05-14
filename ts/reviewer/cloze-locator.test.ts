@@ -5,7 +5,12 @@
 
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { ACTIVE_CLOZE_HIGHLIGHT_CLASS, findActiveTextCloze, locateActiveCloze } from "./cloze-locator";
+import {
+    ACTIVE_CLOZE_HIGHLIGHT_CLASS,
+    findActiveTextCloze,
+    findActiveTextClozes,
+    locateActiveCloze,
+} from "./cloze-locator";
 
 beforeEach(() => {
     vi.useFakeTimers();
@@ -29,6 +34,19 @@ test("finds the first active text cloze", () => {
 </p>`;
 
     expect(findActiveTextCloze()?.id).toBe("first");
+});
+
+test("finds all active text clozes", () => {
+    document.body.innerHTML = `
+<p>
+    <span class="cloze-inactive" data-ordinal="2" id="inactive">inactive</span>
+    <span class="cloze" data-ordinal="1" id="first">[...]</span>
+    <span class="cloze" data-ordinal="1,2" id="second">[...]</span>
+    <div class="cloze" data-ordinal="1" data-shape="rect" id="shape"></div>
+    <span class="cloze" data-ordinal="1" id="hidden" style="display: none">[...]</span>
+</p>`;
+
+    expect(findActiveTextClozes().map((cloze) => cloze.id)).toEqual(["first", "second"]);
 });
 
 test("ignores inactive clozes", () => {
@@ -69,6 +87,69 @@ test("scrolls when the active cloze is outside the viewport", () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", inline: "nearest" });
 });
 
+test("scrolls multiple active clozes into view when the group fits", () => {
+    document.body.innerHTML = `
+<span class="cloze" data-ordinal="1" id="first">[...]</span>
+<span class="cloze" data-ordinal="1" id="second">[...]</span>`;
+
+    const first = document.getElementById("first")!;
+    const second = document.getElementById("second")!;
+    const firstScrollIntoView = mockScrollIntoView(first);
+    const secondScrollIntoView = mockScrollIntoView(second);
+    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => undefined);
+
+    mockRect(first, { top: 470, bottom: 490, left: 100, right: 180 });
+    mockRect(second, { top: 560, bottom: 580, left: 100, right: 180 });
+
+    locateActiveCloze({ highlightDurationMs: 100 });
+
+    expect(scrollBy).toHaveBeenCalledWith(0, 96);
+    expect(firstScrollIntoView).not.toHaveBeenCalled();
+    expect(secondScrollIntoView).not.toHaveBeenCalled();
+});
+
+test("does not scroll when multiple active clozes are already visible", () => {
+    document.body.innerHTML = `
+<span class="cloze" data-ordinal="1" id="first">[...]</span>
+<span class="cloze" data-ordinal="1" id="second">[...]</span>`;
+
+    const first = document.getElementById("first")!;
+    const second = document.getElementById("second")!;
+    const firstScrollIntoView = mockScrollIntoView(first);
+    const secondScrollIntoView = mockScrollIntoView(second);
+    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => undefined);
+
+    mockRect(first, { top: 100, bottom: 120, left: 100, right: 180 });
+    mockRect(second, { top: 300, bottom: 320, left: 100, right: 180 });
+
+    locateActiveCloze({ highlightDurationMs: 100 });
+
+    expect(scrollBy).not.toHaveBeenCalled();
+    expect(firstScrollIntoView).not.toHaveBeenCalled();
+    expect(secondScrollIntoView).not.toHaveBeenCalled();
+});
+
+test("falls back to the first active cloze when the group cannot fit", () => {
+    document.body.innerHTML = `
+<span class="cloze" data-ordinal="1" id="first">[...]</span>
+<span class="cloze" data-ordinal="1" id="second">[...]</span>`;
+
+    const first = document.getElementById("first")!;
+    const second = document.getElementById("second")!;
+    const firstScrollIntoView = mockScrollIntoView(first);
+    const secondScrollIntoView = mockScrollIntoView(second);
+    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => undefined);
+
+    mockRect(first, { top: 700, bottom: 720, left: 100, right: 180 });
+    mockRect(second, { top: 1300, bottom: 1320, left: 100, right: 180 });
+
+    locateActiveCloze({ highlightDurationMs: 100 });
+
+    expect(firstScrollIntoView).toHaveBeenCalledWith({ block: "center", inline: "nearest" });
+    expect(secondScrollIntoView).not.toHaveBeenCalled();
+    expect(scrollBy).not.toHaveBeenCalled();
+});
+
 test("adds and removes the temporary highlight class", () => {
     const cloze = activeCloze();
     mockScrollIntoView(cloze);
@@ -81,6 +162,33 @@ test("adds and removes the temporary highlight class", () => {
     vi.advanceTimersByTime(100);
 
     expect(cloze.classList.contains(ACTIVE_CLOZE_HIGHLIGHT_CLASS)).toBe(false);
+});
+
+test("adds and removes the temporary highlight class on all active clozes", () => {
+    document.body.innerHTML = `
+<span class="cloze" data-ordinal="1" id="first">[...]</span>
+<span class="cloze" data-ordinal="1" id="second">[...]</span>
+<span class="cloze-inactive" data-ordinal="2" id="inactive">inactive</span>`;
+
+    const first = document.getElementById("first")!;
+    const second = document.getElementById("second")!;
+    const inactive = document.getElementById("inactive")!;
+
+    mockScrollIntoView(first);
+    mockScrollIntoView(second);
+    mockRect(first, { top: 100, bottom: 120, left: 100, right: 180 });
+    mockRect(second, { top: 300, bottom: 320, left: 100, right: 180 });
+
+    locateActiveCloze({ highlightDurationMs: 100 });
+
+    expect(first.classList.contains(ACTIVE_CLOZE_HIGHLIGHT_CLASS)).toBe(true);
+    expect(second.classList.contains(ACTIVE_CLOZE_HIGHLIGHT_CLASS)).toBe(true);
+    expect(inactive.classList.contains(ACTIVE_CLOZE_HIGHLIGHT_CLASS)).toBe(false);
+
+    vi.advanceTimersByTime(100);
+
+    expect(first.classList.contains(ACTIVE_CLOZE_HIGHLIGHT_CLASS)).toBe(false);
+    expect(second.classList.contains(ACTIVE_CLOZE_HIGHLIGHT_CLASS)).toBe(false);
 });
 
 function activeCloze(): HTMLElement {
