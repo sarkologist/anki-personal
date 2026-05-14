@@ -111,14 +111,14 @@ def render_latex_returning_errors(
             errors.append(col.tr.preferences_latex_generation_disabled())
             return html, errors
 
-        err = _save_latex_image(col, latex, header, footer, svg)
+        err = save_latex_image(col, latex, header, footer, svg)
         if err is not None:
             errors.append(err)
 
     return html, errors
 
 
-def _save_latex_image(
+def save_latex_image(
     col: anki.collection.Collection,
     extracted: ExtractedLatex,
     header: str,
@@ -159,6 +159,16 @@ def _save_latex_image(
     finally:
         os.chdir(oldcwd)
         log.close()
+
+
+def _save_latex_image(
+    col: anki.collection.Collection,
+    extracted: ExtractedLatex,
+    header: str,
+    footer: str,
+    svg: bool,
+) -> str | None:
+    return save_latex_image(col, extracted, header, footer, svg)
 
 
 def _err_msg(col: anki.collection.Collection, type: str, texpath: str) -> str:

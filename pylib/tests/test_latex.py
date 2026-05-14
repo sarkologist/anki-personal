@@ -59,3 +59,22 @@ def test_latex():
     col.addNote(note)
     assert len(os.listdir(col.media.dir())) == 2
     assert ".png" in oldcard.question()
+
+
+def test_legacy_latex_math_delimiters_render_to_image_links():
+    col = getEmptyCol()
+    col.set_config_bool(Config.Bool.RENDER_LATEX, False)
+
+    note = col.newNote()
+    note["Front"] = (
+        '[$]x^2[/$] [$$]y[/$$] <anki-latex data-latex-kind="inline">z</anki-latex>'
+    )
+    col.addNote(note)
+
+    question = note.cards()[0].question()
+
+    assert question.count("<img class=latex") == 3
+    assert "[$]x^2[/$]" not in question
+    assert "[$$]y[/$$]" not in question
+    assert "<anki-latex" not in question
+    assert "LaTeX image generation is disabled" in question

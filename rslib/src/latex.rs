@@ -9,6 +9,7 @@ use regex::Regex;
 
 use crate::cloze::expand_clozes_to_reveal_latex;
 use crate::media::files::sha1_of_data;
+use crate::text::decode_entities;
 use crate::text::strip_html;
 
 pub(crate) static LATEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -19,9 +20,17 @@ pub(crate) static LATEX: LazyLock<Regex> = LazyLock::new(|| {
             \[\$\](.+?)\[/\$\]           # 2 - inline math
             |
             \[\$\$\](.+?)\[/\$\$\]       # 3 - math environment
+            |
+            <anki-latex\b([^>]*)>(.+?)</anki-latex> # 4/5 - editor-only legacy latex
             ",
     )
     .unwrap()
+});
+static ANKI_LATEX_DISPLAY_KIND: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?xi)\bdata-latex-kind\s*=\s*(?:"display"|'display'|display(?:\s|/|$))"#).unwrap()
+});
+static ANKI_LATEX_DATA_ATTR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?xsi)\bdata-latex\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>/]+))"#).unwrap()
 });
 static LATEX_NEWLINES: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -64,10 +73,26 @@ pub fn extract_latex(text: &str, svg: bool) -> (Cow<'_, str>, Vec<ExtractedLatex
     let mut extracted = vec![];
 
     let new_text = LATEX.replace_all(text, |caps: &Captures| {
-        let latex = match (caps.get(1), caps.get(2), caps.get(3)) {
-            (Some(m), _, _) => m.as_str().into(),
-            (_, Some(m), _) => format!("${}$", m.as_str()),
-            (_, _, Some(m)) => format!(r"\begin{{displaymath}}{}\end{{displaymath}}", m.as_str()),
+        let latex = match (
+            caps.get(1),
+            caps.get(2),
+            caps.get(3),
+            caps.get(4),
+            caps.get(5),
+        ) {
+            (Some(m), _, _, _, _) => m.as_str().into(),
+            (_, Some(m), _, _, _) => format!("${}$", m.as_str()),
+            (_, _, Some(m), _, _) => {
+                format!(r"\begin{{displaymath}}{}\end{{displaymath}}", m.as_str())
+            }
+            (_, _, _, Some(attrs), Some(body)) => {
+                let body = anki_latex_body(attrs.as_str(), body.as_str());
+                if anki_latex_is_display(attrs.as_str()) {
+                    format!(r"\begin{{displaymath}}{body}\end{{displaymath}}")
+                } else {
+                    format!("${body}$")
+                }
+            }
             _ => unreachable!(),
         };
         let latex_text = strip_html_for_latex(&latex);
@@ -82,6 +107,24 @@ pub fn extract_latex(text: &str, svg: bool) -> (Cow<'_, str>, Vec<ExtractedLatex
     });
 
     (new_text, extracted)
+}
+
+fn anki_latex_is_display(attributes: &str) -> bool {
+    ANKI_LATEX_DISPLAY_KIND.is_match(attributes)
+}
+
+fn anki_latex_body(attributes: &str, fallback_body: &str) -> String {
+    let Some(caps) = ANKI_LATEX_DATA_ATTR.captures(attributes) else {
+        return fallback_body.into();
+    };
+
+    for index in 1..=3 {
+        if let Some(value) = caps.get(index) {
+            return decode_entities(value.as_str()).into_owned();
+        }
+    }
+
+    fallback_body.into()
 }
 
 fn strip_html_for_latex(html: &str) -> Cow<'_, str> {
@@ -144,6 +187,24 @@ mod test {
                 fname: "latex-8899f3f849ffdef6e4e9f2f34a923a1f608ebc07.png".to_string(),
                 latex: r"\begin{displaymath}math & stuff\end{displaymath}".to_string()
             }]
+        );
+
+        assert_eq!(
+            extract_latex(
+                r#"<anki-latex data-latex-kind="inline"><b>hello</b>&nbsp; world</anki-latex>"#,
+                true
+            )
+            .1,
+            extract_latex("[$]<b>hello</b>&nbsp; world[/$]", true).1
+        );
+
+        assert_eq!(
+            extract_latex(
+                r#"<anki-latex data-latex-kind="display" data-latex="math &amp; stuff"><span>preview</span></anki-latex>"#,
+                false
+            )
+            .1,
+            extract_latex("[$$]math &amp; stuff[/$$]", false).1
         );
     }
 }

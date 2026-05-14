@@ -15,7 +15,7 @@ export type LegacyLatexPreviewResult =
     | {
         requestId: string;
         ok: true;
-        dataUrl: string;
+        src: string;
         alt: string;
         svg: boolean;
     }

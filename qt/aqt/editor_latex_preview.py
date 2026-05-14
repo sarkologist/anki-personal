@@ -21,14 +21,14 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class LegacyLatexPreviewResult:
-    data_url: str | None = None
+    src: str | None = None
     alt: str = ""
     svg: bool = False
     error_text: str = ""
 
     @property
     def ok(self) -> bool:
-        return self.data_url is not None
+        return self.src is not None
 
 
 def render_legacy_latex_preview(
@@ -36,6 +36,7 @@ def render_legacy_latex_preview(
     notetype: NotetypeDict | dict[str, Any],
     kind: str,
     html_text: str,
+    saved_fields: tuple[str, ...] = (),
 ) -> LegacyLatexPreviewResult:
     svg = bool(notetype.get("latexsvg", False))
     extracted = _extract_single_latex(col, kind, html_text, svg)
@@ -43,9 +44,33 @@ def render_legacy_latex_preview(
     if not extracted:
         return LegacyLatexPreviewResult(error_text="No LaTeX to preview")
 
+    if col.media.have(extracted.filename):
+        return LegacyLatexPreviewResult(
+            src=extracted.filename,
+            alt=extracted.latex_body,
+            svg=svg,
+        )
+
     if not col.get_config_bool(Config.Bool.RENDER_LATEX):
         return LegacyLatexPreviewResult(
             error_text=str(col.tr.preferences_latex_generation_disabled())
+        )
+
+    if _saved_fields_contain_latex(col, saved_fields, extracted.filename, svg):
+        error = _save_latex_image_to_media(
+            col=col,
+            extracted=extracted,
+            header=str(notetype.get("latexPre", "")),
+            footer=str(notetype.get("latexPost", "")),
+            svg=svg,
+        )
+        if error:
+            return LegacyLatexPreviewResult(error_text=error)
+
+        return LegacyLatexPreviewResult(
+            src=extracted.filename,
+            alt=extracted.latex_body,
+            svg=svg,
         )
 
     try:
@@ -60,7 +85,7 @@ def render_legacy_latex_preview(
         return LegacyLatexPreviewResult(error_text=exc.error_text)
 
     return LegacyLatexPreviewResult(
-        data_url=_data_url(image, svg),
+        src=_data_url(image, svg),
         alt=extracted.latex_body,
         svg=svg,
     )
@@ -72,11 +97,8 @@ def _extract_single_latex(
     html_text: str,
     svg: bool,
 ) -> "ExtractedLatex | None":
-    from anki.latex import ExtractedLatexOutput
-
     wrapped = _wrap_legacy_latex(kind, html_text)
-    proto = col._backend.extract_latex(text=wrapped, svg=svg, expand_clozes=False)
-    output = ExtractedLatexOutput.from_proto(proto)
+    output = _extract_latex(col, wrapped, svg)
 
     return output.latex[0] if output.latex else None
 
@@ -86,6 +108,42 @@ def _wrap_legacy_latex(kind: str, html_text: str) -> str:
         return f"[$$]{html_text}[/$$]"
 
     return f"[$]{html_text}[/$]"
+
+
+def _extract_latex(col: "Collection", text: str, svg: bool):
+    from anki.latex import ExtractedLatexOutput
+
+    proto = col._backend.extract_latex(text=text, svg=svg, expand_clozes=False)
+    return ExtractedLatexOutput.from_proto(proto)
+
+
+def _saved_fields_contain_latex(
+    col: "Collection",
+    saved_fields: tuple[str, ...],
+    filename: str,
+    svg: bool,
+) -> bool:
+    for field in saved_fields:
+        if any(
+            latex.filename == filename
+            for latex in _extract_latex(col, field, svg).latex
+        ):
+            return True
+
+    return False
+
+
+def _save_latex_image_to_media(
+    *,
+    col: "Collection",
+    extracted: "ExtractedLatex",
+    header: str,
+    footer: str,
+    svg: bool,
+) -> str | None:
+    from anki.latex import save_latex_image
+
+    return save_latex_image(col, extracted, header, footer, svg)
 
 
 class LatexPreviewError(RuntimeError):

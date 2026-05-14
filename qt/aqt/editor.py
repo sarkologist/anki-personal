@@ -595,6 +595,7 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
         kind: str,
         html_text: str,
         notetype: dict[str, Any],
+        saved_fields: tuple[str, ...],
     ) -> str:
         return json.dumps(
             {
@@ -603,6 +604,7 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
                 "latexPre": notetype["latexPre"],
                 "latexPost": notetype["latexPost"],
                 "latexsvg": notetype["latexsvg"],
+                "savedFieldsHash": checksum("\x1f".join(saved_fields)),
             },
             sort_keys=True,
         )
@@ -616,7 +618,7 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             return {
                 "requestId": request_id,
                 "ok": True,
-                "dataUrl": result.data_url,
+                "src": result.src,
                 "alt": result.alt,
                 "svg": result.svg,
             }
@@ -642,10 +644,14 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
         kind = str(request.get("kind", "inline"))
         html_text = str(request.get("html", ""))
         notetype = self._latex_preview_notetype_config()
+        note = self.note
+        assert note is not None
+        saved_fields = tuple(note.fields) if not self.addMode else ()
         cache_key = self._latex_preview_cache_key(
             kind=kind,
             html_text=html_text,
             notetype=notetype,
+            saved_fields=saved_fields,
         )
 
         if cached := self._latex_preview_cache.get(cache_key):
@@ -671,6 +677,7 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
                 notetype,
                 kind,
                 html_text,
+                saved_fields,
             ),
             success=on_done,
         ).failure(on_failure).run_in_background()

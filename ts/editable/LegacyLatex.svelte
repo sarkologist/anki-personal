@@ -13,7 +13,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let kind: LegacyLatexKind;
 
     let host: HTMLElement;
-    let dataUrl: string | null = null;
+    let src: string | null = null;
     let alt = "";
     let errorText = "";
     let loading = false;
@@ -32,7 +32,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     ): Promise<void> {
         const serial = ++renderSerial;
 
-        dataUrl = null;
+        src = null;
         alt = "";
         errorText = "";
 
@@ -53,11 +53,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         loading = false;
 
         if (result.ok) {
-            dataUrl = result.dataUrl;
+            src = result.src;
             alt = result.alt;
             errorText = "";
         } else {
-            dataUrl = null;
+            src = null;
             alt = "";
             errorText = result.errorText;
         }
@@ -114,11 +114,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {title}
     on:dragstart|preventDefault
 >
-    {#if dataUrl}
+    {#if src}
         <img
             class="legacy-latex-preview"
             class:block={kind === "display"}
-            src={dataUrl}
+            {src}
             {alt}
             draggable="false"
             on:load={notifyResize}

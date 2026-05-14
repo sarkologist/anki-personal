@@ -4,6 +4,8 @@
 
 import { describe, expect, test } from "vitest";
 
+import { undecorateFragment } from "../editor/decorated-elements";
+import { fragmentToStored } from "../editor/rich-text-input/transform";
 import { LegacyLatex } from "./legacy-latex-element.svelte";
 
 describe("LegacyLatex", () => {
@@ -37,5 +39,21 @@ describe("LegacyLatex", () => {
             "<anki-latex data-latex-kind=\"inline\"><b>x</b></anki-latex>",
         );
         expect(LegacyLatex.toStored(undecorated)).toBe("[$]<b>x</b>[/$]");
+    });
+
+    test("stores decorated previews as legacy latex delimiters", () => {
+        const fragment = document.createRange().createContextualFragment(
+            [
+                "<anki-frame data-frames=\"anki-latex\" block=\"false\">",
+                "<anki-latex data-latex-kind=\"inline\" data-latex=\"x^2\" decorated>",
+                "<img class=\"legacy-latex-preview\" src=\"data:image/png;base64,AAAA\" alt=\"$x^2$\">",
+                "</anki-latex>",
+                "</anki-frame>",
+            ].join(""),
+        );
+
+        undecorateFragment(fragment);
+
+        expect(fragmentToStored(fragment)).toBe("[$]x^2[/$]");
     });
 });
