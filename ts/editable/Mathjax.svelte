@@ -68,12 +68,13 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         //   SVG. Otherwise short math (no descender, small SVG) leaves the
         //   font's strut descent below the SVG, so the host bottom sits
         //   *below* the SVG bottom and the math floats above the text line.
-        ":host { display: inline-block; overflow: hidden; line-height: 0; vertical-align: var(--vertical-center, baseline); }",
+        ":host { display: inline-block; overflow: hidden; max-width: none !important; line-height: 0; vertical-align: var(--vertical-center, baseline); }",
+        "svg { max-width: none !important; overflow: visible; }",
         // `width: fit-content` is needed so `margin: auto` actually centers:
         // the host is a <span>, not a replaced element, so without it
         // `display: block` would fill the parent width and the auto margins
         // would collapse to zero, leaving the math flush-left.
-        ":host(.block) { display: block; width: fit-content; margin: 1rem auto; transform: scale(1.1); }",
+        ":host(.block) { display: block; overflow: visible; width: fit-content; max-width: none !important; margin: 1rem auto; transform: scale(1.1); }",
         ":host(.empty) { vertical-align: text-bottom; }",
         ":host(.empty) svg { width: var(--font-size); height: var(--font-size); }",
     ].join("\n");

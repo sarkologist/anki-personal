@@ -23,6 +23,12 @@
     max-width: 100%;
 }
 
+anki-frame[data-frames="anki-mathjax"],
+anki-mathjax,
+.mathjax {
+    max-width: none;
+}
+
 p {
     margin-top: 0;
     margin-bottom: 1rem;
