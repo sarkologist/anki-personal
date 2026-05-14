@@ -87,6 +87,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { pageTheme } from "$lib/sveltelib/theme";
 
     import ContentEditable from "../../editable/ContentEditable.svelte";
+    import { undecorateFragment } from "../decorated-elements";
     import { context as editingAreaContext } from "../EditingArea.svelte";
     import { Flag } from "../helpers";
     import { context as noteEditorContext } from "../NoteEditor.svelte";
@@ -188,7 +189,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     };
 
     richTextPromise.then((editable: HTMLElement) => {
-        fieldUndo = new FieldUndo(editable);
+        fieldUndo = new FieldUndo(editable, undecorateFragment);
 
         const handle =
             (action: () => void) =>

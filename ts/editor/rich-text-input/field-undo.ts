@@ -3,11 +3,14 @@
 
 import type { SelectionLocation } from "$lib/domlib/location";
 import { restoreSelection, saveSelection } from "$lib/domlib/location";
+import { fragmentToString } from "@tslib/dom";
 
 interface Snapshot {
     html: string;
     selection: SelectionLocation | null;
 }
+
+type NormalizeSnapshot = (fragment: DocumentFragment) => void;
 
 const observerConfig: MutationObserverInit = {
     childList: true,
@@ -37,15 +40,30 @@ export class FieldUndo {
     private debounceHandle: ReturnType<typeof setTimeout> | null = null;
     private readonly observer: MutationObserver;
 
-    constructor(private readonly base: HTMLElement) {
+    constructor(
+        private readonly base: HTMLElement,
+        private readonly normalizeSnapshot?: NormalizeSnapshot,
+    ) {
         this.last = this.snapshot();
         this.observer = new MutationObserver(() => this.onMutation());
         this.observer.observe(base, observerConfig);
     }
 
+    private snapshotHtml(): string {
+        if (!this.normalizeSnapshot) {
+            return this.base.innerHTML;
+        }
+
+        const range = document.createRange();
+        range.selectNodeContents(this.base);
+        const fragment = range.cloneContents();
+        this.normalizeSnapshot(fragment);
+        return fragmentToString(fragment);
+    }
+
     private snapshot(): Snapshot {
         return {
-            html: this.base.innerHTML,
+            html: this.snapshotHtml(),
             selection: saveSelection(this.base),
         };
     }
