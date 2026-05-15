@@ -234,6 +234,16 @@ class FakeButton:
         self.enabled = enabled
 
 
+class FakePrompt:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.cleared = False
+
+    def clear(self) -> None:
+        self.cleared = True
+        self.text = ""
+
+
 class FutureThatMustNotBeRead:
     def __init__(self) -> None:
         self.read = False
@@ -362,6 +372,7 @@ def _pane_for_runtime(
     pane.send_button = FakeButton(False)
     pane.stop_button = FakeButton(True)
     pane.apply_button = FakeButton(True)
+    pane.prompt = FakePrompt("draft prompt")
     pane.refresh_calls = 0
 
     def refresh_context_label() -> None:
@@ -475,6 +486,78 @@ def test_browser_note_change_cancels_active_run_and_ignores_stale_completion(
 
     assert stale_future.read is False
     assert pane.history == []
+    assert pane.surface.evals == [
+        "window.agentPane.clearTranscript();",
+        "window.agentPane.clearProposal();",
+    ]
+
+
+def test_reset_chat_button_clears_agent_chat_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.ADD_CARDS,
+        current_note_id=123,
+        last_browser_note_id=None,
+    )
+
+    pane._reset_chat()
+
+    assert pane._context_generation == 1
+    assert pane.history == []
+    assert pane.pending_patch is None
+    assert pane.pending_snapshot is None
+    assert pane._activity_id is None
+    assert pane._activity_open is False
+    assert pane.send_button.enabled is True
+    assert pane.stop_button.enabled is False
+    assert pane.apply_button.enabled is False
+    assert pane.prompt.text == "draft prompt"
+    assert pane.prompt.cleared is False
+    assert pane.surface.evals == [
+        "window.agentPane.clearTranscript();",
+        "window.agentPane.clearProposal();",
+    ]
+
+
+def test_reset_chat_button_cancels_active_run_and_ignores_stale_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.ADD_CARDS,
+        current_note_id=123,
+        last_browser_note_id=None,
+    )
+    stop_event = runtime.Event()
+    pane._agent_stop_event = stop_event
+
+    pane._reset_chat()
+
+    assert stop_event.is_set()
+    assert pane._agent_stop_event is None
+    assert pane._context_generation == 1
+
+    pane._start_agent_request("old prompt", generation=0)
+
+    stale_future = FutureThatMustNotBeRead()
+    pane._handle_agent_done(
+        stale_future,
+        generation=0,
+        stop_event=stop_event,
+        prompt="old",
+        snapshot=snapshot(),
+        notetype={},
+        activity=object(),
+    )
+
+    assert stale_future.read is False
+    assert pane.history == []
+    assert pane.prompt.text == "draft prompt"
+    assert pane.prompt.cleared is False
     assert pane.surface.evals == [
         "window.agentPane.clearTranscript();",
         "window.agentPane.clearProposal();",

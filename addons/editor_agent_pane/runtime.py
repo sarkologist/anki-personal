@@ -344,12 +344,15 @@ class EditorAgentPane(QWidget):
         layout.addLayout(action_row)
 
         send_row = QHBoxLayout()
+        self.reset_chat_button = QPushButton("Reset chat")
+        qconnect(self.reset_chat_button.clicked, self._reset_chat)
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
         qconnect(self.stop_button.clicked, self._stop_running_agent)
         self.send_button = QPushButton("Send")
         qconnect(self.send_button.clicked, self._send)
         send_row.addStretch(1)
+        send_row.addWidget(self.reset_chat_button)
         send_row.addWidget(self.stop_button)
         send_row.addWidget(self.send_button)
         layout.addLayout(send_row)
@@ -498,6 +501,9 @@ class EditorAgentPane(QWidget):
         if not note or not note.id:
             return None
         return int(note.id)
+
+    def _reset_chat(self) -> None:
+        self._clear_chat_context()
 
     def _clear_chat_context(self) -> None:
         self._context_generation += 1
