@@ -10,7 +10,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import ButtonToolbar from "$lib/components/ButtonToolbar.svelte";
     import Icon from "$lib/components/Icon.svelte";
     import IconButton from "$lib/components/IconButton.svelte";
-    import { blockIcon, deleteIcon, inlineIcon } from "$lib/components/icons";
+    import { blockIcon, deleteIcon, inlineIcon, mathIcon } from "$lib/components/icons";
 
     import ClozeButtons from "../ClozeButtons.svelte";
 
@@ -44,6 +44,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     {#if isClozeField}
         <ClozeButtons on:surround alwaysEnabled={true} />
     {/if}
+
+    <ButtonGroup>
+        <IconButton
+            tooltip={tr.editingConvertToMathjax()}
+            on:click={() => dispatch("convert")}
+            --border-left-radius="5px"
+            --border-right-radius="5px"
+        >
+            <Icon icon={mathIcon} />
+        </IconButton>
+    </ButtonGroup>
 
     <ButtonGroup>
         <IconButton

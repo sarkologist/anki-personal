@@ -25,6 +25,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { context } from "../NoteEditor.svelte";
     import type { RichTextInputAPI } from "../rich-text-input";
     import { editingInputIsRichText } from "../rich-text-input";
+    import { legacyLatexToMathjaxElement } from "./convert-to-mathjax";
     import LatexButtons from "./LatexButtons.svelte";
     import LatexEditor from "./LatexEditor.svelte";
 
@@ -195,6 +196,35 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         await tick();
     }
 
+    async function convertToMathjax(source: string): Promise<void> {
+        if (!latexElement) {
+            return;
+        }
+
+        const mathjaxElement = legacyLatexToMathjaxElement(source, isDisplay);
+        const replacementTarget =
+            latexElement.parentElement?.tagName === "ANKI-FRAME"
+                ? latexElement.parentElement
+                : latexElement;
+
+        richTextInput?.pushUndoSnapshot();
+        richTextInput?.editable.focusHandler.flushCaret();
+        replacementTarget.replaceWith(mathjaxElement);
+
+        selectAll = false;
+        position = undefined;
+        allowResubscription?.();
+        clear();
+
+        await tick();
+
+        placeCaretAfter(
+            mathjaxElement.parentElement?.tagName === "ANKI-FRAME"
+                ? mathjaxElement.parentElement
+                : mathjaxElement,
+        );
+    }
+
     const acceptShortcut = "Enter";
     const newlineShortcut = "Shift+Enter";
 </script>
@@ -262,6 +292,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                                     latexElement?.remove();
                                     clear();
                                 }
+                            }}
+                            on:convert={async () => {
+                                const editor = await latexEditor.editor;
+                                await convertToMathjax(editor.getValue());
                             }}
                             on:surround={async ({ detail }) => {
                                 const editor = await latexEditor.editor;
