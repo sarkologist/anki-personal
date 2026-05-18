@@ -191,6 +191,7 @@ class CodexCliAgent:
         timeout_seconds: int,
         project_folder_access: str = DEFAULT_PROJECT_FOLDER_ACCESS,
         custom_instructions: str = "",
+        fast_mode: bool = False,
         stream_reasoning_summaries: bool = True,
     ) -> None:
         self.codex_path = resolve_codex_path(codex_path)
@@ -200,6 +201,7 @@ class CodexCliAgent:
             project_folder_access
         )
         self.custom_instructions = custom_instructions.strip()
+        self.fast_mode = fast_mode
         self.stream_reasoning_summaries = stream_reasoning_summaries
 
     def send(
@@ -219,6 +221,7 @@ class CodexCliAgent:
             model=self.model or "default",
             sandbox=self.project_folder_access,
             timeout_seconds=self.timeout_seconds,
+            fast_mode=self.fast_mode,
             note_id=snapshot.note_id,
             notetype_id=snapshot.notetype_id,
             field_count=len(snapshot.fields),
@@ -384,6 +387,7 @@ class CodexCliAgent:
                 self.model,
                 self.stream_reasoning_summaries,
             ),
+            *_fast_mode_config_args(self.fast_mode),
             "--json",
             "--cd",
             str(cwd),
@@ -573,6 +577,17 @@ def _model_reasoning_summary_config(
         else "none"
     )
     return f'model_reasoning_summary="{summary_mode}"'
+
+
+def _fast_mode_config_args(fast_mode: bool) -> list[str]:
+    if not fast_mode:
+        return []
+    return [
+        "-c",
+        "features.fast_mode=true",
+        "-c",
+        'service_tier="fast"',
+    ]
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:

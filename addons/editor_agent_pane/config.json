@@ -5,6 +5,7 @@
     "project_folder": "",
     "project_folder_access": "workspace-write",
     "recent_project_folders": [],
+    "fast_mode": false,
     "stream_reasoning_summaries": true,
     "timeout_seconds": 300,
     "splitter_sizes": [570, 80]

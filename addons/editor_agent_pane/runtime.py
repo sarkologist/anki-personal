@@ -87,6 +87,7 @@ DEFAULT_CONFIG = {
     "project_folder": "",
     "project_folder_access": DEFAULT_PROJECT_FOLDER_ACCESS,
     "recent_project_folders": [],
+    "fast_mode": False,
     "stream_reasoning_summaries": True,
     "timeout_seconds": 300,
     "splitter_sizes": DEFAULT_SPLITTER_SIZES,
@@ -126,6 +127,7 @@ def _config() -> dict[str, Any]:
         config["stream_reasoning_summaries"],
         True,
     )
+    config["fast_mode"] = _bool_config(config["fast_mode"], False)
     return config
 
 
@@ -263,6 +265,8 @@ class EditorAgentPane(QWidget):
         for label, value in MODEL_OPTIONS:
             self.model_combo.addItem(label, value)
         form.addRow("Model", self.model_combo)
+        self.fast_mode_checkbox = QCheckBox("Fast mode")
+        form.addRow("", self.fast_mode_checkbox)
         self.access_combo = QComboBox()
         self.access_combo.setEditable(False)
         for label, value in PROJECT_FOLDER_ACCESS_OPTIONS:
@@ -366,6 +370,7 @@ class EditorAgentPane(QWidget):
             config["recent_project_folders"],
         )
         self._set_project_folder_access(str(config["project_folder_access"]))
+        self.fast_mode_checkbox.setChecked(bool(config["fast_mode"]))
         self.reasoning_checkbox.setChecked(bool(config["stream_reasoning_summaries"]))
         self.instructions_edit.setPlainText(str(config["custom_instructions"] or ""))
         self.text_splitter.setSizes(_validated_splitter_sizes(config["splitter_sizes"]))
@@ -378,6 +383,7 @@ class EditorAgentPane(QWidget):
         config["custom_instructions"] = self._custom_instructions_text()
         config["project_folder"] = project_folder
         config["project_folder_access"] = self._project_folder_access()
+        config["fast_mode"] = self._fast_mode()
         config["stream_reasoning_summaries"] = self._stream_reasoning_summaries()
         config["recent_project_folders"] = remember_project_folder(
             project_folder,
@@ -410,6 +416,9 @@ class EditorAgentPane(QWidget):
     def _project_folder_access(self) -> str:
         data = self.access_combo.currentData()
         return normalize_project_folder_access(str(data) if data is not None else "")
+
+    def _fast_mode(self) -> bool:
+        return self.fast_mode_checkbox.isChecked()
 
     def _stream_reasoning_summaries(self) -> bool:
         return self.reasoning_checkbox.isChecked()
@@ -594,6 +603,7 @@ class EditorAgentPane(QWidget):
         project_folder_access = self._project_folder_access()
         custom_instructions = self._custom_instructions_text()
         codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
+        fast_mode = self._fast_mode()
         stream_reasoning_summaries = self._stream_reasoning_summaries()
         stop_event = Event()
         history = list(self.history)
@@ -631,6 +641,7 @@ class EditorAgentPane(QWidget):
                 timeout_seconds=int(config["timeout_seconds"]),
                 project_folder_access=project_folder_access,
                 custom_instructions=custom_instructions,
+                fast_mode=fast_mode,
                 stream_reasoning_summaries=stream_reasoning_summaries,
             )
             result = agent.send(

@@ -11,6 +11,9 @@ direct OpenAI API billing.
 - `project_folder_access`: Project folder sandbox mode. `workspace-write` lets
   the agent edit files in the selected folder; `read-only` keeps it inspect-only.
 - `recent_project_folders`: Recently used source folders shown in the project folder pulldown.
+- `fast_mode`: Whether the pane forces Codex CLI Fast mode for runs by passing
+  `features.fast_mode=true` and `service_tier="fast"`. Leave off to preserve
+  your normal Codex CLI speed setting.
 - `stream_reasoning_summaries`: Whether the pane asks Codex for reasoning
   summaries and shows summary events in the activity stream. This only uses
   summary fields from the JSON stream; hidden chain-of-thought/private

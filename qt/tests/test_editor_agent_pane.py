@@ -602,6 +602,12 @@ def test_agent_config_streams_reasoning_summaries_by_default() -> None:
     assert config["stream_reasoning_summaries"] is True
 
 
+def test_agent_config_disables_fast_mode_by_default() -> None:
+    config = json.loads((ROOT / "addons/editor_agent_pane/config.json").read_text())
+
+    assert config["fast_mode"] is False
+
+
 def test_json_line_agent_run_logger_writes_structured_json() -> None:
     logger = CapturingLogger()
     run_logger = JsonLineAgentRunLogger(logger=logger, run_id="run-123")
@@ -1243,6 +1249,8 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
     )
     assert "--json" in command
     assert "--ask-for-approval" not in command
+    assert 'service_tier="fast"' not in command
+    assert "features.fast_mode=true" not in command
     assert command[command.index("--cd") + 1] == str(project.resolve())
     assert "-c" in command
     assert 'model_reasoning_summary="concise"' in command
@@ -1747,6 +1755,51 @@ def test_codex_agent_can_disable_reasoning_summaries(
 
     command = captured["command"]
     assert command[command.index("-c") + 1] == 'model_reasoning_summary="none"'
+
+
+def test_codex_agent_can_enable_fast_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        captured["command"] = command
+        write_codex_response(
+            command,
+            {
+                "message": "No changes.",
+                "message_html": "<p>No changes.</p>",
+                "patch": None,
+            },
+        )
+        return FakePopen(stdout='{"type":"turn.completed"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model="gpt-5.5",
+        timeout_seconds=123,
+        fast_mode=True,
+    ).send(
+        prompt="Improve this",
+        snapshot=snapshot(),
+        project_root=str(tmp_path),
+        history=[],
+    )
+
+    command = captured["command"]
+    assert "features.fast_mode=true" in command
+    assert 'service_tier="fast"' in command
 
 
 def test_codex_agent_disables_reasoning_summaries_for_spark_model(
