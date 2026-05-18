@@ -643,12 +643,10 @@ fn tex_environment_command_end(text: &str, start: usize, command: &str) -> Optio
 
 fn mathjax_alignment_separator_end(text: &str, start: usize) -> Option<usize> {
     let rest = &text[start..];
-    for escaped_ampersand in ["&amp;", "&AMP;", "&#38;", "&#x26;", "&#X26;"] {
-        if rest.starts_with(escaped_ampersand) {
-            return Some(start + escaped_ampersand.len());
-        }
-    }
     if rest.starts_with('&') {
+        if let Some(end) = html_entity_end(text, start) {
+            return html_entity_is_ampersand(&text[start..end]).then_some(end);
+        }
         return Some(start + 1);
     }
     if !rest.starts_with(r"\\") {
@@ -666,6 +664,64 @@ fn mathjax_alignment_separator_end(text: &str, start: usize) -> Option<usize> {
     }
 
     Some(end)
+}
+
+fn html_entity_end(text: &str, start: usize) -> Option<usize> {
+    let rest = &text[start..];
+    if !rest.starts_with('&') {
+        return None;
+    }
+
+    let semicolon = rest.find(';')?;
+    let body = &rest[1..semicolon];
+    if body.is_empty() {
+        return None;
+    }
+
+    if let Some(numeric) = body.strip_prefix('#') {
+        let digits = numeric
+            .strip_prefix('x')
+            .or_else(|| numeric.strip_prefix('X'))
+            .unwrap_or(numeric);
+        if digits.is_empty() {
+            return None;
+        }
+        let valid = if digits.len() == numeric.len() {
+            digits.chars().all(|char| char.is_ascii_digit())
+        } else {
+            digits.chars().all(|char| char.is_ascii_hexdigit())
+        };
+        return valid.then_some(start + semicolon + 1);
+    }
+
+    let mut chars = body.chars();
+    let first = chars.next()?;
+    (first.is_ascii_alphabetic() && chars.all(|char| char.is_ascii_alphanumeric()))
+        .then_some(start + semicolon + 1)
+}
+
+fn html_entity_is_ampersand(entity: &str) -> bool {
+    if entity.eq_ignore_ascii_case("&amp;") {
+        return true;
+    }
+
+    let Some(numeric) = entity
+        .strip_prefix("&#")
+        .and_then(|entity| entity.strip_suffix(';'))
+    else {
+        return false;
+    };
+
+    if let Some(hex) = numeric
+        .strip_prefix('x')
+        .or_else(|| numeric.strip_prefix('X'))
+    {
+        u32::from_str_radix(hex, 16).is_ok_and(|value| value == b'&' as u32)
+    } else {
+        numeric
+            .parse::<u32>()
+            .is_ok_and(|value| value == b'&' as u32)
+    }
 }
 
 // MathJax's \class macro can't contain alignment separators that belong to an
@@ -1022,6 +1078,20 @@ mod test {
         assert_eq!(
             strip_html_inside_mathjax(r"\(<foo>&lt;&gt;</foo>\)"),
             r"\(&lt;&gt;\)"
+        );
+        let answer_ctx = RenderContext {
+            fields: &Default::default(),
+            nonempty_fields: &Default::default(),
+            frontside: Some(""),
+            card_ord: 1,
+            partial_for_python: true,
+        };
+        assert_eq!(
+            cloze_filter(
+                r"\(\sum_p |a_p|={{c2::\sum_p p^{-\sigma}&lt;\infty}}\)",
+                &answer_ctx,
+            ),
+            r"\(\sum_p |a_p|=\class{cloze}{\sum_p p^{-\sigma}&lt;\infty}\)"
         );
         assert_eq!(
             strip_html_inside_mathjax(r#"\(<span class="cloze" data-ordinal="1">[...]</span>\)"#),
