@@ -7,6 +7,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import lifecycleHooks from "$lib/sveltelib/lifecycle-hooks";
 
+    import type { AgentSelectedTextContext } from "../agent-selection";
     import type { CodeMirrorAPI } from "../CodeMirror.svelte";
     import type { EditingInputAPI, FocusableInputAPI } from "../EditingArea.svelte";
 
@@ -37,6 +38,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { pageTheme } from "$lib/sveltelib/theme";
 
+    import { plainTextAgentSelectionContext } from "../agent-selection";
     import { baseOptions, gutterOptions, htmlanki } from "../code-mirror";
     import CodeMirror from "../CodeMirror.svelte";
     import { context as editingAreaContext } from "../EditingArea.svelte";
@@ -48,6 +50,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let hidden = false;
     export let fieldCollapsed = false;
     export const focusFlag = new Flag();
+    export let fieldIndex: number;
+    export let fieldName: string;
+    export let onAgentSelectedTextContext: (
+        context: AgentSelectedTextContext | null,
+    ) => void = () => {};
 
     $: configuration = {
         mode: htmlanki,
@@ -144,7 +151,30 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         $editingInputs.push(api);
         $editingInputs = $editingInputs;
 
-        return singleCallback(
+        let destroyed = false;
+        let cleanupSelection = (): void => {};
+
+        codeMirror.editor.then((editor) => {
+            if (destroyed) {
+                return;
+            }
+
+            const updateSelectionContext = (): void => {
+                onAgentSelectedTextContext(
+                    plainTextAgentSelectionContext(
+                        editor.getSelection(),
+                        fieldName,
+                        fieldIndex,
+                    ),
+                );
+            };
+
+            editor.on("cursorActivity", updateSelectionContext);
+            cleanupSelection = () =>
+                editor.off("cursorActivity", updateSelectionContext);
+        });
+
+        const cleanupStores = singleCallback(
             content.subscribe((html: string): void =>
                 /* We call `removeProhibitedTags` here, because content might
                  * have been changed outside the editor, and we need to parse
@@ -156,6 +186,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 content.set(undecoratedToStored(html)),
             ),
         );
+
+        return (): void => {
+            destroyed = true;
+            cleanupStores();
+            cleanupSelection();
+        };
     });
 
     setupLifecycleHooks(api);

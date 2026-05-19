@@ -54,6 +54,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import { TagEditor } from "$lib/tag-editor";
     import { commitTagEdits } from "$lib/tag-editor/TagInput.svelte";
 
+    import type { AgentSelectedTextContext } from "./agent-selection";
     import {
         type ImageLoadedEvent,
         resetIOImage,
@@ -111,11 +112,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const fieldStores: Writable<string>[] = [];
     let fieldNames: string[] = [];
+    let agentSelectedTextContext: AgentSelectedTextContext | null = null;
+
+    function setAgentSelectedTextContext(
+        context: AgentSelectedTextContext | null,
+    ): void {
+        agentSelectedTextContext = context;
+    }
+
+    export function getAgentSelectedTextContext(): AgentSelectedTextContext | null {
+        return agentSelectedTextContext ? { ...agentSelectedTextContext } : null;
+    }
+
     export function setFields(fs: [string, string][]): void {
         // this is a bit of a mess -- when moving to Rust calls, we should make
         // sure to have two backend endpoints for:
         // * the note, which can be set through this view
         // * the fieldname, font, etc., which cannot be set
+        agentSelectedTextContext = null;
 
         const newFieldNames: string[] = [];
 
@@ -519,6 +533,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: plainTextInputs = plainTextInputs.filter(Boolean);
 
     function toggleRichTextInput(index: number): void {
+        agentSelectedTextContext = null;
         const hidden = !richTextsHidden[index];
         richTextInputs[index].focusFlag.setFlag(!hidden);
         richTextsHidden[index] = hidden;
@@ -528,6 +543,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function togglePlainTextInput(index: number): void {
+        agentSelectedTextContext = null;
         const hidden = !plainTextsHidden[index];
         plainTextInputs[index].focusFlag.setFlag(!hidden);
         plainTextsHidden[index] = hidden;
@@ -537,6 +553,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function toggleField(index: number): void {
+        agentSelectedTextContext = null;
         const collapsed = !fieldsCollapsed[index];
         fieldsCollapsed[index] = collapsed;
 
@@ -754,6 +771,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             saveNow,
             applyAgentProposal,
             focusIfField,
+            getAgentSelectedTextContext,
             getNoteId,
             setNoteId,
             setNotetypeMeta,
@@ -930,6 +948,9 @@ the AddCards dialog) should be implemented in the user of this component.
                         >
                             <RichTextInput
                                 {hidden}
+                                fieldName={field.name}
+                                fieldIndex={index}
+                                onAgentSelectedTextContext={setAgentSelectedTextContext}
                                 on:focusout={() => {
                                     saveFieldNow();
                                     $focusedInput = null;
@@ -947,6 +968,9 @@ the AddCards dialog) should be implemented in the user of this component.
                         >
                             <PlainTextInput
                                 {hidden}
+                                fieldName={field.name}
+                                fieldIndex={index}
+                                onAgentSelectedTextContext={setAgentSelectedTextContext}
                                 fieldCollapsed={fieldsCollapsed[index]}
                                 on:focusout={() => {
                                     saveFieldNow();

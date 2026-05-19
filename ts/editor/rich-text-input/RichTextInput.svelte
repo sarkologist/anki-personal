@@ -7,6 +7,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import type { InputHandlerAPI } from "$lib/sveltelib/input-handler";
 
+    import type { AgentSelectedTextContext } from "../agent-selection";
     import type { ContentEditableAPI } from "../../editable/ContentEditable.svelte";
     import type { EditingInputAPI, FocusableInputAPI } from "../EditingArea.svelte";
     import type { SurroundedAPI } from "../surround";
@@ -86,6 +87,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import useInputHandler from "$lib/sveltelib/input-handler";
     import { pageTheme } from "$lib/sveltelib/theme";
 
+    import { richTextAgentSelectionContext } from "../agent-selection";
     import ContentEditable from "../../editable/ContentEditable.svelte";
     import { undecorateFragment } from "../decorated-elements";
     import { context as editingAreaContext } from "../EditingArea.svelte";
@@ -100,6 +102,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export let hidden = false;
     export const focusFlag = new Flag();
     export let isClozeField: boolean;
+    export let fieldIndex: number;
+    export let fieldName: string;
+    export let onAgentSelectedTextContext: (
+        context: AgentSelectedTextContext | null,
+    ) => void = () => {};
 
     const { focusedInput } = noteEditorContext.get();
     const { content, editingInputs } = editingAreaContext.get();
@@ -161,6 +168,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let fieldUndo: FieldUndo | null = null;
     const undoCleanups: (() => void)[] = [];
+    const selectionCleanups: (() => void)[] = [];
 
     function pushUndoSnapshot(): void {
         fieldUndo?.flush();
@@ -190,6 +198,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     richTextPromise.then((editable: HTMLElement) => {
         fieldUndo = new FieldUndo(editable, undecorateFragment);
+
+        const updateSelectionContext = (): void => {
+            const { inside, context } = richTextAgentSelectionContext(
+                editable,
+                fieldName,
+                fieldIndex,
+            );
+            if (inside) {
+                onAgentSelectedTextContext(context);
+            }
+        };
 
         const handle =
             (action: () => void) =>
@@ -222,11 +241,23 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 },
             ),
         );
+
+        document.addEventListener("selectionchange", updateSelectionContext);
+        editable.addEventListener("keyup", updateSelectionContext);
+        editable.addEventListener("pointerup", updateSelectionContext);
+        selectionCleanups.push(
+            () =>
+                document.removeEventListener("selectionchange", updateSelectionContext),
+            () => editable.removeEventListener("keyup", updateSelectionContext),
+            () => editable.removeEventListener("pointerup", updateSelectionContext),
+        );
     });
 
     onDestroy(() => {
         undoCleanups.forEach((cleanup) => cleanup());
         undoCleanups.length = 0;
+        selectionCleanups.forEach((cleanup) => cleanup());
+        selectionCleanups.length = 0;
         fieldUndo?.destroy();
         fieldUndo = null;
     });

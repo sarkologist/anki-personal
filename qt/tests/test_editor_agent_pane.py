@@ -54,7 +54,9 @@ from editor_agent_pane.patches import (  # noqa: E402
     FieldSnapshot,
     NoteImageSnapshot,
     PatchValidationError,
+    SelectedTextSnapshot,
     validate_note_patch,
+    validate_selected_text_snapshot,
 )
 from editor_agent_pane.recent_folders import (  # noqa: E402
     MAX_RECENT_PROJECT_FOLDERS,
@@ -94,6 +96,13 @@ def snapshot() -> EditorSnapshot:
             FieldSnapshot(name="Back", html="old back"),
         ),
         tags=("keep", "remove-me"),
+        selected_text=SelectedTextSnapshot(
+            field_name="Front",
+            field_index=0,
+            input_kind="rich_text",
+            text="old",
+            html="<b>old</b>",
+        ),
     )
 
 
@@ -873,6 +882,78 @@ def test_editor_snapshot_serializes_image_metadata_without_absolute_paths(
     assert str(tmp_path) not in json.dumps(serialized)
 
 
+def test_editor_snapshot_serializes_selected_text_context() -> None:
+    serialized = snapshot().as_tool_result()
+
+    assert serialized["selected_text"] == {
+        "field_name": "Front",
+        "field_index": 0,
+        "input_kind": "rich_text",
+        "text": "old",
+        "html": "<b>old</b>",
+    }
+
+
+def test_validate_selected_text_snapshot_drops_stale_or_malformed_context() -> None:
+    fields = snapshot().fields
+
+    assert validate_selected_text_snapshot(
+        {
+            "field_name": "Back",
+            "field_index": 1,
+            "input_kind": "plain_text",
+            "text": "<b>source</b>",
+            "html": None,
+        },
+        fields,
+    ) == SelectedTextSnapshot(
+        field_name="Back",
+        field_index=1,
+        input_kind="plain_text",
+        text="<b>source</b>",
+        html=None,
+    )
+    assert (
+        validate_selected_text_snapshot(
+            {
+                "field_name": "Front",
+                "field_index": 1,
+                "input_kind": "rich_text",
+                "text": "stale",
+                "html": "<b>stale</b>",
+            },
+            fields,
+        )
+        is None
+    )
+    assert (
+        validate_selected_text_snapshot(
+            {
+                "field_name": "Front",
+                "field_index": 0,
+                "input_kind": "tag_editor",
+                "text": "no",
+                "html": None,
+            },
+            fields,
+        )
+        is None
+    )
+    assert (
+        validate_selected_text_snapshot(
+            {
+                "field_name": "Front",
+                "field_index": 0,
+                "input_kind": "rich_text",
+                "text": " ",
+                "html": None,
+            },
+            fields,
+        )
+        is None
+    )
+
+
 def test_render_proposal_diff_includes_sanitized_field_preview_and_diff() -> None:
     current = EditorSnapshot(
         mode="browse",
@@ -1260,6 +1341,9 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
     assert captured["stdout"] == subprocess.PIPE
     assert captured["stderr"] == subprocess.PIPE
     assert "Current editor context is JSON" in captured["process"].stdin.text
+    assert '"selected_text": {"field_name": "Front"' in captured["process"].stdin.text
+    assert '"text": "old", "html": "<b>old</b>"' in captured["process"].stdin.text
+    assert "most recent\nnon-empty text selection" in captured["process"].stdin.text
     assert "Improve this" in captured["process"].stdin.text
     assert "may inspect and edit files" in captured["process"].stdin.text
     assert (
@@ -1303,6 +1387,13 @@ def test_codex_agent_logs_redacted_success_lifecycle(
                 fields=("Front",),
                 path=str(image_path),
             ),
+        ),
+        selected_text=SelectedTextSnapshot(
+            field_name="Front",
+            field_index=0,
+            input_kind="rich_text",
+            text="secret selected text",
+            html="<strong>secret selected html</strong>",
         ),
     )
     long_output = "line one\n" + ("x" * 700)
@@ -1435,6 +1526,8 @@ def test_codex_agent_logs_redacted_success_lifecycle(
     serialized = json.dumps(run_logger.records)
     assert "secret prompt text" not in serialized
     assert "secret field html" not in serialized
+    assert "secret selected text" not in serialized
+    assert "secret selected html" not in serialized
     assert "secret previous user" not in serialized
     assert "secret previous assistant" not in serialized
     assert "private web search content" not in serialized

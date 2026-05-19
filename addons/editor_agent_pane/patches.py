@@ -37,6 +37,24 @@ class NoteImageSnapshot:
 
 
 @dataclass(frozen=True)
+class SelectedTextSnapshot:
+    field_name: str
+    field_index: int
+    input_kind: str
+    text: str
+    html: str | None = None
+
+    def as_tool_result(self) -> dict[str, Any]:
+        return {
+            "field_name": self.field_name,
+            "field_index": self.field_index,
+            "input_kind": self.input_kind,
+            "text": self.text,
+            "html": self.html,
+        }
+
+
+@dataclass(frozen=True)
 class EditorSnapshot:
     mode: str
     note_id: int | None
@@ -47,6 +65,7 @@ class EditorSnapshot:
     current_field: str | None = None
     card_id: int | None = None
     images: tuple[NoteImageSnapshot, ...] = ()
+    selected_text: SelectedTextSnapshot | None = None
 
     def field_names(self) -> tuple[str, ...]:
         return tuple(field.name for field in self.fields)
@@ -73,10 +92,49 @@ class EditorSnapshot:
             "images": [
                 image_snapshot.as_tool_result() for image_snapshot in self.images
             ],
+            "selected_text": (
+                self.selected_text.as_tool_result() if self.selected_text else None
+            ),
         }
 
     def image_paths(self) -> tuple[str, ...]:
         return tuple(image_snapshot.path for image_snapshot in self.images)
+
+
+def validate_selected_text_snapshot(
+    raw: Any,
+    fields: tuple[FieldSnapshot, ...],
+) -> SelectedTextSnapshot | None:
+    if not isinstance(raw, dict):
+        return None
+
+    field_index = raw.get("field_index")
+    if type(field_index) is not int or field_index < 0 or field_index >= len(fields):
+        return None
+
+    field_name = raw.get("field_name")
+    if not isinstance(field_name, str) or field_name != fields[field_index].name:
+        return None
+
+    input_kind = raw.get("input_kind")
+    if input_kind not in ("rich_text", "plain_text"):
+        return None
+
+    text = raw.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+
+    selected_html = raw.get("html")
+    if selected_html is not None and not isinstance(selected_html, str):
+        return None
+
+    return SelectedTextSnapshot(
+        field_name=field_name,
+        field_index=field_index,
+        input_kind=input_kind,
+        text=text,
+        html=selected_html,
+    )
 
 
 @dataclass(frozen=True)

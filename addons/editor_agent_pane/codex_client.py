@@ -123,6 +123,8 @@ If context_json.images is non-empty, the referenced note images have been
 attached to this initial prompt.
 context_json.images[n] corresponds to attached image number n + 1. Each entry
 records the Anki media filename plus the note fields that reference that image.
+If context_json.selected_text is non-null, it is the current or most recent
+non-empty text selection from a note field.
 
 Recent conversation:
 {history}

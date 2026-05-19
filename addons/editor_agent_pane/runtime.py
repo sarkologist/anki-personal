@@ -56,6 +56,7 @@ from .patches import (
     FieldSnapshot,
     NotePatch,
     PatchValidationError,
+    validate_selected_text_snapshot,
 )
 from .recent_folders import project_folder_choices, remember_project_folder
 from .surface import (
@@ -580,18 +581,47 @@ class EditorAgentPane(QWidget):
         self._save_settings()
         self._append_transcript(render_user_message(prompt))
         generation = self._context_generation
+        web = getattr(self.editor, "web", None)
+        if web is None:
+            self._send_after_selection_snapshot(prompt, generation, None)
+            return
+        web.evalWithCallback(
+            (
+                "typeof getAgentSelectedTextContext === 'function' "
+                "? getAgentSelectedTextContext() : null"
+            ),
+            lambda selected_text: self._send_after_selection_snapshot(
+                prompt,
+                generation,
+                selected_text,
+            ),
+        )
+
+    def _send_after_selection_snapshot(
+        self,
+        prompt: str,
+        generation: int,
+        selected_text: Any,
+    ) -> None:
+        if generation != self._context_generation:
+            return
         self.editor.call_after_note_saved(
-            lambda: self._start_agent_request(prompt, generation),
+            lambda: self._start_agent_request(prompt, generation, selected_text),
             keepFocus=True,
         )
 
-    def _start_agent_request(self, prompt: str, generation: int | None = None) -> None:
+    def _start_agent_request(
+        self,
+        prompt: str,
+        generation: int | None = None,
+        selected_text: Any = None,
+    ) -> None:
         if generation is None:
             generation = self._context_generation
         if generation != self._context_generation:
             return
         try:
-            snapshot = editor_snapshot(self.editor)
+            snapshot = editor_snapshot(self.editor, selected_text)
             notetype = dict(self.editor.note_type())
         except RuntimeError as exc:
             showWarning(str(exc), parent=self)
@@ -754,7 +784,7 @@ class EditorAgentPane(QWidget):
         tooltip("Agent proposal applied.", parent=self)
 
 
-def editor_snapshot(editor: Editor) -> EditorSnapshot:
+def editor_snapshot(editor: Editor, selected_text: Any = None) -> EditorSnapshot:
     note = editor.note
     if note is None:
         raise RuntimeError("No current note.")
@@ -782,6 +812,7 @@ def editor_snapshot(editor: Editor) -> EditorSnapshot:
         current_field=current_field,
         card_id=card_id,
         images=images,
+        selected_text=validate_selected_text_snapshot(selected_text, fields),
     )
 
 
