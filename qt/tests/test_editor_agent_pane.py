@@ -77,6 +77,7 @@ from editor_agent_pane.surface import (  # noqa: E402
     render_error_message,
     render_proposal_diff,
     render_user_message,
+    selection_context_label_text,
 )
 from editor_agent_pane.ui_text import (  # noqa: E402
     AGENT_BUTTON_LABEL,
@@ -253,6 +254,72 @@ class FakePrompt:
         self.text = ""
 
 
+class FakeLabel:
+    def __init__(self) -> None:
+        self.text = ""
+        self.visible = False
+
+    def setText(self, text: str) -> None:
+        self.text = text
+
+    def clear(self) -> None:
+        self.text = ""
+
+    def setVisible(self, visible: bool) -> None:
+        self.visible = visible
+
+
+class FakeDock:
+    def __init__(self, visible: bool = True) -> None:
+        self.visible = visible
+
+    def isVisible(self) -> bool:
+        return self.visible
+
+
+class ImmediateTaskman:
+    def __init__(self) -> None:
+        self.uses_collection: bool | None = None
+
+    def run_in_background(
+        self,
+        task: Callable[[], object],
+        on_done: Callable[[Any], None],
+        *,
+        uses_collection: bool,
+    ) -> None:
+        self.uses_collection = uses_collection
+        result = task()
+        on_done(types.SimpleNamespace(result=lambda: result))
+
+    def run_on_main(self, callback: Callable[[], None]) -> None:
+        callback()
+
+
+class FakeAddonManager:
+    def get_logger(self, _addon: str) -> CapturingLogger:
+        return CapturingLogger()
+
+
+class FakeNote:
+    def __init__(
+        self,
+        *,
+        note_id: int = 123,
+        mid: int = 7,
+        fields: tuple[tuple[str, str], ...] = (("Front", "front"), ("Back", "back")),
+        tags: tuple[str, ...] = (),
+    ) -> None:
+        self.id = note_id
+        self.mid = mid
+        self.tags = list(tags)
+        self.fields = [html for _name, html in fields]
+        self._fields = fields
+
+    def items(self) -> tuple[tuple[str, str], ...]:
+        return self._fields
+
+
 class FutureThatMustNotBeRead:
     def __init__(self) -> None:
         self.read = False
@@ -287,6 +354,9 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
 
         class Orientation:
             Vertical = 1
+
+        class TextFormat:
+            PlainText = 1
 
     class QFileDialog:
         class Option:
@@ -329,6 +399,7 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         "QPlainTextEdit",
         "QPushButton",
         "QSplitter",
+        "QTimer",
         "QVBoxLayout",
         "QWidget",
     ):
@@ -377,17 +448,65 @@ def _pane_for_runtime(
     pane._agent_stop_event = None
     pane._context_generation = 0
     pane._last_browser_note_id = last_browser_note_id
+    pane._selected_text_snapshot = None
+    pane._selection_context_refresh_pending = False
+    pane._selection_context_request_id = 0
     pane.surface = FakeSurface()
     pane.send_button = FakeButton(False)
     pane.stop_button = FakeButton(True)
     pane.apply_button = FakeButton(True)
     pane.prompt = FakePrompt("draft prompt")
+    pane.selection_context_label = FakeLabel()
     pane.refresh_calls = 0
 
     def refresh_context_label() -> None:
         pane.refresh_calls += 1
 
     pane.refresh_context_label = refresh_context_label
+    return pane
+
+
+def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
+    media_dir = tmp_path / "collection.media"
+    media_dir.mkdir()
+    note = FakeNote(fields=(("Front", "<p>front</p>"), ("Back", "<p>back</p>")))
+    editor = types.SimpleNamespace(
+        editorMode=runtime.EditorMode.BROWSER,
+        note=note,
+        currentField=0,
+        card=None,
+        mw=types.SimpleNamespace(
+            col=types.SimpleNamespace(media=FakeMediaManager(media_dir, {}))
+        ),
+    )
+    editor.note_type = lambda: {"name": "Basic"}
+
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.editor = editor
+    pane.history = []
+    pane.pending_patch = None
+    pane.pending_snapshot = None
+    pane._activity_id = None
+    pane._activity_counter = 0
+    pane._activity_open = False
+    pane._agent_stop_event = None
+    pane._context_generation = 0
+    pane._last_browser_note_id = 123
+    pane._selected_text_snapshot = None
+    pane._selection_context_refresh_pending = False
+    pane._selection_context_request_id = 0
+    pane.surface = FakeSurface()
+    pane.send_button = FakeButton(True)
+    pane.stop_button = FakeButton(False)
+    pane.apply_button = FakeButton(True)
+    pane.selection_context_label = FakeLabel()
+    pane.codex_path_edit = types.SimpleNamespace(text=lambda: "")
+    pane._model_text = lambda: ""
+    pane._project_folder_text = lambda: ""
+    pane._project_folder_access = lambda: PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE
+    pane._custom_instructions_text = lambda: ""
+    pane._fast_mode = lambda: False
+    pane._stream_reasoning_summaries = lambda: True
     return pane
 
 
@@ -571,6 +690,201 @@ def test_reset_chat_button_cancels_active_run_and_ignores_stale_completion(
         "window.agentPane.clearTranscript();",
         "window.agentPane.clearProposal();",
     ]
+
+
+def test_selection_context_indicator_updates_and_hides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.selection_context_label = FakeLabel()
+    selected = SelectedTextSnapshot(
+        field_name="Front",
+        field_index=0,
+        input_kind="rich_text",
+        text="  selected\n text  ",
+        html="<strong>selected</strong>",
+    )
+
+    pane._set_selected_text_snapshot(selected)
+
+    assert pane._selected_text_snapshot == selected
+    assert pane.selection_context_label.visible is True
+    assert (
+        pane.selection_context_label.text
+        == 'Selection context: Front - "selected text"'
+    )
+
+    pane._set_selected_text_snapshot(None)
+
+    assert pane._selected_text_snapshot is None
+    assert pane.selection_context_label.visible is False
+    assert pane.selection_context_label.text == ""
+
+
+def test_selection_context_refresh_hides_stale_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.editor = types.SimpleNamespace(note=FakeNote())
+    pane.dock = FakeDock(True)
+    pane.selection_context_label = FakeLabel()
+    pane._context_generation = 3
+    pane._selection_context_refresh_pending = True
+    pane._selection_context_request_id = 11
+    pane._set_selected_text_snapshot(
+        SelectedTextSnapshot(
+            field_name="Front",
+            field_index=0,
+            input_kind="rich_text",
+            text="previous",
+            html="<strong>previous</strong>",
+        )
+    )
+
+    pane._handle_selection_context_result(
+        11,
+        3,
+        {
+            "field_name": "Front",
+            "field_index": 1,
+            "input_kind": "rich_text",
+            "text": "stale",
+            "html": "<strong>stale</strong>",
+        },
+    )
+
+    assert pane._selection_context_refresh_pending is False
+    assert pane._selected_text_snapshot is None
+    assert pane.selection_context_label.visible is False
+    assert pane.selection_context_label.text == ""
+
+
+def test_selection_context_refresh_hides_when_dock_is_hidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.dock = FakeDock(False)
+    pane.selection_context_label = FakeLabel()
+    pane._selection_context_refresh_pending = False
+    pane._selection_context_request_id = 0
+    pane._set_selected_text_snapshot(
+        SelectedTextSnapshot(
+            field_name="Front",
+            field_index=0,
+            input_kind="rich_text",
+            text="previous",
+            html="<strong>previous</strong>",
+        )
+    )
+
+    pane._refresh_selection_context_from_editor()
+
+    assert pane._selection_context_refresh_pending is False
+    assert pane._selected_text_snapshot is None
+    assert pane.selection_context_label.visible is False
+
+
+def test_agent_request_transcript_mentions_validated_selection_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    taskman = ImmediateTaskman()
+    runtime.aqt.mw = types.SimpleNamespace(
+        taskman=taskman,
+        addonManager=FakeAddonManager(),
+    )
+    config = dict(runtime.DEFAULT_CONFIG)
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    captured: dict[str, Any] = {}
+
+    class CapturingAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["agent_kwargs"] = kwargs
+
+        def send(self, **kwargs: Any) -> Any:
+            captured["send_kwargs"] = kwargs
+            return types.SimpleNamespace(text="", html="", proposals=())
+
+    monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
+    selected_text = {
+        "field_name": "Front",
+        "field_index": 0,
+        "input_kind": "rich_text",
+        "text": "selected <text>",
+        "html": "<strong>selected</strong>",
+    }
+
+    pane._start_agent_request(
+        "Improve this",
+        generation=0,
+        selected_text=selected_text,
+    )
+
+    snapshot_sent = captured["send_kwargs"]["snapshot"]
+    assert snapshot_sent.selected_text == SelectedTextSnapshot(
+        field_name="Front",
+        field_index=0,
+        input_kind="rich_text",
+        text="selected <text>",
+        html="<strong>selected</strong>",
+    )
+    assert pane._selected_text_snapshot == snapshot_sent.selected_text
+    assert pane.selection_context_label.visible is True
+    assert pane.selection_context_label.text == (
+        'Selection context: Front - "selected <text>"'
+    )
+    assert pane.surface.evals[0].startswith("window.agentPane.appendTranscript(")
+    assert "Selection sent from Front" in pane.surface.evals[0]
+    assert "selected &lt;text&gt;" in pane.surface.evals[0]
+    assert "<strong>selected</strong>" not in pane.surface.evals[0]
+    assert taskman.uses_collection is False
+
+
+def test_agent_request_drops_stale_selection_from_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    runtime.aqt.mw = types.SimpleNamespace(
+        taskman=ImmediateTaskman(),
+        addonManager=FakeAddonManager(),
+    )
+    config = dict(runtime.DEFAULT_CONFIG)
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    captured: dict[str, Any] = {}
+
+    class CapturingAgent:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def send(self, **kwargs: Any) -> Any:
+            captured["snapshot"] = kwargs["snapshot"]
+            return types.SimpleNamespace(text="", html="", proposals=())
+
+    monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
+
+    pane._start_agent_request(
+        "Improve this",
+        generation=0,
+        selected_text={
+            "field_name": "Front",
+            "field_index": 1,
+            "input_kind": "rich_text",
+            "text": "stale",
+            "html": "<strong>stale</strong>",
+        },
+    )
+
+    assert captured["snapshot"].selected_text is None
+    assert pane._selected_text_snapshot is None
+    assert pane.selection_context_label.visible is False
+    assert "Selection sent" not in pane.surface.evals[0]
 
 
 def test_agent_model_options_include_default_and_known_models() -> None:
@@ -769,6 +1083,53 @@ def test_surface_rendering_helpers_escape_and_sanitize() -> None:
     assert "&lt;boom&gt;" in render_error_message("<boom>")
 
 
+def test_render_user_message_includes_escaped_selected_text_context() -> None:
+    selected = SelectedTextSnapshot(
+        field_name="Front <field>",
+        field_index=0,
+        input_kind="rich_text",
+        text="  alpha <beta>\n gamma  ",
+        html="<strong>raw selected html must not render</strong>",
+    )
+
+    rendered = render_user_message("Improve <this>", selected)
+
+    assert "Improve &lt;this&gt;" in rendered
+    assert "Selection sent from Front &lt;field&gt;" in rendered
+    assert '"alpha &lt;beta&gt; gamma"' in rendered
+    assert "raw selected html must not render" not in rendered
+    assert "<field>" not in rendered
+    assert "<beta>" not in rendered
+
+
+def test_render_user_message_truncates_selected_text_context() -> None:
+    selected = SelectedTextSnapshot(
+        field_name="Front",
+        field_index=0,
+        input_kind="rich_text",
+        text="word " * 40,
+        html="<strong>word</strong>",
+    )
+
+    rendered = render_user_message("Improve", selected)
+
+    assert "Selection sent from Front" in rendered
+    assert "..." in rendered
+    assert "word " * 35 not in rendered
+
+
+def test_selection_context_label_text_is_plain_excerpt() -> None:
+    selected = SelectedTextSnapshot(
+        field_name="Front",
+        field_index=0,
+        input_kind="plain_text",
+        text="  alpha\n beta  ",
+        html=None,
+    )
+
+    assert selection_context_label_text(selected) == 'Front - "alpha beta"'
+
+
 def test_render_activity_summary_can_expand_escaped_details() -> None:
     rendered = render_activity_summary(
         "agent-activity-1",
@@ -912,6 +1273,22 @@ def test_validate_selected_text_snapshot_drops_stale_or_malformed_context() -> N
         input_kind="plain_text",
         text="<b>source</b>",
         html=None,
+    )
+    assert validate_selected_text_snapshot(
+        SelectedTextSnapshot(
+            field_name="Front",
+            field_index=0,
+            input_kind="rich_text",
+            text="selected",
+            html="<strong>selected</strong>",
+        ),
+        fields,
+    ) == SelectedTextSnapshot(
+        field_name="Front",
+        field_index=0,
+        input_kind="rich_text",
+        text="selected",
+        html="<strong>selected</strong>",
     )
     assert (
         validate_selected_text_snapshot(

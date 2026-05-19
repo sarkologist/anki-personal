@@ -29,6 +29,7 @@ from aqt.qt import (
     QPushButton,
     QSplitter,
     Qt,
+    QTimer,
     QVBoxLayout,
     QWidget,
     qconnect,
@@ -56,6 +57,7 @@ from .patches import (
     FieldSnapshot,
     NotePatch,
     PatchValidationError,
+    SelectedTextSnapshot,
     validate_selected_text_snapshot,
 )
 from .recent_folders import project_folder_choices, remember_project_folder
@@ -74,6 +76,7 @@ from .surface import (
     render_error_message,
     render_proposal_diff,
     render_user_message,
+    selection_context_label_text,
     surface_body,
 )
 from .ui_text import AGENT_BUTTON_LABEL, AGENT_BUTTON_TIP, AGENT_PANE_SHORTCUT
@@ -81,6 +84,11 @@ from .ui_text import AGENT_BUTTON_LABEL, AGENT_BUTTON_TIP, AGENT_PANE_SHORTCUT
 ADDON = "editor_agent_pane"
 TOGGLE_COMMAND = "editorAgentPane"
 DEFAULT_SPLITTER_SIZES = [570, 80]
+SELECTION_CONTEXT_REFRESH_MS = 500
+SELECTION_CONTEXT_JS = (
+    "typeof getAgentSelectedTextContext === 'function' "
+    "? getAgentSelectedTextContext() : null"
+)
 DEFAULT_CONFIG = {
     "codex_path": "",
     "model": "",
@@ -226,6 +234,9 @@ class EditorAgentPane(QWidget):
         self._agent_stop_event: Event | None = None
         self._context_generation = 0
         self._last_browser_note_id = self._current_browser_note_id()
+        self._selected_text_snapshot: SelectedTextSnapshot | None = None
+        self._selection_context_refresh_pending = False
+        self._selection_context_request_id = 0
 
         self.dock = QDockWidget("Agent", editor.parentWindow)
         self.dock.setObjectName("EditorAgentPane")
@@ -243,6 +254,13 @@ class EditorAgentPane(QWidget):
 
         self._build_ui()
         self._load_settings()
+        self._selection_context_timer = QTimer(self)
+        self._selection_context_timer.setInterval(SELECTION_CONTEXT_REFRESH_MS)
+        qconnect(
+            self._selection_context_timer.timeout,
+            self._refresh_selection_context_from_editor,
+        )
+        qconnect(self.dock.visibilityChanged, self._on_dock_visibility_changed)
         qconnect(self.text_splitter.splitterMoved, self._save_splitter_sizes)
         self.refresh_context_label()
 
@@ -328,11 +346,23 @@ class EditorAgentPane(QWidget):
         self.prompt = PromptEdit(self._send, self)
         self.prompt.setPlaceholderText("Message")
         self.prompt.setMinimumHeight(50)
+        self.selection_context_label = QLabel("")
+        self.selection_context_label.setWordWrap(True)
+        self.selection_context_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.selection_context_label.setVisible(False)
+
+        prompt_container = QWidget()
+        prompt_layout = QVBoxLayout()
+        prompt_layout.setContentsMargins(0, 0, 0, 0)
+        prompt_layout.setSpacing(4)
+        prompt_container.setLayout(prompt_layout)
+        prompt_layout.addWidget(self.selection_context_label)
+        prompt_layout.addWidget(self.prompt)
 
         self.text_splitter = QSplitter(Qt.Orientation.Vertical)
         self.text_splitter.setChildrenCollapsible(False)
         self.text_splitter.addWidget(self.surface)
-        self.text_splitter.addWidget(self.prompt)
+        self.text_splitter.addWidget(prompt_container)
         self.text_splitter.setStretchFactor(0, 6)
         self.text_splitter.setStretchFactor(1, 1)
         self.text_splitter.setSizes(list(DEFAULT_SPLITTER_SIZES))
@@ -473,6 +503,9 @@ class EditorAgentPane(QWidget):
         if self.dock.isVisible():
             self.prompt.setFocus()
             self.refresh_context_label()
+            self._start_selection_context_refresh()
+        else:
+            self._stop_selection_context_refresh()
 
     def refresh_context_label(self) -> None:
         note = self.editor.note
@@ -496,6 +529,7 @@ class EditorAgentPane(QWidget):
 
     def on_editor_context_changed(self) -> None:
         self.refresh_context_label()
+        self._set_selected_text_snapshot(None)
         if self.editor.editorMode is not EditorMode.BROWSER:
             return
         note_id = self._current_browser_note_id()
@@ -525,11 +559,84 @@ class EditorAgentPane(QWidget):
         self.pending_snapshot = None
         self._activity_id = None
         self._activity_open = False
+        self._set_selected_text_snapshot(None)
         self.send_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.apply_button.setEnabled(False)
         self.surface.eval(js_clear_transcript())
         self._clear_proposal()
+
+    def _on_dock_visibility_changed(self, visible: bool) -> None:
+        if visible:
+            self._start_selection_context_refresh()
+        else:
+            self._stop_selection_context_refresh()
+
+    def _start_selection_context_refresh(self) -> None:
+        self._refresh_selection_context_from_editor()
+        self._selection_context_timer.start()
+
+    def _stop_selection_context_refresh(self) -> None:
+        self._selection_context_request_id += 1
+        self._selection_context_timer.stop()
+        self._selection_context_refresh_pending = False
+        self._set_selected_text_snapshot(None)
+
+    def _query_selected_text_context(self, callback: Callable[[Any], None]) -> None:
+        web = getattr(self.editor, "web", None)
+        if web is None:
+            callback(None)
+            return
+        web.evalWithCallback(SELECTION_CONTEXT_JS, callback)
+
+    def _refresh_selection_context_from_editor(self) -> None:
+        if self._selection_context_refresh_pending:
+            return
+        if not self.dock.isVisible():
+            self._set_selected_text_snapshot(None)
+            return
+        self._selection_context_refresh_pending = True
+        self._selection_context_request_id += 1
+        request_id = self._selection_context_request_id
+        generation = self._context_generation
+        self._query_selected_text_context(
+            lambda selected_text: self._handle_selection_context_result(
+                request_id,
+                generation,
+                selected_text,
+            )
+        )
+
+    def _handle_selection_context_result(
+        self,
+        request_id: int,
+        generation: int,
+        selected_text: Any,
+    ) -> None:
+        self._selection_context_refresh_pending = False
+        if (
+            request_id != self._selection_context_request_id
+            or generation != self._context_generation
+            or not self.dock.isVisible()
+        ):
+            return
+        self._set_selected_text_snapshot(
+            validated_selected_text_for_editor(self.editor, selected_text)
+        )
+
+    def _set_selected_text_snapshot(
+        self,
+        snapshot: SelectedTextSnapshot | None,
+    ) -> None:
+        self._selected_text_snapshot = snapshot
+        if snapshot is None:
+            self.selection_context_label.clear()
+            self.selection_context_label.setVisible(False)
+            return
+        self.selection_context_label.setText(
+            f"Selection context: {selection_context_label_text(snapshot)}"
+        )
+        self.selection_context_label.setVisible(True)
 
     def _append_transcript(self, fragment: str) -> None:
         self.surface.eval(js_append_transcript(fragment))
@@ -579,17 +686,8 @@ class EditorAgentPane(QWidget):
             return
         self.prompt.clear()
         self._save_settings()
-        self._append_transcript(render_user_message(prompt))
         generation = self._context_generation
-        web = getattr(self.editor, "web", None)
-        if web is None:
-            self._send_after_selection_snapshot(prompt, generation, None)
-            return
-        web.evalWithCallback(
-            (
-                "typeof getAgentSelectedTextContext === 'function' "
-                "? getAgentSelectedTextContext() : null"
-            ),
+        self._query_selected_text_context(
             lambda selected_text: self._send_after_selection_snapshot(
                 prompt,
                 generation,
@@ -626,6 +724,8 @@ class EditorAgentPane(QWidget):
         except RuntimeError as exc:
             showWarning(str(exc), parent=self)
             return
+        self._set_selected_text_snapshot(snapshot.selected_text)
+        self._append_transcript(render_user_message(prompt, snapshot.selected_text))
 
         config = _config()
         model = self._model_text() or str(config["model"])
@@ -784,14 +884,32 @@ class EditorAgentPane(QWidget):
         tooltip("Agent proposal applied.", parent=self)
 
 
+def editor_field_snapshots(editor: Editor) -> tuple[FieldSnapshot, ...]:
+    note = editor.note
+    if note is None:
+        raise RuntimeError("No current note.")
+    return tuple(
+        FieldSnapshot(name=str(name), html=str(html)) for name, html in note.items()
+    )
+
+
+def validated_selected_text_for_editor(
+    editor: Editor,
+    selected_text: Any,
+) -> SelectedTextSnapshot | None:
+    try:
+        fields = editor_field_snapshots(editor)
+    except RuntimeError:
+        return None
+    return validate_selected_text_snapshot(selected_text, fields)
+
+
 def editor_snapshot(editor: Editor, selected_text: Any = None) -> EditorSnapshot:
     note = editor.note
     if note is None:
         raise RuntimeError("No current note.")
     notetype = editor.note_type()
-    fields = tuple(
-        FieldSnapshot(name=str(name), html=str(html)) for name, html in note.items()
-    )
+    fields = editor_field_snapshots(editor)
     current_field = None
     if editor.currentField is not None and 0 <= editor.currentField < len(fields):
         current_field = fields[editor.currentField].name
@@ -849,9 +967,7 @@ def apply_patch_to_editor(editor: Editor, patch: NotePatch) -> None:
         editor.checkValid()
 
     if editor.editorMode is not EditorMode.ADD_CARDS:
-        update_note(parent=editor.widget, note=note).run_in_background(
-            initiator=editor
-        )
+        update_note(parent=editor.widget, note=note).run_in_background(initiator=editor)
 
 
 def _editor_mode_name(editor: Editor) -> str:

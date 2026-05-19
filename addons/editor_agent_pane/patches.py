@@ -105,6 +105,8 @@ def validate_selected_text_snapshot(
     raw: Any,
     fields: tuple[FieldSnapshot, ...],
 ) -> SelectedTextSnapshot | None:
+    if isinstance(raw, SelectedTextSnapshot):
+        raw = raw.as_tool_result()
     if not isinstance(raw, dict):
         return None
 
@@ -233,7 +235,9 @@ def validate_note_patch(raw: dict[str, Any], snapshot: EditorSnapshot) -> NotePa
         raise PatchValidationError("tags must be an object.")
 
     raw_replace = raw_tags.get("replace")
-    replace = None if raw_replace is None else _normalize_tags(raw_replace, "tags.replace")
+    replace = (
+        None if raw_replace is None else _normalize_tags(raw_replace, "tags.replace")
+    )
     tag_patch = TagPatch(
         replace=replace,
         add=_normalize_tags(raw_tags.get("add"), "tags.add"),

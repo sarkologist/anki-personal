@@ -8,10 +8,11 @@ import html
 import json
 from collections.abc import Callable, Iterable
 
-from .patches import EditorSnapshot, NotePatch
+from .patches import EditorSnapshot, NotePatch, SelectedTextSnapshot
 from .sanitize import sanitize_html
 
 PreviewRenderer = Callable[[str], str]
+SELECTION_CONTEXT_EXCERPT_MAX_CHARS = 120
 
 
 def surface_body() -> str:
@@ -47,6 +48,12 @@ def surface_body() -> str:
 }
 .agent-message.user .agent-body {
     white-space: pre-wrap;
+}
+.agent-selection-context {
+    color: var(--fg-subtle, #666);
+    font-size: 0.88em;
+    margin-top: 6px;
+    white-space: normal;
 }
 .agent-activity {
     color: var(--fg-subtle, #666);
@@ -254,8 +261,32 @@ window.agentPane = (() => {
 """
 
 
-def render_user_message(prompt: str) -> str:
-    return _message("You", _escaped_text(prompt), css_class="user")
+def selection_context_excerpt(
+    text: str,
+    *,
+    max_chars: int = SELECTION_CONTEXT_EXCERPT_MAX_CHARS,
+) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max(0, max_chars - 3)].rstrip() + "..."
+
+
+def selection_context_label_text(selected_text: SelectedTextSnapshot) -> str:
+    return (
+        f"{selected_text.field_name} - "
+        f'"{selection_context_excerpt(selected_text.text)}"'
+    )
+
+
+def render_user_message(
+    prompt: str,
+    selected_text: SelectedTextSnapshot | None = None,
+) -> str:
+    body = _escaped_text(prompt)
+    if selected_text is not None:
+        body += _render_selection_context(selected_text)
+    return _message("You", body, css_class="user")
 
 
 def render_assistant_message(message_html: str, fallback_text: str) -> str:
@@ -316,7 +347,7 @@ def render_proposal_diff(
 <section class="agent-proposal">
     <div class="agent-role">Proposed changes</div>
     <div class="agent-proposal-summary">{html.escape(patch.summary)}</div>
-    {''.join(changes)}
+    {"".join(changes)}
 </section>
 """
 
@@ -373,6 +404,15 @@ def _message(role: str, body: str, *, css_class: str) -> str:
 
 def _escaped_text(text: str) -> str:
     return html.escape(text).replace("\n", "<br>")
+
+
+def _render_selection_context(selected_text: SelectedTextSnapshot) -> str:
+    return (
+        '<div class="agent-selection-context">'
+        f"Selection sent from {html.escape(selected_text.field_name)}: "
+        f'"{html.escape(selection_context_excerpt(selected_text.text))}"'
+        "</div>"
+    )
 
 
 def _render_field_change(
