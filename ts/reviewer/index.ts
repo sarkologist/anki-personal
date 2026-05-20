@@ -19,7 +19,7 @@ globalThis.anki.setupImageCloze = imageOcclusionAPI.setup; // deprecated
 import { bridgeCommand } from "@tslib/bridgecommand";
 import { registerPackage } from "@tslib/runtime-require";
 
-import { locateActiveCloze } from "./cloze-locator";
+import { locateActiveCloze, locateRevealedClozeAnswer } from "./cloze-locator";
 import { allImagesLoaded, preloadAnswerImages } from "./images";
 import { replaceEditorMathjaxElements } from "./mathjax";
 import { preloadResources } from "./preload";
@@ -193,7 +193,9 @@ export function _showQuestion(q: string, a: string, bodyclass: string): void {
 }
 
 function scrollToAnswer(): void {
-    document.getElementById("answer")?.scrollIntoView();
+    if (!locateRevealedClozeAnswer()) {
+        document.getElementById("answer")?.scrollIntoView();
+    }
 }
 
 export function _showAnswer(a: string, bodyclass: string): void {
@@ -206,12 +208,10 @@ export function _showAnswer(a: string, bodyclass: string): void {
                     //  when previewing
                     document.body.className = bodyclass;
                 }
-
-                // avoid scrolling to the answer until images load
-                allImagesLoaded().then(scrollToAnswer);
             },
             function() {
-                /* noop */
+                // avoid scrolling to the answer until images load
+                return allImagesLoaded().then(scrollToAnswer);
             },
         )
     );

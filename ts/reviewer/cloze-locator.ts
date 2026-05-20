@@ -4,6 +4,7 @@
 export const ACTIVE_CLOZE_HIGHLIGHT_CLASS = "anki-active-cloze-highlight";
 
 const ACTIVE_CLOZE_SELECTOR = ".cloze:not([data-shape])";
+const REVEALED_CLOZE_ANSWER_SELECTOR = ".cloze:not([data-shape]):not([data-cloze])";
 const ACTIVE_CLOZE_VIEWPORT_MARGIN = 16;
 const ACTIVE_CLOZE_HIGHLIGHT_DURATION_MS = 1200;
 
@@ -16,6 +17,11 @@ interface LocateActiveClozeOptions {
     highlightDurationMs?: number;
 }
 
+interface LocateRevealedClozeAnswerOptions {
+    root?: ParentNode;
+    viewportMargin?: number;
+}
+
 type ViewportRect = Pick<DOMRect, "top" | "right" | "bottom" | "left" | "width" | "height">;
 
 export function findActiveTextCloze(root: ParentNode = document): HTMLElement | null {
@@ -25,6 +31,18 @@ export function findActiveTextCloze(root: ParentNode = document): HTMLElement | 
 export function findActiveTextClozes(root: ParentNode = document): HTMLElement[] {
     return Array.from(root.querySelectorAll<HTMLElement>(ACTIVE_CLOZE_SELECTOR))
         .filter((element) => !isHidden(element));
+}
+
+export function findRevealedAnswerClozes(root: ParentNode = document): HTMLElement[] {
+    const answer = findAnswerSeparator(root);
+    const clozes = Array.from(root.querySelectorAll<HTMLElement>(REVEALED_CLOZE_ANSWER_SELECTOR))
+        .filter((element) => !isHidden(element));
+
+    if (!answer) {
+        return clozes;
+    }
+
+    return clozes.filter((cloze) => isAfter(cloze, answer));
 }
 
 export function locateActiveCloze({
@@ -43,6 +61,20 @@ export function locateActiveCloze({
     return firstCloze;
 }
 
+export function locateRevealedClozeAnswer({
+    root = document,
+    viewportMargin = ACTIVE_CLOZE_VIEWPORT_MARGIN,
+}: LocateRevealedClozeAnswerOptions = {}): HTMLElement | null {
+    const clozes = findRevealedAnswerClozes(root);
+    const firstCloze = clozes[0];
+    if (!firstCloze) {
+        return null;
+    }
+
+    scrollToRevealedClozeAnswer(clozes, viewportMargin);
+    return firstCloze;
+}
+
 function isHidden(element: HTMLElement): boolean {
     const view = element.ownerDocument.defaultView;
     if (!view) {
@@ -56,6 +88,18 @@ function isHidden(element: HTMLElement): boolean {
         }
     }
     return false;
+}
+
+function findAnswerSeparator(root: ParentNode): HTMLElement | null {
+    if (root instanceof HTMLElement && root.id === "answer") {
+        return root;
+    }
+
+    return root.querySelector<HTMLElement>("#answer");
+}
+
+function isAfter(node: Node, reference: Node): boolean {
+    return Boolean(reference.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
 }
 
 function isWithinViewport(element: HTMLElement, margin: number): boolean {
@@ -77,6 +121,18 @@ function scrollToClozes(clozes: HTMLElement[], margin: number): void {
         scrollRectIntoView(rect, margin);
     } else {
         scrollToFirstClozeIfNeeded(clozes[0], margin);
+    }
+}
+
+function scrollToRevealedClozeAnswer(clozes: HTMLElement[], margin: number): void {
+    const rect = combinedBoundingRect(clozes);
+
+    if (fitsWithinViewport(rect, margin)) {
+        if (!isRectWithinViewport(rect, margin)) {
+            scrollRectIntoView(rect, margin);
+        }
+    } else {
+        scrollStartOfRectIntoView(rect, margin);
     }
 }
 
@@ -141,6 +197,25 @@ function scrollRectIntoView(
     const { width: viewportWidth, height: viewportHeight } = viewportSize();
     const deltaX = scrollDelta(rect.left, rect.right, margin, viewportWidth - margin);
     const deltaY = scrollDelta(rect.top, rect.bottom, margin, viewportHeight - margin);
+
+    if (deltaX !== 0 || deltaY !== 0) {
+        window.scrollBy(deltaX, deltaY);
+    }
+}
+
+function scrollStartOfRectIntoView(
+    rect: Pick<DOMRect, "top" | "bottom" | "left" | "right" | "width" | "height">,
+    margin: number,
+): void {
+    const { width: viewportWidth, height: viewportHeight } = viewportSize();
+    const maxX = viewportWidth - margin;
+    const maxY = viewportHeight - margin;
+    const deltaX = rect.width <= viewportWidth - 2 * margin
+        ? scrollDelta(rect.left, rect.right, margin, maxX)
+        : rect.left - margin;
+    const deltaY = rect.height <= viewportHeight - 2 * margin
+        ? scrollDelta(rect.top, rect.bottom, margin, maxY)
+        : rect.top - margin;
 
     if (deltaX !== 0 || deltaY !== 0) {
         window.scrollBy(deltaX, deltaY);

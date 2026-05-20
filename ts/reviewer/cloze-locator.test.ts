@@ -9,7 +9,9 @@ import {
     ACTIVE_CLOZE_HIGHLIGHT_CLASS,
     findActiveTextCloze,
     findActiveTextClozes,
+    findRevealedAnswerClozes,
     locateActiveCloze,
+    locateRevealedClozeAnswer,
 } from "./cloze-locator";
 
 beforeEach(() => {
@@ -65,6 +67,24 @@ test("ignores image occlusion cloze shape markers", () => {
 <span class="cloze" data-ordinal="1" id="text">[...]</span>`;
 
     expect(findActiveTextCloze()?.id).toBe("text");
+});
+
+test("finds revealed answer clozes without question-side placeholders", () => {
+    document.body.innerHTML = `
+<span class="cloze" data-cloze="answer" data-ordinal="1" id="question">[...]</span>
+<span class="cloze" data-ordinal="1" id="revealed">answer</span>
+<div class="cloze" data-ordinal="1" data-shape="rect" id="shape"></div>`;
+
+    expect(findRevealedAnswerClozes().map((cloze) => cloze.id)).toEqual(["revealed"]);
+});
+
+test("prefers revealed answer clozes after the answer separator", () => {
+    document.body.innerHTML = `
+<span class="cloze" data-ordinal="1" id="before">before</span>
+<hr id="answer">
+<span class="cloze" data-ordinal="1" id="after">after</span>`;
+
+    expect(findRevealedAnswerClozes().map((cloze) => cloze.id)).toEqual(["after"]);
 });
 
 test("does not scroll when the active cloze is already visible", () => {
@@ -127,6 +147,49 @@ test("does not scroll when multiple active clozes are already visible", () => {
     expect(scrollBy).not.toHaveBeenCalled();
     expect(firstScrollIntoView).not.toHaveBeenCalled();
     expect(secondScrollIntoView).not.toHaveBeenCalled();
+});
+
+test("scrolls revealed cloze answers fully into view when the group fits", () => {
+    document.body.innerHTML = `
+<hr id="answer">
+<span class="cloze" data-ordinal="1" id="first">answer one</span>
+<span class="cloze" data-ordinal="1" id="second">answer two</span>`;
+
+    const first = document.getElementById("first")!;
+    const second = document.getElementById("second")!;
+    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => undefined);
+
+    mockRect(first, { top: 470, bottom: 490, left: 100, right: 180 });
+    mockRect(second, { top: 560, bottom: 580, left: 100, right: 180 });
+
+    expect(locateRevealedClozeAnswer()).toBe(first);
+    expect(scrollBy).toHaveBeenCalledWith(0, 96);
+});
+
+test("aligns an oversized revealed cloze answer to the viewport start", () => {
+    document.body.innerHTML = `
+<hr id="answer">
+<span class="cloze" data-ordinal="1" id="revealed">long answer</span>`;
+
+    const revealed = document.getElementById("revealed")!;
+    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => undefined);
+
+    mockRect(revealed, { top: 300, bottom: 900, left: 100, right: 180 });
+
+    expect(locateRevealedClozeAnswer()).toBe(revealed);
+    expect(scrollBy).toHaveBeenCalledWith(0, 284);
+});
+
+test("returns no revealed cloze answer target when none exists", () => {
+    document.body.innerHTML = `
+<hr id="answer">
+<span class="cloze-inactive" data-ordinal="2" id="inactive">inactive</span>
+<p>plain answer</p>`;
+
+    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => undefined);
+
+    expect(locateRevealedClozeAnswer()).toBeNull();
+    expect(scrollBy).not.toHaveBeenCalled();
 });
 
 test("falls back to the first active cloze when the group cannot fit", () => {
