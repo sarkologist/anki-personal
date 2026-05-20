@@ -15,6 +15,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         name: "plain-text";
         moveCaretToEnd(): void;
         setStoredContentWithUndo(storedHtml: string): Promise<void>;
+        syncFromStoredContent(): void;
         toggle(): boolean;
         codeMirror: CodeMirrorAPI;
     }
@@ -65,7 +66,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const { focusedInput } = noteEditorContext.get();
     const { editingInputs, content } = editingAreaContext.get();
-    const code = writable($content);
+
+    function storedToCode(storedHtml: string): string {
+        return removeProhibitedTags(storedToUndecorated(storedHtml));
+    }
+
+    let latestStoredContent = $content;
+    let settingCodeFromContent = false;
+    let settingContentFromCode = false;
+    const code = writable(storedToCode(latestStoredContent));
 
     let codeMirror = {} as CodeMirrorAPI;
 
@@ -80,9 +89,25 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     async function setStoredContentWithUndo(storedHtml: string): Promise<void> {
-        await codeMirror.replaceValueWithUndo(
-            removeProhibitedTags(storedToUndecorated(storedHtml)),
-        );
+        latestStoredContent = storedHtml;
+        await codeMirror.replaceValueWithUndo(storedToCode(storedHtml));
+    }
+
+    function inputIsVisible(): boolean {
+        return !(hidden || fieldCollapsed);
+    }
+
+    function syncCodeFromStoredContent(): void {
+        settingCodeFromContent = true;
+        try {
+            code.set(storedToCode(latestStoredContent));
+        } finally {
+            settingCodeFromContent = false;
+        }
+    }
+
+    function syncFromStoredContent(): void {
+        syncCodeFromStoredContent();
     }
 
     async function refocus(): Promise<void> {
@@ -114,6 +139,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         focusable: !hidden,
         moveCaretToEnd,
         setStoredContentWithUndo,
+        syncFromStoredContent,
         refocus,
         toggle,
         getInputAPI,
@@ -126,6 +152,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     function pushUpdate(isFocusable: boolean): void {
         api.focusable = isFocusable;
         $editingInputs = $editingInputs;
+    }
+
+    let inputWasVisible = inputIsVisible();
+    $: {
+        const visible = inputIsVisible();
+        if (!inputWasVisible && visible) {
+            syncCodeFromStoredContent();
+        }
+        inputWasVisible = visible;
     }
 
     async function refresh(): Promise<void> {
@@ -174,17 +209,41 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 editor.off("cursorActivity", updateSelectionContext);
         });
 
+        let codeSubscriptionStarted = false;
         const cleanupStores = singleCallback(
-            content.subscribe((html: string): void =>
+            content.subscribe((html: string): void => {
+                if (settingContentFromCode) {
+                    return;
+                }
+
                 /* We call `removeProhibitedTags` here, because content might
                  * have been changed outside the editor, and we need to parse
                  * it to get the "neutral" value. Otherwise, there might be
                  * conflicts with other editing inputs */
-                code.set(removeProhibitedTags(storedToUndecorated(html))),
-            ),
-            code.subscribe((html: string): void =>
-                content.set(undecoratedToStored(html)),
-            ),
+                latestStoredContent = html;
+                if (inputIsVisible()) {
+                    syncCodeFromStoredContent();
+                }
+            }),
+            code.subscribe((html: string): void => {
+                if (!codeSubscriptionStarted) {
+                    codeSubscriptionStarted = true;
+                    return;
+                }
+
+                if (settingCodeFromContent) {
+                    return;
+                }
+
+                const storedHtml = undecoratedToStored(html);
+                latestStoredContent = storedHtml;
+                settingContentFromCode = true;
+                try {
+                    content.set(storedHtml);
+                } finally {
+                    settingContentFromCode = false;
+                }
+            }),
         );
 
         return (): void => {

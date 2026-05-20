@@ -11,6 +11,7 @@ interface Snapshot {
 }
 
 type NormalizeSnapshot = (fragment: DocumentFragment) => void;
+type CancelIdleCallback = () => void;
 
 const observerConfig: MutationObserverInit = {
     childList: true,
@@ -21,6 +22,24 @@ const observerConfig: MutationObserverInit = {
 
 const debounceMs = 300;
 const maxHistory = 200;
+
+function requestIdle(callback: () => void): CancelIdleCallback {
+    const idleWindow = window as Window & {
+        requestIdleCallback?: (
+            callback: () => void,
+            options?: { timeout: number },
+        ) => number;
+        cancelIdleCallback?: (handle: number) => void;
+    };
+
+    if (idleWindow.requestIdleCallback && idleWindow.cancelIdleCallback) {
+        const handle = idleWindow.requestIdleCallback(callback, { timeout: 1000 });
+        return () => idleWindow.cancelIdleCallback!(handle);
+    }
+
+    const handle = setTimeout(callback);
+    return () => clearTimeout(handle);
+}
 
 /**
  * Per-field undo/redo stack for a contenteditable element.
@@ -38,6 +57,7 @@ export class FieldUndo {
     private future: Snapshot[] = [];
     private last: Snapshot;
     private debounceHandle: ReturnType<typeof setTimeout> | null = null;
+    private cancelIdleCommit: CancelIdleCallback | null = null;
     private readonly observer: MutationObserver;
 
     constructor(
@@ -69,13 +89,30 @@ export class FieldUndo {
     }
 
     private onMutation(): void {
+        this.cancelScheduledIdleCommit();
         if (this.debounceHandle != null) {
             clearTimeout(this.debounceHandle);
         }
         this.debounceHandle = setTimeout(() => {
             this.debounceHandle = null;
-            this.commit();
+            this.scheduleIdleCommit();
         }, debounceMs);
+    }
+
+    private scheduleIdleCommit(): void {
+        if (this.cancelIdleCommit) {
+            return;
+        }
+
+        this.cancelIdleCommit = requestIdle(() => {
+            this.cancelIdleCommit = null;
+            this.commit();
+        });
+    }
+
+    private cancelScheduledIdleCommit(): void {
+        this.cancelIdleCommit?.();
+        this.cancelIdleCommit = null;
     }
 
     private commit(): void {
@@ -113,6 +150,7 @@ export class FieldUndo {
             clearTimeout(this.debounceHandle);
             this.debounceHandle = null;
         }
+        this.cancelScheduledIdleCommit();
         this.commit();
     }
 
@@ -144,6 +182,7 @@ export class FieldUndo {
             clearTimeout(this.debounceHandle);
             this.debounceHandle = null;
         }
+        this.cancelScheduledIdleCommit();
         this.past.length = 0;
         this.future.length = 0;
         this.last = this.snapshot();
@@ -154,6 +193,7 @@ export class FieldUndo {
             clearTimeout(this.debounceHandle);
             this.debounceHandle = null;
         }
+        this.cancelScheduledIdleCommit();
         this.observer.disconnect();
     }
 }

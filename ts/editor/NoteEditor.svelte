@@ -437,6 +437,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     function saveNow(): void {
         closeMathjaxEditor?.();
         closeLatexEditor?.();
+        flushRichTextContent();
         $commitTagEdits();
         saveFieldNow();
     }
@@ -495,6 +496,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export function saveOnPageHide() {
         if (document.visibilityState === "hidden") {
             // will fire on session close and minimize
+            flushRichTextContent();
             saveFieldNow();
         }
     }
@@ -529,6 +531,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         applyNotetypeCssToAll();
     }
 
+    function flushRichTextContent(index?: number): void {
+        if (typeof index === "number") {
+            richTextInputs[index]?.api.flushContent();
+            return;
+        }
+
+        for (const richTextInput of richTextInputs) {
+            richTextInput?.api.flushContent();
+        }
+    }
+
     let plainTextInputs: PlainTextInput[] = [];
     $: plainTextInputs = plainTextInputs.filter(Boolean);
 
@@ -545,6 +558,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     function togglePlainTextInput(index: number): void {
         agentSelectedTextContext = null;
         const hidden = !plainTextsHidden[index];
+        if (!hidden) {
+            flushRichTextContent(index);
+            plainTextInputs[index].api.syncFromStoredContent();
+        }
         plainTextInputs[index].focusFlag.setFlag(!hidden);
         plainTextsHidden[index] = hidden;
         if (hidden) {
@@ -879,6 +896,7 @@ the AddCards dialog) should be implemented in the user of this component.
                         bridgeCommand(`focus:${index}`);
                     }}
                     on:focusout={() => {
+                        flushRichTextContent(index);
                         $focusedField = null;
                         setAddonButtonsDisabled(true);
                         bridgeCommand(
@@ -952,6 +970,7 @@ the AddCards dialog) should be implemented in the user of this component.
                                 fieldIndex={index}
                                 onAgentSelectedTextContext={setAgentSelectedTextContext}
                                 on:focusout={() => {
+                                    flushRichTextContent(index);
                                     saveFieldNow();
                                     $focusedInput = null;
                                 }}

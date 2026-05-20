@@ -2,6 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import { on } from "@tslib/events";
+import { noop } from "@tslib/functional";
 import type { Writable } from "svelte/store";
 import { writable } from "svelte/store";
 
@@ -22,7 +23,10 @@ export type MirrorAction = (
 interface DOMMirrorAPI {
     mirror: MirrorAction;
     preventResubscription(): () => void;
+    flush(): void;
 }
+
+type CancelIdleCallback = () => void;
 
 function cloneNode(node: Node): DocumentFragment {
     /**
@@ -35,6 +39,24 @@ function cloneNode(node: Node): DocumentFragment {
     return range.cloneContents();
 }
 
+function requestIdle(callback: () => void): CancelIdleCallback {
+    const idleWindow = window as Window & {
+        requestIdleCallback?: (
+            callback: () => void,
+            options?: { timeout: number },
+        ) => number;
+        cancelIdleCallback?: (handle: number) => void;
+    };
+
+    if (idleWindow.requestIdleCallback && idleWindow.cancelIdleCallback) {
+        const handle = idleWindow.requestIdleCallback(callback, { timeout: 500 });
+        return () => idleWindow.cancelIdleCallback!(handle);
+    }
+
+    const handle = setTimeout(callback);
+    return () => clearTimeout(handle);
+}
+
 /**
  * Allows you to keep an element's inner HTML bidirectionally
  * in sync with a store containing a DocumentFragment.
@@ -43,6 +65,7 @@ function cloneNode(node: Node): DocumentFragment {
  */
 function useDOMMirror(): DOMMirrorAPI {
     const allowResubscription = writable(true);
+    let flushPendingMirror = noop;
 
     function preventResubscription() {
         allowResubscription.set(false);
@@ -56,14 +79,36 @@ function useDOMMirror(): DOMMirrorAPI {
         element: HTMLElement,
         { store }: { store: Writable<DocumentFragment> },
     ): { destroy(): void } {
+        let cancelPendingSave: CancelIdleCallback | null = null;
+
+        function cancelScheduledSave(): void {
+            cancelPendingSave?.();
+            cancelPendingSave = null;
+        }
+
         function saveHTMLToStore(): void {
+            cancelScheduledSave();
             store.set(cloneNode(element));
         }
 
-        const observer = new MutationObserver(saveHTMLToStore);
+        function scheduleSaveHTMLToStore(): void {
+            if (cancelPendingSave) {
+                return;
+            }
+
+            cancelPendingSave = requestIdle(() => {
+                cancelPendingSave = null;
+                saveHTMLToStore();
+            });
+        }
+
+        flushPendingMirror = saveHTMLToStore;
+
+        const observer = new MutationObserver(scheduleSaveHTMLToStore);
         observer.observe(element, config);
 
         function mirrorToElement(node: Node): void {
+            cancelScheduledSave();
             observer.disconnect();
             // element.replaceChildren(...node.childNodes); // TODO use once available
             while (element.firstChild) {
@@ -111,6 +156,7 @@ function useDOMMirror(): DOMMirrorAPI {
 
         return {
             destroy() {
+                cancelScheduledSave();
                 observer.disconnect();
 
                 removeFocus();
@@ -118,6 +164,7 @@ function useDOMMirror(): DOMMirrorAPI {
 
                 unsubscribe();
                 unsubResubscription();
+                flushPendingMirror = noop;
             },
         };
     }
@@ -125,6 +172,7 @@ function useDOMMirror(): DOMMirrorAPI {
     return {
         mirror,
         preventResubscription,
+        flush: () => flushPendingMirror(),
     };
 }
 

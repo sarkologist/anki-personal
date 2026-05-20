@@ -24,6 +24,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         editable: ContentEditableAPI;
         customStyles: Promise<Record<string, any>>;
         isClozeField: boolean;
+        /** Flush pending DOM changes into the shared stored-HTML content. */
+        flushContent(): void;
         /** Force a commit of the current state as a standalone undo step. */
         pushUndoSnapshot(): void;
         /** Discard the field's undo history (e.g. when loading a new note). */
@@ -117,7 +119,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const nodes = getNormalizingNodeStore();
     const [richTextPromise, resolve] = useRichTextResolve();
-    const { mirror, preventResubscription } = useDOMMirror();
+    const { mirror, preventResubscription, flush: flushMirror } = useDOMMirror();
     const [inputHandler, setupInputHandler] = useInputHandler();
     const [customStyles, stylesResolve] = promiseWithResolver<Record<string, any>>();
 
@@ -178,6 +180,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         fieldUndo?.reset();
     }
 
+    function flushContent(): void {
+        flushMirror();
+    }
+
     export const api: RichTextInputAPI = {
         name: "rich-text",
         element: richTextPromise,
@@ -192,6 +198,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         editable: {} as ContentEditableAPI,
         customStyles,
         isClozeField,
+        flushContent,
         pushUndoSnapshot,
         resetUndo,
     };
@@ -316,13 +323,24 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         $editingInputs.push(api);
         $editingInputs = $editingInputs;
 
+        let settingContentFromNodes = false;
+
         return singleCallback(
-            content.subscribe((html: string): void =>
-                nodes.setUnprocessed(storedToFragment(html)),
-            ),
-            nodes.subscribe((fragment: DocumentFragment): void =>
-                content.set(fragmentToStored(fragment)),
-            ),
+            content.subscribe((html: string): void => {
+                if (settingContentFromNodes) {
+                    return;
+                }
+
+                nodes.setUnprocessed(storedToFragment(html));
+            }),
+            nodes.subscribe((fragment: DocumentFragment): void => {
+                settingContentFromNodes = true;
+                try {
+                    content.set(fragmentToStored(fragment));
+                } finally {
+                    settingContentFromNodes = false;
+                }
+            }),
         );
     });
 
