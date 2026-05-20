@@ -60,6 +60,7 @@ from editor_agent_pane.patches import (  # noqa: E402
 )
 from editor_agent_pane.recent_folders import (  # noqa: E402
     MAX_RECENT_PROJECT_FOLDERS,
+    NO_PROJECT_FOLDER_LABEL,
     project_folder_choices,
     remember_project_folder,
 )
@@ -269,6 +270,29 @@ class FakeLabel:
         self.visible = visible
 
 
+class FakeProjectCombo:
+    def __init__(self, current_text: str = "") -> None:
+        self.items: list[str] = []
+        self.current_text = current_text
+        self.current_index: int | None = None
+
+    def clear(self) -> None:
+        self.items.clear()
+
+    def addItems(self, items: list[str]) -> None:
+        self.items.extend(items)
+
+    def setCurrentIndex(self, index: int) -> None:
+        self.current_index = index
+        self.current_text = self.items[index]
+
+    def setEditText(self, text: str) -> None:
+        self.current_text = text
+
+    def currentText(self) -> str:
+        return self.current_text
+
+
 class FakeDock:
     def __init__(self, visible: bool = True) -> None:
         self.visible = visible
@@ -327,6 +351,22 @@ class FutureThatMustNotBeRead:
     def result(self) -> object:
         self.read = True
         raise AssertionError("stale agent completion should be ignored")
+
+
+class FutureWithResult:
+    def __init__(self, result: object) -> None:
+        self._result = result
+
+    def result(self) -> object:
+        return self._result
+
+
+class FutureWithException:
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+    def result(self) -> object:
+        raise self.exc
 
 
 def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -692,6 +732,109 @@ def test_reset_chat_button_cancels_active_run_and_ignores_stale_completion(
     ]
 
 
+def test_agent_done_summarizes_success_elapsed_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.ADD_CARDS,
+        current_note_id=123,
+        last_browser_note_id=None,
+    )
+    stop_event = runtime.Event()
+    pane._agent_stop_event = stop_event
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: 12.4)
+
+    pane._handle_agent_done(
+        FutureWithResult(
+            (
+                "Done",
+                "<p>Done</p>",
+                (),
+                "[Codex activity: 2 stream events]\n",
+                ("[tool] rg canonical",),
+            )
+        ),
+        generation=0,
+        stop_event=stop_event,
+        prompt="Explain",
+        snapshot=snapshot(),
+        notetype={},
+        activity=types.SimpleNamespace(detail_lines=[]),
+        started_at=5.0,
+    )
+
+    assert any("took 7.4s" in eval for eval in pane.surface.evals)
+    assert pane.history == [("old prompt", "old answer"), ("Explain", "Done")]
+
+
+def test_agent_done_summarizes_stopped_elapsed_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.ADD_CARDS,
+        current_note_id=123,
+        last_browser_note_id=None,
+    )
+    stop_event = runtime.Event()
+    pane._agent_stop_event = stop_event
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: 12.4)
+
+    pane._handle_agent_done(
+        FutureWithException(AgentStopped("stopped")),
+        generation=0,
+        stop_event=stop_event,
+        prompt="Explain",
+        snapshot=snapshot(),
+        notetype={},
+        activity=types.SimpleNamespace(detail_lines=["[tool] rg canonical"]),
+        started_at=5.0,
+    )
+
+    assert any("stopped after 7.4s" in eval for eval in pane.surface.evals)
+    assert pane.history == [("old prompt", "old answer")]
+
+
+def test_agent_done_summarizes_failed_elapsed_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.ADD_CARDS,
+        current_note_id=123,
+        last_browser_note_id=None,
+    )
+    stop_event = runtime.Event()
+    pane._agent_stop_event = stop_event
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: 12.4)
+
+    pane._handle_agent_done(
+        FutureWithException(RuntimeError("boom")),
+        generation=0,
+        stop_event=stop_event,
+        prompt="Explain",
+        snapshot=snapshot(),
+        notetype={},
+        activity=types.SimpleNamespace(detail_lines=["[tool] rg canonical"]),
+        started_at=5.0,
+    )
+
+    assert any("failed after 7.4s" in eval for eval in pane.surface.evals)
+    assert any("boom" in eval for eval in pane.surface.evals)
+    assert pane.history == [("old prompt", "old answer")]
+
+
+def test_agent_turn_duration_formatting(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+
+    assert runtime._format_agent_turn_duration(7.44) == "7.4s"
+    assert runtime._format_agent_turn_duration(123.4) == "2m 03s"
+
+
 def test_selection_context_indicator_updates_and_hides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -887,6 +1030,49 @@ def test_agent_request_drops_stale_selection_from_transcript(
     assert "Selection sent" not in pane.surface.evals[0]
 
 
+def test_fast_mode_toggle_saves_settings_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    calls: list[bool] = []
+    pane._save_settings = lambda: calls.append(True)
+
+    pane._on_fast_mode_toggled(True)
+
+    assert calls == [True]
+
+
+def test_save_settings_persists_fast_mode_and_no_project_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.project_edit = FakeProjectCombo(NO_PROJECT_FOLDER_LABEL)
+    pane.codex_path_edit = types.SimpleNamespace(text=lambda: "/usr/bin/codex")
+    pane._model_text = lambda: "gpt-5.5"
+    pane._custom_instructions_text = lambda: "be concise"
+    pane._project_folder_access = lambda: PROJECT_FOLDER_ACCESS_READ_ONLY
+    pane._fast_mode = lambda: True
+    pane._stream_reasoning_summaries = lambda: False
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["recent_project_folders"] = ["/one", "/two"]
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._save_settings()
+
+    assert saved["codex_path"] == "/usr/bin/codex"
+    assert saved["model"] == "gpt-5.5"
+    assert saved["custom_instructions"] == "be concise"
+    assert saved["project_folder"] == ""
+    assert saved["project_folder_access"] == PROJECT_FOLDER_ACCESS_READ_ONLY
+    assert saved["fast_mode"] is True
+    assert saved["stream_reasoning_summaries"] is False
+    assert saved["recent_project_folders"] == ["/one", "/two"]
+
+
 def test_agent_model_options_include_default_and_known_models() -> None:
     assert MODEL_OPTIONS == (
         ("Codex default", ""),
@@ -1020,8 +1206,27 @@ def test_project_folder_choices_include_current_and_clean_history() -> None:
     assert project_folder_choices(
         " /current ",
         ["/two", " /one ", "/two", "", 123],
-    ) == ["/current", "/two", "/one"]
-    assert project_folder_choices(" /one ", ["/two", "/one"]) == ["/one", "/two"]
+    ) == [NO_PROJECT_FOLDER_LABEL, "/current", "/two", "/one"]
+    assert project_folder_choices(" /one ", ["/two", "/one"]) == [
+        NO_PROJECT_FOLDER_LABEL,
+        "/one",
+        "/two",
+    ]
+
+
+def test_project_folder_choices_include_no_folder_option_without_remembering_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.project_edit = FakeProjectCombo()
+
+    pane._set_project_folder_choices("", ["/one", NO_PROJECT_FOLDER_LABEL, "/two"])
+
+    assert pane.project_edit.items == [NO_PROJECT_FOLDER_LABEL, "/one", "/two"]
+    assert pane.project_edit.current_index == 0
+    assert pane._project_folder_text() == ""
+    assert remember_project_folder(NO_PROJECT_FOLDER_LABEL, ["/one"]) == ["/one"]
 
 
 def test_remember_project_folder_moves_selection_to_front_and_limits() -> None:

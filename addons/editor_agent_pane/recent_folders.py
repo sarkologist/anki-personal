@@ -6,12 +6,15 @@ from __future__ import annotations
 from typing import Any
 
 MAX_RECENT_PROJECT_FOLDERS = 10
+NO_PROJECT_FOLDER_LABEL = "Don't work in a folder"
 
 
 def _clean_project_folder(folder: Any) -> str | None:
     if not isinstance(folder, str):
         return None
     folder = folder.strip()
+    if folder == NO_PROJECT_FOLDER_LABEL:
+        return None
     return folder or None
 
 
@@ -41,4 +44,7 @@ def remember_project_folder(project_folder: str, saved_folders: Any) -> list[str
 
 
 def project_folder_choices(project_folder: str, saved_folders: Any) -> list[str]:
-    return remember_project_folder(project_folder, saved_folders)
+    return [
+        NO_PROJECT_FOLDER_LABEL,
+        *remember_project_folder(project_folder, saved_folders),
+    ]

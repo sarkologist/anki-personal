@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import time
 import weakref
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -60,7 +61,11 @@ from .patches import (
     SelectedTextSnapshot,
     validate_selected_text_snapshot,
 )
-from .recent_folders import project_folder_choices, remember_project_folder
+from .recent_folders import (
+    NO_PROJECT_FOLDER_LABEL,
+    project_folder_choices,
+    remember_project_folder,
+)
 from .surface import (
     js_append_to_activity,
     js_append_transcript,
@@ -163,6 +168,34 @@ def _validated_splitter_sizes(value: Any) -> list[int]:
     return sizes
 
 
+def _format_agent_turn_duration(elapsed_seconds: float) -> str:
+    seconds = max(0.0, elapsed_seconds)
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    total_seconds = int(round(seconds))
+    minutes, remaining_seconds = divmod(total_seconds, 60)
+    return f"{minutes}m {remaining_seconds:02d}s"
+
+
+def _activity_summary_with_elapsed(
+    summary: str,
+    *,
+    elapsed_seconds: float,
+    verb: str = "took",
+) -> str:
+    elapsed = _format_agent_turn_duration(elapsed_seconds)
+    clean = summary.strip()
+    suffix = f"{verb} {elapsed}"
+    if clean.startswith("[Codex activity: ") and clean.endswith("]"):
+        return f"{clean[:-1]}, {suffix}]\n"
+    return f"{clean} ({suffix})\n"
+
+
+def _activity_status_summary(status: str, *, elapsed_seconds: float) -> str:
+    elapsed = _format_agent_turn_duration(elapsed_seconds)
+    return f"[Codex activity: {status} after {elapsed}]\n"
+
+
 def _add_editor_button(buttons: list[str], editor: Editor) -> None:
     buttons.append(
         editor.addButton(
@@ -237,6 +270,7 @@ class EditorAgentPane(QWidget):
         self._selected_text_snapshot: SelectedTextSnapshot | None = None
         self._selection_context_refresh_pending = False
         self._selection_context_request_id = 0
+        self._loading_settings = False
 
         self.dock = QDockWidget("Agent", editor.parentWindow)
         self.dock.setObjectName("EditorAgentPane")
@@ -285,6 +319,7 @@ class EditorAgentPane(QWidget):
             self.model_combo.addItem(label, value)
         form.addRow("Model", self.model_combo)
         self.fast_mode_checkbox = QCheckBox("Fast mode")
+        qconnect(self.fast_mode_checkbox.toggled, self._on_fast_mode_toggled)
         form.addRow("", self.fast_mode_checkbox)
         self.access_combo = QComboBox()
         self.access_combo.setEditable(False)
@@ -394,17 +429,25 @@ class EditorAgentPane(QWidget):
 
     def _load_settings(self) -> None:
         config = _config()
-        self.codex_path_edit.setText(str(config["codex_path"]))
-        self._set_model_choice(str(config["model"]))
-        self._set_project_folder_choices(
-            str(config["project_folder"]),
-            config["recent_project_folders"],
-        )
-        self._set_project_folder_access(str(config["project_folder_access"]))
-        self.fast_mode_checkbox.setChecked(bool(config["fast_mode"]))
-        self.reasoning_checkbox.setChecked(bool(config["stream_reasoning_summaries"]))
-        self.instructions_edit.setPlainText(str(config["custom_instructions"] or ""))
-        self.text_splitter.setSizes(_validated_splitter_sizes(config["splitter_sizes"]))
+        self._loading_settings = True
+        try:
+            self.codex_path_edit.setText(str(config["codex_path"]))
+            self._set_model_choice(str(config["model"]))
+            self._set_project_folder_choices(
+                str(config["project_folder"]),
+                config["recent_project_folders"],
+            )
+            self._set_project_folder_access(str(config["project_folder_access"]))
+            self.fast_mode_checkbox.setChecked(bool(config["fast_mode"]))
+            self.reasoning_checkbox.setChecked(
+                bool(config["stream_reasoning_summaries"])
+            )
+            self.instructions_edit.setPlainText(str(config["custom_instructions"] or ""))
+            self.text_splitter.setSizes(
+                _validated_splitter_sizes(config["splitter_sizes"])
+            )
+        finally:
+            self._loading_settings = False
 
     def _save_settings(self) -> None:
         config = _config()
@@ -425,6 +468,11 @@ class EditorAgentPane(QWidget):
             project_folder,
             config["recent_project_folders"],
         )
+
+    def _on_fast_mode_toggled(self, _checked: bool) -> None:
+        if getattr(self, "_loading_settings", False):
+            return
+        self._save_settings()
 
     def _set_model_choice(self, model: str) -> None:
         self.model_combo.clear()
@@ -463,10 +511,16 @@ class EditorAgentPane(QWidget):
         self.project_edit.addItems(
             project_folder_choices(project_folder, recent_folders)
         )
-        self.project_edit.setEditText(project_folder.strip())
+        if project_folder.strip():
+            self.project_edit.setEditText(project_folder.strip())
+        else:
+            self.project_edit.setCurrentIndex(0)
 
     def _project_folder_text(self) -> str:
-        return self.project_edit.currentText().strip()
+        project_folder = self.project_edit.currentText().strip()
+        if project_folder == NO_PROJECT_FOLDER_LABEL:
+            return ""
+        return project_folder
 
     def _custom_instructions_text(self) -> str:
         return self.instructions_edit.toPlainText().strip()
@@ -737,6 +791,7 @@ class EditorAgentPane(QWidget):
         stream_reasoning_summaries = self._stream_reasoning_summaries()
         stop_event = Event()
         history = list(self.history)
+        started_at = time.monotonic()
         self._agent_stop_event = stop_event
         self.send_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -800,6 +855,7 @@ class EditorAgentPane(QWidget):
                 snapshot=snapshot,
                 notetype=notetype,
                 activity=activity,
+                started_at=started_at,
             )
 
         taskman.run_in_background(task, on_done, uses_collection=False)
@@ -814,9 +870,13 @@ class EditorAgentPane(QWidget):
         snapshot: EditorSnapshot,
         notetype: dict[str, Any],
         activity: CodexActivityRenderer,
+        started_at: float | None = None,
     ) -> None:
         if generation != self._context_generation:
             return
+        elapsed_seconds = (
+            time.monotonic() - started_at if started_at is not None else None
+        )
         if self._agent_stop_event is stop_event:
             self._agent_stop_event = None
             self.send_button.setEnabled(True)
@@ -830,15 +890,31 @@ class EditorAgentPane(QWidget):
                 activity_details,
             ) = future.result()
         except AgentStopped:
+            summary = (
+                _activity_status_summary("stopped", elapsed_seconds=elapsed_seconds)
+                if elapsed_seconds is not None
+                else "Codex run stopped."
+            )
             self._replace_activity_with_summary(
-                "Codex run stopped.",
+                summary,
                 tuple(activity.detail_lines),
             )
             return
         except Exception as exc:
-            self._activity_open = False
+            if elapsed_seconds is not None:
+                self._replace_activity_with_summary(
+                    _activity_status_summary("failed", elapsed_seconds=elapsed_seconds),
+                    tuple(activity.detail_lines),
+                )
+            else:
+                self._activity_open = False
             self._append_transcript(render_error_message(str(exc)))
             return
+        if elapsed_seconds is not None:
+            activity_summary = _activity_summary_with_elapsed(
+                activity_summary,
+                elapsed_seconds=elapsed_seconds,
+            )
         self._replace_activity_with_summary(activity_summary, activity_details)
         if text or message_html:
             self._append_transcript(render_assistant_message(message_html, text))
