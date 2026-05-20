@@ -80,7 +80,7 @@ from .surface import (
     js_clear_transcript,
     js_replace_element,
     js_set_proposal,
-    multi_note_patch_card_note_ids,
+    multi_note_patch_card_ids,
     render_activity_line,
     render_activity_start,
     render_activity_summary,
@@ -1262,12 +1262,17 @@ class EditorAgentPane(QWidget):
         snapshot: MultiCardSnapshot,
         patch: MultiNotePatch,
     ) -> None:
+        card_ids = multi_note_patch_card_ids(snapshot, patch)
+        if not card_ids:
+            self._clear_proposal()
+            self.apply_button.setEnabled(False)
+            return
         self.surface.eval(
             js_set_proposal(
                 render_multi_note_card_proposal_diff(
                     snapshot,
                     patch,
-                    multi_note_patch_card_note_ids(snapshot, patch)[0],
+                    card_ids[0],
                 )
             )
         )

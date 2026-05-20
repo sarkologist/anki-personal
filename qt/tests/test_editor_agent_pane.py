@@ -78,7 +78,7 @@ from editor_agent_pane.sources import (  # noqa: E402
 from editor_agent_pane.surface import (  # noqa: E402
     js_apply_agent_proposal,
     js_clear_transcript,
-    multi_note_patch_card_note_ids,
+    multi_note_patch_card_ids,
     render_activity_summary,
     render_assistant_message,
     render_error_message,
@@ -2209,7 +2209,36 @@ def test_render_multi_note_card_proposal_diff_shows_one_cards_note_group() -> No
     assert "Field: Front" in rendered
     assert "&lt;b&gt;new&lt;/b&gt;" in rendered
     assert "new text" not in rendered
-    assert multi_note_patch_card_note_ids(multi_snapshot(), patch) == (101, 101, 202)
+    assert multi_note_patch_card_ids(multi_snapshot(), patch) == (11, 12, 21)
+
+
+def test_set_multi_proposal_previews_affected_card_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.surface = FakeSurface()
+    pane.apply_button = FakeButton(True)
+    pane._show_multi_proposal_dialog = lambda _snapshot, _patch: None
+    patch = validate_multi_note_patch(
+        {
+            "summary": "Tighten selected cards",
+            "note_updates": [
+                {
+                    "note_id": 101,
+                    "notetype_id": 7,
+                    "field_updates": [{"name": "Front", "html": "new front"}],
+                    "tags": {"replace": None, "add": [], "remove": []},
+                }
+            ],
+        },
+        multi_snapshot(),
+    )
+
+    pane._set_multi_proposal(multi_snapshot(), patch)
+
+    assert "Card 11" in pane.surface.evals[0]
+    assert "note 101" in pane.surface.evals[0]
 
 
 def test_validate_note_patch_rejects_unknown_field() -> None:

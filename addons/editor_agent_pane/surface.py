@@ -360,12 +360,12 @@ def render_proposal_diff(
 """
 
 
-def multi_note_patch_card_note_ids(
+def multi_note_patch_card_ids(
     snapshot: MultiCardSnapshot,
     patch: MultiNotePatch,
 ) -> tuple[int, ...]:
     affected = set(patch.affected_note_ids())
-    return tuple(card.note_id for card in snapshot.cards if card.note_id in affected)
+    return tuple(card.card_id for card in snapshot.cards if card.note_id in affected)
 
 
 def render_multi_note_card_proposal_diff(
