@@ -8,7 +8,15 @@ import html
 import json
 from collections.abc import Callable, Iterable
 
-from .patches import EditorSnapshot, NotePatch, SelectedTextSnapshot
+from .patches import (
+    EditorSnapshot,
+    MultiCardSnapshot,
+    MultiNotePatch,
+    MultiNoteUpdate,
+    NotePatch,
+    SelectedNoteSnapshot,
+    SelectedTextSnapshot,
+)
 from .sanitize import sanitize_html
 
 PreviewRenderer = Callable[[str], str]
@@ -352,6 +360,49 @@ def render_proposal_diff(
 """
 
 
+def multi_note_patch_card_note_ids(
+    snapshot: MultiCardSnapshot,
+    patch: MultiNotePatch,
+) -> tuple[int, ...]:
+    affected = set(patch.affected_note_ids())
+    return tuple(card.note_id for card in snapshot.cards if card.note_id in affected)
+
+
+def render_multi_note_card_proposal_diff(
+    snapshot: MultiCardSnapshot,
+    patch: MultiNotePatch,
+    card_id: int,
+    preview_renderer: PreviewRenderer | None = None,
+) -> str:
+    render_preview = preview_renderer or sanitize_html
+    card = snapshot.card_by_id(card_id)
+    note = snapshot.note_by_id(card.note_id)
+    update = patch.update_for_note(card.note_id)
+    if update is None:
+        changes = '<div class="agent-empty">No proposal for this card.</div>'
+    else:
+        changes = _render_multi_note_update_change(note, update, render_preview)
+    sibling_count = len(snapshot.cards_for_note(card.note_id))
+    sibling_text = (
+        f"{sibling_count} selected sibling cards share this note"
+        if sibling_count > 1
+        else "1 selected card uses this note"
+    )
+
+    return f"""
+<section class="agent-proposal">
+    <div class="agent-role">Proposed changes</div>
+    <div class="agent-proposal-summary">{html.escape(patch.summary)}</div>
+    <div class="agent-change-title">
+        Card {html.escape(str(card.card_id))} - {html.escape(card.template_name)}
+        - note {html.escape(str(note.note_id))}
+    </div>
+    <div class="agent-selection-context">{html.escape(sibling_text)}</div>
+    {changes}
+</section>
+"""
+
+
 def js_append_transcript(fragment: str) -> str:
     return f"window.agentPane.appendTranscript({json.dumps(fragment)});"
 
@@ -441,6 +492,67 @@ def _render_field_change(
 def _render_tag_change(snapshot: EditorSnapshot, patch: NotePatch) -> str:
     old_tags = tuple(snapshot.tags)
     new_tags = patch.tag_patch.apply(old_tags)
+    old_text = " ".join(old_tags)
+    new_text = " ".join(new_tags)
+    diff = difflib.unified_diff(
+        [old_text],
+        [new_text],
+        fromfile="current",
+        tofile="proposed",
+        lineterm="",
+    )
+    return f"""
+<section class="agent-change">
+    <div class="agent-change-title">Tags</div>
+    {_render_preview_grid(_render_tags(old_tags), _render_tags(new_tags))}
+    {_render_unified_diff(diff)}
+</section>
+"""
+
+
+def _render_multi_note_update_change(
+    note: SelectedNoteSnapshot,
+    update: MultiNoteUpdate,
+    render_preview: PreviewRenderer,
+) -> str:
+    changes = [
+        _render_selected_note_field_change(note, field_name, new_html, render_preview)
+        for field_name, new_html in update.field_updates.items()
+    ]
+    if update.tag_patch.has_changes():
+        changes.append(_render_selected_note_tag_change(note, update))
+    return "".join(changes)
+
+
+def _render_selected_note_field_change(
+    note: SelectedNoteSnapshot,
+    field_name: str,
+    new_html: str,
+    render_preview: PreviewRenderer,
+) -> str:
+    old_html = note.field_html(field_name)
+    diff = difflib.unified_diff(
+        old_html.splitlines(),
+        new_html.splitlines(),
+        fromfile="current",
+        tofile="proposed",
+        lineterm="",
+    )
+    return f"""
+<section class="agent-change">
+    <div class="agent-change-title">Field: {html.escape(field_name)}</div>
+    {_render_preview_grid(render_preview(old_html), render_preview(new_html))}
+    {_render_unified_diff(diff)}
+</section>
+"""
+
+
+def _render_selected_note_tag_change(
+    note: SelectedNoteSnapshot,
+    update: MultiNoteUpdate,
+) -> str:
+    old_tags = tuple(note.tags)
+    new_tags = update.tag_patch.apply(old_tags)
     old_text = " ".join(old_tags)
     new_text = " ".join(new_tags)
     diff = difflib.unified_diff(

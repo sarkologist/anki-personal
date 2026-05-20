@@ -52,9 +52,14 @@ from editor_agent_pane.note_images import collect_note_images  # noqa: E402
 from editor_agent_pane.patches import (  # noqa: E402
     EditorSnapshot,
     FieldSnapshot,
+    MultiCardSnapshot,
+    MultiNotePatch,
     NoteImageSnapshot,
     PatchValidationError,
+    SelectedCardSnapshot,
+    SelectedNoteSnapshot,
     SelectedTextSnapshot,
+    validate_multi_note_patch,
     validate_note_patch,
     validate_selected_text_snapshot,
 )
@@ -73,9 +78,11 @@ from editor_agent_pane.sources import (  # noqa: E402
 from editor_agent_pane.surface import (  # noqa: E402
     js_apply_agent_proposal,
     js_clear_transcript,
+    multi_note_patch_card_note_ids,
     render_activity_summary,
     render_assistant_message,
     render_error_message,
+    render_multi_note_card_proposal_diff,
     render_proposal_diff,
     render_user_message,
     selection_context_label_text,
@@ -104,6 +111,62 @@ def snapshot() -> EditorSnapshot:
             input_kind="rich_text",
             text="old",
             html="<b>old</b>",
+        ),
+    )
+
+
+def multi_snapshot() -> MultiCardSnapshot:
+    return MultiCardSnapshot(
+        cards=(
+            SelectedCardSnapshot(
+                card_id=11,
+                note_id=101,
+                notetype_id=7,
+                notetype_name="Basic",
+                ord=0,
+                template_name="Card 1",
+                deck_id=1,
+                deck_name="Default",
+            ),
+            SelectedCardSnapshot(
+                card_id=12,
+                note_id=101,
+                notetype_id=7,
+                notetype_name="Basic",
+                ord=1,
+                template_name="Card 2",
+                deck_id=1,
+                deck_name="Default",
+            ),
+            SelectedCardSnapshot(
+                card_id=21,
+                note_id=202,
+                notetype_id=8,
+                notetype_name="Cloze",
+                ord=0,
+                template_name="Cloze",
+                deck_id=2,
+                deck_name="Filtered",
+            ),
+        ),
+        notes=(
+            SelectedNoteSnapshot(
+                note_id=101,
+                notetype_id=7,
+                notetype_name="Basic",
+                fields=(
+                    FieldSnapshot(name="Front", html="old front"),
+                    FieldSnapshot(name="Back", html="old back"),
+                ),
+                tags=("keep", "remove-me"),
+            ),
+            SelectedNoteSnapshot(
+                note_id=202,
+                notetype_id=8,
+                notetype_name="Cloze",
+                fields=(FieldSnapshot(name="Text", html="old {{c1::text}}"),),
+                tags=("cloze",),
+            ),
         ),
     )
 
@@ -344,6 +407,131 @@ class FakeNote:
         return self._fields
 
 
+class FakeMutableNote(FakeNote):
+    def __init__(
+        self,
+        *,
+        field_names: tuple[str, ...],
+        note_id: int,
+        mid: int,
+        fields: tuple[str, ...],
+        tags: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(
+            note_id=note_id,
+            mid=mid,
+            fields=tuple(zip(field_names, fields, strict=True)),
+            tags=tags,
+        )
+        self.field_names = field_names
+
+    def items(self) -> tuple[tuple[str, str], ...]:
+        return tuple(zip(self.field_names, self.fields, strict=True))
+
+
+class FakeCardForSnapshot:
+    def __init__(
+        self,
+        *,
+        card_id: int,
+        note: FakeMutableNote,
+        ord: int,
+        template_name: str,
+        deck_id: int = 1,
+        deck_name: str = "Default",
+    ) -> None:
+        self.id = card_id
+        self._note = note
+        self.ord = ord
+        self.deck_id = deck_id
+        self.deck_name = deck_name
+
+    def note(self) -> FakeMutableNote:
+        return self._note
+
+    def note_type(self) -> dict[str, Any]:
+        return {
+            "id": self._note.mid,
+            "name": "Basic" if self._note.mid == 7 else "Cloze",
+            "tmpls": [{"name": self.template()["name"]}],
+        }
+
+    def template(self) -> dict[str, Any]:
+        return {"name": f"Card {self.ord + 1}"}
+
+    def current_deck_id(self) -> int:
+        return self.deck_id
+
+
+class FakeDecks:
+    def name(self, deck_id: int) -> str:
+        return "Default" if deck_id == 1 else f"Deck {deck_id}"
+
+
+class FakeCollectionForCards:
+    def __init__(self, cards: dict[int, FakeCardForSnapshot]) -> None:
+        self.cards = cards
+        self.decks = FakeDecks()
+
+    def get_card(self, card_id: int) -> FakeCardForSnapshot:
+        return self.cards[card_id]
+
+
+class FakeCollectionForNotes:
+    def __init__(self, notes: dict[int, FakeMutableNote]) -> None:
+        self.notes = notes
+
+    def get_note(self, note_id: int) -> FakeMutableNote:
+        return self.notes[note_id]
+
+
+class FakeVisibleWidget:
+    def __init__(self, visible: bool = True) -> None:
+        self.visible = visible
+
+    def show(self) -> None:
+        self.visible = True
+
+    def hide(self) -> None:
+        self.visible = False
+
+    def setVisible(self, visible: bool) -> None:
+        self.visible = visible
+
+    def isVisible(self) -> bool:
+        return self.visible
+
+
+class FakeSplitter:
+    def __init__(self, widget: FakeVisibleWidget) -> None:
+        self._widget = widget
+
+    def widget(self, index: int) -> FakeVisibleWidget:
+        assert index == 1
+        return self._widget
+
+
+class FakeSelectionTable:
+    def __init__(self, count: int) -> None:
+        self.count = count
+
+    def len_selection(self) -> int:
+        return self.count
+
+
+class FakeBrowserForPane:
+    pass
+
+
+class FakeBrowserPane(FakeVisibleWidget):
+    def __init__(self) -> None:
+        super().__init__(False)
+        self.context_changes = 0
+
+    def on_browser_context_changed(self) -> None:
+        self.context_changes += 1
+
+
 class FutureThatMustNotBeRead:
     def __init__(self) -> None:
         self.read = False
@@ -405,6 +593,7 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
     aqt_module = types.ModuleType("aqt")
     aqt_module.__path__ = []
     gui_hooks = types.SimpleNamespace(
+        browser_will_show=[],
         browser_did_change_row=[],
         editor_did_init=[],
         editor_did_init_buttons=[],
@@ -422,6 +611,7 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
     operations_module.__path__ = []
     note_module = types.ModuleType("aqt.operations.note")
     note_module.update_note = lambda *args, **kwargs: None
+    note_module.update_notes = lambda *args, **kwargs: None
     operations_module.note = note_module
     aqt_module.operations = operations_module
 
@@ -430,6 +620,8 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         "QAction",
         "QCheckBox",
         "QComboBox",
+        "QDialog",
+        "QDialogButtonBox",
         "QDockWidget",
         "QFormLayout",
         "QHBoxLayout",
@@ -1251,6 +1443,151 @@ def test_project_root_status_reflects_access_mode(tmp_path: Path) -> None:
     )
 
 
+def test_browser_multi_card_snapshot_expands_selected_cards_from_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    note_one = FakeMutableNote(
+        note_id=101,
+        mid=7,
+        field_names=("Front", "Back"),
+        fields=("front", "back"),
+        tags=("keep",),
+    )
+    note_two = FakeMutableNote(
+        note_id=202,
+        mid=8,
+        field_names=("Text",),
+        fields=("text",),
+        tags=("cloze",),
+    )
+    cards = {
+        11: FakeCardForSnapshot(card_id=11, note=note_one, ord=0, template_name="A"),
+        12: FakeCardForSnapshot(card_id=12, note=note_one, ord=1, template_name="B"),
+        21: FakeCardForSnapshot(card_id=21, note=note_two, ord=0, template_name="C"),
+    }
+    browser = types.SimpleNamespace(
+        selected_cards=lambda: [11, 12, 21],
+        col=FakeCollectionForCards(cards),
+    )
+
+    snapshot = runtime.browser_multi_card_snapshot(browser)
+
+    assert [card.card_id for card in snapshot.cards] == [11, 12, 21]
+    assert [note.note_id for note in snapshot.notes] == [101, 202]
+    assert snapshot.cards[1].note_id == 101
+    assert snapshot.cards[1].template_name == "Card 2"
+    assert snapshot.notes[0].fields[0] == FieldSnapshot("Front", "front")
+    assert snapshot.as_tool_result()["mode"] == "browse_multi"
+
+
+def test_prepare_multi_note_updates_applies_checked_notes_only_and_rejects_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    patch = validate_multi_note_patch(
+        {
+            "summary": "Tighten selected cards",
+            "note_updates": [
+                {
+                    "note_id": 101,
+                    "notetype_id": 7,
+                    "field_updates": [{"name": "Front", "html": "new front"}],
+                    "tags": {"replace": None, "add": ["agent"], "remove": []},
+                },
+                {
+                    "note_id": 202,
+                    "notetype_id": 8,
+                    "field_updates": [{"name": "Text", "html": "new text"}],
+                    "tags": {"replace": None, "add": [], "remove": []},
+                },
+            ],
+        },
+        multi_snapshot(),
+    )
+    note_one = FakeMutableNote(
+        note_id=101,
+        mid=7,
+        field_names=("Front", "Back"),
+        fields=("old front", "old back"),
+        tags=("keep", "remove-me"),
+    )
+    note_two = FakeMutableNote(
+        note_id=202,
+        mid=8,
+        field_names=("Text",),
+        fields=("old {{c1::text}}",),
+        tags=("cloze",),
+    )
+
+    updates = runtime.prepare_multi_note_updates(
+        FakeCollectionForNotes({101: note_one, 202: note_two}),
+        multi_snapshot(),
+        patch,
+        {101},
+    )
+
+    assert updates == [note_one]
+    assert note_one.fields == ["new front", "old back"]
+    assert note_one.tags == ["keep", "remove-me", "agent"]
+    assert note_two.fields == ["old {{c1::text}}"]
+
+    stale_note = FakeMutableNote(
+        note_id=101,
+        mid=7,
+        field_names=("Front", "Back"),
+        fields=("changed front", "old back"),
+        tags=("keep", "remove-me"),
+    )
+    with pytest.raises(PatchValidationError, match="changed since the proposal"):
+        runtime.prepare_multi_note_updates(
+            FakeCollectionForNotes({101: stale_note, 202: note_two}),
+            multi_snapshot(),
+            patch,
+            {101},
+        )
+
+
+def test_browser_multi_card_pane_replaces_blank_editor_area(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    browser = FakeBrowserForPane()
+    fields_area = FakeVisibleWidget(False)
+    splitter_pane = FakeVisibleWidget(False)
+    editor_web = FakeVisibleWidget(True)
+    pane = FakeBrowserPane()
+    browser.form = types.SimpleNamespace(
+        fieldsArea=fields_area,
+        splitter=FakeSplitter(splitter_pane),
+    )
+    browser.editor = types.SimpleNamespace(web=editor_web)
+    browser.table = FakeSelectionTable(2)
+    runtime._browser_panes[browser] = pane
+
+    runtime._sync_browser_multi_card_pane(browser)
+
+    assert splitter_pane.visible is True
+    assert fields_area.visible is True
+    assert editor_web.visible is False
+    assert pane.visible is True
+    assert pane.context_changes == 1
+
+    browser.table.count = 1
+    runtime._sync_browser_multi_card_pane(browser)
+
+    assert pane.visible is False
+    assert editor_web.visible is True
+
+    browser.table.count = 0
+    editor_web.visible = False
+    pane.visible = True
+    runtime._sync_browser_multi_card_pane(browser)
+
+    assert pane.visible is False
+    assert editor_web.visible is True
+
+
 def test_sanitize_html_allows_formatting_and_mathjax() -> None:
     assert (
         sanitize_html("<p>Use <strong>canonical</strong> divisors \\[K_X\\].</p>")
@@ -1778,6 +2115,103 @@ def test_validate_note_patch_accepts_current_note_fields_and_tags() -> None:
     assert patch.tag_patch.apply(snapshot().tags) == ("keep", "agent")
 
 
+def test_validate_multi_note_patch_accepts_selected_note_updates() -> None:
+    patch = validate_multi_note_patch(
+        {
+            "summary": "Tighten selected cards",
+            "note_updates": [
+                {
+                    "note_id": 101,
+                    "notetype_id": 7,
+                    "field_updates": [{"name": "Front", "html": "new front"}],
+                    "tags": {"replace": None, "add": ["agent"], "remove": []},
+                },
+                {
+                    "note_id": 202,
+                    "notetype_id": 8,
+                    "field_updates": [{"name": "Text", "html": "new {{c1::text}}"}],
+                    "tags": {"replace": None, "add": [], "remove": ["cloze"]},
+                },
+            ],
+        },
+        multi_snapshot(),
+    )
+
+    assert isinstance(patch, MultiNotePatch)
+    assert patch.summary == "Tighten selected cards"
+    assert patch.note_updates[0].note_id == 101
+    assert patch.note_updates[0].field_updates == {"Front": "new front"}
+    assert patch.note_updates[0].tag_patch.apply(("keep",)) == ("keep", "agent")
+    assert patch.note_updates[1].tag_patch.apply(("cloze",)) == ()
+
+
+def test_validate_multi_note_patch_rejects_unselected_note_or_unknown_field() -> None:
+    with pytest.raises(PatchValidationError, match="not selected"):
+        validate_multi_note_patch(
+            {
+                "summary": "Bad note",
+                "note_updates": [
+                    {
+                        "note_id": 999,
+                        "notetype_id": 7,
+                        "field_updates": [{"name": "Front", "html": "new"}],
+                        "tags": {"replace": None, "add": [], "remove": []},
+                    }
+                ],
+            },
+            multi_snapshot(),
+        )
+
+    with pytest.raises(PatchValidationError, match="Unknown field"):
+        validate_multi_note_patch(
+            {
+                "summary": "Bad field",
+                "note_updates": [
+                    {
+                        "note_id": 101,
+                        "notetype_id": 7,
+                        "field_updates": [{"name": "Extra", "html": "new"}],
+                        "tags": {"replace": None, "add": [], "remove": []},
+                    }
+                ],
+            },
+            multi_snapshot(),
+        )
+
+
+def test_render_multi_note_card_proposal_diff_shows_one_cards_note_group() -> None:
+    patch = validate_multi_note_patch(
+        {
+            "summary": "Tighten selected cards",
+            "note_updates": [
+                {
+                    "note_id": 101,
+                    "notetype_id": 7,
+                    "field_updates": [{"name": "Front", "html": "<b>new</b>"}],
+                    "tags": {"replace": None, "add": ["agent"], "remove": []},
+                },
+                {
+                    "note_id": 202,
+                    "notetype_id": 8,
+                    "field_updates": [{"name": "Text", "html": "new text"}],
+                    "tags": {"replace": None, "add": [], "remove": []},
+                },
+            ],
+        },
+        multi_snapshot(),
+    )
+
+    rendered = render_multi_note_card_proposal_diff(multi_snapshot(), patch, card_id=12)
+
+    assert "Tighten selected cards" in rendered
+    assert "Card 2" in rendered
+    assert "note 101" in rendered
+    assert "Field: Front" in rendered
+    assert "&lt;b&gt;new&lt;/b&gt;" in rendered
+    assert "new text" not in rendered
+    assert multi_note_patch_card_note_ids(multi_snapshot(), patch) == (101, 101, 202)
+
+
 def test_validate_note_patch_rejects_unknown_field() -> None:
     with pytest.raises(PatchValidationError, match="Unknown field"):
         validate_note_patch(
@@ -1942,6 +2376,74 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
         "turn.started",
         "exec_command_begin",
     ]
+
+
+def test_codex_agent_sends_multi_card_context_and_validates_note_patch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        output_path = Path(command[command.index("--output-last-message") + 1])
+        output_path.write_text(
+            json.dumps(
+                {
+                    "message": "Updated selected cards.",
+                    "message_html": "<p>Updated selected cards.</p>",
+                    "patch": {
+                        "summary": "Tighten selected cards",
+                        "note_updates": [
+                            {
+                                "note_id": 101,
+                                "notetype_id": 7,
+                                "field_updates": [
+                                    {"name": "Front", "html": "new front"},
+                                ],
+                                "tags": {
+                                    "replace": None,
+                                    "add": ["agent"],
+                                    "remove": [],
+                                },
+                            }
+                        ],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        process = FakePopen(stdout='{"type":"turn.started"}\n')
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model="",
+        timeout_seconds=123,
+    ).send(
+        prompt="Improve selected cards",
+        snapshot=multi_snapshot(),
+        project_root="",
+        history=[],
+    )
+
+    stdin = captured["process"].stdin.text
+    assert '"mode": "browse_multi"' in stdin
+    assert '"card_id": 11' in stdin
+    assert '"note_id": 101' in stdin
+    assert "return note_updates" in stdin
+    assert "attached image number" not in stdin
+    assert isinstance(result.proposals[0], MultiNotePatch)
+    assert result.proposals[0].note_updates[0].field_updates == {"Front": "new front"}
 
 
 def test_codex_agent_logs_redacted_success_lifecycle(

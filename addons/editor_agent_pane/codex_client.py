@@ -22,7 +22,14 @@ from .agent_log import (
     stream_event_log_payload,
     text_preview,
 )
-from .patches import EditorSnapshot, NotePatch, validate_note_patch
+from .patches import (
+    EditorSnapshot,
+    MultiCardSnapshot,
+    MultiNotePatch,
+    NotePatch,
+    validate_multi_note_patch,
+    validate_note_patch,
+)
 from .sources import SourceAccessError, resolve_project_root
 
 DEFAULT_CODEX_APP_PATH = "/Applications/Codex.app/Contents/Resources/codex"
@@ -48,6 +55,84 @@ PROJECT_ACCESS_INSTRUCTIONS = {
 }
 
 
+SINGLE_NOTE_PATCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "note_id": {"type": ["integer", "null"]},
+        "notetype_id": {"type": "integer"},
+        "field_updates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "html": {"type": "string"},
+                },
+                "required": ["name", "html"],
+                "additionalProperties": False,
+            },
+        },
+        "tags": {
+            "type": "object",
+            "properties": {
+                "replace": {
+                    "type": ["array", "null"],
+                    "items": {"type": "string"},
+                },
+                "add": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "remove": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["replace", "add", "remove"],
+            "additionalProperties": False,
+        },
+    },
+    "required": [
+        "summary",
+        "note_id",
+        "notetype_id",
+        "field_updates",
+        "tags",
+    ],
+    "additionalProperties": False,
+}
+
+MULTI_NOTE_PATCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "note_updates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "note_id": {"type": "integer"},
+                    "notetype_id": {"type": "integer"},
+                    "field_updates": SINGLE_NOTE_PATCH_SCHEMA["properties"][
+                        "field_updates"
+                    ],
+                    "tags": SINGLE_NOTE_PATCH_SCHEMA["properties"]["tags"],
+                },
+                "required": [
+                    "note_id",
+                    "notetype_id",
+                    "field_updates",
+                    "tags",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["summary", "note_updates"],
+    "additionalProperties": False,
+}
+
 CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -56,53 +141,8 @@ CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
         "patch": {
             "anyOf": [
                 {"type": "null"},
-                {
-                    "type": "object",
-                    "properties": {
-                        "summary": {"type": "string"},
-                        "note_id": {"type": ["integer", "null"]},
-                        "notetype_id": {"type": "integer"},
-                        "field_updates": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "name": {"type": "string"},
-                                    "html": {"type": "string"},
-                                },
-                                "required": ["name", "html"],
-                                "additionalProperties": False,
-                            },
-                        },
-                        "tags": {
-                            "type": "object",
-                            "properties": {
-                                "replace": {
-                                    "type": ["array", "null"],
-                                    "items": {"type": "string"},
-                                },
-                                "add": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                },
-                                "remove": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                },
-                            },
-                            "required": ["replace", "add", "remove"],
-                            "additionalProperties": False,
-                        },
-                    },
-                    "required": [
-                        "summary",
-                        "note_id",
-                        "notetype_id",
-                        "field_updates",
-                        "tags",
-                    ],
-                    "additionalProperties": False,
-                },
+                SINGLE_NOTE_PATCH_SCHEMA,
+                MULTI_NOTE_PATCH_SCHEMA,
             ]
         },
     },
@@ -119,12 +159,8 @@ User-customized instructions:
 Current editor context is JSON:
 {context_json}
 
-If context_json.images is non-empty, the referenced note images have been
-attached to this initial prompt.
-context_json.images[n] corresponds to attached image number n + 1. Each entry
-records the Anki media filename plus the note fields that reference that image.
-If context_json.selected_text is non-null, it is the current or most recent
-non-empty text selection from a note field.
+{image_instructions}
+{selection_instructions}
 
 Recent conversation:
 {history}
@@ -148,22 +184,29 @@ fine to include a concise rationale or evidence summary in message and
 message_html, especially when proposing a patch.
 
 When proposing a patch:
-- Target only the current note.
+- If context_json.mode is "browse_multi", target only notes listed in
+  context_json.notes and return note_updates. Each note_update edits a note
+  that may be shared by multiple selected cards.
+- Otherwise, target only the current note and return field_updates/tags at the
+  top level of patch.
 - Use exact field names from the editor context.
 - Preserve HTML where appropriate.
 - Explain briefly in message/message_html why the proposed change improves the
-  note.
+  note or selected cards.
 - Include tags.replace, tags.add, and tags.remove. Use null for tags.replace
   unless you intend to replace the complete tag list.
 - The patch will only be shown to the user; Anki applies it after approval.
 """
 
 
+AgentPatch = NotePatch | MultiNotePatch
+
+
 @dataclass(frozen=True)
 class AgentResult:
     text: str
     html: str
-    proposals: tuple[NotePatch, ...]
+    proposals: tuple[AgentPatch, ...]
     event_count: int = 0
 
 
@@ -210,7 +253,7 @@ class CodexCliAgent:
         self,
         *,
         prompt: str,
-        snapshot: EditorSnapshot,
+        snapshot: EditorSnapshot | MultiCardSnapshot,
         project_root: str,
         history: list[tuple[str, str]],
         event_callback: CodexEventCallback | None = None,
@@ -224,11 +267,7 @@ class CodexCliAgent:
             sandbox=self.project_folder_access,
             timeout_seconds=self.timeout_seconds,
             fast_mode=self.fast_mode,
-            note_id=snapshot.note_id,
-            notetype_id=snapshot.notetype_id,
-            field_count=len(snapshot.fields),
-            tag_count=len(snapshot.tags),
-            image_count=len(snapshot.images),
+            **_snapshot_log_payload(snapshot),
             prompt_chars=len(prompt),
             history_count=len(history),
             history_user_chars=sum(len(user) for user, _assistant in history),
@@ -238,9 +277,7 @@ class CodexCliAgent:
             temp = Path(temp_dir)
             schema_path = temp / "response.schema.json"
             output_path = temp / "last-message.json"
-            schema_path.write_text(
-                json.dumps(CODEX_OUTPUT_SCHEMA), encoding="utf-8"
-            )
+            schema_path.write_text(json.dumps(CODEX_OUTPUT_SCHEMA), encoding="utf-8")
 
             try:
                 cwd = self._working_directory(project_root, temp)
@@ -329,10 +366,10 @@ class CodexCliAgent:
             message = str(data.get("message") or "").strip()
             message_html = str(data.get("message_html") or "").strip()
             patch_data = data.get("patch")
-            proposals: tuple[NotePatch, ...] = ()
+            proposals: tuple[AgentPatch, ...] = ()
             if patch_data is not None:
                 try:
-                    proposals = (validate_note_patch(patch_data, snapshot),)
+                    proposals = (_validate_agent_patch(patch_data, snapshot),)
                 except Exception as exc:
                     _log_agent_event(
                         run_logger,
@@ -422,6 +459,8 @@ class CodexCliAgent:
         return PROMPT_TEMPLATE.format(
             custom_instructions=self.custom_instructions or "(none)",
             context_json=json.dumps(snapshot.as_tool_result(), ensure_ascii=False),
+            image_instructions=_image_instructions(snapshot),
+            selection_instructions=_selection_instructions(snapshot),
             history=history_text,
             user_prompt=prompt,
             project_access_instructions=PROJECT_ACCESS_INSTRUCTIONS[
@@ -575,7 +614,8 @@ def _model_reasoning_summary_config(
 ) -> str:
     summary_mode = (
         "concise"
-        if stream_reasoning_summaries and model not in MODELS_WITHOUT_REASONING_SUMMARIES
+        if stream_reasoning_summaries
+        and model not in MODELS_WITHOUT_REASONING_SUMMARIES
         else "none"
     )
     return f'model_reasoning_summary="{summary_mode}"'
@@ -645,8 +685,63 @@ def _format_codex_error(completed: _CodexProcessResult) -> str:
             return f"Codex CLI rejected the response schema: {match.group(1)}"
         return "Codex CLI rejected the response schema."
     if "not logged in" in details.lower() or "login" in details.lower():
-        return "Codex CLI is not logged in. Run `codex login` and choose ChatGPT sign-in."
+        return (
+            "Codex CLI is not logged in. Run `codex login` and choose ChatGPT sign-in."
+        )
     return f"Codex CLI failed with exit code {completed.returncode}: {details[-1200:]}"
+
+
+def _validate_agent_patch(
+    patch_data: dict[str, Any],
+    snapshot: EditorSnapshot | MultiCardSnapshot,
+) -> AgentPatch:
+    if isinstance(snapshot, MultiCardSnapshot):
+        return validate_multi_note_patch(patch_data, snapshot)
+    return validate_note_patch(patch_data, snapshot)
+
+
+def _snapshot_log_payload(
+    snapshot: EditorSnapshot | MultiCardSnapshot,
+) -> dict[str, Any]:
+    if isinstance(snapshot, MultiCardSnapshot):
+        return {
+            "mode": snapshot.mode,
+            "note_id": None,
+            "notetype_id": None,
+            "field_count": sum(len(note.fields) for note in snapshot.notes),
+            "tag_count": sum(len(note.tags) for note in snapshot.notes),
+            "image_count": 0,
+            "selected_card_count": len(snapshot.cards),
+            "selected_note_count": len(snapshot.notes),
+        }
+    return {
+        "mode": snapshot.mode,
+        "note_id": snapshot.note_id,
+        "notetype_id": snapshot.notetype_id,
+        "field_count": len(snapshot.fields),
+        "tag_count": len(snapshot.tags),
+        "image_count": len(snapshot.images),
+    }
+
+
+def _image_instructions(snapshot: EditorSnapshot | MultiCardSnapshot) -> str:
+    if not snapshot.image_paths():
+        return ""
+    return (
+        "If context_json.images is non-empty, the referenced note images have been\n"
+        "attached to this initial prompt.\n"
+        "context_json.images[n] corresponds to attached image number n + 1. Each entry\n"
+        "records the Anki media filename plus the note fields that reference that image."
+    )
+
+
+def _selection_instructions(snapshot: EditorSnapshot | MultiCardSnapshot) -> str:
+    if isinstance(snapshot, MultiCardSnapshot):
+        return ""
+    return (
+        "If context_json.selected_text is non-null, it is the current or most recent\n"
+        "non-empty text selection from a note field."
+    )
 
 
 def project_root_status(

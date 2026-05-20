@@ -14,11 +14,13 @@ from typing import Any
 import aqt
 from aqt import gui_hooks
 from aqt.editor import Editor, EditorMode
-from aqt.operations.note import update_note
+from aqt.operations.note import update_note, update_notes
 from aqt.qt import (
     QAction,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDockWidget,
     QFileDialog,
     QFormLayout,
@@ -56,8 +58,12 @@ from .note_images import collect_note_images
 from .patches import (
     EditorSnapshot,
     FieldSnapshot,
+    MultiCardSnapshot,
+    MultiNotePatch,
     NotePatch,
     PatchValidationError,
+    SelectedCardSnapshot,
+    SelectedNoteSnapshot,
     SelectedTextSnapshot,
     validate_selected_text_snapshot,
 )
@@ -74,11 +80,13 @@ from .surface import (
     js_clear_transcript,
     js_replace_element,
     js_set_proposal,
+    multi_note_patch_card_note_ids,
     render_activity_line,
     render_activity_start,
     render_activity_summary,
     render_assistant_message,
     render_error_message,
+    render_multi_note_card_proposal_diff,
     render_proposal_diff,
     render_user_message,
     selection_context_label_text,
@@ -115,6 +123,9 @@ _installed = False
 _panes: weakref.WeakKeyDictionary[Editor, "EditorAgentPane"] = (
     weakref.WeakKeyDictionary()
 )
+_browser_panes: weakref.WeakKeyDictionary[Any, "EditorAgentPane"] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def install() -> None:
@@ -125,6 +136,7 @@ def install() -> None:
     gui_hooks.editor_did_init_buttons.append(_add_editor_button)
     gui_hooks.editor_did_init.append(_add_editor_menu_action)
     gui_hooks.editor_did_load_note.append(_on_editor_did_load_note)
+    gui_hooks.browser_will_show.append(_on_browser_will_show)
     gui_hooks.browser_did_change_row.append(_on_browser_did_change_row)
 
 
@@ -229,6 +241,7 @@ def _on_browser_did_change_row(browser: Any) -> None:
     editor = getattr(browser, "editor", None)
     if editor is not None and (pane := _panes.get(editor)):
         pane.on_editor_context_changed()
+    _sync_browser_multi_card_pane(browser)
 
 
 def _toggle_pane(editor: Editor) -> None:
@@ -237,6 +250,55 @@ def _toggle_pane(editor: Editor) -> None:
         pane = EditorAgentPane(editor)
         _panes[editor] = pane
     pane.toggle()
+
+
+def _on_browser_will_show(browser: Any) -> None:
+    _ensure_browser_multi_card_pane(browser)
+    _sync_browser_multi_card_pane(browser)
+
+
+def _ensure_browser_multi_card_pane(browser: Any) -> "EditorAgentPane":
+    pane = _browser_panes.get(browser)
+    if pane is not None:
+        return pane
+    pane = EditorAgentPane(browser=browser, embedded=True)
+    _browser_panes[browser] = pane
+    fields_area = browser.form.fieldsArea
+    layout = fields_area.layout()
+    if layout is not None:
+        layout.addWidget(pane, 1)
+    pane.hide()
+    return pane
+
+
+def _browser_selection_count(browser: Any) -> int:
+    table = getattr(browser, "table", None)
+    if table is None:
+        return 0
+    return int(table.len_selection())
+
+
+def _sync_browser_multi_card_pane(browser: Any) -> None:
+    pane = _browser_panes.get(browser)
+    if pane is None:
+        return
+
+    editor = getattr(browser, "editor", None)
+    fields_area = browser.form.fieldsArea
+    splitter_widget = browser.form.splitter.widget(1)
+    multi_selected = _browser_selection_count(browser) > 1
+    if multi_selected:
+        if splitter_widget is not None:
+            splitter_widget.setVisible(True)
+        fields_area.show()
+        if editor is not None and getattr(editor, "web", None) is not None:
+            editor.web.hide()
+        pane.show()
+        pane.on_browser_context_changed()
+    else:
+        pane.hide()
+        if editor is not None and getattr(editor, "web", None) is not None:
+            editor.web.show()
 
 
 class PromptEdit(QPlainTextEdit):
@@ -254,37 +316,188 @@ class PromptEdit(QPlainTextEdit):
         super().keyPressEvent(event)
 
 
+class MultiCardProposalDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        snapshot: MultiCardSnapshot,
+        patch: MultiNotePatch,
+        apply_callback: Callable[[set[int]], bool],
+        discard_callback: Callable[[], None],
+    ) -> None:
+        super().__init__(parent, Qt.WindowType.Window)
+        self.snapshot = snapshot
+        self.patch = patch
+        self.apply_callback = apply_callback
+        self.discard_callback = discard_callback
+        self.cards = tuple(
+            card
+            for card in snapshot.cards
+            if patch.update_for_note(card.note_id) is not None
+        )
+        self.index = 0
+        self.checked_note_ids = set(patch.affected_note_ids())
+
+        self.setWindowTitle("Agent proposal")
+        self.resize(1000, 720)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        self.setLayout(layout)
+
+        top_row = QHBoxLayout()
+        self.previous_button = QPushButton("Previous")
+        self.next_button = QPushButton("Next")
+        self.page_label = QLabel("")
+        qconnect(self.previous_button.clicked, self._previous_card)
+        qconnect(self.next_button.clicked, self._next_card)
+        top_row.addWidget(self.previous_button)
+        top_row.addWidget(self.next_button)
+        top_row.addWidget(self.page_label, 1)
+        layout.addLayout(top_row)
+
+        self.apply_note_checkbox = QCheckBox("")
+        qconnect(self.apply_note_checkbox.toggled, self._on_note_checked)
+        layout.addWidget(self.apply_note_checkbox)
+
+        self.surface = AnkiWebView(self)
+        self.surface.stdHtml(
+            surface_body(),
+            js=[
+                "js/mathjax.js",
+                "js/vendor/mathjax/tex-chtml-full.js",
+            ],
+            context=self,
+        )
+        layout.addWidget(self.surface, 1)
+
+        buttons = QDialogButtonBox()
+        self.apply_button = buttons.addButton(
+            "Apply checked",
+            QDialogButtonBox.ButtonRole.AcceptRole,
+        )
+        self.discard_button = buttons.addButton(
+            "Discard",
+            QDialogButtonBox.ButtonRole.RejectRole,
+        )
+        assert self.apply_button is not None
+        assert self.discard_button is not None
+        qconnect(self.apply_button.clicked, self._apply_checked)
+        qconnect(self.discard_button.clicked, self._discard)
+        layout.addWidget(buttons)
+
+        self._show_current_card()
+
+    def _current_card(self) -> SelectedCardSnapshot:
+        return self.cards[self.index]
+
+    def _show_current_card(self) -> None:
+        if not self.cards:
+            self.page_label.setText("No affected cards")
+            self.apply_note_checkbox.setEnabled(False)
+            self.apply_button.setEnabled(False)
+            self.surface.eval(js_clear_proposal())
+            return
+
+        card = self._current_card()
+        note_cards = self.snapshot.cards_for_note(card.note_id)
+        self.page_label.setText(f"Card {self.index + 1} of {len(self.cards)}")
+        self.previous_button.setEnabled(self.index > 0)
+        self.next_button.setEnabled(self.index < len(self.cards) - 1)
+        self.apply_note_checkbox.blockSignals(True)
+        self.apply_note_checkbox.setText(
+            f"Apply changes to note {card.note_id} "
+            f"({len(note_cards)} selected card{'s' if len(note_cards) != 1 else ''})"
+        )
+        self.apply_note_checkbox.setChecked(card.note_id in self.checked_note_ids)
+        self.apply_note_checkbox.blockSignals(False)
+        self.surface.eval(
+            js_set_proposal(
+                render_multi_note_card_proposal_diff(
+                    self.snapshot,
+                    self.patch,
+                    card.card_id,
+                )
+            )
+        )
+
+    def _previous_card(self) -> None:
+        if self.index > 0:
+            self.index -= 1
+            self._show_current_card()
+
+    def _next_card(self) -> None:
+        if self.index < len(self.cards) - 1:
+            self.index += 1
+            self._show_current_card()
+
+    def _on_note_checked(self, checked: bool) -> None:
+        card = self._current_card()
+        if checked:
+            self.checked_note_ids.add(card.note_id)
+        else:
+            self.checked_note_ids.discard(card.note_id)
+
+    def _apply_checked(self) -> None:
+        if self.apply_callback(set(self.checked_note_ids)):
+            self.accept()
+
+    def _discard(self) -> None:
+        self.discard_callback()
+        self.reject()
+
+
 class EditorAgentPane(QWidget):
-    def __init__(self, editor: Editor) -> None:
-        super().__init__(editor.parentWindow)
+    def __init__(
+        self,
+        editor: Editor | None = None,
+        *,
+        browser: Any | None = None,
+        embedded: bool = False,
+    ) -> None:
+        if editor is None and browser is None:
+            raise ValueError("EditorAgentPane requires an editor or browser.")
+        parent = editor.parentWindow if editor is not None else browser
+        super().__init__(parent)
         self.editor = editor
+        self.browser = browser
+        self.embedded = embedded
         self.history: list[tuple[str, str]] = []
-        self.pending_patch: NotePatch | None = None
-        self.pending_snapshot: EditorSnapshot | None = None
+        self.pending_patch: NotePatch | MultiNotePatch | None = None
+        self.pending_snapshot: EditorSnapshot | MultiCardSnapshot | None = None
         self._activity_id: str | None = None
         self._activity_counter = 0
         self._activity_open = False
         self._agent_stop_event: Event | None = None
         self._context_generation = 0
         self._last_browser_note_id = self._current_browser_note_id()
+        self._last_browser_multi_card_ids = self._current_browser_multi_card_ids()
         self._selected_text_snapshot: SelectedTextSnapshot | None = None
         self._selection_context_refresh_pending = False
         self._selection_context_request_id = 0
         self._loading_settings = False
+        self._multi_proposal_dialog: MultiCardProposalDialog | None = None
 
-        self.dock = QDockWidget("Agent", editor.parentWindow)
-        self.dock.setObjectName("EditorAgentPane")
-        self.dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self.dock.setWidget(self)
+        self.dock: QDockWidget | None = None
+        if not embedded:
+            assert editor is not None
+            self.dock = QDockWidget("Agent", editor.parentWindow)
+            self.dock.setObjectName("EditorAgentPane")
+            self.dock.setAllowedAreas(
+                Qt.DockWidgetArea.LeftDockWidgetArea
+                | Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            self.dock.setWidget(self)
 
-        parent = editor.parentWindow
-        if isinstance(parent, QMainWindow):
-            parent.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock)
-        else:
-            self.dock.setFloating(True)
-        self.dock.hide()
+            dock_parent = editor.parentWindow
+            if isinstance(dock_parent, QMainWindow):
+                dock_parent.addDockWidget(
+                    Qt.DockWidgetArea.RightDockWidgetArea, self.dock
+                )
+            else:
+                self.dock.setFloating(True)
+            self.dock.hide()
 
         self._build_ui()
         self._load_settings()
@@ -294,7 +507,8 @@ class EditorAgentPane(QWidget):
             self._selection_context_timer.timeout,
             self._refresh_selection_context_from_editor,
         )
-        qconnect(self.dock.visibilityChanged, self._on_dock_visibility_changed)
+        if self.dock is not None:
+            qconnect(self.dock.visibilityChanged, self._on_dock_visibility_changed)
         qconnect(self.text_splitter.splitterMoved, self._save_splitter_sizes)
         self.refresh_context_label()
 
@@ -442,7 +656,9 @@ class EditorAgentPane(QWidget):
             self.reasoning_checkbox.setChecked(
                 bool(config["stream_reasoning_summaries"])
             )
-            self.instructions_edit.setPlainText(str(config["custom_instructions"] or ""))
+            self.instructions_edit.setPlainText(
+                str(config["custom_instructions"] or "")
+            )
             self.text_splitter.setSizes(
                 _validated_splitter_sizes(config["splitter_sizes"])
             )
@@ -553,6 +769,12 @@ class EditorAgentPane(QWidget):
         openFolder(str(path))
 
     def toggle(self) -> None:
+        if self.dock is None:
+            self.setVisible(not self.isVisible())
+            if self.isVisible():
+                self.prompt.setFocus()
+                self.refresh_context_label()
+            return
         self.dock.setVisible(not self.dock.isVisible())
         if self.dock.isVisible():
             self.prompt.setFocus()
@@ -562,6 +784,23 @@ class EditorAgentPane(QWidget):
             self._stop_selection_context_refresh()
 
     def refresh_context_label(self) -> None:
+        if self.browser is not None:
+            try:
+                snapshot = browser_multi_card_snapshot(self.browser)
+            except RuntimeError:
+                self.context_label.setText("Select multiple cards to use the agent.")
+                return
+            project_status = project_root_status(
+                self._project_folder_text(),
+                self._project_folder_access(),
+            )
+            self.context_label.setText(
+                f"browse - {len(snapshot.cards)} selected cards - "
+                f"{len(snapshot.notes)} notes\n{project_status}"
+            )
+            return
+
+        assert self.editor is not None
         note = self.editor.note
         if not note:
             self.context_label.setText("No current note.")
@@ -584,6 +823,8 @@ class EditorAgentPane(QWidget):
     def on_editor_context_changed(self) -> None:
         self.refresh_context_label()
         self._set_selected_text_snapshot(None)
+        if self.editor is None:
+            return
         if self.editor.editorMode is not EditorMode.BROWSER:
             return
         note_id = self._current_browser_note_id()
@@ -592,13 +833,32 @@ class EditorAgentPane(QWidget):
         self._last_browser_note_id = note_id
         self._clear_chat_context()
 
+    def on_browser_context_changed(self) -> None:
+        self.refresh_context_label()
+        card_ids = self._current_browser_multi_card_ids()
+        if card_ids == self._last_browser_multi_card_ids:
+            return
+        self._last_browser_multi_card_ids = card_ids
+        self._clear_chat_context()
+
     def _current_browser_note_id(self) -> int | None:
+        if self.editor is None:
+            return None
         if self.editor.editorMode is not EditorMode.BROWSER:
             return None
         note = self.editor.note
         if not note or not note.id:
             return None
         return int(note.id)
+
+    def _current_browser_multi_card_ids(self) -> tuple[int, ...]:
+        browser = self.browser
+        if browser is None or _browser_selection_count(browser) <= 1:
+            return ()
+        try:
+            return tuple(int(card_id) for card_id in browser.selected_cards())
+        except Exception:
+            return ()
 
     def _reset_chat(self) -> None:
         self._clear_chat_context()
@@ -626,6 +886,11 @@ class EditorAgentPane(QWidget):
         else:
             self._stop_selection_context_refresh()
 
+    def _pane_is_visible(self) -> bool:
+        if self.dock is not None:
+            return self.dock.isVisible()
+        return self.isVisible()
+
     def _start_selection_context_refresh(self) -> None:
         self._refresh_selection_context_from_editor()
         self._selection_context_timer.start()
@@ -646,7 +911,7 @@ class EditorAgentPane(QWidget):
     def _refresh_selection_context_from_editor(self) -> None:
         if self._selection_context_refresh_pending:
             return
-        if not self.dock.isVisible():
+        if not self._pane_is_visible() or self.editor is None:
             self._set_selected_text_snapshot(None)
             return
         self._selection_context_refresh_pending = True
@@ -671,12 +936,15 @@ class EditorAgentPane(QWidget):
         if (
             request_id != self._selection_context_request_id
             or generation != self._context_generation
-            or not self.dock.isVisible()
+            or not self._pane_is_visible()
         ):
             return
-        self._set_selected_text_snapshot(
-            validated_selected_text_for_editor(self.editor, selected_text)
-        )
+        if self.editor is None:
+            self._set_selected_text_snapshot(None)
+        else:
+            self._set_selected_text_snapshot(
+                validated_selected_text_for_editor(self.editor, selected_text)
+            )
 
     def _set_selected_text_snapshot(
         self,
@@ -727,6 +995,7 @@ class EditorAgentPane(QWidget):
         patch: NotePatch,
         notetype: dict[str, Any],
     ) -> None:
+        assert self.editor is not None
         renderer = LegacyLatexPreviewRenderer(col=self.editor.mw.col, notetype=notetype)
         self.surface.eval(
             js_set_proposal(render_proposal_diff(snapshot, patch, renderer.render))
@@ -757,6 +1026,9 @@ class EditorAgentPane(QWidget):
     ) -> None:
         if generation != self._context_generation:
             return
+        if self.editor is None:
+            self._start_agent_request(prompt, generation, selected_text)
+            return
         self.editor.call_after_note_saved(
             lambda: self._start_agent_request(prompt, generation, selected_text),
             keepFocus=True,
@@ -773,13 +1045,22 @@ class EditorAgentPane(QWidget):
         if generation != self._context_generation:
             return
         try:
-            snapshot = editor_snapshot(self.editor, selected_text)
-            notetype = dict(self.editor.note_type())
+            browser = getattr(self, "browser", None)
+            if browser is not None:
+                snapshot = browser_multi_card_snapshot(browser)
+                notetype: dict[str, Any] = {}
+            else:
+                assert self.editor is not None
+                snapshot = editor_snapshot(self.editor, selected_text)
+                notetype = dict(self.editor.note_type())
         except RuntimeError as exc:
             showWarning(str(exc), parent=self)
             return
-        self._set_selected_text_snapshot(snapshot.selected_text)
-        self._append_transcript(render_user_message(prompt, snapshot.selected_text))
+        selected_snapshot = (
+            snapshot.selected_text if isinstance(snapshot, EditorSnapshot) else None
+        )
+        self._set_selected_text_snapshot(selected_snapshot)
+        self._append_transcript(render_user_message(prompt, selected_snapshot))
 
         config = _config()
         model = self._model_text() or str(config["model"])
@@ -867,7 +1148,7 @@ class EditorAgentPane(QWidget):
         generation: int,
         stop_event: Event,
         prompt: str,
-        snapshot: EditorSnapshot,
+        snapshot: EditorSnapshot | MultiCardSnapshot,
         notetype: dict[str, Any],
         activity: CodexActivityRenderer,
         started_at: float | None = None,
@@ -922,7 +1203,14 @@ class EditorAgentPane(QWidget):
         if proposals:
             self.pending_patch = proposals[-1]
             self.pending_snapshot = snapshot
-            self._set_proposal(snapshot, proposals[-1], notetype)
+            if isinstance(snapshot, MultiCardSnapshot) and isinstance(
+                proposals[-1], MultiNotePatch
+            ):
+                self._set_multi_proposal(snapshot, proposals[-1])
+            else:
+                assert isinstance(snapshot, EditorSnapshot)
+                assert isinstance(proposals[-1], NotePatch)
+                self._set_proposal(snapshot, proposals[-1], notetype)
             self.apply_button.setEnabled(True)
 
     def _stop_running_agent(self) -> None:
@@ -937,10 +1225,20 @@ class EditorAgentPane(QWidget):
         self.pending_snapshot = None
         self._clear_proposal()
         self.apply_button.setEnabled(False)
+        if hasattr(self.apply_button, "setText"):
+            self.apply_button.setText("Apply proposal")
 
     def _apply_pending_patch(self) -> None:
         patch = self.pending_patch
         if patch is None:
+            return
+        if isinstance(patch, MultiNotePatch):
+            snapshot = self.pending_snapshot
+            if not isinstance(snapshot, MultiCardSnapshot):
+                return
+            self._show_multi_proposal_dialog(snapshot, patch)
+            return
+        if self.editor is None:
             return
         generation = self._context_generation
         self.editor.call_after_note_saved(
@@ -958,6 +1256,81 @@ class EditorAgentPane(QWidget):
             return
         self._discard_pending_patch()
         tooltip("Agent proposal applied.", parent=self)
+
+    def _set_multi_proposal(
+        self,
+        snapshot: MultiCardSnapshot,
+        patch: MultiNotePatch,
+    ) -> None:
+        self.surface.eval(
+            js_set_proposal(
+                render_multi_note_card_proposal_diff(
+                    snapshot,
+                    patch,
+                    multi_note_patch_card_note_ids(snapshot, patch)[0],
+                )
+            )
+        )
+        if hasattr(self.apply_button, "setText"):
+            self.apply_button.setText("Review proposal")
+        self._show_multi_proposal_dialog(snapshot, patch)
+
+    def _show_multi_proposal_dialog(
+        self,
+        snapshot: MultiCardSnapshot,
+        patch: MultiNotePatch,
+    ) -> None:
+        if self._multi_proposal_dialog is not None:
+            self._multi_proposal_dialog.raise_()
+            self._multi_proposal_dialog.activateWindow()
+            return
+        dialog = MultiCardProposalDialog(
+            parent=self,
+            snapshot=snapshot,
+            patch=patch,
+            apply_callback=self._apply_checked_multi_patch,
+            discard_callback=self._discard_pending_patch,
+        )
+        self._multi_proposal_dialog = dialog
+
+        def on_finished(_result: int) -> None:
+            self._multi_proposal_dialog = None
+
+        qconnect(dialog.finished, on_finished)
+        dialog.show()
+
+    def _apply_checked_multi_patch(self, checked_note_ids: set[int]) -> bool:
+        snapshot = self.pending_snapshot
+        patch = self.pending_patch
+        if not isinstance(snapshot, MultiCardSnapshot) or not isinstance(
+            patch, MultiNotePatch
+        ):
+            return False
+        browser = self.browser
+        if browser is None:
+            return False
+        try:
+            notes = prepare_multi_note_updates(
+                browser.col,
+                snapshot,
+                patch,
+                checked_note_ids,
+            )
+        except PatchValidationError as exc:
+            showWarning(str(exc), parent=self)
+            return False
+        if not notes:
+            showWarning("No checked cards have proposed changes.", parent=self)
+            return False
+
+        def on_success(_changes: Any) -> None:
+            self._discard_pending_patch()
+            tooltip("Agent proposal applied.", parent=self)
+
+        update_notes(parent=self, notes=notes).success(on_success).run_in_background(
+            initiator=self
+        )
+        return True
 
 
 def editor_field_snapshots(editor: Editor) -> tuple[FieldSnapshot, ...]:
@@ -1010,6 +1383,65 @@ def editor_snapshot(editor: Editor, selected_text: Any = None) -> EditorSnapshot
     )
 
 
+def browser_multi_card_snapshot(browser: Any) -> MultiCardSnapshot:
+    card_ids = tuple(int(card_id) for card_id in browser.selected_cards())
+    if len(card_ids) <= 1:
+        raise RuntimeError("Select multiple cards to use the agent.")
+
+    cards: list[SelectedCardSnapshot] = []
+    notes: list[SelectedNoteSnapshot] = []
+    seen_note_ids: set[int] = set()
+    for card_id in card_ids:
+        try:
+            card = browser.col.get_card(card_id)
+            note = card.note()
+            notetype = card.note_type()
+            template = card.template()
+        except Exception as exc:
+            raise RuntimeError("A selected card could not be loaded.") from exc
+
+        notetype_id = int(note.mid)
+        notetype_name = str(notetype.get("name", notetype_id))
+        deck_id = (
+            int(card.current_deck_id()) if hasattr(card, "current_deck_id") else None
+        )
+        deck_name = None
+        if deck_id is not None:
+            try:
+                deck_name = str(browser.col.decks.name(card.current_deck_id()))
+            except Exception:
+                deck_name = str(deck_id)
+        cards.append(
+            SelectedCardSnapshot(
+                card_id=card_id,
+                note_id=int(note.id),
+                notetype_id=notetype_id,
+                notetype_name=notetype_name,
+                ord=int(card.ord),
+                template_name=str(template.get("name", f"Card {int(card.ord) + 1}")),
+                deck_id=deck_id,
+                deck_name=deck_name,
+            )
+        )
+
+        if int(note.id) not in seen_note_ids:
+            seen_note_ids.add(int(note.id))
+            notes.append(
+                SelectedNoteSnapshot(
+                    note_id=int(note.id),
+                    notetype_id=notetype_id,
+                    notetype_name=notetype_name,
+                    fields=tuple(
+                        FieldSnapshot(name=str(name), html=str(html))
+                        for name, html in note.items()
+                    ),
+                    tags=tuple(note.tags),
+                )
+            )
+
+    return MultiCardSnapshot(cards=tuple(cards), notes=tuple(notes))
+
+
 def apply_patch_to_editor(editor: Editor, patch: NotePatch) -> None:
     note = editor.note
     if note is None:
@@ -1044,6 +1476,53 @@ def apply_patch_to_editor(editor: Editor, patch: NotePatch) -> None:
 
     if editor.editorMode is not EditorMode.ADD_CARDS:
         update_note(parent=editor.widget, note=note).run_in_background(initiator=editor)
+
+
+def prepare_multi_note_updates(
+    col: Any,
+    snapshot: MultiCardSnapshot,
+    patch: MultiNotePatch,
+    checked_note_ids: set[int],
+) -> list[Any]:
+    notes = []
+    for update in patch.note_updates:
+        if update.note_id not in checked_note_ids:
+            continue
+        snapshot_note = snapshot.note_by_id(update.note_id)
+        try:
+            note = col.get_note(update.note_id)
+        except Exception as exc:
+            raise PatchValidationError(
+                f"Selected note {update.note_id} no longer exists."
+            ) from exc
+        if int(note.mid) != snapshot_note.notetype_id:
+            raise PatchValidationError(
+                f"Selected note {update.note_id} has changed note type."
+            )
+
+        current_fields = tuple(
+            FieldSnapshot(name=str(name), html=str(html)) for name, html in note.items()
+        )
+        current_by_name = {field.name: field.html for field in current_fields}
+        field_names = [field.name for field in current_fields]
+        for field_name, html in update.field_updates.items():
+            if field_name not in current_by_name:
+                raise PatchValidationError(f"Unknown field: {field_name}.")
+            if current_by_name[field_name] != snapshot_note.field_html(field_name):
+                raise PatchValidationError(
+                    f"Selected note {update.note_id} has changed since the proposal."
+                )
+            note.fields[field_names.index(field_name)] = html
+
+        if update.tag_patch.has_changes():
+            if tuple(note.tags) != snapshot_note.tags:
+                raise PatchValidationError(
+                    f"Selected note {update.note_id} tags have changed since the proposal."
+                )
+            note.tags = list(update.tag_patch.apply(tuple(note.tags)))
+
+        notes.append(note)
+    return notes
 
 
 def _editor_mode_name(editor: Editor) -> str:

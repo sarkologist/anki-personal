@@ -101,6 +101,92 @@ class EditorSnapshot:
         return tuple(image_snapshot.path for image_snapshot in self.images)
 
 
+@dataclass(frozen=True)
+class SelectedCardSnapshot:
+    card_id: int
+    note_id: int
+    notetype_id: int
+    notetype_name: str
+    ord: int
+    template_name: str
+    deck_id: int | None = None
+    deck_name: str | None = None
+
+    def as_tool_result(self) -> dict[str, Any]:
+        return {
+            "card_id": self.card_id,
+            "note_id": self.note_id,
+            "notetype_id": self.notetype_id,
+            "notetype_name": self.notetype_name,
+            "ord": self.ord,
+            "template_name": self.template_name,
+            "deck_id": self.deck_id,
+            "deck_name": self.deck_name,
+        }
+
+
+@dataclass(frozen=True)
+class SelectedNoteSnapshot:
+    note_id: int
+    notetype_id: int
+    notetype_name: str
+    fields: tuple[FieldSnapshot, ...]
+    tags: tuple[str, ...]
+
+    def field_names(self) -> tuple[str, ...]:
+        return tuple(field.name for field in self.fields)
+
+    def field_html(self, name: str) -> str:
+        for field_snapshot in self.fields:
+            if field_snapshot.name == name:
+                return field_snapshot.html
+        raise KeyError(name)
+
+    def as_tool_result(self) -> dict[str, Any]:
+        return {
+            "note_id": self.note_id,
+            "notetype_id": self.notetype_id,
+            "notetype_name": self.notetype_name,
+            "fields": [
+                {"name": field_snapshot.name, "html": field_snapshot.html}
+                for field_snapshot in self.fields
+            ],
+            "tags": list(self.tags),
+        }
+
+
+@dataclass(frozen=True)
+class MultiCardSnapshot:
+    cards: tuple[SelectedCardSnapshot, ...]
+    notes: tuple[SelectedNoteSnapshot, ...]
+    mode: str = "browse_multi"
+
+    def note_by_id(self, note_id: int) -> SelectedNoteSnapshot:
+        for note in self.notes:
+            if note.note_id == note_id:
+                return note
+        raise KeyError(note_id)
+
+    def card_by_id(self, card_id: int) -> SelectedCardSnapshot:
+        for card in self.cards:
+            if card.card_id == card_id:
+                return card
+        raise KeyError(card_id)
+
+    def cards_for_note(self, note_id: int) -> tuple[SelectedCardSnapshot, ...]:
+        return tuple(card for card in self.cards if card.note_id == note_id)
+
+    def as_tool_result(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "cards": [card.as_tool_result() for card in self.cards],
+            "notes": [note.as_tool_result() for note in self.notes],
+        }
+
+    def image_paths(self) -> tuple[str, ...]:
+        return ()
+
+
 def validate_selected_text_snapshot(
     raw: Any,
     fields: tuple[FieldSnapshot, ...],
@@ -168,6 +254,35 @@ class NotePatch:
 
     def has_changes(self) -> bool:
         return bool(self.field_updates) or self.tag_patch.has_changes()
+
+
+@dataclass(frozen=True)
+class MultiNoteUpdate:
+    note_id: int
+    notetype_id: int
+    field_updates: dict[str, str] = field(default_factory=dict)
+    tag_patch: TagPatch = field(default_factory=TagPatch)
+
+    def has_changes(self) -> bool:
+        return bool(self.field_updates) or self.tag_patch.has_changes()
+
+
+@dataclass(frozen=True)
+class MultiNotePatch:
+    summary: str
+    note_updates: tuple[MultiNoteUpdate, ...]
+
+    def has_changes(self) -> bool:
+        return any(update.has_changes() for update in self.note_updates)
+
+    def update_for_note(self, note_id: int) -> MultiNoteUpdate | None:
+        for update in self.note_updates:
+            if update.note_id == note_id:
+                return update
+        return None
+
+    def affected_note_ids(self) -> tuple[int, ...]:
+        return tuple(update.note_id for update in self.note_updates)
 
 
 def _normalize_tags(value: Any, key: str) -> tuple[str, ...]:
@@ -253,6 +368,112 @@ def validate_note_patch(raw: dict[str, Any], snapshot: EditorSnapshot) -> NotePa
         notetype_id=notetype_id,
         field_updates=field_updates,
         tag_patch=tag_patch,
+    )
+    if not patch.has_changes():
+        raise PatchValidationError("Patch does not contain any changes.")
+    return patch
+
+
+def _validate_field_updates(
+    raw_updates: Any,
+    known_fields: set[str],
+) -> dict[str, str]:
+    if raw_updates is None:
+        raw_updates = []
+    if not isinstance(raw_updates, list):
+        raise PatchValidationError("field_updates must be a list.")
+    field_updates: dict[str, str] = {}
+    for update in raw_updates:
+        if not isinstance(update, dict):
+            raise PatchValidationError("Each field update must be an object.")
+        name = update.get("name")
+        html = update.get("html")
+        if not isinstance(name, str) or not name:
+            raise PatchValidationError("Field update name must be a string.")
+        if name not in known_fields:
+            raise PatchValidationError(f"Unknown field: {name}.")
+        if name in field_updates:
+            raise PatchValidationError(f"Duplicate field update: {name}.")
+        if not isinstance(html, str):
+            raise PatchValidationError(f"Field update for {name} must contain html.")
+        field_updates[name] = html
+    return field_updates
+
+
+def _validate_tag_patch(raw_tags: Any) -> TagPatch:
+    if raw_tags is None:
+        raw_tags = {}
+    if not isinstance(raw_tags, dict):
+        raise PatchValidationError("tags must be an object.")
+
+    raw_replace = raw_tags.get("replace")
+    replace = (
+        None if raw_replace is None else _normalize_tags(raw_replace, "tags.replace")
+    )
+    return TagPatch(
+        replace=replace,
+        add=_normalize_tags(raw_tags.get("add"), "tags.add"),
+        remove=_normalize_tags(raw_tags.get("remove"), "tags.remove"),
+    )
+
+
+def validate_multi_note_patch(
+    raw: dict[str, Any],
+    snapshot: MultiCardSnapshot,
+) -> MultiNotePatch:
+    if not isinstance(raw, dict):
+        raise PatchValidationError("Patch must be a JSON object.")
+
+    raw_updates = raw.get("note_updates")
+    if not isinstance(raw_updates, list):
+        raise PatchValidationError("note_updates must be a list.")
+
+    selected_notes = {note.note_id: note for note in snapshot.notes}
+    updates: list[MultiNoteUpdate] = []
+    seen_note_ids: set[int] = set()
+    for raw_update in raw_updates:
+        if not isinstance(raw_update, dict):
+            raise PatchValidationError("Each note update must be an object.")
+        raw_note_id = raw_update.get("note_id")
+        try:
+            note_id = int(raw_note_id)
+        except (TypeError, ValueError) as exc:
+            raise PatchValidationError("note_id must be an integer.") from exc
+        if note_id in seen_note_ids:
+            raise PatchValidationError(f"Duplicate note update: {note_id}.")
+        if note_id not in selected_notes:
+            raise PatchValidationError(
+                f"Patch targets note that was not selected: {note_id}."
+            )
+        seen_note_ids.add(note_id)
+
+        selected_note = selected_notes[note_id]
+        raw_notetype_id = raw_update.get("notetype_id", selected_note.notetype_id)
+        try:
+            notetype_id = int(raw_notetype_id)
+        except (TypeError, ValueError) as exc:
+            raise PatchValidationError("notetype_id must be an integer.") from exc
+        if notetype_id != selected_note.notetype_id:
+            raise PatchValidationError("Patch targets a different note type.")
+
+        update = MultiNoteUpdate(
+            note_id=note_id,
+            notetype_id=notetype_id,
+            field_updates=_validate_field_updates(
+                raw_update.get("field_updates", []),
+                set(selected_note.field_names()),
+            ),
+            tag_patch=_validate_tag_patch(raw_update.get("tags", {})),
+        )
+        if update.has_changes():
+            updates.append(update)
+
+    summary = raw.get("summary", "")
+    if not isinstance(summary, str):
+        raise PatchValidationError("summary must be a string.")
+    patch = MultiNotePatch(
+        summary=summary.strip() or "Proposed selected-card updates",
+        note_updates=tuple(updates),
     )
     if not patch.has_changes():
         raise PatchValidationError("Patch does not contain any changes.")
