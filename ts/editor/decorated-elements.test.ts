@@ -24,11 +24,20 @@ import { fragmentToStored } from "./rich-text-input/transform";
 
 const hairlineSpace = "\u200a";
 
+function attributeValue(source: string): string {
+    return source
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
+
 function inlineMathjax(source: string): string {
+    const mathjax = attributeValue(source);
     return [
         "<anki-frame data-frames=\"anki-mathjax\" block=\"false\">",
         `<frame-start data-frames="anki-mathjax">${hairlineSpace}</frame-start>`,
-        `<anki-mathjax contenteditable="false" decorated="true" data-mathjax="${source}">`,
+        `<anki-mathjax contenteditable="false" decorated="true" data-mathjax="${mathjax}">`,
         "<span data-anki=\"mathjax\" class=\"mathjax empty\"></span>",
         "</anki-mathjax>",
         `<frame-end data-frames="anki-mathjax">${hairlineSpace}</frame-end>`,
@@ -37,10 +46,11 @@ function inlineMathjax(source: string): string {
 }
 
 function blockMathjax(source: string): string {
+    const mathjax = attributeValue(source);
     return [
         "<anki-frame data-frames=\"anki-mathjax\" block=\"true\">",
         `<frame-start data-frames="anki-mathjax">${hairlineSpace}</frame-start>`,
-        `<anki-mathjax block="true" contenteditable="false" decorated="true" data-mathjax="${source}">`,
+        `<anki-mathjax block="true" contenteditable="false" decorated="true" data-mathjax="${mathjax}">`,
         "<span data-anki=\"mathjax\" class=\"mathjax block empty\"></span>",
         "</anki-mathjax>",
         `<frame-end data-frames="anki-mathjax">${hairlineSpace}</frame-end>`,
@@ -126,6 +136,28 @@ describe("decorated editor elements", () => {
         expect(fragmentToStored(fragment)).toBe(
             "before \\(\\omega\\) and \\[x+y\\] after",
         );
+    });
+
+    test("stores decorated MathJax clozes from their source", () => {
+        const fragment = document.createRange().createContextualFragment(
+            [
+                "before ",
+                inlineMathjax(String.raw`{{c1::\frac{1}{2}}}`),
+                " and ",
+                blockMathjax(
+                    String.raw`\begin{aligned}a &amp;={{c2::b \\ &amp;= c}}\\ &amp;=d\end{aligned}`,
+                ),
+                " after",
+            ].join(""),
+        );
+        const expected = [
+            String.raw`before \({{c1::\frac{1}{2&#125;}}\)`,
+            String
+                .raw` and \[\begin{aligned}a &amp;={{c2::b \\ &amp;= c}}\\ &amp;=d\end{aligned}\]`,
+            " after",
+        ].join("");
+
+        expect(fragmentToStored(fragment)).toBe(expected);
     });
 
     test("runs indent with decorated elements exposed as source", () => {

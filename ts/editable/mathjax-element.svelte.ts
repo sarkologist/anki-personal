@@ -11,7 +11,9 @@ import type { DecoratedElement, DecoratedElementConstructor } from "./decorated"
 import { FrameElement, frameElement } from "./frame-element";
 import Mathjax_svelte from "./Mathjax.svelte";
 
-const mathjaxTagPattern = /<anki-mathjax(?:[^>]*?block="(.*?)")?[^>]*?>(.*?)<\/anki-mathjax>/gsu;
+const mathjaxFramePattern =
+    /<anki-frame\b(?=[^>]*\bdata-frames=(?:"anki-mathjax"|'anki-mathjax'|anki-mathjax))[^>]*>.*?<\/anki-frame>/gsu;
+const mathjaxTagPattern = /<anki-mathjax\b[^>]*>.*?<\/anki-mathjax>/gsu;
 
 const mathjaxBlockDelimiterPattern = /\\\[(.*?)\\\]/gsu;
 const mathjaxInlineDelimiterPattern = /\\\((.*?)\\\)/gsu;
@@ -21,6 +23,34 @@ function trimBreaks(text: string): string {
         .replace(/<br[ ]*\/?>/gsu, "\n")
         .replace(/^\n*/, "")
         .replace(/\n*$/, "");
+}
+
+function mathjaxElementFromHtml(html: string): HTMLElement | null {
+    const template = document.createElement("template");
+    template.innerHTML = html;
+
+    return template.content.querySelector<HTMLElement>("anki-mathjax");
+}
+
+function hasBlockAttribute(element: Element): boolean {
+    const block = element.getAttribute("block")
+        ?? element.closest("anki-frame")?.getAttribute("block");
+
+    return typeof block === "string" && block !== "false";
+}
+
+function mathjaxHtmlToStored(html: string): string {
+    const element = mathjaxElementFromHtml(html);
+    if (!element) {
+        return html;
+    }
+
+    const source = typeof element.dataset.mathjax === "string"
+        ? element.dataset.mathjax
+        : element.innerHTML;
+    const trimmed = trimBreaks(source);
+
+    return hasBlockAttribute(element) ? `\\[${trimmed}\\]` : `\\(${trimmed}\\)`;
 }
 
 export const mathjaxConfig = {
@@ -39,17 +69,9 @@ export const Mathjax: DecoratedElementConstructor = class Mathjax extends HTMLEl
     static tagName = "anki-mathjax";
 
     static toStored(undecorated: string): string {
-        const stored = undecorated.replace(
-            mathjaxTagPattern,
-            (_match: string, block: string | undefined, text: string) => {
-                const trimmed = trimBreaks(text);
-                return typeof block === "string" && block !== "false"
-                    ? `\\[${trimmed}\\]`
-                    : `\\(${trimmed}\\)`;
-            },
-        );
-
-        return stored;
+        return undecorated
+            .replace(mathjaxFramePattern, mathjaxHtmlToStored)
+            .replace(mathjaxTagPattern, mathjaxHtmlToStored);
     }
 
     static toUndecorated(stored: string): string {
