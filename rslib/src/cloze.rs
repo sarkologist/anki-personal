@@ -39,6 +39,17 @@ static MATHJAX: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+static EDITOR_MATHJAX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?xsi)
+            (<anki-mathjax\b[^>]*>)   # 1 = mathjax opening tag
+            (.*?)                     # 2 = inner content
+            (</anki-mathjax>)         # 3 = mathjax closing tag
+           ",
+    )
+    .unwrap()
+});
+
 static HTML_TAG_OR_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         "(?si)",
@@ -890,7 +901,26 @@ fn strip_html_preserving_cloze_in_mathjax(html: &str) -> Cow<'_, str> {
 }
 
 fn strip_html_inside_mathjax(text: &str) -> Cow<'_, str> {
-    MATHJAX.replace_all(text, |caps: &Captures| -> String {
+    let stripped = MATHJAX.replace_all(text, |caps: &Captures| -> String {
+        format!(
+            "{}{}{}",
+            caps.get(mathjax_caps::OPENING_TAG).unwrap().as_str(),
+            strip_html_preserving_cloze_in_mathjax(
+                caps.get(mathjax_caps::INNER_TEXT).unwrap().as_str(),
+            )
+            .as_ref(),
+            caps.get(mathjax_caps::CLOSING_TAG).unwrap().as_str()
+        )
+    });
+
+    match stripped {
+        Cow::Borrowed(text) => strip_html_inside_editor_mathjax(text),
+        Cow::Owned(text) => strip_html_inside_editor_mathjax(&text).into_owned().into(),
+    }
+}
+
+fn strip_html_inside_editor_mathjax(text: &str) -> Cow<'_, str> {
+    EDITOR_MATHJAX.replace_all(text, |caps: &Captures| -> String {
         format!(
             "{}{}{}",
             caps.get(mathjax_caps::OPENING_TAG).unwrap().as_str(),
@@ -1130,6 +1160,27 @@ mod test {
                 r#"\[\begin{aligned}a &amp;=<span class="cloze" data-ordinal="1">b \\ &amp;= c</span>\end{aligned}\]"#
             ),
             r#"\[\begin{aligned}a &amp;=\class{cloze}{b }\\ &amp;\class{cloze}{= c}\end{aligned}\]"#
+        );
+        let question_ctx = RenderContext {
+            fields: &Default::default(),
+            nonempty_fields: &Default::default(),
+            frontside: None,
+            card_ord: 0,
+            partial_for_python: true,
+        };
+        assert_eq!(
+            cloze_filter(
+                r#"<anki-mathjax>\frac{3+{{c1::\cos x}}}{y}</anki-mathjax>"#,
+                &question_ctx,
+            ),
+            r#"<anki-mathjax>\frac{3+\class{cloze}{[...]}}{y}</anki-mathjax>"#
+        );
+        assert_eq!(
+            cloze_filter(
+                r#"<anki-mathjax block="true">\begin{aligned}a &amp;={{c2::b \\ &amp;= c}}\\ &amp;=d\end{aligned}</anki-mathjax>"#,
+                &answer_ctx,
+            ),
+            r#"<anki-mathjax block="true">\begin{aligned}a &amp;=\class{cloze}{b }\\ &amp;\class{cloze}{= c}\\ &amp;=d\end{aligned}</anki-mathjax>"#
         );
     }
 
