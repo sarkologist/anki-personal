@@ -5,7 +5,7 @@ import { updateAllState } from "$lib/components/WithState.svelte";
 import { execCommand } from "$lib/domlib";
 
 import { filterHTML } from "../html-filter";
-import { decorateUndecoratedElements } from "./decorated-elements";
+import { decoratedElements, decorateUndecoratedElements } from "./decorated-elements";
 
 function activeRichTextEditable(): HTMLElement | null {
     const active = document.activeElement;
@@ -35,6 +35,7 @@ export function pasteHTML(
     extendedMode: boolean,
 ): void {
     html = filterHTML(html, internal, extendedMode);
+    html = decoratedElements.toUndecorated(html);
 
     if (html !== "") {
         execCommand("inserthtml", false, html);
