@@ -87,6 +87,10 @@ in build scripts/tests is fine.
 
 ## Commit workflow
 
+Before implementing changes, create or switch to a dedicated git branch. Use
+the `codex/` branch prefix by default unless the user requests a different
+branch name.
+
 After completing work, create a git commit unless the user says not to or the
 current interaction is quick development iteration that should remain
 uncommitted. Keep unrelated local changes out of the commit.
