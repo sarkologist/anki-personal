@@ -1739,7 +1739,7 @@ class EditorWebView(AnkiWebView):
             strip_html = not strip_html
         return not strip_html
 
-    def _onPaste(self, mode: QClipboard.Mode) -> None:
+    def _onPaste(self, mode: QClipboard.Mode, mac_html_retry: bool = False) -> None:
         # Since _on_clipboard_change doesn't always trigger properly on macOS, we do a double check if any changes were made before pasting
         clipboard = self._clipboard()
         if self._last_known_clipboard_mime != clipboard.mimeData(mode):
@@ -1752,10 +1752,24 @@ class EditorWebView(AnkiWebView):
                 return
             # On macOS the QMimeData snapshot can be missing text/html on the
             # first read after an external clipboard change. Pump the event
-            # loop and re-fetch once before falling back to plain text.
+            # loop and re-fetch once before falling back to plain text. If the
+            # refreshed snapshot still has no usable fallback content, retry
+            # once asynchronously; Qt may need another event-loop turn before
+            # exposing the externally written HTML flavor.
             if not mime.hasHtml() and is_mac:
                 QApplication.processEvents()
                 mime = clipboard.mimeData(mode=mode) or mime
+                if (
+                    not mac_html_retry
+                    and not mime.hasHtml()
+                    and not mime.hasText()
+                    and not mime.hasImage()
+                    and not mime.hasUrls()
+                ):
+                    QTimer.singleShot(
+                        75, lambda: self._onPaste(mode, mac_html_retry=True)
+                    )
+                    return
             html, internal = self._processMime(mime, extended)
             if html:
                 self.editor.doPaste(html, internal, extended)
