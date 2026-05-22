@@ -24,6 +24,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { pageTheme } from "$lib/sveltelib/theme";
 
+    import type { AgentSelectedTextContext } from "../agent-selection";
+    import { plainTextAgentSelectionContext } from "../agent-selection";
     import { baseOptions, focusAndSetCaret, latex } from "../code-mirror";
     import type { CodeMirrorAPI } from "../CodeMirror.svelte";
     import CodeMirror from "../CodeMirror.svelte";
@@ -49,61 +51,93 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     export let position: CodeMirrorLib.Position | undefined = undefined;
     export let selectAll: boolean;
+    export let fieldName: string;
+    export let fieldIndex: number;
+    export let onAgentSelectedTextContext: (
+        context: AgentSelectedTextContext | null,
+    ) => void = () => {};
 
     const dispatch = createEventDispatcher();
 
     let codeMirror = {} as CodeMirrorAPI;
 
-    onMount(async () => {
-        const editor = await codeMirror.editor;
+    onMount(() => {
+        let destroyed = false;
+        let cleanupSelectionContext = (): void => {};
 
-        let direction: "start" | "end" | undefined = undefined;
-
-        editor.on(
-            "keydown",
-            (_instance: CodeMirrorLib.Editor, event: KeyboardEvent): void => {
-                if (event.key === "Escape") {
-                    dispatch("close");
-                    event.stopPropagation();
-                } else if (isArrowLeft(event)) {
-                    direction = "start";
-                } else if (isArrowRight(event)) {
-                    direction = "end";
-                }
-            },
-        );
-
-        editor.on(
-            "beforeSelectionChange",
-            (
-                instance: CodeMirrorLib.Editor,
-                obj: CodeMirrorLib.EditorSelectionChange,
-            ): void => {
-                const { anchor } = obj.ranges[0];
-
-                if (anchor["hitSide"]) {
-                    if (instance.getValue().length === 0) {
-                        if (direction) {
-                            dispatch(`moveout${direction}`);
-                        }
-                    } else if (anchor.line === 0 && anchor.ch === 0) {
-                        dispatch("moveoutstart");
-                    } else {
-                        dispatch("moveoutend");
-                    }
-                }
-
-                direction = undefined;
-            },
-        );
-
-        setTimeout(() => {
-            focusAndSetCaret(editor, position);
-
-            if (selectAll) {
-                editor.execCommand("selectAll");
+        codeMirror.editor.then((editor) => {
+            if (destroyed) {
+                return;
             }
+
+            let direction: "start" | "end" | undefined = undefined;
+
+            editor.on(
+                "keydown",
+                (_instance: CodeMirrorLib.Editor, event: KeyboardEvent): void => {
+                    if (event.key === "Escape") {
+                        dispatch("close");
+                        event.stopPropagation();
+                    } else if (isArrowLeft(event)) {
+                        direction = "start";
+                    } else if (isArrowRight(event)) {
+                        direction = "end";
+                    }
+                },
+            );
+
+            editor.on(
+                "beforeSelectionChange",
+                (
+                    instance: CodeMirrorLib.Editor,
+                    obj: CodeMirrorLib.EditorSelectionChange,
+                ): void => {
+                    const { anchor } = obj.ranges[0];
+
+                    if (anchor["hitSide"]) {
+                        if (instance.getValue().length === 0) {
+                            if (direction) {
+                                dispatch(`moveout${direction}`);
+                            }
+                        } else if (anchor.line === 0 && anchor.ch === 0) {
+                            dispatch("moveoutstart");
+                        } else {
+                            dispatch("moveoutend");
+                        }
+                    }
+
+                    direction = undefined;
+                },
+            );
+
+            const updateSelectionContext = (): void => {
+                onAgentSelectedTextContext(
+                    plainTextAgentSelectionContext(
+                        editor.getSelection(),
+                        fieldName,
+                        fieldIndex,
+                    ),
+                );
+            };
+
+            editor.on("cursorActivity", updateSelectionContext);
+            cleanupSelectionContext = () =>
+                editor.off("cursorActivity", updateSelectionContext);
+
+            setTimeout(() => {
+                focusAndSetCaret(editor, position);
+
+                if (selectAll) {
+                    editor.execCommand("selectAll");
+                    updateSelectionContext();
+                }
+            });
         });
+
+        return (): void => {
+            destroyed = true;
+            cleanupSelectionContext();
+        };
     });
 
     $: if ($closeSignalStore) {

@@ -30,13 +30,31 @@ function rangeIsInside(base: Node, range: Range): boolean {
         && nodeIsInside(base, range.endContainer);
 }
 
-function richTextSelectionHtml(range: Range): string | null {
+interface RichTextSelection {
+    text: string;
+    html: string | null;
+}
+
+function containsDecoratedEditorElement(root: ParentNode): boolean {
+    return !!root.querySelector("anki-frame, anki-mathjax, anki-latex");
+}
+
+function richTextSelection(range: Range): RichTextSelection {
+    const text = range.toString();
+
     try {
         const fragment = range.cloneContents();
+        const containsDecoratedElement = containsDecoratedEditorElement(fragment);
+
         undecorateFragment(fragment);
-        return fragmentToStored(fragment) || null;
+        const html = fragmentToStored(fragment) || null;
+
+        return {
+            text: containsDecoratedElement && html !== null ? html : text,
+            html,
+        };
     } catch {
-        return null;
+        return { text, html: null };
     }
 }
 
@@ -59,8 +77,8 @@ export function richTextAgentSelectionContext(
         return { inside: true, context: null };
     }
 
-    const text = range.toString();
-    if (!text.trim()) {
+    const selectedContent = richTextSelection(range);
+    if (!selectedContent.text.trim()) {
         return { inside: true, context: null };
     }
 
@@ -70,8 +88,8 @@ export function richTextAgentSelectionContext(
             field_name: fieldName,
             field_index: fieldIndex,
             input_kind: "rich_text",
-            text,
-            html: richTextSelectionHtml(range),
+            text: selectedContent.text,
+            html: selectedContent.html,
         },
     };
 }

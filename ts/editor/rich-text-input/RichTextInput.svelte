@@ -24,6 +24,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         editable: ContentEditableAPI;
         customStyles: Promise<Record<string, any>>;
         isClozeField: boolean;
+        fieldName: string;
+        fieldIndex: number;
         /** Flush pending DOM changes into the shared stored-HTML content. */
         flushContent(): void;
         /** Force a commit of the current state as a standalone undo step. */
@@ -198,6 +200,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         editable: {} as ContentEditableAPI,
         customStyles,
         isClozeField,
+        fieldName,
+        fieldIndex,
         flushContent,
         pushUndoSnapshot,
         resetUndo,
@@ -317,6 +321,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     $: {
         api.isClozeField = isClozeField;
+        api.fieldName = fieldName;
+        api.fieldIndex = fieldIndex;
     }
 
     onMount(() => {

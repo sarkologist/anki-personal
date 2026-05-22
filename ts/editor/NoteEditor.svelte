@@ -1002,8 +1002,8 @@ the AddCards dialog) should be implemented in the user of this component.
                 </EditorField>
             {/each}
 
-            <MathjaxOverlay />
-            <LatexOverlay />
+            <MathjaxOverlay onAgentSelectedTextContext={setAgentSelectedTextContext} />
+            <LatexOverlay onAgentSelectedTextContext={setAgentSelectedTextContext} />
             <ImageOverlay maxWidth={250} maxHeight={125} />
         </Fields>
 

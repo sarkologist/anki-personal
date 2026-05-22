@@ -20,6 +20,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { LegacyLatex } from "../../editable/legacy-latex-element.svelte";
     import type { LegacyLatexKind } from "../../editable/legacy-latex-preview";
+    import type { AgentSelectedTextContext } from "../agent-selection";
     import type { EditingInputAPI } from "../EditingArea.svelte";
     import HandleBackground from "../HandleBackground.svelte";
     import { context } from "../NoteEditor.svelte";
@@ -30,6 +31,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import LatexEditor from "./LatexEditor.svelte";
 
     const { focusedInput } = context.get();
+
+    export let onAgentSelectedTextContext: (
+        context: AgentSelectedTextContext | null,
+    ) => void = () => {};
 
     let cleanup: Callback;
     let richTextInput: RichTextInputAPI | null = null;
@@ -72,6 +77,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     let selectAll = false;
     let position: CodeMirrorLib.Position | undefined = undefined;
+    let fieldName = "";
+    let fieldIndex = 0;
 
     const code = writable("");
 
@@ -89,6 +96,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         );
 
         position = pos;
+        fieldName = richTextInput!.fieldName;
+        fieldIndex = richTextInput!.fieldIndex;
         activePreview = preview;
         latexElement = activePreview.closest(LegacyLatex.tagName)!;
         errorMessage = activePreview.title;
@@ -251,6 +260,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         {code}
                         {selectAll}
                         {position}
+                        {fieldName}
+                        {fieldIndex}
+                        {onAgentSelectedTextContext}
                         on:moveoutstart={() => {
                             placeHandle(false);
                             resetHandle();
