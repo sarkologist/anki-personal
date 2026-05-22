@@ -19,7 +19,11 @@ vi.mock("svelte", async () => {
 });
 
 import { withAutoDecorationSuspended } from "../editable/decorated";
-import { execCommandWithUndecoratedElements, undecorateFragment } from "./decorated-elements";
+import {
+    decorateUndecoratedElements,
+    execCommandWithUndecoratedElements,
+    undecorateFragment,
+} from "./decorated-elements";
 import { fragmentToStored } from "./rich-text-input/transform";
 
 const hairlineSpace = "\u200a";
@@ -211,5 +215,27 @@ describe("decorated editor elements", () => {
         expect(stored).toContain("[$]z^2[/$]");
         expect(stored).not.toContain("data-anki=\"mathjax\"");
         expect(stored).not.toContain("mathjax empty");
+    });
+
+    test("decorates pasted undecorated MathJax elements", () => {
+        const base = document.createElement("div");
+        withAutoDecorationSuspended(() => {
+            base.innerHTML = [
+                "before ",
+                "<anki-mathjax>\\alpha</anki-mathjax>",
+                " and ",
+                "<anki-mathjax block=\"true\">x+y</anki-mathjax>",
+                " after",
+            ].join("");
+            document.body.append(base);
+        });
+
+        decorateUndecoratedElements(base);
+
+        expect(base.querySelectorAll("anki-frame")).toHaveLength(2);
+        expect(base.querySelectorAll("anki-mathjax[decorated]")).toHaveLength(2);
+        expect(storedAfterEditorNormalization(base)).toBe(
+            "before \\(\\alpha\\) and \\[x+y\\] after",
+        );
     });
 });

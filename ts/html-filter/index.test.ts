@@ -47,4 +47,27 @@ describe("filterHTML", () => {
             ),
         ).toBe("<span style=\"background-color: transparent;\"></span>");
     });
+    test("external paste preserves raw MathJax elements", () => {
+        expect(filterHTML("<anki-mathjax>x</anki-mathjax>", false, false)).toBe(
+            "<anki-mathjax>x</anki-mathjax>",
+        );
+        expect(
+            filterHTML(
+                "<anki-mathjax block=\"true\">x</anki-mathjax>",
+                false,
+                true,
+            ),
+        ).toBe("<anki-mathjax block=\"true\">x</anki-mathjax>");
+        expect(
+            filterHTML(
+                [
+                    "<anki-mathjax block=\"true\" decorated=\"true\"",
+                    " contenteditable=\"false\" data-mathjax=\"trusted?\"",
+                    " class=\"math\">x</anki-mathjax>",
+                ].join(""),
+                false,
+                true,
+            ),
+        ).toBe("<anki-mathjax block=\"true\">x</anki-mathjax>");
+    });
 });

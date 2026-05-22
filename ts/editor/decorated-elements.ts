@@ -38,14 +38,30 @@ function undecorateElements(root: ParentNode): void {
     }
 }
 
+function decorateElement(element: DecoratedElement): void {
+    element.decorate();
+    if (!element.hasAttribute("decorated")) {
+        // First pass may only wrap the element in an <anki-frame>.
+        element.decorate();
+    }
+}
+
 function decorateElements(root: ParentNode): void {
     for (const decorated of decoratedElements) {
         for (const element of decoratedElementMatches(root, decorated.tagName)) {
-            element.decorate();
-            if (!element.hasAttribute("decorated")) {
-                // First pass may only wrap the element in an <anki-frame>.
-                element.decorate();
+            decorateElement(element);
+        }
+    }
+}
+
+export function decorateUndecoratedElements(root: ParentNode): void {
+    for (const decorated of decoratedElements) {
+        for (const element of decoratedElementMatches(root, decorated.tagName)) {
+            if (element.hasAttribute("decorated")) {
+                continue;
             }
+
+            decorateElement(element);
         }
     }
 }

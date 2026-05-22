@@ -5,6 +5,29 @@ import { updateAllState } from "$lib/components/WithState.svelte";
 import { execCommand } from "$lib/domlib";
 
 import { filterHTML } from "../html-filter";
+import { decorateUndecoratedElements } from "./decorated-elements";
+
+function activeRichTextEditable(): HTMLElement | null {
+    const active = document.activeElement;
+
+    if (!(active instanceof HTMLElement)) {
+        return null;
+    }
+
+    if (active.matches("anki-editable")) {
+        return active;
+    }
+
+    const shadowActive = active.shadowRoot?.activeElement;
+    if (
+        shadowActive instanceof HTMLElement
+        && shadowActive.matches("anki-editable")
+    ) {
+        return shadowActive;
+    }
+
+    return null;
+}
 
 export function pasteHTML(
     html: string,
@@ -14,7 +37,12 @@ export function pasteHTML(
     html = filterHTML(html, internal, extendedMode);
 
     if (html !== "") {
-        setFormat("inserthtml", html);
+        execCommand("inserthtml", false, html);
+        const editable = activeRichTextEditable();
+        if (editable) {
+            decorateUndecoratedElements(editable);
+        }
+        updateAllState(new Event("inserthtml"));
     }
 }
 

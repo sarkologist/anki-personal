@@ -49,6 +49,7 @@ function filterSpan(element: Element): void {
 }
 
 const tagsAllowedBasic: TagsAllowed = {
+    "ANKI-MATHJAX": allow(["BLOCK"]),
     BR: allowNone,
     IMG: allow(["SRC", "ALT"]),
     DIV: allowNone,
