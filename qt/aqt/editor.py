@@ -902,10 +902,12 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             return True
         m = self.note_type()
         for c, f in enumerate(self.note.fields):
+            # Sticky fields are carried forward in add mode, and shouldn't
+            # trigger a discard confirmation when they're the only edits.
+            if m["flds"][c]["sticky"]:
+                continue
             f = f.replace("<br>", "").strip()
             notChangedvalues = {"", "<br>"}
-            if previousNote and m["flds"][c]["sticky"]:
-                notChangedvalues.add(previousNote.fields[c].replace("<br>", "").strip())
             if f not in notChangedvalues:
                 return False
         return True
