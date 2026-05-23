@@ -149,6 +149,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     .legacy-latex-preview {
         max-width: 100%;
         vertical-align: middle;
+
+        :global(.nightMode) & {
+            filter: invert(100%);
+        }
     }
 
     .legacy-latex-preview.block {
