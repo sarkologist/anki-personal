@@ -89,6 +89,7 @@ describe("useDOMMirror", () => {
         const allowResubscription = mirror.preventResubscription();
         element.innerHTML =
             "<anki-mathjax data-mathjax=\"x^2\" decorated><span data-anki=\"mathjax\"></span></anki-mathjax>";
+        const mathjaxElement = element.querySelector("anki-mathjax");
         await flushMutationObserver();
 
         element.blur();
@@ -98,6 +99,7 @@ describe("useDOMMirror", () => {
         expect(stored).toContain("data-mathjax=\"x^2\"");
         expect(stored).not.toBe("stale");
         expect(element.innerHTML).toBe(stored);
+        expect(element.querySelector("anki-mathjax")).toBe(mathjaxElement);
 
         vi.runOnlyPendingTimers();
         expect(values.at(-1)).toBe(stored);

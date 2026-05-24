@@ -39,6 +39,12 @@ function cloneNode(node: Node): DocumentFragment {
     return range.cloneContents();
 }
 
+function nodeContentsHTML(node: Node): string {
+    const wrapper = document.createElement("div");
+    wrapper.append(cloneNode(node));
+    return wrapper.innerHTML;
+}
+
 function requestIdle(callback: () => void): CancelIdleCallback {
     const idleWindow = window as Window & {
         requestIdleCallback?: (
@@ -110,6 +116,10 @@ function useDOMMirror(): DOMMirrorAPI {
 
         function mirrorToElement(node: Node): void {
             cancelScheduledSave();
+            if (nodeContentsHTML(node) === element.innerHTML) {
+                return;
+            }
+
             observer.disconnect();
             // element.replaceChildren(...node.childNodes); // TODO use once available
             while (element.firstChild) {
