@@ -2,13 +2,17 @@
 Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
+<script context="module" lang="ts">
+    export let closeLatexOverlay: (() => void) | null = null;
+</script>
+
 <script lang="ts">
     import { on } from "@tslib/events";
     import { promiseWithResolver } from "@tslib/promise";
     import type { Callback } from "@tslib/typing";
     import { singleCallback } from "@tslib/typing";
     import type CodeMirrorLib from "codemirror";
-    import { tick } from "svelte";
+    import { onDestroy, tick } from "svelte";
     import { writable } from "svelte/store";
 
     import Popover from "$lib/components/Popover.svelte";
@@ -134,6 +138,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         activePreview = null;
         latexElement = null;
     }
+
+    closeLatexOverlay = (): void => {
+        if (activePreview && latexElement) {
+            placeHandle(true);
+            resetHandle();
+        }
+    };
+
+    onDestroy(() => {
+        closeLatexOverlay = null;
+    });
 
     let errorMessage: string;
     let cleanupPreviewResize: Callback | null = null;

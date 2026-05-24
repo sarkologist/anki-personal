@@ -6,6 +6,7 @@ import { writable } from "svelte/store";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import useDOMMirror from "./dom-mirror";
+import { nodeStore } from "./node-store";
 
 function fragmentFromHtml(html: string): DocumentFragment {
     return document.createRange().createContextualFragment(html);
@@ -15,6 +16,15 @@ function fragmentToHtml(fragment: DocumentFragment): string {
     const wrapper = document.createElement("div");
     wrapper.append(fragment.cloneNode(true));
     return wrapper.innerHTML;
+}
+
+function undecorateMathjax(fragment: DocumentFragment): void {
+    for (const element of fragment.querySelectorAll<HTMLElement>("anki-mathjax")) {
+        element.innerHTML = element.dataset.mathjax ?? "";
+        delete element.dataset.mathjax;
+        element.removeAttribute("contenteditable");
+        element.removeAttribute("decorated");
+    }
 }
 
 async function flushMutationObserver(): Promise<void> {
@@ -77,7 +87,10 @@ describe("useDOMMirror", () => {
         const element = document.createElement("div");
         element.tabIndex = 0;
         document.body.append(element);
-        const store = writable(fragmentFromHtml("stale"));
+        const store = nodeStore<DocumentFragment>(
+            fragmentFromHtml("stale"),
+            undecorateMathjax,
+        );
         const values: string[] = [];
         const mirror = useDOMMirror();
         const action = mirror.mirror(element, { store });
@@ -96,9 +109,9 @@ describe("useDOMMirror", () => {
         allowResubscription();
 
         const stored = values.at(-1);
-        expect(stored).toContain("data-mathjax=\"x^2\"");
+        expect(stored).toBe("<anki-mathjax>x^2</anki-mathjax>");
         expect(stored).not.toBe("stale");
-        expect(element.innerHTML).toBe(stored);
+        expect(element.innerHTML).toContain("data-mathjax=\"x^2\"");
         expect(element.querySelector("anki-mathjax")).toBe(mathjaxElement);
 
         vi.runOnlyPendingTimers();

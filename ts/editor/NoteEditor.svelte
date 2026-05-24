@@ -68,10 +68,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import Fields from "./Fields.svelte";
     import ImageOverlay from "./image-overlay";
     import LatexOverlay from "./latex-overlay";
-    import { closeLatexEditor } from "./latex-overlay/LatexEditor.svelte";
+    import { closeLatexOverlay } from "./latex-overlay/LatexOverlay.svelte";
     import { shrinkImagesByDefault } from "./image-overlay/ImageOverlay.svelte";
     import MathjaxOverlay from "./mathjax-overlay";
-    import { closeMathjaxEditor } from "./mathjax-overlay/MathjaxEditor.svelte";
+    import { closeMathjaxOverlay } from "./mathjax-overlay/MathjaxOverlay.svelte";
     import Notification from "./Notification.svelte";
     import PlainTextInput from "./plain-text-input";
     import { closeHTMLTags } from "./plain-text-input/PlainTextInput.svelte";
@@ -435,8 +435,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function saveNow(): void {
-        closeMathjaxEditor?.();
-        closeLatexEditor?.();
+        closeMathjaxOverlay?.();
+        closeLatexOverlay?.();
         flushRichTextContent();
         $commitTagEdits();
         saveFieldNow();

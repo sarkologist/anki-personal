@@ -87,6 +87,8 @@ function useDOMMirror(): DOMMirrorAPI {
         { store }: { store: Writable<DocumentFragment> },
     ): { destroy(): void } {
         let cancelPendingSave: CancelIdleCallback | null = null;
+        let localStoreHTML: string | null = null;
+        let savingLocalHTML = false;
 
         function cancelScheduledSave(): void {
             cancelPendingSave?.();
@@ -95,7 +97,16 @@ function useDOMMirror(): DOMMirrorAPI {
 
         function saveHTMLToStore(): void {
             cancelScheduledSave();
-            store.set(cloneNode(element));
+            savingLocalHTML = true;
+            try {
+                store.set(cloneNode(element));
+                const unsubscribe = store.subscribe((fragment) => {
+                    localStoreHTML = nodeContentsHTML(fragment);
+                });
+                unsubscribe();
+            } finally {
+                savingLocalHTML = false;
+            }
         }
 
         function scheduleSaveHTMLToStore(): void {
@@ -133,6 +144,18 @@ function useDOMMirror(): DOMMirrorAPI {
         }
 
         function mirrorFromFragment(fragment: DocumentFragment): void {
+            const fragmentHTML = nodeContentsHTML(fragment);
+            if (savingLocalHTML) {
+                localStoreHTML = fragmentHTML;
+                return;
+            }
+
+            if (localStoreHTML === fragmentHTML) {
+                localStoreHTML = null;
+                return;
+            }
+
+            localStoreHTML = null;
             mirrorToElement(cloneNode(fragment));
         }
 

@@ -2,6 +2,10 @@
 Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
+<script context="module" lang="ts">
+    export let closeMathjaxOverlay: (() => void) | null = null;
+</script>
+
 <script lang="ts">
     import { hasBlockAttribute } from "@tslib/dom";
     import { on } from "@tslib/events";
@@ -9,7 +13,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import type { Callback } from "@tslib/typing";
     import { singleCallback } from "@tslib/typing";
     import type CodeMirrorLib from "codemirror";
-    import { tick } from "svelte";
+    import { onDestroy, tick } from "svelte";
     import { writable } from "svelte/store";
 
     import Popover from "$lib/components/Popover.svelte";
@@ -148,6 +152,17 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         activeImage = null;
         mathjaxElement = null;
     }
+
+    closeMathjaxOverlay = (): void => {
+        if (activeImage && mathjaxElement) {
+            placeHandle(true);
+            resetHandle();
+        }
+    };
+
+    onDestroy(() => {
+        closeMathjaxOverlay = null;
+    });
 
     let errorMessage: string;
     let cleanupImageError: Callback | null = null;
