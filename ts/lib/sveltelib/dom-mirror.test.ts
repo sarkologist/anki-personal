@@ -25,6 +25,7 @@ async function flushMutationObserver(): Promise<void> {
 describe("useDOMMirror", () => {
     afterEach(() => {
         vi.useRealTimers();
+        document.body.replaceChildren();
     });
 
     test("defers element mutations before writing to the store", async () => {
@@ -67,6 +68,39 @@ describe("useDOMMirror", () => {
         expect(values.filter((value) => value === "<b>changed</b>")).toHaveLength(
             1,
         );
+
+        action.destroy();
+    });
+
+    test("flushes suspended local mutations before resubscribing on blur", async () => {
+        vi.useFakeTimers();
+        const element = document.createElement("div");
+        element.tabIndex = 0;
+        document.body.append(element);
+        const store = writable(fragmentFromHtml("stale"));
+        const values: string[] = [];
+        const mirror = useDOMMirror();
+        const action = mirror.mirror(element, { store });
+
+        store.subscribe((fragment) => values.push(fragmentToHtml(fragment)));
+        expect(element.innerHTML).toBe("stale");
+
+        element.focus();
+        const allowResubscription = mirror.preventResubscription();
+        element.innerHTML =
+            "<anki-mathjax data-mathjax=\"x^2\" decorated><span data-anki=\"mathjax\"></span></anki-mathjax>";
+        await flushMutationObserver();
+
+        element.blur();
+        allowResubscription();
+
+        const stored = values.at(-1);
+        expect(stored).toContain("data-mathjax=\"x^2\"");
+        expect(stored).not.toBe("stale");
+        expect(element.innerHTML).toBe(stored);
+
+        vi.runOnlyPendingTimers();
+        expect(values.at(-1)).toBe(stored);
 
         action.destroy();
     });

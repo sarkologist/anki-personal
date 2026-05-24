@@ -71,6 +71,7 @@ function useDOMMirror(): DOMMirrorAPI {
         allowResubscription.set(false);
 
         return () => {
+            flushPendingMirror();
             allowResubscription.set(true);
         };
     }
