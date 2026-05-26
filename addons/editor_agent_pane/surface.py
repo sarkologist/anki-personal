@@ -172,6 +172,33 @@ def surface_body() -> str:
     padding: 1px 8px;
     white-space: pre-wrap;
 }
+.agent-unified-html-diff {
+    font-family: inherit;
+}
+.agent-unified-html-diff .agent-diff-file,
+.agent-unified-html-diff .agent-diff-hunk,
+.agent-diff-marker {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+.agent-diff-rich {
+    column-gap: 4px;
+    display: grid;
+    grid-template-columns: 2ch minmax(0, 1fr);
+    white-space: normal;
+}
+.agent-diff-marker {
+    white-space: pre;
+}
+.agent-diff-content {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.agent-diff-content > :first-child {
+    margin-top: 0;
+}
+.agent-diff-content > :last-child {
+    margin-bottom: 0;
+}
 .agent-diff-add {
     background: rgba(50, 160, 90, 0.16);
 }
@@ -484,7 +511,7 @@ def _render_field_change(
 <section class="agent-change">
     <div class="agent-change-title">Field: {html.escape(field_name)}</div>
     {_render_preview_grid(render_preview(old_html), render_preview(new_html))}
-    {_render_unified_diff(diff)}
+    {_render_unified_diff(diff, render_preview)}
 </section>
 """
 
@@ -542,7 +569,7 @@ def _render_selected_note_field_change(
 <section class="agent-change">
     <div class="agent-change-title">Field: {html.escape(field_name)}</div>
     {_render_preview_grid(render_preview(old_html), render_preview(new_html))}
-    {_render_unified_diff(diff)}
+    {_render_unified_diff(diff, render_preview)}
 </section>
 """
 
@@ -596,17 +623,26 @@ def _render_tags(tags: tuple[str, ...]) -> str:
     )
 
 
-def _render_unified_diff(lines: Iterable[str]) -> str:
-    rows = "".join(_render_diff_line(line) for line in lines)
+def _render_unified_diff(
+    lines: Iterable[str],
+    render_content: PreviewRenderer | None = None,
+) -> str:
+    rows = "".join(_render_diff_line(line, render_content) for line in lines)
     if not rows:
         rows = '<div class="agent-diff-row agent-diff-context">No textual differences.</div>'
+    container_class = "agent-unified-diff"
+    if render_content is not None:
+        container_class += " agent-unified-html-diff"
     return f"""
 <div class="agent-diff-heading">Diff</div>
-<div class="agent-unified-diff">{rows}</div>
+<div class="{container_class}">{rows}</div>
 """
 
 
-def _render_diff_line(line: str) -> str:
+def _render_diff_line(
+    line: str,
+    render_content: PreviewRenderer | None = None,
+) -> str:
     if line.startswith(("--- ", "+++ ")):
         css_class = "agent-diff-file"
     elif line.startswith("@@"):
@@ -617,7 +653,32 @@ def _render_diff_line(line: str) -> str:
         css_class = "agent-diff-del"
     else:
         css_class = "agent-diff-context"
+    if (
+        render_content is not None
+        and css_class in {"agent-diff-add", "agent-diff-del", "agent-diff-context"}
+        and not line.startswith("\\")
+    ):
+        return _render_html_diff_line(line, css_class, render_content)
     return f'<div class="agent-diff-row {css_class}">{html.escape(line)}</div>'
+
+
+def _render_html_diff_line(
+    line: str,
+    css_class: str,
+    render_content: PreviewRenderer,
+) -> str:
+    marker = ""
+    content = line
+    if line.startswith(("+", "-", " ")):
+        marker = line[0]
+        content = line[1:]
+    rendered_content = render_content(content) if content else "&nbsp;"
+    return (
+        f'<div class="agent-diff-row {css_class} agent-diff-rich">'
+        f'<span class="agent-diff-marker">{html.escape(marker)}</span>'
+        f'<div class="agent-diff-content">{rendered_content or "&nbsp;"}</div>'
+        "</div>"
+    )
 
 
 def _empty_preview() -> str:
