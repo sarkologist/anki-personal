@@ -425,6 +425,7 @@ pub const MATHJAX_FILES: &[&str] = &[
     "mathjax/es5/a11y/complexity.js",
     "mathjax/es5/a11y/explorer.js",
     "mathjax/es5/a11y/semantic-enrich.js",
+    "mathjax/es5/input/tex/extensions/html.js",
     "mathjax/es5/output/chtml/fonts/woff-v2/MathJax_AMS-Regular.woff",
     "mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Bold.woff",
     "mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Regular.woff",

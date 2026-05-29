@@ -65,6 +65,13 @@ static HTML_CLASS_ATTR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?is)\bclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#).unwrap()
 });
 
+static HTML_DATA_CLOZE_ATTR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)\bdata-cloze\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#).unwrap()
+});
+
+static RIGHT_BRACE_ENTITY_SUFFIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)&#(?:0*125|x0*7d);$").unwrap());
+
 mod mathjax_caps {
     pub const OPENING_TAG: usize = 1;
     pub const INNER_TEXT: usize = 2;
@@ -800,6 +807,71 @@ fn push_mathjax_cloze_segment(segment: &str, output: &mut String) {
     }
 }
 
+fn mathjax_brace_depth(text: &str) -> usize {
+    let mut brace_depth = 0usize;
+    let mut idx = 0;
+
+    while idx < text.len() {
+        let rest = &text[idx..];
+
+        if rest.starts_with('\\') {
+            let next = idx + 1;
+            if next < text.len() {
+                let next_char = text[next..].chars().next().unwrap();
+                if matches!(next_char, '{' | '}') {
+                    idx = next + next_char.len_utf8();
+                    continue;
+                }
+            }
+            idx += 1;
+            continue;
+        }
+
+        let char = rest.chars().next().unwrap();
+        match char {
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            _ => {}
+        }
+        idx += char.len_utf8();
+    }
+
+    brace_depth
+}
+
+fn trailing_unescaped_right_braces(text: &str) -> usize {
+    let mut count = 0;
+    let mut end = text.len();
+
+    loop {
+        let Some((idx, char)) = text[..end].char_indices().next_back() else {
+            break;
+        };
+
+        let brace_start = if char == '}' {
+            idx
+        } else if let Some(entity) = RIGHT_BRACE_ENTITY_SUFFIX.find(&text[..end]) {
+            entity.start()
+        } else {
+            break;
+        };
+
+        let backslashes = text[..brace_start]
+            .chars()
+            .rev()
+            .take_while(|&char| char == '\\')
+            .count();
+        if backslashes % 2 == 1 {
+            break;
+        }
+
+        count += 1;
+        end = brace_start;
+    }
+
+    count
+}
+
 fn wrap_mathjax_cloze_content(content: &str) -> String {
     let separators = mathjax_alignment_separators(content);
     if separators.is_empty() {
@@ -821,14 +893,37 @@ fn wrap_mathjax_cloze_content(content: &str) -> String {
 struct MathjaxSpan {
     cloze: bool,
     content: String,
+    hidden_content: Option<String>,
 }
 
 fn append_mathjax_span(span: MathjaxSpan, output: &mut String) {
     if span.cloze {
+        let outer_closing_braces = span
+            .hidden_content
+            .as_deref()
+            .map(|hidden| mathjax_brace_depth(output).min(trailing_unescaped_right_braces(hidden)))
+            .unwrap_or(0);
         output.push_str(&wrap_mathjax_cloze_content(&span.content));
+        for _ in 0..outer_closing_braces {
+            output.push('}');
+        }
     } else {
         output.push_str(&span.content);
     }
+}
+
+fn html_tag_attr_value<'a>(tag: &'a str, attr: &Regex) -> Option<&'a str> {
+    let captures = attr.captures(tag)?;
+    captures
+        .get(1)
+        .or_else(|| captures.get(2))
+        .or_else(|| captures.get(3))
+        .map(|capture| capture.as_str())
+}
+
+fn html_tag_data_cloze(tag: &str) -> Option<String> {
+    let value = html_tag_attr_value(tag, &HTML_DATA_CLOZE_ATTR)?;
+    htmlescape::decode_html(value).ok()
 }
 
 fn strip_html_preserving_cloze_in_mathjax(html: &str) -> Cow<'_, str> {
@@ -839,6 +934,7 @@ fn strip_html_preserving_cloze_in_mathjax(html: &str) -> Cow<'_, str> {
     let mut stack = vec![MathjaxSpan {
         cloze: false,
         content: String::with_capacity(html.len()),
+        hidden_content: None,
     }];
     let mut last_end = 0;
     let mut found_tag = false;
@@ -873,6 +969,7 @@ fn strip_html_preserving_cloze_in_mathjax(html: &str) -> Cow<'_, str> {
                         stack.push(MathjaxSpan {
                             cloze,
                             content: String::new(),
+                            hidden_content: cloze.then(|| html_tag_data_cloze(tag)).flatten(),
                         });
                     }
                 }
@@ -1174,6 +1271,21 @@ mod test {
                 &question_ctx,
             ),
             r#"<anki-mathjax>\frac{3+\class{cloze}{[...]}}{y}</anki-mathjax>"#
+        );
+        assert_eq!(
+            cloze_filter(r#"\[\frac{3+4{{c1::\cos x}}}{y}\]"#, &question_ctx),
+            r#"\[\frac{3+4\class{cloze}{[...]}}{y}\]"#
+        );
+        assert_eq!(
+            cloze_filter(r#"\[\frac{3+4{{c1::\cos x&#125;}}{y}\]"#, &question_ctx,),
+            r#"\[\frac{3+4\class{cloze}{[...]}}{y}\]"#
+        );
+        assert_eq!(
+            cloze_filter(
+                r#"\[\frac{3+4\chi(p)^k{{c1::\cos(kt\log p)}}+{{c1::\cos(2kt\log p)&#125;}}{kp^{k\sigma}}\]"#,
+                &question_ctx,
+            ),
+            r#"\[\frac{3+4\chi(p)^k\class{cloze}{[...]}+\class{cloze}{[...]}}{kp^{k\sigma}}\]"#
         );
         assert_eq!(
             cloze_filter(

@@ -18,10 +18,26 @@ describe("escapeMathjaxClozeEntities", () => {
         ).toBe("\\({{c1::\\sqrt{\\frac{a}{b&#125;&#125;}}\\)");
     });
 
+    test("leaves enclosing mathjax braces outside an inner cloze", () => {
+        expect(
+            escapeMathjaxClozeEntities("\\[\\frac{3+4{{c1::\\cos x}}}{y}\\]"),
+        ).toBe("\\[\\frac{3+4{{c1::\\cos x}}}{y}\\]");
+    });
+
+    test("leaves fraction numerator braces outside clozed terms", () => {
+        expect(
+            escapeMathjaxClozeEntities(
+                "\\[\\frac{3+4\\chi(p)^k{{c1::\\cos(kt\\log p)}}+{{c1::\\cos(2kt\\log p)}}}{kp^{k\\sigma}}\\]",
+            ),
+        ).toBe(
+            "\\[\\frac{3+4\\chi(p)^k{{c1::\\cos(kt\\log p)}}+{{c1::\\cos(2kt\\log p)}}}{kp^{k\\sigma}}\\]",
+        );
+    });
+
     test("escapes nested closing groups when a cloze wraps mathjax", () => {
         expect(
             escapeMathjaxClozeEntities("{{c1::\\(\\sqrt{\\frac{a}{b}}\\)}}"),
-        ).toBe("{{c1::\\(\\sqrt{\\frac{a}{b&#125;&#125;\\)}}");
+        ).toBe("{{c1::\\(\\sqrt{\\frac{a}{b&#125;}\\)}}");
     });
 
     test("escapes escaped literal right braces before the cloze suffix", () => {
@@ -46,7 +62,7 @@ describe("escapeMathjaxClozeEntities", () => {
     });
 
     test("is idempotent", () => {
-        const input = "{{c1::\\(\\sqrt{\\frac{a}{b&#125;&#125;\\)}}";
+        const input = "{{c1::\\(\\sqrt{\\frac{a}{b&#125;}\\)}}";
         expect(escapeMathjaxClozeEntities(input)).toBe(input);
     });
 });

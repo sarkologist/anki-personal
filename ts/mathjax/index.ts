@@ -3,7 +3,7 @@
 
 /// <reference types="./mathjax-types" />
 
-const packages = ["noerrors", "mathtools"];
+const packages = ["noerrors", "mathtools", "html"];
 
 function packagesForLoading(packages: string[]): string[] {
     return packages.map((value: string): string => `[tex]/${value}`);

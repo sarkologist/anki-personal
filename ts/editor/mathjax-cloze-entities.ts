@@ -57,15 +57,23 @@ function rightBraceRunEnd(text: string, index: number): number {
 export function escapeMathjaxClozeEntities(storedHtml: string): string {
     let output = "";
     let index = 0;
-    let clozeDepth = 0;
+    const clozeMathjaxBraceDepths: number[] = [];
     let mathjaxCloseDelimiter: "\\)" | "\\]" | null = null;
     let mathjaxBraceDepth = 0;
+
+    function clozeDepth(): number {
+        return clozeMathjaxBraceDepths.length;
+    }
+
+    function currentClozeMathjaxBraceDepth(): number | undefined {
+        return clozeMathjaxBraceDepths[clozeMathjaxBraceDepths.length - 1];
+    }
 
     while (index < storedHtml.length) {
         const clozeEnd = clozeOpenEnd(storedHtml, index);
         if (clozeEnd !== null) {
             output += storedHtml.slice(index, clozeEnd);
-            clozeDepth++;
+            clozeMathjaxBraceDepths.push(mathjaxBraceDepth);
             index = clozeEnd;
             continue;
         }
@@ -80,9 +88,9 @@ export function escapeMathjaxClozeEntities(storedHtml: string): string {
                 continue;
             }
 
-            if (clozeDepth > 0 && storedHtml.startsWith("}}", index)) {
+            if (clozeDepth() > 0 && storedHtml.startsWith("}}", index)) {
                 output += "}}";
-                clozeDepth--;
+                clozeMathjaxBraceDepths.pop();
                 index += 2;
                 continue;
             }
@@ -126,7 +134,7 @@ export function escapeMathjaxClozeEntities(storedHtml: string): string {
         }
 
         if (storedHtml.startsWith("\\}", index)) {
-            const entity = clozeDepth > 0 && storedHtml[index + 2] === "}"
+            const entity = clozeDepth() > 0 && storedHtml[index + 2] === "}"
                 ? rightBraceEntity
                 : "}";
             output += "\\" + entity;
@@ -143,17 +151,24 @@ export function escapeMathjaxClozeEntities(storedHtml: string): string {
 
         if (storedHtml[index] === "}") {
             const runEnd = rightBraceRunEnd(storedHtml, index);
-            const runLength = runEnd - index;
 
             while (index < runEnd) {
-                if (mathjaxBraceDepth > 0) {
-                    output += clozeDepth > 0 && runLength > 1 ? rightBraceEntity : "}";
+                const clozeStartBraceDepth = currentClozeMathjaxBraceDepth();
+                if (
+                    clozeStartBraceDepth !== undefined
+                    && mathjaxBraceDepth > clozeStartBraceDepth
+                ) {
+                    output += runEnd - index > 1 ? rightBraceEntity : "}";
                     mathjaxBraceDepth--;
                     index++;
-                } else if (clozeDepth > 0 && runEnd - index >= 2) {
+                } else if (clozeStartBraceDepth !== undefined && runEnd - index >= 2) {
                     output += "}}";
-                    clozeDepth--;
+                    clozeMathjaxBraceDepths.pop();
                     index += 2;
+                } else if (mathjaxBraceDepth > 0) {
+                    output += "}";
+                    mathjaxBraceDepth--;
+                    index++;
                 } else {
                     output += "}";
                     index++;
