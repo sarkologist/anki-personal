@@ -1961,12 +1961,63 @@ def test_render_proposal_diff_renders_html_diff_rows_for_mathjax() -> None:
     rendered = render_proposal_diff(current, patch)
     diff = rendered.split('<div class="agent-diff-heading">', maxsplit=1)[1]
 
-    assert '<div class="agent-unified-diff agent-unified-html-diff">' in diff
+    assert (
+        '<div class="agent-unified-diff agent-unified-html-diff tex2jax_ignore">'
+        in diff
+    )
     assert '<span class="agent-diff-marker">+</span>' in diff
     assert "<b>Why the fibre check is needed.</b>" in diff
     assert "\\[y^4-y_0^4=-5x^2+x^4.\\]" in diff
     assert "4 &lt; 12" in diff
     assert "4 &amp;lt; 12" not in diff
+    assert "onclick" not in diff
+    assert "<script>" not in diff
+
+
+def test_render_proposal_diff_keeps_multiline_mathjax_literal_in_diff() -> None:
+    current = EditorSnapshot(
+        mode="browse",
+        note_id=123,
+        notetype_id=7,
+        notetype_name="Basic",
+        fields=(
+            FieldSnapshot(name="Front", html="<div>old</div>"),
+        ),
+        tags=(),
+    )
+    patch = validate_note_patch(
+        {
+            "summary": "Explain asymptotic bound",
+            "note_id": 123,
+            "notetype_id": 7,
+            "field_updates": [
+                {
+                    "name": "Front",
+                    "html": (
+                        "<div><b>Appendix: why</b></div>\n"
+                        "<div>\\[\n"
+                        "\\sqrt{x}\\log x + x^{1/3}(\\log x)^2 = o(x)\n"
+                        "\\]</div>\n"
+                        '<div onclick="evil()">safe text</div><script>bad()</script>'
+                    ),
+                }
+            ],
+            "tags": {"replace": None, "add": [], "remove": []},
+        },
+        current,
+    )
+
+    rendered = render_proposal_diff(current, patch)
+    preview, diff = rendered.split('<div class="agent-diff-heading">', maxsplit=1)
+
+    assert "tex2jax_ignore" not in preview
+    assert (
+        '<div class="agent-unified-diff agent-unified-html-diff tex2jax_ignore">'
+        in diff
+    )
+    assert "\\[" in diff
+    assert "\\]" in diff
+    assert "\\sqrt{x}\\log x + x^{1/3}(\\log x)^2 = o(x)" in diff
     assert "onclick" not in diff
     assert "<script>" not in diff
 
@@ -2260,6 +2311,10 @@ def test_render_multi_note_card_proposal_diff_shows_one_cards_note_group() -> No
     assert "note 101" in rendered
     assert "Field: Front" in rendered
     assert '<div class="agent-diff-content"><b>new</b></div>' in rendered
+    assert (
+        '<div class="agent-unified-diff agent-unified-html-diff tex2jax_ignore">'
+        in rendered
+    )
     assert "new text" not in rendered
     assert multi_note_patch_card_ids(multi_snapshot(), patch) == (11, 12, 21)
 

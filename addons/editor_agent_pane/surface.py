@@ -633,6 +633,7 @@ def _render_unified_diff(
     container_class = "agent-unified-diff"
     if render_content is not None:
         container_class += " agent-unified-html-diff"
+    container_class += " tex2jax_ignore"
     return f"""
 <div class="agent-diff-heading">Diff</div>
 <div class="{container_class}">{rows}</div>
