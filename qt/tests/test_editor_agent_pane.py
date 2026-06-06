@@ -3021,6 +3021,96 @@ def test_ollama_agent_treats_empty_patch_as_no_proposal(
     assert "run_failure" not in [record["event"] for record in run_logger.records]
 
 
+def test_ollama_agent_accepts_field_updates_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        env: dict[str, str],
+    ) -> FakePopen:
+        return FakePopen(
+            stdout=json.dumps(
+                {
+                    "message": "Converted LaTeX to MathJax delimiters.",
+                    "message_html": "<p>Converted LaTeX to MathJax delimiters.</p>",
+                    "patch": {
+                        "summary": "Convert delimiters",
+                        "field_updates": {"Front": "\\(x^2\\)"},
+                    },
+                }
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    result = OllamaCliAgent(
+        ollama_path="ollama",
+        ollama_host="",
+        model="qwen3:latest",
+        timeout_seconds=300,
+    ).send(
+        prompt="convert latex to mathjax",
+        snapshot=snapshot(),
+        project_root="",
+        history=[],
+        run_logger=run_logger,
+    )
+
+    assert result.proposals[0].field_updates == {"Front": "\\(x^2\\)"}
+    assert result.proposals[0].note_id == 123
+    assert result.proposals[0].notetype_id == 7
+    assert "run_failure" not in [record["event"] for record in run_logger.records]
+
+
+def test_ollama_agent_accepts_patch_as_field_update_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        env: dict[str, str],
+    ) -> FakePopen:
+        return FakePopen(
+            stdout=json.dumps(
+                {
+                    "message": "Converted LaTeX to MathJax delimiters.",
+                    "message_html": "<p>Converted LaTeX to MathJax delimiters.</p>",
+                    "patch": [
+                        {"name": "Front", "html": "\\(x^2\\)"},
+                    ],
+                }
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = OllamaCliAgent(
+        ollama_path="ollama",
+        ollama_host="",
+        model="qwen3:latest",
+        timeout_seconds=300,
+    ).send(
+        prompt="convert latex to mathjax",
+        snapshot=snapshot(),
+        project_root="",
+        history=[],
+    )
+
+    assert result.proposals[0].field_updates == {"Front": "\\(x^2\\)"}
+
+
 def test_ollama_agent_repairs_empty_patch_with_field_updates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3043,10 +3133,7 @@ def test_ollama_agent_repairs_empty_patch_with_field_updates(
                 "summary": "Convert delimiters",
                 "note_id": 123,
                 "notetype_id": 7,
-                "field_updates": [
-                    {"name": "Front", "html": "$x^2$"},
-                ],
-                "tags": {"replace": None, "add": [], "remove": []},
+                "field_updates": {"Front": "\\(x^2\\)"},
             },
         },
     ]
@@ -3085,7 +3172,7 @@ def test_ollama_agent_repairs_empty_patch_with_field_updates(
     assert len(processes) == 2
     assert "previous JSON response" in processes[1].stdin.text
     assert "non-null patch object" in processes[1].stdin.text
-    assert result.proposals[0].field_updates == {"Front": "$x^2$"}
+    assert result.proposals[0].field_updates == {"Front": "\\(x^2\\)"}
     assert run_logger.first("repair_start")["reason"] == "empty_patch"
     assert run_logger.first("run_finish")["repair_attempted"] is True
 

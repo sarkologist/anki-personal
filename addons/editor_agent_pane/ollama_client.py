@@ -303,6 +303,8 @@ If the user requested a note edit, patch must contain actual changes:
 - Use exact field names from context_json.fields.
 - Each field update must contain the full proposed HTML for that field.
 - Preserve unrelated field HTML and tags.
+- MathJax delimiters are \\(...\\) for inline math and \\[...\\] for display
+  math. Do not use [$]...[/$], [$$]...[/$$], or raw dollar delimiters.
 
 If no note edit should be proposed, set patch to null and make message/message_html accurately say no proposal was made.
 """
@@ -422,7 +424,10 @@ def _parse_ollama_agent_response(
     empty_patch = False
     if patch_data is not None:
         try:
-            patch = _validate_optional_agent_patch(patch_data, snapshot)
+            patch = _validate_optional_agent_patch(
+                _normalize_ollama_patch_data(patch_data, snapshot),
+                snapshot,
+            )
             if patch is None:
                 empty_patch = True
             else:
@@ -443,6 +448,82 @@ def _parse_ollama_agent_response(
         proposals=proposals,
         empty_patch=empty_patch,
     )
+
+
+def _normalize_ollama_patch_data(
+    patch_data: Any,
+    snapshot: EditorSnapshot | MultiCardSnapshot,
+) -> Any:
+    if isinstance(snapshot, EditorSnapshot) and isinstance(patch_data, list):
+        return {
+            "summary": "Proposed note update",
+            "note_id": snapshot.note_id,
+            "notetype_id": snapshot.notetype_id,
+            "field_updates": _normalize_ollama_field_updates(patch_data),
+            "tags": _normalize_ollama_tags(None),
+        }
+    if not isinstance(patch_data, dict):
+        return patch_data
+    normalized = dict(patch_data)
+    normalized.setdefault("summary", "Proposed note update")
+    if isinstance(snapshot, MultiCardSnapshot):
+        updates = normalized.get("note_updates")
+        if isinstance(updates, list):
+            normalized["note_updates"] = [
+                _normalize_ollama_note_update(update, snapshot)
+                for update in updates
+            ]
+        return normalized
+
+    normalized.setdefault("note_id", snapshot.note_id)
+    normalized.setdefault("notetype_id", snapshot.notetype_id)
+    normalized["field_updates"] = _normalize_ollama_field_updates(
+        normalized.get("field_updates", [])
+    )
+    normalized["tags"] = _normalize_ollama_tags(normalized.get("tags"))
+    return normalized
+
+
+def _normalize_ollama_note_update(
+    update: Any,
+    snapshot: MultiCardSnapshot,
+) -> Any:
+    if not isinstance(update, dict):
+        return update
+    normalized = dict(update)
+    note_id = normalized.get("note_id")
+    try:
+        note = snapshot.note_by_id(int(note_id))
+    except Exception:
+        note = None
+    if note is not None:
+        normalized.setdefault("notetype_id", note.notetype_id)
+    normalized["field_updates"] = _normalize_ollama_field_updates(
+        normalized.get("field_updates", [])
+    )
+    normalized["tags"] = _normalize_ollama_tags(normalized.get("tags"))
+    return normalized
+
+
+def _normalize_ollama_field_updates(raw_updates: Any) -> Any:
+    if isinstance(raw_updates, dict):
+        if "name" in raw_updates and "html" in raw_updates:
+            return [raw_updates]
+        return [
+            {"name": str(name), "html": html}
+            for name, html in raw_updates.items()
+        ]
+    return raw_updates
+
+
+def _normalize_ollama_tags(raw_tags: Any) -> dict[str, Any]:
+    if not isinstance(raw_tags, dict):
+        return {"replace": None, "add": [], "remove": []}
+    tags = dict(raw_tags)
+    tags.setdefault("replace", None)
+    tags.setdefault("add", [])
+    tags.setdefault("remove", [])
+    return tags
 
 
 def discover_ollama_models(

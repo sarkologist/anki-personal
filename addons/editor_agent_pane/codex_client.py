@@ -193,6 +193,9 @@ When proposing a patch:
   top level of patch.
 - Use exact field names from the editor context.
 - Preserve HTML where appropriate.
+- For delimiter conversions, legacy Anki LaTeX delimiters are [$]...[/$] for
+  inline math and [$$]...[/$$] for display math. Convert them to Anki MathJax
+  delimiters \\(...\\) for inline math and \\[...\\] for display math.
 - When the user asks to change, convert, rewrite, fix, or update note content,
   return an actual patch with non-empty field_updates and the full proposed HTML
   for each changed field. Do not merely describe the change.
