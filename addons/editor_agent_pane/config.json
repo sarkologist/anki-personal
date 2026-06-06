@@ -1,6 +1,10 @@
 {
+    "provider": "codex",
     "codex_path": "",
-    "model": "",
+    "codex_model": "",
+    "ollama_path": "",
+    "ollama_host": "http://127.0.0.1:11434",
+    "ollama_model": "",
     "reasoning_effort": "",
     "custom_instructions": "",
     "project_folder": "",

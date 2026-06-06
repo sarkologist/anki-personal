@@ -335,11 +335,16 @@ def render_error_message(error: str) -> str:
     return _message("Error", _escaped_text(error), css_class="agent-error")
 
 
-def render_activity_start(activity_id: str) -> str:
+def render_activity_start(
+    activity_id: str,
+    *,
+    role: str = "Codex",
+    status: str = "[Live Codex activity]",
+) -> str:
     return f"""
 <section class="agent-activity" id="{html.escape(activity_id, quote=True)}">
-    <div class="agent-role">Codex</div>
-    <div class="agent-body"><div>[Live Codex activity]</div></div>
+    <div class="agent-role">{html.escape(role)}</div>
+    <div class="agent-body"><div>{html.escape(status)}</div></div>
 </section>
 """
 
@@ -352,11 +357,13 @@ def render_activity_summary(
     activity_id: str,
     summary: str,
     detail_lines: Iterable[str] = (),
+    *,
+    role: str = "Codex",
 ) -> str:
     details = "".join(render_activity_line(line) for line in detail_lines)
     return f"""
 <section class="agent-activity agent-activity-compact" id="{html.escape(activity_id, quote=True)}">
-    <div class="agent-role">Codex</div>
+    <div class="agent-role">{html.escape(role)}</div>
     <details class="agent-activity-details">
         <summary>{html.escape(summary.strip())}</summary>
         <div class="agent-body">{details}</div>

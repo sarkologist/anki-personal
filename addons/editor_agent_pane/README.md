@@ -7,9 +7,13 @@ profile's `addons21` folder, restart Anki, and open Add Cards, Browser, or Edit
 Current. Use the `Agent` editor toolbar button, or `Ctrl+Alt+Shift+E`, to show the
 pane.
 
-Run `codex login` first and choose ChatGPT sign-in. The add-on shells out to
-`codex exec`, so it uses your Codex CLI account instead of a direct OpenAI API
-key.
+For Codex, run `codex login` first and choose ChatGPT sign-in. The add-on shells
+out to `codex exec`, so it uses your Codex CLI account instead of a direct
+OpenAI API key.
+
+For local models, choose the Ollama provider. The pane discovers installed
+models from local Ollama, then shells out to
+`ollama run MODEL --format json --hidethinking --nowordwrap`.
 
 The selected project folder is writable by default; use the Access menu to switch
 it to read-only mode, or choose "Don't work in a folder" to use card context only.

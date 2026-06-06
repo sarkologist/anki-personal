@@ -20,6 +20,7 @@ ADDONS = ROOT / "addons"
 if str(ADDONS) not in sys.path:
     sys.path.insert(0, str(ADDONS))
 
+from editor_agent_pane import ollama_client  # noqa: E402
 from editor_agent_pane.activity import (  # noqa: E402
     CodexActivityRenderer,
     compact_activity_transcript,
@@ -50,10 +51,25 @@ from editor_agent_pane.latex_preview import (  # noqa: E402
 )
 from editor_agent_pane.model_options import (  # noqa: E402
     MODEL_OPTIONS,
+    PROVIDER_CODEX,
+    PROVIDER_OLLAMA,
     model_option_index,
     model_options_with_legacy,
+    ollama_model_option_index,
+    ollama_model_options_with_legacy,
+    provider_option_index,
+    provider_value,
 )
 from editor_agent_pane.note_images import collect_note_images  # noqa: E402
+from editor_agent_pane.ollama_client import (  # noqa: E402
+    DEFAULT_OLLAMA_HOST,
+    OllamaCliAgent,
+    OllamaModelInfo,
+    discover_ollama_models,
+    normalize_ollama_host,
+    parse_ollama_list,
+    resolve_ollama_path,
+)
 from editor_agent_pane.patches import (  # noqa: E402
     EditorSnapshot,
     FieldSnapshot,
@@ -336,6 +352,56 @@ class FakeLabel:
 
     def setVisible(self, visible: bool) -> None:
         self.visible = visible
+
+
+class FakeCombo:
+    def __init__(self) -> None:
+        self.items: list[tuple[str, Any]] = []
+        self.current_index = 0
+        self.enabled = True
+
+    def clear(self) -> None:
+        self.items.clear()
+        self.current_index = 0
+
+    def addItem(self, label: str, value: Any = None) -> None:
+        self.items.append((label, value))
+
+    def addItems(self, items: list[str]) -> None:
+        for item in items:
+            self.addItem(item, item)
+
+    def setCurrentIndex(self, index: int) -> None:
+        self.current_index = index
+
+    def currentData(self) -> Any:
+        if not self.items:
+            return None
+        return self.items[self.current_index][1]
+
+    def itemData(self, index: int) -> Any:
+        return self.items[index][1]
+
+    def count(self) -> int:
+        return len(self.items)
+
+    def setEnabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+
+class FakeLineEdit:
+    def __init__(self, text: str = "") -> None:
+        self._text = text
+        self.enabled = True
+
+    def text(self) -> str:
+        return self._text
+
+    def setText(self, text: str) -> None:
+        self._text = text
+
+    def setEnabled(self, enabled: bool) -> None:
+        self.enabled = enabled
 
 
 class FakeProjectCombo:
@@ -738,6 +804,14 @@ def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
     pane.apply_button = FakeButton(True)
     pane.selection_context_label = FakeLabel()
     pane.codex_path_edit = types.SimpleNamespace(text=lambda: "")
+    pane.ollama_path_edit = types.SimpleNamespace(text=lambda: "")
+    pane.ollama_host_edit = types.SimpleNamespace(text=lambda: "")
+    pane._provider = lambda: PROVIDER_CODEX
+    pane._saved_model_for_provider = (
+        lambda provider, config: str(config["ollama_model"])
+        if provider == PROVIDER_OLLAMA
+        else str(config["codex_model"])
+    )
     pane._model_text = lambda: ""
     pane._reasoning_effort = lambda: ""
     pane._project_folder_text = lambda: ""
@@ -1216,13 +1290,88 @@ def test_agent_request_passes_selected_reasoning_effort(
     assert captured["agent_kwargs"]["reasoning_effort"] == "high"
 
 
+def test_agent_request_uses_ollama_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane._provider = lambda: PROVIDER_OLLAMA
+    pane._model_text = lambda: "qwen3:latest"
+    pane.ollama_path_edit = types.SimpleNamespace(text=lambda: "/usr/local/bin/ollama")
+    pane.ollama_host_edit = types.SimpleNamespace(text=lambda: "localhost:11434")
+    runtime.aqt.mw = types.SimpleNamespace(
+        taskman=ImmediateTaskman(),
+        addonManager=FakeAddonManager(),
+    )
+    config = dict(runtime.DEFAULT_CONFIG)
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    captured: dict[str, Any] = {}
+
+    class CapturingOllamaAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["agent_kwargs"] = kwargs
+
+        def send(self, **kwargs: Any) -> Any:
+            captured["send_kwargs"] = kwargs
+            return types.SimpleNamespace(text="Done", html="<p>Done</p>", proposals=())
+
+    monkeypatch.setattr(
+        runtime,
+        "CodexCliAgent",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Codex")),
+    )
+    monkeypatch.setattr(runtime, "OllamaCliAgent", CapturingOllamaAgent)
+
+    pane._start_agent_request("Improve this", generation=0)
+
+    assert captured["agent_kwargs"] == {
+        "ollama_path": "/usr/local/bin/ollama",
+        "ollama_host": "localhost:11434",
+        "model": "qwen3:latest",
+        "timeout_seconds": 300,
+        "custom_instructions": "",
+    }
+    assert captured["send_kwargs"]["project_root"] == ""
+    assert "event_callback" not in captured["send_kwargs"]
+    assert any("Ollama activity" in eval for eval in pane.surface.evals)
+
+
+def test_agent_request_blocks_ollama_without_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane._provider = lambda: PROVIDER_OLLAMA
+    pane._model_text = lambda: ""
+    runtime.aqt.mw = types.SimpleNamespace(
+        taskman=ImmediateTaskman(),
+        addonManager=FakeAddonManager(),
+    )
+    config = dict(runtime.DEFAULT_CONFIG)
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        runtime, "showWarning", lambda message, parent: warnings.append(message)
+    )
+
+    pane._start_agent_request("Improve this", generation=0)
+
+    assert warnings == ["Select an Ollama model first."]
+    assert pane.surface.evals == []
+
+
 def test_load_settings_restores_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _import_runtime_with_aqt_stubs(monkeypatch)
     pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
     restored: dict[str, Any] = {}
+    pane.provider_combo = types.SimpleNamespace(setCurrentIndex=lambda index: None)
     pane.codex_path_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane.ollama_path_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane.ollama_host_edit = types.SimpleNamespace(setText=lambda text: None)
     pane._set_model_choice = lambda model: None
     pane._set_project_folder_choices = lambda folder, recent: None
     pane._set_project_folder_access = lambda access: None
@@ -1231,6 +1380,8 @@ def test_load_settings_restores_reasoning_effort(
     pane.reasoning_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
     pane.instructions_edit = types.SimpleNamespace(setPlainText=lambda text: None)
     pane.text_splitter = types.SimpleNamespace(setSizes=lambda sizes: None)
+    pane._update_provider_controls = lambda: None
+    pane._provider = lambda: PROVIDER_CODEX
     config = dict(runtime.DEFAULT_CONFIG)
     config["reasoning_effort"] = "xhigh"
     monkeypatch.setattr(runtime, "_config", lambda: config)
@@ -1302,6 +1453,9 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
     pane.project_edit = FakeProjectCombo(NO_PROJECT_FOLDER_LABEL)
     pane.codex_path_edit = types.SimpleNamespace(text=lambda: "/usr/bin/codex")
+    pane.ollama_path_edit = types.SimpleNamespace(text=lambda: "/usr/bin/ollama")
+    pane.ollama_host_edit = types.SimpleNamespace(text=lambda: "localhost:11434")
+    pane._provider = lambda: PROVIDER_CODEX
     pane._model_text = lambda: "gpt-5.5"
     pane._custom_instructions_text = lambda: "be concise"
     pane._project_folder_access = lambda: PROJECT_FOLDER_ACCESS_READ_ONLY
@@ -1317,7 +1471,10 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     pane._save_settings()
 
     assert saved["codex_path"] == "/usr/bin/codex"
-    assert saved["model"] == "gpt-5.5"
+    assert saved["ollama_path"] == "/usr/bin/ollama"
+    assert saved["ollama_host"] == "http://localhost:11434"
+    assert saved["provider"] == PROVIDER_CODEX
+    assert saved["codex_model"] == "gpt-5.5"
     assert saved["custom_instructions"] == "be concise"
     assert saved["project_folder"] == ""
     assert saved["project_folder_access"] == PROJECT_FOLDER_ACCESS_READ_ONLY
@@ -1385,6 +1542,169 @@ def test_agent_model_options_preserve_unknown_legacy_model() -> None:
     assert model_option_index("gpt-legacy") == len(options) - 1
 
 
+def test_agent_provider_options_default_to_codex() -> None:
+    assert provider_value("") == PROVIDER_CODEX
+    assert provider_value("ollama") == PROVIDER_OLLAMA
+    assert provider_value("unknown") == PROVIDER_CODEX
+    assert provider_option_index(PROVIDER_OLLAMA) == 1
+
+
+def test_ollama_model_options_use_discovered_models() -> None:
+    models = ("qwen3:30b-a3b-instruct-2507-q4_K_M", "llama3.2:latest")
+
+    assert ollama_model_options_with_legacy("", models) == (
+        ("qwen3:30b-a3b-instruct-2507-q4_K_M", "qwen3:30b-a3b-instruct-2507-q4_K_M"),
+        ("llama3.2:latest", "llama3.2:latest"),
+    )
+    assert ollama_model_option_index("llama3.2:latest", models) == 1
+
+
+def test_ollama_model_options_preserve_saved_missing_model() -> None:
+    options = ollama_model_options_with_legacy("custom:latest", ("qwen3:latest",))
+
+    assert options == (
+        ("qwen3:latest", "qwen3:latest"),
+        ("custom:latest", "custom:latest"),
+    )
+    assert ollama_model_option_index("custom:latest", ("qwen3:latest",)) == 1
+
+
+def test_ollama_model_options_show_empty_or_unavailable_state() -> None:
+    assert ollama_model_options_with_legacy("", ()) == (
+        ("No Ollama models installed", ""),
+    )
+    assert ollama_model_options_with_legacy("", (), unavailable=True) == (
+        ("Ollama unavailable", ""),
+    )
+
+
+def test_parse_ollama_list_extracts_model_names() -> None:
+    assert parse_ollama_list(
+        "NAME                                  ID              SIZE     MODIFIED\n"
+        "qwen3:30b-a3b-instruct-2507-q4_K_M    19e422b02313    18 GB    13 minutes ago\n"
+        "llama3.2:latest                       abcdef012345    2.0 GB   2 days ago\n"
+    ) == (
+        OllamaModelInfo(
+            name="qwen3:30b-a3b-instruct-2507-q4_K_M",
+            digest="19e422b02313",
+        ),
+        OllamaModelInfo(name="llama3.2:latest", digest="abcdef012345"),
+    )
+
+
+def test_discover_ollama_models_prefers_local_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            pass
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "models": [
+                        {
+                            "name": "qwen3:latest",
+                            "size": 123,
+                            "digest": "digest",
+                            "modified_at": "2026-06-06T20:59:15+01:00",
+                            "details": {
+                                "family": "qwen3moe",
+                                "quantization_level": "Q4_K_M",
+                            },
+                        }
+                    ]
+                }
+            ).encode()
+
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(url: str, *, timeout: float) -> Response:
+        captured["url"] = url
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(ollama_client.urllib.request, "urlopen", fake_urlopen)
+
+    models = discover_ollama_models(
+        ollama_path="/custom/ollama",
+        ollama_host="127.0.0.1:11434",
+        timeout_seconds=0.5,
+    )
+
+    assert captured == {
+        "url": "http://127.0.0.1:11434/api/tags",
+        "timeout": 0.5,
+    }
+    assert models == (
+        OllamaModelInfo(
+            name="qwen3:latest",
+            size=123,
+            digest="digest",
+            modified_at="2026-06-06T20:59:15+01:00",
+            details={"family": "qwen3moe", "quantization_level": "Q4_K_M"},
+        ),
+    )
+
+
+def test_discover_ollama_models_falls_back_to_ollama_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ollama_client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("api down")),
+    )
+    captured: dict[str, Any] = {}
+
+    def fake_run(
+        command: list[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        timeout: float,
+        env: dict[str, str],
+        check: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        captured.update(
+            command=command,
+            capture_output=capture_output,
+            text=text,
+            timeout=timeout,
+            env_host=env["OLLAMA_HOST"],
+            check=check,
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                "NAME            ID              SIZE     MODIFIED\n"
+                "qwen3:latest    19e422b02313    18 GB    13 minutes ago\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert discover_ollama_models(
+        ollama_path="/custom/ollama",
+        ollama_host="localhost:11434",
+        timeout_seconds=0.25,
+    ) == (OllamaModelInfo(name="qwen3:latest", digest="19e422b02313"),)
+    assert captured["command"] == ["/custom/ollama", "list"]
+    assert captured["env_host"] == "http://localhost:11434"
+
+
+def test_ollama_path_and_host_defaults() -> None:
+    assert resolve_ollama_path("") == "ollama"
+    assert normalize_ollama_host("") == DEFAULT_OLLAMA_HOST
+    assert normalize_ollama_host("localhost:11434") == "http://localhost:11434"
+    assert normalize_ollama_host("http://localhost:11434/") == "http://localhost:11434"
+
+
 def test_agent_button_tooltip_includes_shortcut() -> None:
     assert AGENT_BUTTON_LABEL == "Agent"
     assert AGENT_BUTTON_TIP == f"Open the editor agent pane ({AGENT_PANE_SHORTCUT})"
@@ -1406,6 +1726,68 @@ def test_agent_config_uses_codex_default_effort_by_default() -> None:
     config = json.loads((ROOT / "addons/editor_agent_pane/config.json").read_text())
 
     assert config["reasoning_effort"] == ""
+
+
+def test_agent_config_defaults_to_codex_provider() -> None:
+    config = json.loads((ROOT / "addons/editor_agent_pane/config.json").read_text())
+
+    assert config["provider"] == PROVIDER_CODEX
+    assert config["codex_model"] == ""
+    assert config["ollama_model"] == ""
+    assert config["ollama_path"] == ""
+    assert config["ollama_host"] == DEFAULT_OLLAMA_HOST
+    assert "model" not in config
+
+
+def test_agent_config_migrates_legacy_model_to_codex_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    runtime.aqt.mw = types.SimpleNamespace(
+        addonManager=types.SimpleNamespace(
+            getConfig=lambda _addon: {
+                "model": "gpt-legacy",
+                "provider": PROVIDER_OLLAMA,
+            }
+        )
+    )
+
+    config = runtime._config()
+
+    assert config["provider"] == PROVIDER_OLLAMA
+    assert config["codex_model"] == "gpt-legacy"
+
+
+def test_agent_pane_model_dropdown_uses_current_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.addItem("Ollama", PROVIDER_OLLAMA)
+    pane.model_combo = FakeCombo()
+    pane._ollama_models = ("qwen3:latest",)
+    pane._ollama_models_unavailable = False
+
+    pane.provider_combo.setCurrentIndex(0)
+    pane._set_model_choice("gpt-5.4")
+
+    assert pane.model_combo.currentData() == "gpt-5.4"
+    assert pane._model_provider == PROVIDER_CODEX
+
+    pane.provider_combo.setCurrentIndex(1)
+    pane._set_model_choice("")
+
+    assert pane.model_combo.items == [("qwen3:latest", "qwen3:latest")]
+    assert pane.model_combo.currentData() == "qwen3:latest"
+    assert pane._model_provider == PROVIDER_OLLAMA
+
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = True
+    pane._set_model_choice("")
+
+    assert pane.model_combo.items == [("Ollama unavailable", "")]
 
 
 def test_json_line_agent_run_logger_writes_structured_json() -> None:
@@ -2506,6 +2888,315 @@ def test_validate_note_patch_can_replace_all_tags() -> None:
     )
 
     assert patch.tag_patch.apply(snapshot().tags) == ("fresh",)
+
+
+def test_ollama_agent_runs_model_and_parses_patch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        env: dict[str, str],
+    ) -> FakePopen:
+        captured["command"] = command
+        captured["stdin"] = stdin
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        captured["text"] = text
+        captured["bufsize"] = bufsize
+        captured["env"] = env
+        process = FakePopen(
+            stdout=(
+                "{\n"
+                '  "message": "Looks better with a shorter front.",\n'
+                '  "message_html": "<p>Looks <strong>better</strong>.</p>",\n'
+                '  "patch": {\n'
+                '    "summary": "Shorten front",\n'
+                '    "note_id": 123,\n'
+                '    "notetype_id": 7,\n'
+                '    "field_updates": [{"name": "Front", "html": "new front"}],\n'
+                '    "tags": {"replace": null, "add": ["agent"], "remove": []}\n'
+                "  }\n"
+                "}\n"
+            )
+        )
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = OllamaCliAgent(
+        ollama_path="/usr/local/bin/ollama",
+        ollama_host="localhost:11434",
+        model="qwen3:latest",
+        timeout_seconds=123,
+    ).send(
+        prompt="Improve this",
+        snapshot=snapshot(),
+        project_root="/ignored",
+        history=[],
+    )
+
+    command = captured["command"]
+    assert command == [
+        "/usr/local/bin/ollama",
+        "run",
+        "qwen3:latest",
+        "--format",
+        "json",
+        "--hidethinking",
+        "--nowordwrap",
+    ]
+    assert captured["env"]["OLLAMA_HOST"] == "http://localhost:11434"
+    assert captured["stdin"] == subprocess.PIPE
+    assert captured["stdout"] == subprocess.PIPE
+    assert captured["stderr"] == subprocess.PIPE
+    assert "Current editor context is JSON" in captured["process"].stdin.text
+    assert '"selected_text": {"field_name": "Front"' in captured["process"].stdin.text
+    assert "You do not have Codex tools" in captured["process"].stdin.text
+    assert "Use only the current editor context JSON" in captured["process"].stdin.text
+    assert "Improve this" in captured["process"].stdin.text
+    assert "may inspect and edit files" not in captured["process"].stdin.text
+    assert "Do not include hidden chain-of-thought" in captured["process"].stdin.text
+    assert result.text == "Looks better with a shorter front."
+    assert result.html == "<p>Looks <strong>better</strong>.</p>"
+    assert result.proposals[0].field_updates == {"Front": "new front"}
+    assert result.event_count == 0
+
+
+def test_ollama_agent_times_out_and_kills_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    run_logger = FakeRunLogger()
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        env: dict[str, str],
+    ) -> FakePopen:
+        process = FakePopen(returncode=None)
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        OllamaCliAgent(
+            ollama_path="ollama",
+            ollama_host="",
+            model="qwen3:latest",
+            timeout_seconds=0,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+        )
+
+    assert captured["process"].killed
+    assert run_logger.first("timeout_kill")["event"] == "timeout_kill"
+    assert run_logger.first("run_failure")["stage"] == "run"
+
+
+def test_ollama_agent_stops_running_process_without_failure_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    run_logger = FakeRunLogger()
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        env: dict[str, str],
+    ) -> FakePopen:
+        process = FakePopen(returncode=None)
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(AgentStopped, match="stopped"):
+        OllamaCliAgent(
+            ollama_path="ollama",
+            ollama_host="",
+            model="qwen3:latest",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+            stop_requested=lambda: True,
+        )
+
+    assert captured["process"].terminated
+    assert run_logger.first("run_stopped")["event"] == "run_stopped"
+    assert "run_failure" not in [record["event"] for record in run_logger.records]
+
+
+def test_ollama_agent_reports_missing_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(*_args: Any, **_kwargs: Any) -> FakePopen:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="Could not find Ollama CLI"):
+        OllamaCliAgent(
+            ollama_path="/missing/ollama",
+            ollama_host="",
+            model="qwen3:latest",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+        )
+
+
+def test_ollama_agent_logs_nonzero_cli_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        env: dict[str, str],
+    ) -> FakePopen:
+        return FakePopen(stderr="Error: connection refused", returncode=1)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    with pytest.raises(RuntimeError, match="connection refused"):
+        OllamaCliAgent(
+            ollama_path="ollama",
+            ollama_host="",
+            model="qwen3:latest",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+        )
+
+    failure = run_logger.first("run_failure")
+    assert failure["stage"] == "cli_exit"
+    assert failure["returncode"] == 1
+    assert failure["stderr_preview"] == "Error: connection refused"
+
+
+def test_ollama_agent_logs_invalid_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        env: dict[str, str],
+    ) -> FakePopen:
+        return FakePopen(stdout="not json\n")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    with pytest.raises(RuntimeError, match="non-JSON"):
+        OllamaCliAgent(
+            ollama_path="ollama",
+            ollama_host="",
+            model="qwen3:latest",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+        )
+
+    failure = run_logger.first("run_failure")
+    assert failure["stage"] == "final_json_parse"
+
+
+def test_ollama_agent_validates_patch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        env: dict[str, str],
+    ) -> FakePopen:
+        return FakePopen(
+            stdout=json.dumps(
+                {
+                    "message": "Bad patch",
+                    "message_html": "<p>Bad patch</p>",
+                    "patch": {
+                        "summary": "Bad",
+                        "note_id": 999,
+                        "notetype_id": 7,
+                        "field_updates": [],
+                        "tags": {"replace": None, "add": [], "remove": []},
+                    },
+                }
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    with pytest.raises(PatchValidationError):
+        OllamaCliAgent(
+            ollama_path="ollama",
+            ollama_host="",
+            model="qwen3:latest",
+            timeout_seconds=300,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            run_logger=run_logger,
+        )
+
+    assert run_logger.first("run_failure")["stage"] == "patch_validation"
 
 
 def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(

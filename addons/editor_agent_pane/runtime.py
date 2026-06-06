@@ -59,8 +59,28 @@ from .effort_options import (
     effort_value,
 )
 from .latex_preview import LegacyLatexPreviewRenderer
-from .model_options import MODEL_OPTIONS, model_option_index, model_options_with_legacy
+from .model_options import (
+    DEFAULT_PROVIDER,
+    MODEL_OPTIONS,
+    PROVIDER_CODEX,
+    PROVIDER_OLLAMA,
+    PROVIDER_OPTIONS,
+    model_option_index,
+    model_options_with_legacy,
+    ollama_model_option_index,
+    ollama_model_options_with_legacy,
+    provider_option_index,
+    provider_value,
+)
 from .note_images import collect_note_images
+from .ollama_client import (
+    DEFAULT_OLLAMA_HOST,
+    OllamaCliAgent,
+    discover_ollama_models,
+    normalize_ollama_host,
+    ollama_model_names,
+    resolve_ollama_path,
+)
 from .patches import (
     EditorSnapshot,
     FieldSnapshot,
@@ -109,8 +129,12 @@ SELECTION_CONTEXT_JS = (
     "? getAgentSelectedTextContext() : null"
 )
 DEFAULT_CONFIG = {
+    "provider": DEFAULT_PROVIDER,
     "codex_path": "",
-    "model": "",
+    "codex_model": "",
+    "ollama_path": "",
+    "ollama_host": DEFAULT_OLLAMA_HOST,
+    "ollama_model": "",
     "reasoning_effort": "",
     "custom_instructions": "",
     "project_folder": "",
@@ -151,11 +175,15 @@ def _config() -> dict[str, Any]:
     assert aqt.mw is not None
     saved = aqt.mw.addonManager.getConfig(ADDON) or {}
     config = {key: saved.get(key, default) for key, default in DEFAULT_CONFIG.items()}
-    if "codex_path" not in saved and config["model"] == "gpt-5.2":
-        config["model"] = ""
+    if "codex_model" not in saved and "model" in saved:
+        config["codex_model"] = str(saved["model"]).strip()
+    if "codex_path" not in saved and config["codex_model"] == "gpt-5.2":
+        config["codex_model"] = ""
+    config["provider"] = provider_value(config["provider"])
     config["project_folder_access"] = normalize_project_folder_access(
         str(config["project_folder_access"])
     )
+    config["ollama_host"] = normalize_ollama_host(str(config["ollama_host"]))
     config["stream_reasoning_summaries"] = _bool_config(
         config["stream_reasoning_summaries"],
         True,
@@ -206,14 +234,19 @@ def _activity_summary_with_elapsed(
     elapsed = _format_agent_turn_duration(elapsed_seconds)
     clean = summary.strip()
     suffix = f"{verb} {elapsed}"
-    if clean.startswith("[Codex activity: ") and clean.endswith("]"):
+    if clean.startswith("[") and " activity: " in clean and clean.endswith("]"):
         return f"{clean[:-1]}, {suffix}]\n"
     return f"{clean} ({suffix})\n"
 
 
-def _activity_status_summary(status: str, *, elapsed_seconds: float) -> str:
+def _activity_status_summary(
+    status: str,
+    *,
+    elapsed_seconds: float,
+    role: str = "Codex",
+) -> str:
     elapsed = _format_agent_turn_duration(elapsed_seconds)
-    return f"[Codex activity: {status} after {elapsed}]\n"
+    return f"[{role} activity: {status} after {elapsed}]\n"
 
 
 def _add_editor_button(buttons: list[str], editor: Editor) -> None:
@@ -484,6 +517,10 @@ class EditorAgentPane(QWidget):
         self._selected_text_snapshot: SelectedTextSnapshot | None = None
         self._selection_context_refresh_pending = False
         self._selection_context_request_id = 0
+        self._activity_role = "Codex"
+        self._model_provider = PROVIDER_CODEX
+        self._ollama_models: tuple[str, ...] = ()
+        self._ollama_models_unavailable = False
         self._loading_settings = False
         self._multi_proposal_dialog: MultiCardProposalDialog | None = None
 
@@ -532,14 +569,34 @@ class EditorAgentPane(QWidget):
 
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
+        self.provider_combo = QComboBox()
+        self.provider_combo.setEditable(False)
+        for label, value in PROVIDER_OPTIONS:
+            self.provider_combo.addItem(label, value)
+        qconnect(self.provider_combo.currentIndexChanged, self._on_provider_changed)
+        form.addRow("Provider", self.provider_combo)
         self.codex_path_edit = QLineEdit()
         self.codex_path_edit.setPlaceholderText(resolve_codex_path(""))
         form.addRow("Codex CLI", self.codex_path_edit)
+        self.ollama_path_edit = QLineEdit()
+        self.ollama_path_edit.setPlaceholderText(resolve_ollama_path(""))
+        form.addRow("Ollama CLI", self.ollama_path_edit)
+        self.ollama_host_edit = QLineEdit()
+        self.ollama_host_edit.setPlaceholderText(DEFAULT_OLLAMA_HOST)
+        form.addRow("Ollama host", self.ollama_host_edit)
         self.model_combo = QComboBox()
         self.model_combo.setEditable(False)
         for label, value in MODEL_OPTIONS:
             self.model_combo.addItem(label, value)
-        form.addRow("Model", self.model_combo)
+        model_row = QHBoxLayout()
+        self.model_refresh_button = QPushButton("Refresh")
+        qconnect(
+            self.model_refresh_button.clicked,
+            lambda _checked=False: self._refresh_ollama_models(show_error=True),
+        )
+        model_row.addWidget(self.model_combo, 1)
+        model_row.addWidget(self.model_refresh_button)
+        form.addRow("Model", model_row)
         self.effort_combo = QComboBox()
         self.effort_combo.setEditable(False)
         for label, value in EFFORT_OPTIONS:
@@ -658,8 +715,11 @@ class EditorAgentPane(QWidget):
         config = _config()
         self._loading_settings = True
         try:
+            self._set_provider_choice(str(config["provider"]))
             self.codex_path_edit.setText(str(config["codex_path"]))
-            self._set_model_choice(str(config["model"]))
+            self.ollama_path_edit.setText(str(config["ollama_path"]))
+            self.ollama_host_edit.setText(str(config["ollama_host"]))
+            self._set_model_choice(self._saved_model_for_provider(config["provider"], config))
             self._set_effort_choice(str(config["reasoning_effort"]))
             self._set_project_folder_choices(
                 str(config["project_folder"]),
@@ -676,14 +736,20 @@ class EditorAgentPane(QWidget):
             self.text_splitter.setSizes(
                 _validated_splitter_sizes(config["splitter_sizes"])
             )
+            self._update_provider_controls()
         finally:
             self._loading_settings = False
+        if self._provider() == PROVIDER_OLLAMA:
+            self._refresh_ollama_models()
 
     def _save_settings(self) -> None:
         config = _config()
         project_folder = self._project_folder_text()
+        self._save_current_model_choice(config)
+        config["provider"] = self._provider()
         config["codex_path"] = self.codex_path_edit.text().strip()
-        config["model"] = self._model_text()
+        config["ollama_path"] = self.ollama_path_edit.text().strip()
+        config["ollama_host"] = normalize_ollama_host(self.ollama_host_edit.text())
         config["reasoning_effort"] = self._reasoning_effort()
         config["custom_instructions"] = self._custom_instructions_text()
         config["project_folder"] = project_folder
@@ -705,15 +771,115 @@ class EditorAgentPane(QWidget):
             return
         self._save_settings()
 
+    def _set_provider_choice(self, provider: str) -> None:
+        index = provider_option_index(provider)
+        self.provider_combo.setCurrentIndex(index)
+
     def _set_model_choice(self, model: str) -> None:
         self.model_combo.clear()
-        for label, value in model_options_with_legacy(model):
-            self.model_combo.addItem(label, value)
-        self.model_combo.setCurrentIndex(model_option_index(model))
+        provider = self._provider()
+        if provider == PROVIDER_OLLAMA:
+            for label, value in ollama_model_options_with_legacy(
+                model,
+                self._ollama_models,
+                unavailable=self._ollama_models_unavailable,
+            ):
+                self.model_combo.addItem(label, value)
+            self.model_combo.setCurrentIndex(
+                ollama_model_option_index(
+                    model,
+                    self._ollama_models,
+                    unavailable=self._ollama_models_unavailable,
+                )
+            )
+        else:
+            for label, value in model_options_with_legacy(model):
+                self.model_combo.addItem(label, value)
+            self.model_combo.setCurrentIndex(model_option_index(model))
+        self._model_provider = provider
 
     def _model_text(self) -> str:
         data = self.model_combo.currentData()
         return str(data).strip() if data is not None else ""
+
+    def _provider(self) -> str:
+        data = self.provider_combo.currentData()
+        return provider_value(data if data is not None else "")
+
+    def _saved_model_for_provider(
+        self,
+        provider: object,
+        config: dict[str, Any],
+    ) -> str:
+        if provider_value(provider) == PROVIDER_OLLAMA:
+            return str(config["ollama_model"])
+        return str(config["codex_model"])
+
+    def _save_current_model_choice(self, config: dict[str, Any]) -> None:
+        if getattr(self, "_model_provider", PROVIDER_CODEX) == PROVIDER_OLLAMA:
+            config["ollama_model"] = self._model_text()
+        else:
+            config["codex_model"] = self._model_text()
+
+    def _on_provider_changed(self, _index: int) -> None:
+        config = _config()
+        if not getattr(self, "_loading_settings", False):
+            self._save_current_model_choice(config)
+            config["provider"] = self._provider()
+            _write_config(config)
+        self._set_model_choice(self._saved_model_for_provider(self._provider(), config))
+        self._update_provider_controls()
+        self.refresh_context_label()
+        if not getattr(self, "_loading_settings", False) and self._provider() == PROVIDER_OLLAMA:
+            self._refresh_ollama_models()
+
+    def _update_provider_controls(self) -> None:
+        codex_enabled = self._provider() == PROVIDER_CODEX
+        self.codex_path_edit.setEnabled(codex_enabled)
+        self.ollama_path_edit.setEnabled(not codex_enabled)
+        self.ollama_host_edit.setEnabled(not codex_enabled)
+        self.model_refresh_button.setEnabled(not codex_enabled)
+        self.effort_combo.setEnabled(codex_enabled)
+        self.fast_mode_checkbox.setEnabled(codex_enabled)
+        self.access_combo.setEnabled(codex_enabled)
+        self.reasoning_checkbox.setEnabled(codex_enabled)
+
+    def _refresh_ollama_models(self, show_error: bool = False) -> None:
+        if self._provider() != PROVIDER_OLLAMA:
+            return
+        assert aqt.mw is not None
+        taskman = aqt.mw.taskman
+        ollama_path = self.ollama_path_edit.text().strip()
+        ollama_host = self.ollama_host_edit.text().strip()
+
+        def task() -> tuple[tuple[str, ...], str | None]:
+            try:
+                models = discover_ollama_models(
+                    ollama_path=ollama_path,
+                    ollama_host=ollama_host,
+                )
+            except Exception as exc:
+                return (), str(exc)
+            return ollama_model_names(models), None
+
+        def on_done(future: Future) -> None:
+            model_names, error = future.result()
+            config = _config()
+            if error is None:
+                self._ollama_models = model_names
+                self._ollama_models_unavailable = False
+                if not str(config["ollama_model"]).strip() and model_names:
+                    config["ollama_model"] = model_names[0]
+                    _write_config(config)
+            else:
+                self._ollama_models = ()
+                self._ollama_models_unavailable = True
+            if self._provider() == PROVIDER_OLLAMA:
+                self._set_model_choice(str(config["ollama_model"]))
+                if error is not None and show_error:
+                    tooltip(str(error), parent=self)
+
+        taskman.run_in_background(task, on_done, uses_collection=False)
 
     def _set_effort_choice(self, effort: str) -> None:
         self.effort_combo.clear()
@@ -799,11 +965,15 @@ class EditorAgentPane(QWidget):
             if self.isVisible():
                 self.prompt.setFocus()
                 self.refresh_context_label()
+                if self._provider() == PROVIDER_OLLAMA:
+                    self._refresh_ollama_models()
             return
         self.dock.setVisible(not self.dock.isVisible())
         if self.dock.isVisible():
             self.prompt.setFocus()
             self.refresh_context_label()
+            if self._provider() == PROVIDER_OLLAMA:
+                self._refresh_ollama_models()
             self._start_selection_context_refresh()
         else:
             self._stop_selection_context_refresh()
@@ -815,13 +985,9 @@ class EditorAgentPane(QWidget):
             except RuntimeError:
                 self.context_label.setText("Select multiple cards to use the agent.")
                 return
-            project_status = project_root_status(
-                self._project_folder_text(),
-                self._project_folder_access(),
-            )
             self.context_label.setText(
                 f"browse - {len(snapshot.cards)} selected cards - "
-                f"{len(snapshot.notes)} notes\n{project_status}"
+                f"{len(snapshot.notes)} notes\n{self._agent_context_status()}"
             )
             return
 
@@ -836,13 +1002,20 @@ class EditorAgentPane(QWidget):
         except Exception:
             notetype_name = str(note.mid)
         mode = _editor_mode_name(self.editor)
-        project_status = project_root_status(
-            self._project_folder_text(),
-            self._project_folder_access(),
-        )
         self.context_label.setText(
             f"{mode} - note {int(note.id) if note.id else 'new'} - "
-            f"{notetype_name}\n{project_status}"
+            f"{notetype_name}\n{self._agent_context_status()}"
+        )
+
+    def _agent_context_status(self) -> str:
+        if self._provider() == PROVIDER_OLLAMA:
+            model = self._model_text()
+            if model:
+                return f"Local Ollama model: {model}"
+            return "No Ollama model selected."
+        return project_root_status(
+            self._project_folder_text(),
+            self._project_folder_access(),
         )
 
     def on_editor_context_changed(self) -> None:
@@ -995,7 +1168,12 @@ class EditorAgentPane(QWidget):
             self.surface.eval(
                 js_replace_element(
                     self._activity_id,
-                    render_activity_summary(self._activity_id, summary, detail_lines),
+                    render_activity_summary(
+                        self._activity_id,
+                        summary,
+                        detail_lines,
+                        role=getattr(self, "_activity_role", "Codex"),
+                    ),
                 )
             )
         self._activity_id = None
@@ -1084,18 +1262,27 @@ class EditorAgentPane(QWidget):
         selected_snapshot = (
             snapshot.selected_text if isinstance(snapshot, EditorSnapshot) else None
         )
-        self._set_selected_text_snapshot(selected_snapshot)
-        self._append_transcript(render_user_message(prompt, selected_snapshot))
 
         config = _config()
-        model = self._model_text() or str(config["model"])
-        reasoning_effort = self._reasoning_effort()
+        provider = self._provider()
+        model = self._model_text() or self._saved_model_for_provider(provider, config)
+        if provider == PROVIDER_OLLAMA and not model:
+            showWarning("Select an Ollama model first.", parent=self)
+            return
+        provider_label = "Ollama" if provider == PROVIDER_OLLAMA else "Codex"
+        reasoning_effort = self._reasoning_effort() if provider == PROVIDER_CODEX else ""
         project_root = self._project_folder_text()
         project_folder_access = self._project_folder_access()
         custom_instructions = self._custom_instructions_text()
         codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
-        fast_mode = self._fast_mode()
-        stream_reasoning_summaries = self._stream_reasoning_summaries()
+        ollama_path = self.ollama_path_edit.text().strip() or str(config["ollama_path"])
+        ollama_host = self.ollama_host_edit.text().strip() or str(config["ollama_host"])
+        fast_mode = self._fast_mode() if provider == PROVIDER_CODEX else False
+        stream_reasoning_summaries = (
+            self._stream_reasoning_summaries() if provider == PROVIDER_CODEX else False
+        )
+        self._set_selected_text_snapshot(selected_snapshot)
+        self._append_transcript(render_user_message(prompt, selected_snapshot))
         stop_event = Event()
         history = list(self.history)
         started_at = time.monotonic()
@@ -1109,7 +1296,18 @@ class EditorAgentPane(QWidget):
         self._activity_counter += 1
         self._activity_id = f"agent-activity-{self._activity_counter}"
         self._activity_open = True
-        self._append_transcript(render_activity_start(self._activity_id))
+        self._activity_role = provider_label
+        self._append_transcript(
+            render_activity_start(
+                self._activity_id,
+                role=provider_label,
+                status=(
+                    "[Live Codex activity]"
+                    if provider == PROVIDER_CODEX
+                    else "[Running local Ollama model]"
+                ),
+            )
+        )
         activity = CodexActivityRenderer(
             stream_reasoning_summaries=stream_reasoning_summaries
         )
@@ -1126,7 +1324,37 @@ class EditorAgentPane(QWidget):
                     )
                 )
 
-        def task() -> tuple[str, str, tuple[NotePatch, ...], str, tuple[str, ...]]:
+        def task() -> tuple[
+            str,
+            str,
+            tuple[NotePatch | MultiNotePatch, ...],
+            str,
+            tuple[str, ...],
+        ]:
+            if provider == PROVIDER_OLLAMA:
+                agent = OllamaCliAgent(
+                    ollama_path=ollama_path,
+                    ollama_host=ollama_host,
+                    model=model,
+                    timeout_seconds=int(config["timeout_seconds"]),
+                    custom_instructions=custom_instructions,
+                )
+                result = agent.send(
+                    prompt=prompt,
+                    snapshot=snapshot,
+                    project_root="",
+                    history=history,
+                    run_logger=run_logger,
+                    stop_requested=stop_event.is_set,
+                )
+                return (
+                    result.text,
+                    result.html,
+                    result.proposals,
+                    "[Ollama activity: local model run]\n",
+                    (),
+                )
+
             agent = CodexCliAgent(
                 codex_path=codex_path,
                 model=model,
@@ -1189,6 +1417,7 @@ class EditorAgentPane(QWidget):
             self._agent_stop_event = None
             self.send_button.setEnabled(True)
             self.stop_button.setEnabled(False)
+        activity_role = getattr(self, "_activity_role", "Codex")
         try:
             (
                 text,
@@ -1199,9 +1428,13 @@ class EditorAgentPane(QWidget):
             ) = future.result()
         except AgentStopped:
             summary = (
-                _activity_status_summary("stopped", elapsed_seconds=elapsed_seconds)
+                _activity_status_summary(
+                    "stopped",
+                    elapsed_seconds=elapsed_seconds,
+                    role=activity_role,
+                )
                 if elapsed_seconds is not None
-                else "Codex run stopped."
+                else f"{activity_role} run stopped."
             )
             self._replace_activity_with_summary(
                 summary,
@@ -1211,7 +1444,11 @@ class EditorAgentPane(QWidget):
         except Exception as exc:
             if elapsed_seconds is not None:
                 self._replace_activity_with_summary(
-                    _activity_status_summary("failed", elapsed_seconds=elapsed_seconds),
+                    _activity_status_summary(
+                        "failed",
+                        elapsed_seconds=elapsed_seconds,
+                        role=activity_role,
+                    ),
                     tuple(activity.detail_lines),
                 )
             else:
@@ -1245,7 +1482,7 @@ class EditorAgentPane(QWidget):
             return
         self._agent_stop_event.set()
         self.stop_button.setEnabled(False)
-        self._append_activity_line("[status] stopping Codex")
+        self._append_activity_line("[status] stopping agent")
 
     def _discard_pending_patch(self) -> None:
         self.pending_patch = None
