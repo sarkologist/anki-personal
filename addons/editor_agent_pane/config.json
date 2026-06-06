@@ -1,6 +1,7 @@
 {
     "codex_path": "",
     "model": "",
+    "reasoning_effort": "",
     "custom_instructions": "",
     "project_folder": "",
     "project_folder_access": "workspace-write",

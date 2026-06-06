@@ -237,10 +237,12 @@ class CodexCliAgent:
         project_folder_access: str = DEFAULT_PROJECT_FOLDER_ACCESS,
         custom_instructions: str = "",
         fast_mode: bool = False,
+        reasoning_effort: str = "",
         stream_reasoning_summaries: bool = True,
     ) -> None:
         self.codex_path = resolve_codex_path(codex_path)
         self.model = model.strip()
+        self.reasoning_effort = reasoning_effort.strip()
         self.timeout_seconds = timeout_seconds
         self.project_folder_access = normalize_project_folder_access(
             project_folder_access
@@ -264,6 +266,7 @@ class CodexCliAgent:
             run_logger,
             "run_start",
             model=self.model or "default",
+            reasoning_effort=self.reasoning_effort or "default",
             sandbox=self.project_folder_access,
             timeout_seconds=self.timeout_seconds,
             fast_mode=self.fast_mode,
@@ -426,6 +429,7 @@ class CodexCliAgent:
                 self.model,
                 self.stream_reasoning_summaries,
             ),
+            *_reasoning_effort_config_args(self.reasoning_effort),
             *_fast_mode_config_args(self.fast_mode),
             "--json",
             "--cd",
@@ -630,6 +634,13 @@ def _fast_mode_config_args(fast_mode: bool) -> list[str]:
         "-c",
         'service_tier="fast"',
     ]
+
+
+def _reasoning_effort_config_args(reasoning_effort: str) -> list[str]:
+    effort = reasoning_effort.strip()
+    if not effort:
+        return []
+    return ["-c", f'model_reasoning_effort="{effort}"']
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:

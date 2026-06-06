@@ -37,6 +37,11 @@ from editor_agent_pane.codex_client import (  # noqa: E402
     project_root_status,
     resolve_codex_path,
 )
+from editor_agent_pane.effort_options import (  # noqa: E402
+    EFFORT_OPTIONS,
+    effort_option_index,
+    effort_options_with_legacy,
+)
 from editor_agent_pane.latex_preview import (  # noqa: E402
     LatexPreviewError,
     LegacyLatexPreviewRenderer,
@@ -734,6 +739,7 @@ def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
     pane.selection_context_label = FakeLabel()
     pane.codex_path_edit = types.SimpleNamespace(text=lambda: "")
     pane._model_text = lambda: ""
+    pane._reasoning_effort = lambda: ""
     pane._project_folder_text = lambda: ""
     pane._project_folder_access = lambda: PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE
     pane._custom_instructions_text = lambda: ""
@@ -1177,7 +1183,61 @@ def test_agent_request_transcript_mentions_validated_selection_context(
     assert "Selection sent from Front" in pane.surface.evals[0]
     assert "selected &lt;text&gt;" in pane.surface.evals[0]
     assert "<strong>selected</strong>" not in pane.surface.evals[0]
+    assert captured["agent_kwargs"]["reasoning_effort"] == ""
     assert taskman.uses_collection is False
+
+
+def test_agent_request_passes_selected_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane._reasoning_effort = lambda: "high"
+    runtime.aqt.mw = types.SimpleNamespace(
+        taskman=ImmediateTaskman(),
+        addonManager=FakeAddonManager(),
+    )
+    config = dict(runtime.DEFAULT_CONFIG)
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    captured: dict[str, Any] = {}
+
+    class CapturingAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["agent_kwargs"] = kwargs
+
+        def send(self, **_kwargs: Any) -> Any:
+            return types.SimpleNamespace(text="", html="", proposals=())
+
+    monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
+
+    pane._start_agent_request("Improve this", generation=0)
+
+    assert captured["agent_kwargs"]["reasoning_effort"] == "high"
+
+
+def test_load_settings_restores_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    restored: dict[str, Any] = {}
+    pane.codex_path_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane._set_model_choice = lambda model: None
+    pane._set_project_folder_choices = lambda folder, recent: None
+    pane._set_project_folder_access = lambda access: None
+    pane._set_effort_choice = lambda effort: restored.update(effort=effort)
+    pane.fast_mode_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
+    pane.reasoning_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
+    pane.instructions_edit = types.SimpleNamespace(setPlainText=lambda text: None)
+    pane.text_splitter = types.SimpleNamespace(setSizes=lambda sizes: None)
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["reasoning_effort"] = "xhigh"
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+
+    pane._load_settings()
+
+    assert restored["effort"] == "xhigh"
 
 
 def test_agent_request_drops_stale_selection_from_transcript(
@@ -1245,6 +1305,7 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     pane._model_text = lambda: "gpt-5.5"
     pane._custom_instructions_text = lambda: "be concise"
     pane._project_folder_access = lambda: PROJECT_FOLDER_ACCESS_READ_ONLY
+    pane._reasoning_effort = lambda: "high"
     pane._fast_mode = lambda: True
     pane._stream_reasoning_summaries = lambda: False
     config = dict(runtime.DEFAULT_CONFIG)
@@ -1260,9 +1321,37 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     assert saved["custom_instructions"] == "be concise"
     assert saved["project_folder"] == ""
     assert saved["project_folder_access"] == PROJECT_FOLDER_ACCESS_READ_ONLY
+    assert saved["reasoning_effort"] == "high"
     assert saved["fast_mode"] is True
     assert saved["stream_reasoning_summaries"] is False
     assert saved["recent_project_folders"] == ["/one", "/two"]
+
+
+def test_agent_effort_options_include_default_and_known_efforts() -> None:
+    assert EFFORT_OPTIONS == (
+        ("Codex default", ""),
+        ("None", "none"),
+        ("Minimal", "minimal"),
+        ("Low", "low"),
+        ("Medium", "medium"),
+        ("High", "high"),
+        ("XHigh", "xhigh"),
+    )
+    assert effort_option_index("") == 0
+
+
+def test_agent_effort_options_round_trip_known_efforts() -> None:
+    for expected_index, (_label, effort) in enumerate(EFFORT_OPTIONS):
+        assert effort_options_with_legacy(effort) == EFFORT_OPTIONS
+        assert effort_option_index(effort) == expected_index
+
+
+def test_agent_effort_options_preserve_unknown_legacy_effort() -> None:
+    options = effort_options_with_legacy(" experimental ")
+
+    assert options[:-1] == EFFORT_OPTIONS
+    assert options[-1] == ("experimental", "experimental")
+    assert effort_option_index("experimental") == len(options) - 1
 
 
 def test_agent_model_options_include_default_and_known_models() -> None:
@@ -1307,6 +1396,12 @@ def test_agent_config_disables_fast_mode_by_default() -> None:
     config = json.loads((ROOT / "addons/editor_agent_pane/config.json").read_text())
 
     assert config["fast_mode"] is False
+
+
+def test_agent_config_uses_codex_default_effort_by_default() -> None:
+    config = json.loads((ROOT / "addons/editor_agent_pane/config.json").read_text())
+
+    assert config["reasoning_effort"] == ""
 
 
 def test_json_line_agent_run_logger_writes_structured_json() -> None:
@@ -1980,9 +2075,7 @@ def test_render_proposal_diff_keeps_multiline_mathjax_literal_in_diff() -> None:
         note_id=123,
         notetype_id=7,
         notetype_name="Basic",
-        fields=(
-            FieldSnapshot(name="Front", html="<div>old</div>"),
-        ),
+        fields=(FieldSnapshot(name="Front", html="<div>old</div>"),),
         tags=(),
     )
     patch = validate_note_patch(
@@ -2484,6 +2577,7 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
     assert "--ask-for-approval" not in command
     assert 'service_tier="fast"' not in command
     assert "features.fast_mode=true" not in command
+    assert 'model_reasoning_effort="high"' not in command
     assert command[command.index("--cd") + 1] == str(project.resolve())
     assert "-c" in command
     assert 'model_reasoning_summary="concise"' in command
@@ -3113,6 +3207,50 @@ def test_codex_agent_can_enable_fast_mode(
     command = captured["command"]
     assert "features.fast_mode=true" in command
     assert 'service_tier="fast"' in command
+
+
+def test_codex_agent_can_set_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        captured["command"] = command
+        write_codex_response(
+            command,
+            {
+                "message": "No changes.",
+                "message_html": "<p>No changes.</p>",
+                "patch": None,
+            },
+        )
+        return FakePopen(stdout='{"type":"turn.completed"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model="gpt-5.5",
+        timeout_seconds=123,
+        reasoning_effort="high",
+    ).send(
+        prompt="Improve this",
+        snapshot=snapshot(),
+        project_root=str(tmp_path),
+        history=[],
+    )
+
+    command = captured["command"]
+    assert 'model_reasoning_effort="high"' in command
 
 
 def test_codex_agent_disables_reasoning_summaries_for_spark_model(

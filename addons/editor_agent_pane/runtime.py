@@ -52,6 +52,12 @@ from .codex_client import (
     project_root_status,
     resolve_codex_path,
 )
+from .effort_options import (
+    EFFORT_OPTIONS,
+    effort_option_index,
+    effort_options_with_legacy,
+    effort_value,
+)
 from .latex_preview import LegacyLatexPreviewRenderer
 from .model_options import MODEL_OPTIONS, model_option_index, model_options_with_legacy
 from .note_images import collect_note_images
@@ -105,6 +111,7 @@ SELECTION_CONTEXT_JS = (
 DEFAULT_CONFIG = {
     "codex_path": "",
     "model": "",
+    "reasoning_effort": "",
     "custom_instructions": "",
     "project_folder": "",
     "project_folder_access": DEFAULT_PROJECT_FOLDER_ACCESS,
@@ -154,6 +161,7 @@ def _config() -> dict[str, Any]:
         True,
     )
     config["fast_mode"] = _bool_config(config["fast_mode"], False)
+    config["reasoning_effort"] = effort_value(config["reasoning_effort"])
     return config
 
 
@@ -532,6 +540,11 @@ class EditorAgentPane(QWidget):
         for label, value in MODEL_OPTIONS:
             self.model_combo.addItem(label, value)
         form.addRow("Model", self.model_combo)
+        self.effort_combo = QComboBox()
+        self.effort_combo.setEditable(False)
+        for label, value in EFFORT_OPTIONS:
+            self.effort_combo.addItem(label, value)
+        form.addRow("Effort", self.effort_combo)
         self.fast_mode_checkbox = QCheckBox("Fast mode")
         qconnect(self.fast_mode_checkbox.toggled, self._on_fast_mode_toggled)
         form.addRow("", self.fast_mode_checkbox)
@@ -647,6 +660,7 @@ class EditorAgentPane(QWidget):
         try:
             self.codex_path_edit.setText(str(config["codex_path"]))
             self._set_model_choice(str(config["model"]))
+            self._set_effort_choice(str(config["reasoning_effort"]))
             self._set_project_folder_choices(
                 str(config["project_folder"]),
                 config["recent_project_folders"],
@@ -670,6 +684,7 @@ class EditorAgentPane(QWidget):
         project_folder = self._project_folder_text()
         config["codex_path"] = self.codex_path_edit.text().strip()
         config["model"] = self._model_text()
+        config["reasoning_effort"] = self._reasoning_effort()
         config["custom_instructions"] = self._custom_instructions_text()
         config["project_folder"] = project_folder
         config["project_folder_access"] = self._project_folder_access()
@@ -699,6 +714,16 @@ class EditorAgentPane(QWidget):
     def _model_text(self) -> str:
         data = self.model_combo.currentData()
         return str(data).strip() if data is not None else ""
+
+    def _set_effort_choice(self, effort: str) -> None:
+        self.effort_combo.clear()
+        for label, value in effort_options_with_legacy(effort):
+            self.effort_combo.addItem(label, value)
+        self.effort_combo.setCurrentIndex(effort_option_index(effort))
+
+    def _reasoning_effort(self) -> str:
+        data = self.effort_combo.currentData()
+        return effort_value(data) if data is not None else ""
 
     def _set_project_folder_access(self, project_folder_access: str) -> None:
         access = normalize_project_folder_access(project_folder_access)
@@ -1064,6 +1089,7 @@ class EditorAgentPane(QWidget):
 
         config = _config()
         model = self._model_text() or str(config["model"])
+        reasoning_effort = self._reasoning_effort()
         project_root = self._project_folder_text()
         project_folder_access = self._project_folder_access()
         custom_instructions = self._custom_instructions_text()
@@ -1108,6 +1134,7 @@ class EditorAgentPane(QWidget):
                 project_folder_access=project_folder_access,
                 custom_instructions=custom_instructions,
                 fast_mode=fast_mode,
+                reasoning_effort=reasoning_effort,
                 stream_reasoning_summaries=stream_reasoning_summaries,
             )
             result = agent.send(
