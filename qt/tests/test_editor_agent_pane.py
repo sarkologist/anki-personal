@@ -3021,6 +3021,75 @@ def test_ollama_agent_treats_empty_patch_as_no_proposal(
     assert "run_failure" not in [record["event"] for record in run_logger.records]
 
 
+def test_ollama_agent_repairs_empty_patch_with_field_updates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = [
+        {
+            "message": "Converted LaTeX to MathJax delimiters.",
+            "message_html": "<p>Converted LaTeX to MathJax delimiters.</p>",
+            "patch": {
+                "summary": "Convert delimiters",
+                "note_id": 123,
+                "notetype_id": 7,
+                "field_updates": [],
+                "tags": {"replace": None, "add": [], "remove": []},
+            },
+        },
+        {
+            "message": "Converted LaTeX to MathJax delimiters.",
+            "message_html": "<p>Converted LaTeX to MathJax delimiters.</p>",
+            "patch": {
+                "summary": "Convert delimiters",
+                "note_id": 123,
+                "notetype_id": 7,
+                "field_updates": [
+                    {"name": "Front", "html": "$x^2$"},
+                ],
+                "tags": {"replace": None, "add": [], "remove": []},
+            },
+        },
+    ]
+    processes: list[FakePopen] = []
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        env: dict[str, str],
+    ) -> FakePopen:
+        process = FakePopen(stdout=json.dumps(responses.pop(0)))
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    result = OllamaCliAgent(
+        ollama_path="ollama",
+        ollama_host="",
+        model="qwen3:latest",
+        timeout_seconds=300,
+    ).send(
+        prompt="convert latex to mathjax",
+        snapshot=snapshot(),
+        project_root="",
+        history=[],
+        run_logger=run_logger,
+    )
+
+    assert len(processes) == 2
+    assert "previous JSON response" in processes[1].stdin.text
+    assert "non-null patch object" in processes[1].stdin.text
+    assert result.proposals[0].field_updates == {"Front": "$x^2$"}
+    assert run_logger.first("repair_start")["reason"] == "empty_patch"
+    assert run_logger.first("run_finish")["repair_attempted"] is True
+
+
 def test_ollama_agent_times_out_and_kills_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

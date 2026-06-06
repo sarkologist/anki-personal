@@ -53,6 +53,14 @@ class _OllamaProcessResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class _OllamaParsedResponse:
+    message: str
+    message_html: str
+    proposals: tuple[AgentPatch, ...]
+    empty_patch: bool = False
+
+
 StopRequestedCallback = Callable[[], bool]
 
 
@@ -154,24 +162,69 @@ class OllamaCliAgent:
             )
             raise
 
-        message = str(data.get("message") or "").strip()
-        message_html = str(data.get("message_html") or "").strip()
-        patch_data = data.get("patch")
-        proposals: tuple[AgentPatch, ...] = ()
-        if patch_data is not None:
+        parsed_response = _parse_ollama_agent_response(
+            data,
+            snapshot,
+            returncode=completed.returncode,
+            run_logger=run_logger,
+            validation_stage="patch_validation",
+        )
+        repair_attempted = False
+        if parsed_response.empty_patch:
+            repair_attempted = True
+            _log_agent_event(run_logger, "repair_start", reason="empty_patch")
             try:
-                patch = _validate_optional_agent_patch(patch_data, snapshot)
-                proposals = (patch,) if patch is not None else ()
+                completed = self._run(
+                    command,
+                    self._repair_prompt(prompt, snapshot, data),
+                    run_logger=run_logger,
+                    stop_requested=stop_requested,
+                )
+            except AgentStopped:
+                _log_agent_event(run_logger, "run_stopped")
+                raise
             except Exception as exc:
                 _log_agent_event(
                     run_logger,
                     "run_failure",
-                    stage="patch_validation",
-                    returncode=completed.returncode,
+                    stage="repair_run",
                     error_type=type(exc).__name__,
                     error_preview=text_preview(str(exc)),
                 )
                 raise
+            if completed.returncode != 0:
+                _log_agent_event(
+                    run_logger,
+                    "run_failure",
+                    stage="repair_cli_exit",
+                    returncode=completed.returncode,
+                    stdout_lines=line_count(completed.stdout),
+                    stderr_lines=line_count(completed.stderr),
+                    stderr_preview=text_preview(completed.stderr),
+                )
+                raise RuntimeError(_format_ollama_error(completed))
+            try:
+                repair_data = _parse_json_object(completed.stdout)
+            except Exception as exc:
+                _log_agent_event(
+                    run_logger,
+                    "run_failure",
+                    stage="repair_json_parse",
+                    returncode=completed.returncode,
+                    stdout_lines=line_count(completed.stdout),
+                    stderr_lines=line_count(completed.stderr),
+                    output_chars=len(completed.stdout),
+                    error_type=type(exc).__name__,
+                    error_preview=text_preview(str(exc)),
+                )
+                raise
+            parsed_response = _parse_ollama_agent_response(
+                repair_data,
+                snapshot,
+                returncode=completed.returncode,
+                run_logger=run_logger,
+                validation_stage="repair_patch_validation",
+            )
 
         _log_agent_event(
             run_logger,
@@ -180,14 +233,15 @@ class OllamaCliAgent:
             stdout_lines=line_count(completed.stdout),
             stderr_lines=line_count(completed.stderr),
             final_response_present=True,
-            message_chars=len(message),
-            message_html_chars=len(message_html),
-            proposal_count=len(proposals),
+            message_chars=len(parsed_response.message),
+            message_html_chars=len(parsed_response.message_html),
+            proposal_count=len(parsed_response.proposals),
+            repair_attempted=repair_attempted,
         )
         return AgentResult(
-            text=message,
-            html=message_html,
-            proposals=proposals,
+            text=parsed_response.message,
+            html=parsed_response.message_html,
+            proposals=parsed_response.proposals,
             event_count=0,
         )
 
@@ -225,6 +279,33 @@ class OllamaCliAgent:
             user_prompt=prompt,
             project_access_instructions=OLLAMA_CONTEXT_INSTRUCTIONS,
         )
+
+    def _repair_prompt(
+        self,
+        prompt: str,
+        snapshot: EditorSnapshot | MultiCardSnapshot,
+        previous_response: dict[str, Any],
+    ) -> str:
+        return f"""Your previous JSON response for the Anki editor pane had a non-null patch object, but that patch contained no field or tag changes.
+
+Original user request:
+{prompt}
+
+Current editor context is JSON:
+{json.dumps(snapshot.as_tool_result(), ensure_ascii=False)}
+
+Previous response JSON:
+{json.dumps(previous_response, ensure_ascii=False)}
+
+Return only a corrected JSON object with message, message_html, and patch.
+If the user requested a note edit, patch must contain actual changes:
+- For a single note, include non-empty field_updates at the top level of patch.
+- Use exact field names from context_json.fields.
+- Each field update must contain the full proposed HTML for that field.
+- Preserve unrelated field HTML and tags.
+
+If no note edit should be proposed, set patch to null and make message/message_html accurately say no proposal was made.
+"""
 
     def _run(
         self,
@@ -324,6 +405,44 @@ class OllamaCliAgent:
                 stdout_reader.join(timeout=1)
                 stderr_reader.join(timeout=1)
                 raise AgentStopped("Ollama run stopped.")
+
+
+def _parse_ollama_agent_response(
+    data: dict[str, Any],
+    snapshot: EditorSnapshot | MultiCardSnapshot,
+    *,
+    returncode: int,
+    run_logger: AgentRunLogger | None,
+    validation_stage: str,
+) -> _OllamaParsedResponse:
+    message = str(data.get("message") or "").strip()
+    message_html = str(data.get("message_html") or "").strip()
+    patch_data = data.get("patch")
+    proposals: tuple[AgentPatch, ...] = ()
+    empty_patch = False
+    if patch_data is not None:
+        try:
+            patch = _validate_optional_agent_patch(patch_data, snapshot)
+            if patch is None:
+                empty_patch = True
+            else:
+                proposals = (patch,)
+        except Exception as exc:
+            _log_agent_event(
+                run_logger,
+                "run_failure",
+                stage=validation_stage,
+                returncode=returncode,
+                error_type=type(exc).__name__,
+                error_preview=text_preview(str(exc)),
+            )
+            raise
+    return _OllamaParsedResponse(
+        message=message,
+        message_html=message_html,
+        proposals=proposals,
+        empty_patch=empty_patch,
+    )
 
 
 def discover_ollama_models(

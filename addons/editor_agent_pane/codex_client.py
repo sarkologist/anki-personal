@@ -193,6 +193,9 @@ When proposing a patch:
   top level of patch.
 - Use exact field names from the editor context.
 - Preserve HTML where appropriate.
+- When the user asks to change, convert, rewrite, fix, or update note content,
+  return an actual patch with non-empty field_updates and the full proposed HTML
+  for each changed field. Do not merely describe the change.
 - Explain briefly in message/message_html why the proposed change improves the
   note or selected cards.
 - Include tags.replace, tags.add, and tags.remove. Use null for tags.replace
