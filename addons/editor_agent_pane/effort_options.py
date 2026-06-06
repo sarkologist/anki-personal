@@ -6,7 +6,6 @@ from __future__ import annotations
 EFFORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Codex default", ""),
     ("None", "none"),
-    ("Minimal", "minimal"),
     ("Low", "low"),
     ("Medium", "medium"),
     ("High", "high"),
@@ -34,7 +33,10 @@ def effort_value(effort: object) -> str:
 
 
 def _effort_value(effort: object) -> str:
-    return str(effort).strip()
+    value = str(effort).strip()
+    if value == "minimal":
+        return ""
+    return value
 
 
 def _effort_values() -> set[str]:

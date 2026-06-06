@@ -8,7 +8,8 @@ direct OpenAI API billing.
 - `model`: Optional Codex model override selected from the Model pulldown. `Codex default` stores an empty value and uses Codex's default for your signed-in account.
 - `reasoning_effort`: Optional Codex reasoning effort override selected from
   the Effort pulldown. `Codex default` stores an empty value and uses your
-  normal Codex CLI reasoning effort setting.
+  normal Codex CLI reasoning effort setting. The pane does not offer
+  `minimal`, because Codex rejects it when default hosted tools are available.
 - `custom_instructions`: Optional user instructions inserted into the agent prompt. The add-on still appends the fixed editor context, JSON response contract, and patch safety rules.
 - `project_folder`: Optional source folder for the agent. The pane stores an
   empty value when "Don't work in a folder" is selected.

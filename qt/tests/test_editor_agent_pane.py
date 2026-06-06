@@ -1331,7 +1331,6 @@ def test_agent_effort_options_include_default_and_known_efforts() -> None:
     assert EFFORT_OPTIONS == (
         ("Codex default", ""),
         ("None", "none"),
-        ("Minimal", "minimal"),
         ("Low", "low"),
         ("Medium", "medium"),
         ("High", "high"),
@@ -1352,6 +1351,11 @@ def test_agent_effort_options_preserve_unknown_legacy_effort() -> None:
     assert options[:-1] == EFFORT_OPTIONS
     assert options[-1] == ("experimental", "experimental")
     assert effort_option_index("experimental") == len(options) - 1
+
+
+def test_agent_effort_options_reset_unsupported_minimal_effort() -> None:
+    assert effort_options_with_legacy("minimal") == EFFORT_OPTIONS
+    assert effort_option_index("minimal") == 0
 
 
 def test_agent_model_options_include_default_and_known_models() -> None:
@@ -3251,6 +3255,50 @@ def test_codex_agent_can_set_reasoning_effort(
 
     command = captured["command"]
     assert 'model_reasoning_effort="high"' in command
+
+
+def test_codex_agent_omits_unsupported_minimal_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        captured["command"] = command
+        write_codex_response(
+            command,
+            {
+                "message": "No changes.",
+                "message_html": "<p>No changes.</p>",
+                "patch": None,
+            },
+        )
+        return FakePopen(stdout='{"type":"turn.completed"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model="gpt-5.5",
+        timeout_seconds=123,
+        reasoning_effort="minimal",
+    ).send(
+        prompt="Improve this",
+        snapshot=snapshot(),
+        project_root=str(tmp_path),
+        history=[],
+    )
+
+    command = captured["command"]
+    assert 'model_reasoning_effort="minimal"' not in command
 
 
 def test_codex_agent_disables_reasoning_summaries_for_spark_model(

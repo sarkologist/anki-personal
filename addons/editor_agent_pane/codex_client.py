@@ -30,6 +30,7 @@ from .patches import (
     validate_multi_note_patch,
     validate_note_patch,
 )
+from .effort_options import effort_value
 from .sources import SourceAccessError, resolve_project_root
 
 DEFAULT_CODEX_APP_PATH = "/Applications/Codex.app/Contents/Resources/codex"
@@ -242,7 +243,7 @@ class CodexCliAgent:
     ) -> None:
         self.codex_path = resolve_codex_path(codex_path)
         self.model = model.strip()
-        self.reasoning_effort = reasoning_effort.strip()
+        self.reasoning_effort = effort_value(reasoning_effort)
         self.timeout_seconds = timeout_seconds
         self.project_folder_access = normalize_project_folder_access(
             project_folder_access
