@@ -22,7 +22,7 @@ from .codex_client import (
     _parse_json_object,
     _selection_instructions,
     _snapshot_log_payload,
-    _validate_agent_patch,
+    _validate_optional_agent_patch,
 )
 from .patches import EditorSnapshot, MultiCardSnapshot
 
@@ -160,7 +160,8 @@ class OllamaCliAgent:
         proposals: tuple[AgentPatch, ...] = ()
         if patch_data is not None:
             try:
-                proposals = (_validate_agent_patch(patch_data, snapshot),)
+                patch = _validate_optional_agent_patch(patch_data, snapshot)
+                proposals = (patch,) if patch is not None else ()
             except Exception as exc:
                 _log_agent_event(
                     run_logger,

@@ -22,15 +22,16 @@ from .agent_log import (
     stream_event_log_payload,
     text_preview,
 )
+from .effort_options import effort_value
 from .patches import (
     EditorSnapshot,
     MultiCardSnapshot,
     MultiNotePatch,
     NotePatch,
+    PatchValidationError,
     validate_multi_note_patch,
     validate_note_patch,
 )
-from .effort_options import effort_value
 from .sources import SourceAccessError, resolve_project_root
 
 DEFAULT_CODEX_APP_PATH = "/Applications/Codex.app/Contents/Resources/codex"
@@ -196,6 +197,8 @@ When proposing a patch:
   note or selected cards.
 - Include tags.replace, tags.add, and tags.remove. Use null for tags.replace
   unless you intend to replace the complete tag list.
+- If there are no field or tag changes, return patch: null instead of an empty
+  patch object.
 - The patch will only be shown to the user; Anki applies it after approval.
 """
 
@@ -373,7 +376,8 @@ class CodexCliAgent:
             proposals: tuple[AgentPatch, ...] = ()
             if patch_data is not None:
                 try:
-                    proposals = (_validate_agent_patch(patch_data, snapshot),)
+                    patch = _validate_optional_agent_patch(patch_data, snapshot)
+                    proposals = (patch,) if patch is not None else ()
                 except Exception as exc:
                     _log_agent_event(
                         run_logger,
@@ -710,6 +714,18 @@ def _validate_agent_patch(
     if isinstance(snapshot, MultiCardSnapshot):
         return validate_multi_note_patch(patch_data, snapshot)
     return validate_note_patch(patch_data, snapshot)
+
+
+def _validate_optional_agent_patch(
+    patch_data: dict[str, Any],
+    snapshot: EditorSnapshot | MultiCardSnapshot,
+) -> AgentPatch | None:
+    try:
+        return _validate_agent_patch(patch_data, snapshot)
+    except PatchValidationError as exc:
+        if str(exc) == "Patch does not contain any changes.":
+            return None
+        raise
 
 
 def _snapshot_log_payload(

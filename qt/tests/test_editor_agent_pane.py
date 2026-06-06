@@ -2971,6 +2971,56 @@ def test_ollama_agent_runs_model_and_parses_patch(
     assert result.event_count == 0
 
 
+def test_ollama_agent_treats_empty_patch_as_no_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        env: dict[str, str],
+    ) -> FakePopen:
+        return FakePopen(
+            stdout=json.dumps(
+                {
+                    "message": "Use dollar delimiters for inline MathJax.",
+                    "message_html": "<p>Use dollar delimiters for inline MathJax.</p>",
+                    "patch": {
+                        "summary": "No changes",
+                        "note_id": 123,
+                        "notetype_id": 7,
+                        "field_updates": [],
+                        "tags": {"replace": None, "add": [], "remove": []},
+                    },
+                }
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    result = OllamaCliAgent(
+        ollama_path="ollama",
+        ollama_host="",
+        model="qwen3:latest",
+        timeout_seconds=300,
+    ).send(
+        prompt="use $ delimiters for the mathjax",
+        snapshot=snapshot(),
+        project_root="",
+        history=[],
+        run_logger=run_logger,
+    )
+
+    assert result.text == "Use dollar delimiters for inline MathJax."
+    assert result.proposals == ()
+    assert "run_failure" not in [record["event"] for record in run_logger.records]
+
+
 def test_ollama_agent_times_out_and_kills_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3816,6 +3866,54 @@ def test_codex_agent_logs_patch_validation_failure(
     assert failure["returncode"] == 0
     assert failure["event_count"] == 1
     assert failure["error_type"] == "PatchValidationError"
+
+
+def test_codex_agent_treats_empty_patch_as_no_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        write_codex_response(
+            command,
+            {
+                "message": "No note changes needed.",
+                "message_html": "<p>No note changes needed.</p>",
+                "patch": {
+                    "summary": "No changes",
+                    "note_id": 123,
+                    "notetype_id": 7,
+                    "field_updates": [],
+                    "tags": {"replace": None, "add": [], "remove": []},
+                },
+            },
+        )
+        return FakePopen(stdout='{"type":"turn.completed"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    run_logger = FakeRunLogger()
+
+    result = CodexCliAgent(
+        codex_path="codex",
+        model="",
+        timeout_seconds=300,
+    ).send(
+        prompt="Explain",
+        snapshot=snapshot(),
+        project_root="",
+        history=[],
+        run_logger=run_logger,
+    )
+
+    assert result.text == "No note changes needed."
+    assert result.proposals == ()
+    assert "run_failure" not in [record["event"] for record in run_logger.records]
 
 
 def test_codex_agent_can_disable_reasoning_summaries(
