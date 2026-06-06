@@ -14,7 +14,8 @@ direct OpenAI API billing.
   the Effort pulldown. `Codex default` stores an empty value and uses your
   normal Codex CLI reasoning effort setting. The pane does not offer
   `minimal`, because Codex rejects it when default hosted tools are available.
-- `custom_instructions`: Optional user instructions inserted into the agent prompt. The add-on still appends the fixed editor context, JSON response contract, and patch safety rules.
+- `custom_instructions`: Legacy/default instructions fallback inserted into the agent prompt when the selected provider/model does not have scoped instructions.
+- `custom_instructions_by_model`: Instructions saved per provider and model. The map is keyed first by provider (`codex` or `ollama`), then by the selected model value; an empty model key stores the provider's default model choice.
 - `project_folder`: Optional source folder for the agent. The pane stores an
   empty value when "Don't work in a folder" is selected.
 - `project_folder_access`: Project folder sandbox mode. `workspace-write` lets

@@ -404,6 +404,20 @@ class FakeLineEdit:
         self.enabled = enabled
 
 
+class FakeInstructionsEdit:
+    def __init__(self, text: str = "") -> None:
+        self.text = text
+
+    def toPlainText(self) -> str:
+        return self.text
+
+    def setPlainText(self, text: str) -> None:
+        self.text = text
+
+    def clear(self) -> None:
+        self.text = ""
+
+
 class FakeProjectCombo:
     def __init__(self, current_text: str = "") -> None:
         self.items: list[str] = []
@@ -1382,6 +1396,7 @@ def test_load_settings_restores_reasoning_effort(
     pane.text_splitter = types.SimpleNamespace(setSizes=lambda sizes: None)
     pane._update_provider_controls = lambda: None
     pane._provider = lambda: PROVIDER_CODEX
+    pane._model_text = lambda: ""
     config = dict(runtime.DEFAULT_CONFIG)
     config["reasoning_effort"] = "xhigh"
     monkeypatch.setattr(runtime, "_config", lambda: config)
@@ -1389,6 +1404,60 @@ def test_load_settings_restores_reasoning_effort(
     pane._load_settings()
 
     assert restored["effort"] == "xhigh"
+
+
+def test_load_settings_restores_model_scoped_instructions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = types.SimpleNamespace(setCurrentIndex=lambda index: None)
+    pane.codex_path_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane.ollama_path_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane.ollama_host_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane._set_model_choice = lambda model: None
+    pane._set_project_folder_choices = lambda folder, recent: None
+    pane._set_project_folder_access = lambda access: None
+    pane._set_effort_choice = lambda effort: None
+    pane.fast_mode_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
+    pane.reasoning_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane.text_splitter = types.SimpleNamespace(setSizes=lambda sizes: None)
+    pane._update_provider_controls = lambda: None
+    pane._provider = lambda: PROVIDER_CODEX
+    pane._model_text = lambda: "gpt-5.4"
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["codex_model"] = "gpt-5.4"
+    config["custom_instructions"] = "legacy instructions"
+    config["custom_instructions_by_model"] = {
+        PROVIDER_CODEX: {"gpt-5.4": "codex scoped instructions"},
+        PROVIDER_OLLAMA: {"qwen3:latest": "ollama scoped instructions"},
+    }
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+
+    pane._load_settings()
+
+    assert pane.instructions_edit.text == "codex scoped instructions"
+    assert pane._instructions_scope == (PROVIDER_CODEX, "gpt-5.4")
+
+
+def test_model_scoped_instructions_fall_back_to_legacy_global_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["custom_instructions"] = "legacy instructions"
+    config["custom_instructions_by_model"] = {
+        PROVIDER_OLLAMA: {"qwen3:latest": "ollama scoped instructions"}
+    }
+
+    instructions = runtime._custom_instructions_for_model(
+        config,
+        provider=PROVIDER_CODEX,
+        model="gpt-5.5",
+    )
+
+    assert instructions == "legacy instructions"
 
 
 def test_agent_request_drops_stale_selection_from_transcript(
@@ -1463,6 +1532,7 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     pane._fast_mode = lambda: True
     pane._stream_reasoning_summaries = lambda: False
     config = dict(runtime.DEFAULT_CONFIG)
+    config["custom_instructions"] = "legacy fallback"
     config["recent_project_folders"] = ["/one", "/two"]
     monkeypatch.setattr(runtime, "_config", lambda: config)
     saved: dict[str, Any] = {}
@@ -1475,7 +1545,10 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     assert saved["ollama_host"] == "http://localhost:11434"
     assert saved["provider"] == PROVIDER_CODEX
     assert saved["codex_model"] == "gpt-5.5"
-    assert saved["custom_instructions"] == "be concise"
+    assert saved["custom_instructions"] == "legacy fallback"
+    assert saved["custom_instructions_by_model"] == {
+        PROVIDER_CODEX: {"gpt-5.5": "be concise"}
+    }
     assert saved["project_folder"] == ""
     assert saved["project_folder_access"] == PROJECT_FOLDER_ACCESS_READ_ONLY
     assert saved["reasoning_effort"] == "high"
@@ -1756,6 +1829,131 @@ def test_agent_config_migrates_legacy_model_to_codex_model(
 
     assert config["provider"] == PROVIDER_OLLAMA
     assert config["codex_model"] == "gpt-legacy"
+    assert config["custom_instructions_by_model"] == {}
+
+
+def test_agent_pane_model_change_saves_and_restores_scoped_instructions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.addItem("Ollama", PROVIDER_OLLAMA)
+    pane.provider_combo.setCurrentIndex(0)
+    pane.model_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CODEX
+    pane.refresh_context_label = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["codex_model"] = "gpt-5.4"
+    config["custom_instructions_by_model"] = {
+        PROVIDER_CODEX: {"gpt-5.5": "second model instructions"}
+    }
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._set_model_choice("gpt-5.4")
+    pane._load_instructions_for_current_choice(config)
+    pane.instructions_edit.text = "first model instructions"
+    pane.model_combo.setCurrentIndex(model_option_index("gpt-5.5"))
+
+    pane._on_model_changed(pane.model_combo.current_index)
+
+    assert saved["codex_model"] == "gpt-5.5"
+    assert saved["custom_instructions_by_model"][PROVIDER_CODEX] == {
+        "gpt-5.4": "first model instructions",
+        "gpt-5.5": "second model instructions",
+    }
+    assert pane.instructions_edit.text == "second model instructions"
+    assert pane._instructions_scope == (PROVIDER_CODEX, "gpt-5.5")
+
+
+def test_agent_pane_model_change_does_not_bleed_current_instructions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.addItem("Ollama", PROVIDER_OLLAMA)
+    pane.provider_combo.setCurrentIndex(0)
+    pane.model_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CODEX
+    pane.refresh_context_label = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._set_model_choice("gpt-5.4")
+    pane._load_instructions_for_current_choice(config)
+    pane.instructions_edit.text = "first model instructions"
+    pane.model_combo.setCurrentIndex(model_option_index("gpt-5.5"))
+
+    pane._on_model_changed(pane.model_combo.current_index)
+
+    assert saved["custom_instructions"] == ""
+    assert saved["custom_instructions_by_model"][PROVIDER_CODEX] == {
+        "gpt-5.4": "first model instructions"
+    }
+    assert pane.instructions_edit.text == ""
+
+
+def test_agent_pane_provider_change_saves_and_restores_scoped_instructions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.addItem("Ollama", PROVIDER_OLLAMA)
+    pane.model_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ("qwen3:latest",)
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CODEX
+    pane._update_provider_controls = lambda: None
+    pane.refresh_context_label = lambda: None
+    pane._refresh_ollama_models = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["codex_model"] = "gpt-5.4"
+    config["ollama_model"] = "qwen3:latest"
+    config["custom_instructions_by_model"] = {
+        PROVIDER_OLLAMA: {"qwen3:latest": "ollama model instructions"}
+    }
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane.provider_combo.setCurrentIndex(0)
+    pane._set_model_choice("gpt-5.4")
+    pane._load_instructions_for_current_choice(config)
+    pane.instructions_edit.text = "codex model instructions"
+    pane.provider_combo.setCurrentIndex(1)
+
+    pane._on_provider_changed(1)
+
+    assert saved["provider"] == PROVIDER_OLLAMA
+    assert saved["codex_model"] == "gpt-5.4"
+    assert saved["custom_instructions_by_model"][PROVIDER_CODEX] == {
+        "gpt-5.4": "codex model instructions"
+    }
+    assert pane.model_combo.currentData() == "qwen3:latest"
+    assert pane.instructions_edit.text == "ollama model instructions"
+    assert pane._instructions_scope == (PROVIDER_OLLAMA, "qwen3:latest")
 
 
 def test_agent_pane_model_dropdown_uses_current_provider(

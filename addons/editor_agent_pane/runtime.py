@@ -137,6 +137,7 @@ DEFAULT_CONFIG = {
     "ollama_model": "",
     "reasoning_effort": "",
     "custom_instructions": "",
+    "custom_instructions_by_model": {},
     "project_folder": "",
     "project_folder_access": DEFAULT_PROJECT_FOLDER_ACCESS,
     "recent_project_folders": [],
@@ -190,6 +191,9 @@ def _config() -> dict[str, Any]:
     )
     config["fast_mode"] = _bool_config(config["fast_mode"], False)
     config["reasoning_effort"] = effort_value(config["reasoning_effort"])
+    config["custom_instructions_by_model"] = _custom_instructions_by_model(
+        config["custom_instructions_by_model"]
+    )
     return config
 
 
@@ -202,6 +206,59 @@ def _write_config(config: dict[str, Any]) -> None:
     merged = dict(DEFAULT_CONFIG)
     merged.update(config)
     aqt.mw.addonManager.writeConfig(ADDON, merged)
+
+
+def _custom_instructions_by_model(value: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, str]] = {}
+    for provider, models in value.items():
+        provider_key = str(provider).strip()
+        if provider_key not in {PROVIDER_CODEX, PROVIDER_OLLAMA}:
+            continue
+        if not isinstance(models, dict):
+            continue
+        instructions_by_model: dict[str, str] = {}
+        for model, instructions in models.items():
+            if isinstance(instructions, str):
+                instructions_by_model[str(model).strip()] = instructions
+            elif instructions is not None:
+                instructions_by_model[str(model).strip()] = str(instructions)
+        normalized[provider_key] = instructions_by_model
+    return normalized
+
+
+def _custom_instructions_for_model(
+    config: dict[str, Any],
+    *,
+    provider: object,
+    model: object,
+) -> str:
+    instructions = _custom_instructions_by_model(
+        config.get("custom_instructions_by_model", {})
+    )
+    provider_instructions = instructions.get(provider_value(provider), {})
+    model_key = str(model).strip()
+    if model_key in provider_instructions:
+        return provider_instructions[model_key]
+    return str(config.get("custom_instructions") or "")
+
+
+def _set_custom_instructions_for_model(
+    config: dict[str, Any],
+    *,
+    provider: object,
+    model: object,
+    instructions: str,
+) -> None:
+    scoped = _custom_instructions_by_model(
+        config.get("custom_instructions_by_model", {})
+    )
+    provider_key = provider_value(provider)
+    provider_instructions = dict(scoped.get(provider_key, {}))
+    provider_instructions[str(model).strip()] = instructions
+    scoped[provider_key] = provider_instructions
+    config["custom_instructions_by_model"] = scoped
 
 
 def _validated_splitter_sizes(value: Any) -> list[int]:
@@ -519,9 +576,11 @@ class EditorAgentPane(QWidget):
         self._selection_context_request_id = 0
         self._activity_role = "Codex"
         self._model_provider = PROVIDER_CODEX
+        self._instructions_scope = (PROVIDER_CODEX, "")
         self._ollama_models: tuple[str, ...] = ()
         self._ollama_models_unavailable = False
         self._loading_settings = False
+        self._setting_model_choice = False
         self._multi_proposal_dialog: MultiCardProposalDialog | None = None
 
         self.dock: QDockWidget | None = None
@@ -588,6 +647,7 @@ class EditorAgentPane(QWidget):
         self.model_combo.setEditable(False)
         for label, value in MODEL_OPTIONS:
             self.model_combo.addItem(label, value)
+        qconnect(self.model_combo.currentIndexChanged, self._on_model_changed)
         model_row = QHBoxLayout()
         self.model_refresh_button = QPushButton("Refresh")
         qconnect(
@@ -730,9 +790,7 @@ class EditorAgentPane(QWidget):
             self.reasoning_checkbox.setChecked(
                 bool(config["stream_reasoning_summaries"])
             )
-            self.instructions_edit.setPlainText(
-                str(config["custom_instructions"] or "")
-            )
+            self._load_instructions_for_current_choice(config)
             self.text_splitter.setSizes(
                 _validated_splitter_sizes(config["splitter_sizes"])
             )
@@ -751,7 +809,7 @@ class EditorAgentPane(QWidget):
         config["ollama_path"] = self.ollama_path_edit.text().strip()
         config["ollama_host"] = normalize_ollama_host(self.ollama_host_edit.text())
         config["reasoning_effort"] = self._reasoning_effort()
-        config["custom_instructions"] = self._custom_instructions_text()
+        self._save_current_instructions(config)
         config["project_folder"] = project_folder
         config["project_folder_access"] = self._project_folder_access()
         config["fast_mode"] = self._fast_mode()
@@ -776,26 +834,30 @@ class EditorAgentPane(QWidget):
         self.provider_combo.setCurrentIndex(index)
 
     def _set_model_choice(self, model: str) -> None:
-        self.model_combo.clear()
-        provider = self._provider()
-        if provider == PROVIDER_OLLAMA:
-            for label, value in ollama_model_options_with_legacy(
-                model,
-                self._ollama_models,
-                unavailable=self._ollama_models_unavailable,
-            ):
-                self.model_combo.addItem(label, value)
-            self.model_combo.setCurrentIndex(
-                ollama_model_option_index(
+        self._setting_model_choice = True
+        try:
+            self.model_combo.clear()
+            provider = self._provider()
+            if provider == PROVIDER_OLLAMA:
+                for label, value in ollama_model_options_with_legacy(
                     model,
                     self._ollama_models,
                     unavailable=self._ollama_models_unavailable,
+                ):
+                    self.model_combo.addItem(label, value)
+                self.model_combo.setCurrentIndex(
+                    ollama_model_option_index(
+                        model,
+                        self._ollama_models,
+                        unavailable=self._ollama_models_unavailable,
+                    )
                 )
-            )
-        else:
-            for label, value in model_options_with_legacy(model):
-                self.model_combo.addItem(label, value)
-            self.model_combo.setCurrentIndex(model_option_index(model))
+            else:
+                for label, value in model_options_with_legacy(model):
+                    self.model_combo.addItem(label, value)
+                self.model_combo.setCurrentIndex(model_option_index(model))
+        finally:
+            self._setting_model_choice = False
         self._model_provider = provider
 
     def _model_text(self) -> str:
@@ -821,13 +883,58 @@ class EditorAgentPane(QWidget):
         else:
             config["codex_model"] = self._model_text()
 
+    def _current_instructions_scope(self) -> tuple[str, str]:
+        return self._provider(), self._model_text()
+
+    def _load_instructions_for_current_choice(
+        self,
+        config: dict[str, Any],
+    ) -> None:
+        provider, model = self._current_instructions_scope()
+        self._instructions_scope = (provider, model)
+        self.instructions_edit.setPlainText(
+            _custom_instructions_for_model(
+                config,
+                provider=provider,
+                model=model,
+            )
+        )
+
+    def _save_current_instructions(self, config: dict[str, Any]) -> None:
+        provider, model = getattr(
+            self,
+            "_instructions_scope",
+            self._current_instructions_scope(),
+        )
+        _set_custom_instructions_for_model(
+            config,
+            provider=provider,
+            model=model,
+            instructions=self._custom_instructions_text(),
+        )
+
+    def _on_model_changed(self, _index: int) -> None:
+        if getattr(self, "_loading_settings", False) or getattr(
+            self, "_setting_model_choice", False
+        ):
+            return
+        config = _config()
+        self._save_current_instructions(config)
+        self._save_current_model_choice(config)
+        config["provider"] = self._provider()
+        _write_config(config)
+        self._load_instructions_for_current_choice(config)
+        self.refresh_context_label()
+
     def _on_provider_changed(self, _index: int) -> None:
         config = _config()
         if not getattr(self, "_loading_settings", False):
+            self._save_current_instructions(config)
             self._save_current_model_choice(config)
             config["provider"] = self._provider()
             _write_config(config)
         self._set_model_choice(self._saved_model_for_provider(self._provider(), config))
+        self._load_instructions_for_current_choice(config)
         self._update_provider_controls()
         self.refresh_context_label()
         if not getattr(self, "_loading_settings", False) and self._provider() == PROVIDER_OLLAMA:
@@ -875,7 +982,13 @@ class EditorAgentPane(QWidget):
                 self._ollama_models = ()
                 self._ollama_models_unavailable = True
             if self._provider() == PROVIDER_OLLAMA:
+                model_changed = self._model_text() != str(config["ollama_model"])
+                if model_changed:
+                    self._save_current_instructions(config)
                 self._set_model_choice(str(config["ollama_model"]))
+                if model_changed:
+                    self._load_instructions_for_current_choice(config)
+                    _write_config(config)
                 if error is not None and show_error:
                     tooltip(str(error), parent=self)
 
