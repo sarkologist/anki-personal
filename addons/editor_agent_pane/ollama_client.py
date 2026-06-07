@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -27,6 +28,11 @@ from .codex_client import (
 from .patches import EditorSnapshot, MultiCardSnapshot
 
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
+OLLAMA_CLI_CANDIDATES = (
+    "/opt/homebrew/bin/ollama",
+    "/usr/local/bin/ollama",
+    "/Applications/Ollama.app/Contents/Resources/ollama",
+)
 
 OLLAMA_CONTEXT_INSTRUCTIONS = (
     "You are running as a local Ollama model. You do not have Codex tools, shell "
@@ -579,7 +585,15 @@ def normalize_ollama_host(ollama_host: str) -> str:
 
 
 def resolve_ollama_path(configured_path: str) -> str:
-    return configured_path.strip() or "ollama"
+    configured = configured_path.strip()
+    if configured:
+        return configured
+    if path := shutil.which("ollama"):
+        return path
+    for path in OLLAMA_CLI_CANDIDATES:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return "ollama"
 
 
 def _discover_ollama_models_from_api(

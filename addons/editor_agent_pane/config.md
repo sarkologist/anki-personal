@@ -7,7 +7,7 @@ direct OpenAI API billing.
 - `provider`: Agent backend selected in the Provider pulldown. `codex` uses the Codex CLI; `ollama` uses a local Ollama model.
 - `codex_path`: Optional path to the Codex CLI. Leave blank to use `/Applications/Codex.app/Contents/Resources/codex` when present, otherwise `codex` from `PATH`.
 - `codex_model`: Optional Codex model override selected from the Model pulldown. `Codex default` stores an empty value and uses Codex's default for your signed-in account.
-- `ollama_path`: Optional path to the Ollama CLI. Leave blank to use `ollama` from `PATH`.
+- `ollama_path`: Optional path to the Ollama CLI. Leave blank to use `ollama` from `PATH`, then common macOS Ollama install locations.
 - `ollama_host`: Ollama host used for model discovery and as `OLLAMA_HOST` for `ollama run`. Defaults to `http://127.0.0.1:11434`.
 - `ollama_model`: Local Ollama model selected from discovered models. The pane discovers installed models from `/api/tags`, falling back to `ollama list`.
 - `reasoning_effort`: Optional Codex reasoning effort override selected from

@@ -1771,11 +1771,43 @@ def test_discover_ollama_models_falls_back_to_ollama_list(
     assert captured["env_host"] == "http://localhost:11434"
 
 
-def test_ollama_path_and_host_defaults() -> None:
+def test_ollama_path_and_host_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ollama_client.shutil, "which", lambda _command: None)
+    monkeypatch.setattr(ollama_client.os.path, "isfile", lambda _path: False)
+    monkeypatch.setattr(ollama_client.os, "access", lambda _path, _mode: False)
+
     assert resolve_ollama_path("") == "ollama"
     assert normalize_ollama_host("") == DEFAULT_OLLAMA_HOST
     assert normalize_ollama_host("localhost:11434") == "http://localhost:11434"
     assert normalize_ollama_host("http://localhost:11434/") == "http://localhost:11434"
+
+
+def test_ollama_path_prefers_path_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ollama_client.shutil,
+        "which",
+        lambda command: "/opt/homebrew/bin/ollama" if command == "ollama" else None,
+    )
+
+    assert resolve_ollama_path("") == "/opt/homebrew/bin/ollama"
+
+
+def test_ollama_path_falls_back_to_common_app_locations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ollama_client.shutil, "which", lambda _command: None)
+    monkeypatch.setattr(
+        ollama_client.os.path,
+        "isfile",
+        lambda path: path == "/usr/local/bin/ollama",
+    )
+    monkeypatch.setattr(
+        ollama_client.os,
+        "access",
+        lambda path, mode: path == "/usr/local/bin/ollama" and mode == os.X_OK,
+    )
+
+    assert resolve_ollama_path("") == "/usr/local/bin/ollama"
 
 
 def test_agent_button_tooltip_includes_shortcut() -> None:
