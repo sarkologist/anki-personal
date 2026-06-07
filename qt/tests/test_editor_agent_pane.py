@@ -324,9 +324,13 @@ class FakeSurface:
 class FakeButton:
     def __init__(self, enabled: bool = False) -> None:
         self.enabled = enabled
+        self.visible = True
 
     def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
+
+    def setVisible(self, visible: bool) -> None:
+        self.visible = visible
 
 
 class FakePrompt:
@@ -359,6 +363,7 @@ class FakeCombo:
         self.items: list[tuple[str, Any]] = []
         self.current_index = 0
         self.enabled = True
+        self.visible = True
 
     def clear(self) -> None:
         self.items.clear()
@@ -388,11 +393,15 @@ class FakeCombo:
     def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
 
+    def setVisible(self, visible: bool) -> None:
+        self.visible = visible
+
 
 class FakeLineEdit:
     def __init__(self, text: str = "") -> None:
         self._text = text
         self.enabled = True
+        self.visible = True
 
     def text(self) -> str:
         return self._text
@@ -402,6 +411,9 @@ class FakeLineEdit:
 
     def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
+
+    def setVisible(self, visible: bool) -> None:
+        self.visible = visible
 
 
 class FakeInstructionsEdit:
@@ -573,6 +585,7 @@ class FakeCollectionForNotes:
 class FakeVisibleWidget:
     def __init__(self, visible: bool = True) -> None:
         self.visible = visible
+        self.enabled = True
 
     def show(self) -> None:
         self.visible = True
@@ -585,6 +598,9 @@ class FakeVisibleWidget:
 
     def isVisible(self) -> bool:
         return self.visible
+
+    def setEnabled(self, enabled: bool) -> None:
+        self.enabled = enabled
 
 
 class FakeSplitter:
@@ -1986,6 +2002,88 @@ def test_agent_pane_provider_change_saves_and_restores_scoped_instructions(
     assert pane.model_combo.currentData() == "qwen3:latest"
     assert pane.instructions_edit.text == "ollama model instructions"
     assert pane._instructions_scope == (PROVIDER_OLLAMA, "qwen3:latest")
+
+
+def _pane_for_provider_control_visibility(runtime: Any, provider: str) -> Any:
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane._provider = lambda: provider
+    pane.codex_path_label = FakeLabel()
+    pane.codex_path_edit = FakeLineEdit()
+    pane.ollama_path_label = FakeLabel()
+    pane.ollama_path_edit = FakeLineEdit()
+    pane.ollama_host_label = FakeLabel()
+    pane.ollama_host_edit = FakeLineEdit()
+    pane.model_refresh_button = FakeButton()
+    pane.effort_label = FakeLabel()
+    pane.effort_combo = FakeCombo()
+    pane.fast_mode_label = FakeLabel()
+    pane.fast_mode_checkbox = FakeButton()
+    pane.access_label = FakeLabel()
+    pane.access_combo = FakeCombo()
+    pane.reasoning_label = FakeLabel()
+    pane.reasoning_checkbox = FakeButton()
+    pane.project_row_widget = FakeVisibleWidget()
+    return pane
+
+
+def test_agent_pane_hides_ollama_controls_for_codex_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_provider_control_visibility(runtime, PROVIDER_CODEX)
+
+    pane._update_provider_controls()
+
+    assert pane.codex_path_label.visible is True
+    assert pane.codex_path_edit.visible is True
+    assert pane.codex_path_edit.enabled is True
+    assert pane.ollama_path_label.visible is False
+    assert pane.ollama_path_edit.visible is False
+    assert pane.ollama_path_edit.enabled is False
+    assert pane.ollama_host_label.visible is False
+    assert pane.ollama_host_edit.visible is False
+    assert pane.model_refresh_button.visible is False
+    assert pane.model_refresh_button.enabled is False
+    assert pane.effort_label.visible is True
+    assert pane.effort_combo.visible is True
+    assert pane.fast_mode_checkbox.visible is True
+    assert pane.access_label.visible is True
+    assert pane.access_combo.visible is True
+    assert pane.reasoning_checkbox.visible is True
+    assert pane.project_row_widget.visible is True
+    assert pane.project_row_widget.enabled is True
+
+
+def test_agent_pane_hides_codex_controls_for_ollama_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_provider_control_visibility(runtime, PROVIDER_OLLAMA)
+
+    pane._update_provider_controls()
+
+    assert pane.codex_path_label.visible is False
+    assert pane.codex_path_edit.visible is False
+    assert pane.codex_path_edit.enabled is False
+    assert pane.ollama_path_label.visible is True
+    assert pane.ollama_path_edit.visible is True
+    assert pane.ollama_path_edit.enabled is True
+    assert pane.ollama_host_label.visible is True
+    assert pane.ollama_host_edit.visible is True
+    assert pane.model_refresh_button.visible is True
+    assert pane.model_refresh_button.enabled is True
+    assert pane.effort_label.visible is False
+    assert pane.effort_combo.visible is False
+    assert pane.effort_combo.enabled is False
+    assert pane.fast_mode_checkbox.visible is False
+    assert pane.fast_mode_checkbox.enabled is False
+    assert pane.access_label.visible is False
+    assert pane.access_combo.visible is False
+    assert pane.access_combo.enabled is False
+    assert pane.reasoning_checkbox.visible is False
+    assert pane.reasoning_checkbox.enabled is False
+    assert pane.project_row_widget.visible is False
+    assert pane.project_row_widget.enabled is False
 
 
 def test_agent_pane_model_dropdown_uses_current_provider(

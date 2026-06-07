@@ -626,77 +626,8 @@ class EditorAgentPane(QWidget):
         self.context_label.setWordWrap(True)
         layout.addWidget(self.context_label)
 
-        form = QFormLayout()
-        form.setContentsMargins(0, 0, 0, 0)
-        self.provider_combo = QComboBox()
-        self.provider_combo.setEditable(False)
-        for label, value in PROVIDER_OPTIONS:
-            self.provider_combo.addItem(label, value)
-        qconnect(self.provider_combo.currentIndexChanged, self._on_provider_changed)
-        form.addRow("Provider", self.provider_combo)
-        self.codex_path_edit = QLineEdit()
-        self.codex_path_edit.setPlaceholderText(resolve_codex_path(""))
-        form.addRow("Codex CLI", self.codex_path_edit)
-        self.ollama_path_edit = QLineEdit()
-        self.ollama_path_edit.setPlaceholderText(resolve_ollama_path(""))
-        form.addRow("Ollama CLI", self.ollama_path_edit)
-        self.ollama_host_edit = QLineEdit()
-        self.ollama_host_edit.setPlaceholderText(DEFAULT_OLLAMA_HOST)
-        form.addRow("Ollama host", self.ollama_host_edit)
-        self.model_combo = QComboBox()
-        self.model_combo.setEditable(False)
-        for label, value in MODEL_OPTIONS:
-            self.model_combo.addItem(label, value)
-        qconnect(self.model_combo.currentIndexChanged, self._on_model_changed)
-        model_row = QHBoxLayout()
-        self.model_refresh_button = QPushButton("Refresh")
-        qconnect(
-            self.model_refresh_button.clicked,
-            lambda _checked=False: self._refresh_ollama_models(show_error=True),
-        )
-        model_row.addWidget(self.model_combo, 1)
-        model_row.addWidget(self.model_refresh_button)
-        form.addRow("Model", model_row)
-        self.effort_combo = QComboBox()
-        self.effort_combo.setEditable(False)
-        for label, value in EFFORT_OPTIONS:
-            self.effort_combo.addItem(label, value)
-        form.addRow("Effort", self.effort_combo)
-        self.fast_mode_checkbox = QCheckBox("Fast mode")
-        qconnect(self.fast_mode_checkbox.toggled, self._on_fast_mode_toggled)
-        form.addRow("", self.fast_mode_checkbox)
-        self.access_combo = QComboBox()
-        self.access_combo.setEditable(False)
-        for label, value in PROJECT_FOLDER_ACCESS_OPTIONS:
-            self.access_combo.addItem(label, value)
-        qconnect(
-            self.access_combo.currentIndexChanged,
-            lambda _index: self.refresh_context_label(),
-        )
-        form.addRow("Access", self.access_combo)
-        self.reasoning_checkbox = QCheckBox("Show reasoning summaries")
-        form.addRow("", self.reasoning_checkbox)
-        open_logs = QPushButton("Open logs")
-        qconnect(open_logs.clicked, self._open_logs_folder)
-        form.addRow("Logs", open_logs)
-        layout.addLayout(form)
-
-        project_row = QHBoxLayout()
-        self.project_edit = QComboBox()
-        self.project_edit.setEditable(True)
-        self.project_edit.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        project_line_edit = self.project_edit.lineEdit()
-        assert project_line_edit is not None
-        project_line_edit.setPlaceholderText("Optional project folder")
-        qconnect(
-            self.project_edit.currentTextChanged,
-            lambda _text: self.refresh_context_label(),
-        )
-        browse = QPushButton("Browse")
-        qconnect(browse.clicked, self._browse_project)
-        project_row.addWidget(self.project_edit, 1)
-        project_row.addWidget(browse)
-        layout.addLayout(project_row)
+        layout.addLayout(self._build_settings_form())
+        self._add_project_folder_row(layout)
 
         instructions_header = QHBoxLayout()
         instructions_label = QLabel("Instructions")
@@ -770,6 +701,90 @@ class EditorAgentPane(QWidget):
         send_row.addWidget(self.stop_button)
         send_row.addWidget(self.send_button)
         layout.addLayout(send_row)
+
+    def _build_settings_form(self) -> QFormLayout:
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        self.provider_combo = QComboBox()
+        self.provider_combo.setEditable(False)
+        for label, value in PROVIDER_OPTIONS:
+            self.provider_combo.addItem(label, value)
+        qconnect(self.provider_combo.currentIndexChanged, self._on_provider_changed)
+        form.addRow("Provider", self.provider_combo)
+        self.codex_path_edit = QLineEdit()
+        self.codex_path_edit.setPlaceholderText(resolve_codex_path(""))
+        self.codex_path_label = QLabel("Codex CLI")
+        form.addRow(self.codex_path_label, self.codex_path_edit)
+        self.ollama_path_edit = QLineEdit()
+        self.ollama_path_edit.setPlaceholderText(resolve_ollama_path(""))
+        self.ollama_path_label = QLabel("Ollama CLI")
+        form.addRow(self.ollama_path_label, self.ollama_path_edit)
+        self.ollama_host_edit = QLineEdit()
+        self.ollama_host_edit.setPlaceholderText(DEFAULT_OLLAMA_HOST)
+        self.ollama_host_label = QLabel("Ollama host")
+        form.addRow(self.ollama_host_label, self.ollama_host_edit)
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(False)
+        for label, value in MODEL_OPTIONS:
+            self.model_combo.addItem(label, value)
+        qconnect(self.model_combo.currentIndexChanged, self._on_model_changed)
+        model_row = QHBoxLayout()
+        self.model_refresh_button = QPushButton("Refresh")
+        qconnect(
+            self.model_refresh_button.clicked,
+            lambda _checked=False: self._refresh_ollama_models(show_error=True),
+        )
+        model_row.addWidget(self.model_combo, 1)
+        model_row.addWidget(self.model_refresh_button)
+        form.addRow("Model", model_row)
+        self.effort_combo = QComboBox()
+        self.effort_combo.setEditable(False)
+        for label, value in EFFORT_OPTIONS:
+            self.effort_combo.addItem(label, value)
+        self.effort_label = QLabel("Effort")
+        form.addRow(self.effort_label, self.effort_combo)
+        self.fast_mode_checkbox = QCheckBox("Fast mode")
+        qconnect(self.fast_mode_checkbox.toggled, self._on_fast_mode_toggled)
+        self.fast_mode_label = QLabel("")
+        form.addRow(self.fast_mode_label, self.fast_mode_checkbox)
+        self.access_combo = QComboBox()
+        self.access_combo.setEditable(False)
+        for label, value in PROJECT_FOLDER_ACCESS_OPTIONS:
+            self.access_combo.addItem(label, value)
+        qconnect(
+            self.access_combo.currentIndexChanged,
+            lambda _index: self.refresh_context_label(),
+        )
+        self.access_label = QLabel("Access")
+        form.addRow(self.access_label, self.access_combo)
+        self.reasoning_checkbox = QCheckBox("Show reasoning summaries")
+        self.reasoning_label = QLabel("")
+        form.addRow(self.reasoning_label, self.reasoning_checkbox)
+        open_logs = QPushButton("Open logs")
+        qconnect(open_logs.clicked, self._open_logs_folder)
+        form.addRow("Logs", open_logs)
+        return form
+
+    def _add_project_folder_row(self, layout: QVBoxLayout) -> None:
+        self.project_row_widget = QWidget()
+        project_row = QHBoxLayout()
+        project_row.setContentsMargins(0, 0, 0, 0)
+        self.project_row_widget.setLayout(project_row)
+        self.project_edit = QComboBox()
+        self.project_edit.setEditable(True)
+        self.project_edit.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        project_line_edit = self.project_edit.lineEdit()
+        assert project_line_edit is not None
+        project_line_edit.setPlaceholderText("Optional project folder")
+        qconnect(
+            self.project_edit.currentTextChanged,
+            lambda _text: self.refresh_context_label(),
+        )
+        browse = QPushButton("Browse")
+        qconnect(browse.clicked, self._browse_project)
+        project_row.addWidget(self.project_edit, 1)
+        project_row.addWidget(browse)
+        layout.addWidget(self.project_row_widget)
 
     def _load_settings(self) -> None:
         config = _config()
@@ -942,6 +957,25 @@ class EditorAgentPane(QWidget):
 
     def _update_provider_controls(self) -> None:
         codex_enabled = self._provider() == PROVIDER_CODEX
+        self._set_form_row_visible(
+            self.codex_path_label, self.codex_path_edit, codex_enabled
+        )
+        self._set_form_row_visible(
+            self.ollama_path_label, self.ollama_path_edit, not codex_enabled
+        )
+        self._set_form_row_visible(
+            self.ollama_host_label, self.ollama_host_edit, not codex_enabled
+        )
+        self.model_refresh_button.setVisible(not codex_enabled)
+        self._set_form_row_visible(self.effort_label, self.effort_combo, codex_enabled)
+        self._set_form_row_visible(
+            self.fast_mode_label, self.fast_mode_checkbox, codex_enabled
+        )
+        self._set_form_row_visible(self.access_label, self.access_combo, codex_enabled)
+        self._set_form_row_visible(
+            self.reasoning_label, self.reasoning_checkbox, codex_enabled
+        )
+        self.project_row_widget.setVisible(codex_enabled)
         self.codex_path_edit.setEnabled(codex_enabled)
         self.ollama_path_edit.setEnabled(not codex_enabled)
         self.ollama_host_edit.setEnabled(not codex_enabled)
@@ -950,6 +984,16 @@ class EditorAgentPane(QWidget):
         self.fast_mode_checkbox.setEnabled(codex_enabled)
         self.access_combo.setEnabled(codex_enabled)
         self.reasoning_checkbox.setEnabled(codex_enabled)
+        self.project_row_widget.setEnabled(codex_enabled)
+
+    def _set_form_row_visible(
+        self,
+        label: QWidget,
+        field: QWidget,
+        visible: bool,
+    ) -> None:
+        label.setVisible(visible)
+        field.setVisible(visible)
 
     def _refresh_ollama_models(self, show_error: bool = False) -> None:
         if self._provider() != PROVIDER_OLLAMA:
