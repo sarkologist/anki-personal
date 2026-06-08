@@ -8,6 +8,8 @@
     "reasoning_effort": "",
     "custom_instructions": "",
     "custom_instructions_by_model": {},
+    "instructions_collapsed": false,
+    "prompt_history_by_model": {},
     "project_folder": "",
     "project_folder_access": "workspace-write",
     "recent_project_folders": [],
