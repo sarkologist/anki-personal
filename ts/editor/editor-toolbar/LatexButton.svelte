@@ -84,7 +84,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         [onLatex, "Control+T, T", tr.editingLatex()],
         [onLatexEquation, "Control+T, E", tr.editingLatexEquation()],
         [onLatexMathEnv, "Control+T, M", tr.editingLatexMathEnv()],
-        [onConvertAllToMathjax, null, tr.editingConvertToMathjax(), mathIcon],
+        [onConvertAllToMathjax, "Control+M, X", tr.editingConvertToMathjax(), mathIcon],
     ];
 
     $: disabled = !$focusedInput || !editingInputIsRichText($focusedInput);
