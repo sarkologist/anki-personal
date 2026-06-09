@@ -10,18 +10,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import DropdownItem from "$lib/components/DropdownItem.svelte";
     import Icon from "$lib/components/Icon.svelte";
     import IconButton from "$lib/components/IconButton.svelte";
-    import { functionIcon } from "$lib/components/icons";
+    import { functionIcon, mathIcon } from "$lib/components/icons";
     import Popover from "$lib/components/Popover.svelte";
     import Shortcut from "$lib/components/Shortcut.svelte";
+    import type { IconData } from "$lib/components/types";
     import WithFloating from "$lib/components/WithFloating.svelte";
 
     import { mathjaxConfig } from "../../editable/mathjax-element.svelte";
     import { undecorateFragment } from "../decorated-elements";
+    import { convertLegacyLatexToInlineMathjax } from "../latex-overlay/convert-to-mathjax";
     import { context as noteEditorContext } from "../NoteEditor.svelte";
     import type { RichTextInputAPI } from "../rich-text-input";
     import { editingInputIsRichText } from "../rich-text-input";
 
-    const { focusedInput } = noteEditorContext.get();
+    const noteEditor = noteEditorContext.get();
+    const { focusedInput } = noteEditor;
     $: richTextAPI = $focusedInput as RichTextInputAPI;
 
     async function surround(front: string, back: string): Promise<void> {
@@ -68,7 +71,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         );
     }
 
-    type LatexItem = [() => void, string, string];
+    async function onConvertAllToMathjax(): Promise<void> {
+        await noteEditor.transformFieldsWithUndo(convertLegacyLatexToInlineMathjax);
+    }
+
+    type LatexItem = [() => void | Promise<void>, string | null, string, IconData?];
 
     const dropdownItems: LatexItem[] = [
         [onMathjaxInline, "Control+M, M", tr.editingMathjaxInline()],
@@ -77,6 +84,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         [onLatex, "Control+T, T", tr.editingLatex()],
         [onLatexEquation, "Control+T, E", tr.editingLatexEquation()],
         [onLatexMathEnv, "Control+T, M", tr.editingLatexMathEnv()],
+        [onConvertAllToMathjax, null, tr.editingConvertToMathjax(), mathIcon],
     ];
 
     $: disabled = !$focusedInput || !editingInputIsRichText($focusedInput);
@@ -103,19 +111,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     </IconButton>
 
     <Popover slot="floating" --popover-padding-inline="0">
-        {#each dropdownItems as [callback, keyCombination, label]}
+        {#each dropdownItems as [callback, keyCombination, label, icon]}
             <DropdownItem on:click={() => setTimeout(callback, 100)}>
+                {#if icon}
+                    <Icon {icon} />
+                {/if}
                 <span>{label}</span>
-                <span class="ms-auto ps-2 shortcut">
-                    {getPlatformString(keyCombination)}
-                </span>
+                {#if keyCombination}
+                    <span class="ms-auto ps-2 shortcut">
+                        {getPlatformString(keyCombination)}
+                    </span>
+                {/if}
             </DropdownItem>
         {/each}
     </Popover>
 </WithFloating>
 
 {#each dropdownItems as [callback, keyCombination]}
-    <Shortcut {keyCombination} on:action={callback} />
+    {#if keyCombination}
+        <Shortcut {keyCombination} on:action={callback} />
+    {/if}
 {/each}
 
 <style lang="scss">

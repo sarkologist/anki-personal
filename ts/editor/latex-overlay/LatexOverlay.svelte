@@ -226,6 +226,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         }
 
         const mathjaxElement = legacyLatexToMathjaxElement(source, isDisplay);
+        if (!mathjaxElement) {
+            return;
+        }
         const replacementTarget =
             latexElement.parentElement?.tagName === "ANKI-FRAME"
                 ? latexElement.parentElement

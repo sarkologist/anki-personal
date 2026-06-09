@@ -3,6 +3,14 @@
 
 import { Mathjax } from "../../editable/mathjax-element.svelte";
 
+const legacyLatexTagPattern = /<anki-latex\b[^>]*>(.*?)<\/anki-latex>/gisu;
+const legacyLatexPatterns = [
+    /\[\$\$\](.*?)\[\/\$\$\]/gsu,
+    /\[\$\](.*?)\[\/\$\]/gsu,
+    /\[latex\](.*?)\[\/latex\]/gisu,
+    legacyLatexTagPattern,
+];
+
 function textContentWithLegacyBreaks(node: Node): string {
     if (node.nodeType === Node.TEXT_NODE) {
         return node.textContent ?? "";
@@ -38,16 +46,55 @@ export function normalizeLegacyLatexSource(source: string): string {
     return text;
 }
 
-export function legacyLatexToMathjaxElement(
-    source: string,
-    isDisplay: boolean,
-): HTMLElement {
-    const element = document.createElement(Mathjax.tagName);
+function escapeMathjaxSourceForStoredHtml(source: string): string {
+    return source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
-    if (isDisplay) {
-        element.setAttribute("block", "true");
+export function legacyLatexIsValidInlineMathjax(source: string): boolean {
+    const mathjax = (globalThis as any).MathJax;
+    if (!mathjax?.tex2svg) {
+        return false;
     }
 
-    element.textContent = normalizeLegacyLatexSource(source);
+    try {
+        const output = mathjax.tex2svg(source) as Element;
+        return !output.innerHTML.includes("data-mjx-error");
+    } catch {
+        return false;
+    }
+}
+
+export function legacyLatexToInlineMathjax(source: string): string | null {
+    const normalized = normalizeLegacyLatexSource(source);
+    if (!legacyLatexIsValidInlineMathjax(normalized)) {
+        return null;
+    }
+
+    return `\\(${escapeMathjaxSourceForStoredHtml(normalized)}\\)`;
+}
+
+export function convertLegacyLatexToInlineMathjax(storedHtml: string): string {
+    let converted = storedHtml;
+
+    for (const pattern of legacyLatexPatterns) {
+        converted = converted.replace(pattern, (match: string, source: string) => {
+            return legacyLatexToInlineMathjax(source) ?? match;
+        });
+    }
+
+    return converted;
+}
+
+export function legacyLatexToMathjaxElement(
+    source: string,
+    _isDisplay = false,
+): HTMLElement | null {
+    const normalized = normalizeLegacyLatexSource(source);
+    if (!legacyLatexIsValidInlineMathjax(normalized)) {
+        return null;
+    }
+
+    const element = document.createElement(Mathjax.tagName);
+    element.textContent = normalized;
     return element;
 }

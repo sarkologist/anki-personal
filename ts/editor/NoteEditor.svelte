@@ -20,6 +20,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         focusedField: Writable<EditorFieldAPI | null>;
         focusedInput: Writable<EditingInputAPI | null>;
         toolbar: EditorToolbarAPI;
+        transformFieldsWithUndo(
+            transform: (html: string, index: number) => string,
+        ): Promise<number>;
     }
 
     import { registerPackage } from "@tslib/runtime-require";
@@ -452,9 +455,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         tags?: string[] | null;
     }
 
-    async function applyAgentFieldUpdateWithUndo(
-        update: AgentFieldUpdate,
-    ): Promise<void> {
+    async function applyFieldUpdateWithUndo(update: AgentFieldUpdate): Promise<void> {
         const { index, html } = update;
         if (!Number.isInteger(index) || index < 0 || index >= fieldStores.length) {
             throw new Error(`Invalid field index: ${index}`);
@@ -473,6 +474,29 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         richTextInputs[index]?.api.pushUndoSnapshot();
     }
 
+    async function transformFieldsWithUndo(
+        transform: (html: string, index: number) => string,
+    ): Promise<number> {
+        closeMathjaxOverlay?.();
+        closeLatexOverlay?.();
+        flushRichTextContent();
+
+        const updates: AgentFieldUpdate[] = [];
+        for (const [index, fieldStore] of fieldStores.entries()) {
+            const html = get(fieldStore);
+            const transformed = transform(html, index);
+            if (transformed !== html) {
+                updates.push({ index, html: transformed });
+            }
+        }
+
+        for (const update of updates) {
+            await applyFieldUpdateWithUndo(update);
+        }
+
+        return updates.length;
+    }
+
     async function applyAgentProposal({
         fields = [],
         tags = null,
@@ -480,7 +504,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         suppressFieldSave = true;
         try {
             for (const update of fields) {
-                await applyAgentFieldUpdateWithUndo(update);
+                await applyFieldUpdateWithUndo(update);
             }
             if (tags !== null) {
                 setTags(tags);
@@ -830,6 +854,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         focusedInput,
         toolbar: toolbar as EditorToolbarAPI,
         fields,
+        transformFieldsWithUndo,
     };
 
     setContextProperty(api);
