@@ -325,12 +325,25 @@ class FakeButton:
     def __init__(self, enabled: bool = False) -> None:
         self.enabled = enabled
         self.visible = True
+        self.tooltip = ""
 
     def setEnabled(self, enabled: bool) -> None:
         self.enabled = enabled
 
     def setVisible(self, visible: bool) -> None:
         self.visible = visible
+
+    def setToolTip(self, tooltip: str) -> None:
+        self.tooltip = tooltip
+
+
+class FakeToolButton(FakeButton):
+    def __init__(self) -> None:
+        super().__init__()
+        self.arrow_type: object | None = None
+
+    def setArrowType(self, arrow_type: object) -> None:
+        self.arrow_type = arrow_type
 
 
 class FakePrompt:
@@ -341,6 +354,22 @@ class FakePrompt:
     def clear(self) -> None:
         self.cleared = True
         self.text = ""
+
+
+class FakeKeyEvent:
+    def __init__(self, key: object, modifiers: object = 0) -> None:
+        self._key = key
+        self._modifiers = modifiers
+        self.accepted = False
+
+    def key(self) -> object:
+        return self._key
+
+    def modifiers(self) -> object:
+        return self._modifiers
+
+    def accept(self) -> None:
+        self.accepted = True
 
 
 class FakeLabel:
@@ -419,6 +448,7 @@ class FakeLineEdit:
 class FakeInstructionsEdit:
     def __init__(self, text: str = "") -> None:
         self.text = text
+        self.visible = True
 
     def toPlainText(self) -> str:
         return self.text
@@ -428,6 +458,9 @@ class FakeInstructionsEdit:
 
     def clear(self) -> None:
         self.text = ""
+
+    def setVisible(self, visible: bool) -> None:
+        self.visible = visible
 
 
 class FakeProjectCombo:
@@ -481,8 +514,14 @@ class ImmediateTaskman:
 
 
 class FakeAddonManager:
+    def __init__(self) -> None:
+        self.written_config: list[tuple[str, dict[str, Any]]] = []
+
     def get_logger(self, _addon: str) -> CapturingLogger:
         return CapturingLogger()
+
+    def writeConfig(self, addon: str, config: dict[str, Any]) -> None:
+        self.written_config.append((addon, config))
 
 
 class FakeNote:
@@ -665,6 +704,9 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
+        def keyPressEvent(self, _event: Any) -> None:
+            pass
+
     class EditorMode:
         ADD_CARDS = object()
         BROWSER = object()
@@ -677,6 +719,8 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         class Key:
             Key_Return = 1
             Key_Enter = 2
+            Key_Up = 3
+            Key_Down = 4
 
         class KeyboardModifier:
             ShiftModifier = 4
@@ -686,6 +730,14 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
 
         class TextFormat:
             PlainText = 1
+
+        class ArrowType:
+            RightArrow = 1
+            DownArrow = 2
+
+    class QTextCursor:
+        class MoveOperation:
+            End = 1
 
     class QFileDialog:
         class Option:
@@ -732,11 +784,14 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         "QPlainTextEdit",
         "QPushButton",
         "QSplitter",
+        "QTextCursor",
+        "QToolButton",
         "QTimer",
         "QVBoxLayout",
         "QWidget",
     ):
         setattr(qt_module, name, Widget)
+    qt_module.QTextCursor = QTextCursor
     qt_module.QFileDialog = QFileDialog
     qt_module.Qt = Qt
     qt_module.qconnect = lambda *args, **kwargs: None
@@ -850,6 +905,102 @@ def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
     pane._fast_mode = lambda: False
     pane._stream_reasoning_summaries = lambda: True
     return pane
+
+
+def _prompt_edit_for_history(
+    runtime: Any,
+    history: tuple[str, ...],
+    *,
+    text: str = "draft",
+    cursor_block: int = 0,
+    block_count: int = 1,
+) -> Any:
+    prompt = runtime.PromptEdit.__new__(runtime.PromptEdit)
+    prompt.text = text
+    prompt.cursor_block = cursor_block
+    prompt.block_count = block_count
+    prompt.moved_to_end = False
+    prompt.sent = False
+    prompt._send_callback = lambda: setattr(prompt, "sent", True)
+    prompt._history_callback = lambda: history
+    prompt._history_index = None
+    prompt._draft_text = None
+    prompt.toPlainText = lambda: prompt.text
+
+    def set_plain_text(value: str) -> None:
+        prompt.text = value
+        prompt.block_count = value.count("\n") + 1
+        prompt.cursor_block = prompt.block_count - 1
+
+    prompt.setPlainText = set_plain_text
+    prompt.textCursor = lambda: types.SimpleNamespace(
+        blockNumber=lambda: prompt.cursor_block
+    )
+    prompt.document = lambda: types.SimpleNamespace(
+        blockCount=lambda: prompt.block_count
+    )
+    prompt.moveCursor = lambda _operation: setattr(prompt, "moved_to_end", True)
+    return prompt
+
+
+def test_prompt_edit_up_down_recall_history_and_restore_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    prompt = _prompt_edit_for_history(
+        runtime,
+        ("Newest prompt", "Older prompt"),
+        text="draft prompt",
+    )
+
+    up = FakeKeyEvent(runtime.Qt.Key.Key_Up)
+    prompt.keyPressEvent(up)
+
+    assert up.accepted is True
+    assert prompt.text == "Newest prompt"
+    assert prompt.moved_to_end is True
+
+    prompt.keyPressEvent(FakeKeyEvent(runtime.Qt.Key.Key_Up))
+    assert prompt.text == "Older prompt"
+
+    prompt.keyPressEvent(FakeKeyEvent(runtime.Qt.Key.Key_Down))
+    assert prompt.text == "Newest prompt"
+
+    prompt.keyPressEvent(FakeKeyEvent(runtime.Qt.Key.Key_Down))
+    assert prompt.text == "draft prompt"
+    assert prompt._history_index is None
+
+
+def test_prompt_edit_arrows_do_not_recall_history_away_from_edges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    prompt = _prompt_edit_for_history(
+        runtime,
+        ("Newest prompt",),
+        text="line 1\nline 2",
+        cursor_block=1,
+        block_count=2,
+    )
+
+    up = FakeKeyEvent(runtime.Qt.Key.Key_Up)
+    prompt.keyPressEvent(up)
+
+    assert up.accepted is False
+    assert prompt.text == "line 1\nline 2"
+
+    prompt = _prompt_edit_for_history(
+        runtime,
+        ("Newest prompt",),
+        text="line 1\nline 2",
+        cursor_block=0,
+        block_count=2,
+    )
+    down = FakeKeyEvent(runtime.Qt.Key.Key_Down)
+    prompt.keyPressEvent(down)
+
+    assert down.accepted is False
+    assert prompt.text == "line 1\nline 2"
 
 
 def test_browser_note_change_clears_agent_chat_context(
@@ -1069,6 +1220,47 @@ def test_agent_done_summarizes_success_elapsed_time(
 
     assert any("took 7.4s" in eval for eval in pane.surface.evals)
     assert pane.history == [("old prompt", "old answer"), ("Explain", "Done")]
+
+
+def test_agent_done_records_prompt_history_with_captured_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.ADD_CARDS,
+        current_note_id=123,
+        last_browser_note_id=None,
+    )
+    stop_event = runtime.Event()
+    pane._agent_stop_event = stop_event
+    config = dict(runtime.DEFAULT_CONFIG)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._handle_agent_done(
+        FutureWithResult(
+            (
+                "Done",
+                "<p>Done</p>",
+                (),
+                "[Codex activity: 2 stream events]\n",
+                (),
+            )
+        ),
+        generation=0,
+        stop_event=stop_event,
+        prompt="Explain",
+        snapshot=snapshot(),
+        notetype={},
+        activity=types.SimpleNamespace(detail_lines=[]),
+        prompt_history_scope=(PROVIDER_CODEX, "gpt-5.4"),
+    )
+
+    assert saved["prompt_history_by_model"] == {
+        PROVIDER_CODEX: {"gpt-5.4": ["Explain"]}
+    }
 
 
 def test_agent_done_summarizes_stopped_elapsed_time(
@@ -1409,6 +1601,7 @@ def test_load_settings_restores_reasoning_effort(
     pane.fast_mode_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
     pane.reasoning_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
     pane.instructions_edit = types.SimpleNamespace(setPlainText=lambda text: None)
+    pane._set_instructions_collapsed = lambda collapsed: None
     pane.text_splitter = types.SimpleNamespace(setSizes=lambda sizes: None)
     pane._update_provider_controls = lambda: None
     pane._provider = lambda: PROVIDER_CODEX
@@ -1438,6 +1631,7 @@ def test_load_settings_restores_model_scoped_instructions(
     pane.fast_mode_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
     pane.reasoning_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
     pane.instructions_edit = FakeInstructionsEdit()
+    pane._set_instructions_collapsed = lambda collapsed: None
     pane.text_splitter = types.SimpleNamespace(setSizes=lambda sizes: None)
     pane._update_provider_controls = lambda: None
     pane._provider = lambda: PROVIDER_CODEX
@@ -1474,6 +1668,62 @@ def test_model_scoped_instructions_fall_back_to_legacy_global_value(
     )
 
     assert instructions == "legacy instructions"
+
+
+def test_load_settings_restores_collapsed_instructions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = types.SimpleNamespace(setCurrentIndex=lambda index: None)
+    pane.codex_path_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane.ollama_path_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane.ollama_host_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane._set_model_choice = lambda model: None
+    pane._set_project_folder_choices = lambda folder, recent: None
+    pane._set_project_folder_access = lambda access: None
+    pane._set_effort_choice = lambda effort: None
+    pane.fast_mode_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
+    pane.reasoning_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane.instructions_reset_button = FakeButton()
+    pane.instructions_toggle_button = FakeToolButton()
+    pane.text_splitter = types.SimpleNamespace(setSizes=lambda sizes: None)
+    pane._update_provider_controls = lambda: None
+    pane._provider = lambda: PROVIDER_CODEX
+    pane._model_text = lambda: ""
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["instructions_collapsed"] = True
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+
+    pane._load_settings()
+
+    assert pane._instructions_collapsed is True
+    assert pane.instructions_edit.visible is False
+    assert pane.instructions_reset_button.visible is False
+    assert pane.instructions_toggle_button.arrow_type == runtime.Qt.ArrowType.RightArrow
+
+
+def test_toggle_instructions_collapsed_saves_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane._instructions_collapsed = False
+    pane._loading_settings = False
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane.instructions_reset_button = FakeButton()
+    pane.instructions_toggle_button = FakeToolButton()
+    saves: list[bool] = []
+    pane._save_settings = lambda: saves.append(True)
+
+    pane._toggle_instructions_collapsed()
+
+    assert pane._instructions_collapsed is True
+    assert pane.instructions_edit.visible is False
+    assert pane.instructions_reset_button.visible is False
+    assert pane.instructions_toggle_button.arrow_type == runtime.Qt.ArrowType.RightArrow
+    assert saves == [True]
 
 
 def test_agent_request_drops_stale_selection_from_transcript(
@@ -1547,6 +1797,7 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     pane._reasoning_effort = lambda: "high"
     pane._fast_mode = lambda: True
     pane._stream_reasoning_summaries = lambda: False
+    pane._instructions_are_collapsed = lambda: True
     config = dict(runtime.DEFAULT_CONFIG)
     config["custom_instructions"] = "legacy fallback"
     config["recent_project_folders"] = ["/one", "/two"]
@@ -1565,6 +1816,7 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     assert saved["custom_instructions_by_model"] == {
         PROVIDER_CODEX: {"gpt-5.5": "be concise"}
     }
+    assert saved["instructions_collapsed"] is True
     assert saved["project_folder"] == ""
     assert saved["project_folder_access"] == PROJECT_FOLDER_ACCESS_READ_ONLY
     assert saved["reasoning_effort"] == "high"
@@ -1857,7 +2109,73 @@ def test_agent_config_defaults_to_codex_provider() -> None:
     assert config["ollama_model"] == ""
     assert config["ollama_path"] == ""
     assert config["ollama_host"] == DEFAULT_OLLAMA_HOST
+    assert config["instructions_collapsed"] is False
+    assert config["prompt_history_by_model"] == {}
     assert "model" not in config
+
+
+def test_agent_config_normalizes_instruction_and_prompt_history_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    runtime.aqt.mw = types.SimpleNamespace(
+        addonManager=types.SimpleNamespace(
+            getConfig=lambda _addon: {
+                "instructions_collapsed": "yes",
+                "prompt_history_by_model": {
+                    PROVIDER_CODEX: {
+                        " gpt-5.4 ": [f" prompt {index} " for index in range(12)]
+                    },
+                    PROVIDER_OLLAMA: {"qwen3:latest": "not a list"},
+                    "unknown": {"model": ["ignored"]},
+                },
+            }
+        )
+    )
+
+    config = runtime._config()
+
+    assert config["instructions_collapsed"] is False
+    assert config["prompt_history_by_model"] == {
+        PROVIDER_CODEX: {"gpt-5.4": [f"prompt {index}" for index in range(10)]}
+    }
+
+
+def test_prompt_history_is_saved_per_provider_and_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    config = dict(runtime.DEFAULT_CONFIG)
+
+    for index in range(12):
+        runtime._record_prompt_history_for_model(
+            config,
+            provider=PROVIDER_CODEX,
+            model="gpt-5.4",
+            prompt=f"Prompt {index}",
+        )
+    runtime._record_prompt_history_for_model(
+        config,
+        provider=PROVIDER_CODEX,
+        model="gpt-5.5",
+        prompt="Other Codex prompt",
+    )
+    runtime._record_prompt_history_for_model(
+        config,
+        provider=PROVIDER_OLLAMA,
+        model="qwen3:latest",
+        prompt="Local prompt",
+    )
+
+    assert runtime._prompt_history_for_model(
+        config, provider=PROVIDER_CODEX, model="gpt-5.4"
+    ) == tuple(f"Prompt {index}" for index in range(11, 1, -1))
+    assert runtime._prompt_history_for_model(
+        config, provider=PROVIDER_CODEX, model="gpt-5.5"
+    ) == ("Other Codex prompt",)
+    assert runtime._prompt_history_for_model(
+        config, provider=PROVIDER_OLLAMA, model="qwen3:latest"
+    ) == ("Local prompt",)
 
 
 def test_agent_config_migrates_legacy_model_to_codex_model(
@@ -3025,6 +3343,85 @@ def test_validate_note_patch_accepts_current_note_fields_and_tags() -> None:
     assert patch.tag_patch.apply(snapshot().tags) == ("keep", "agent")
 
 
+def test_validate_note_patch_strips_clipboard_fragment_comments() -> None:
+    patch = validate_note_patch(
+        {
+            "summary": "Tighten wording",
+            "note_id": 123,
+            "notetype_id": 7,
+            "field_updates": [
+                {
+                    "name": "Front",
+                    "html": (
+                        "before<!--StartFragment--><b>new front</b>"
+                        "<!--EndFragment-->after"
+                    ),
+                }
+            ],
+            "tags": {"replace": None, "add": [], "remove": []},
+        },
+        snapshot(),
+    )
+
+    assert patch.field_updates == {"Front": "before<b>new front</b>after"}
+
+
+def test_validate_note_patch_rejects_malformed_clipboard_fragment_html() -> None:
+    malformed_html = (
+        "definition (hilbert spaces)<div><br></div><div>let</div>"
+        "<div><!--StartFragment--><ul><li><anki-mathjax>H</anki-mathjax> "
+        "a Hilbert space</li></ul><!--EndFragment></div>"
+        "<div><anki-mathjax>T</anki-mathjax>&nbsp;is a&nbsp;"
+        '<!--StartFragment--><span class="bigger">Hilbert-Schmidt operator</span>'
+        "<!--EndFragment>&nbsp;(HS)&nbsp;if</div>"
+        "</body></html>--></div>"
+    )
+
+    with pytest.raises(PatchValidationError, match="malformed clipboard fragment"):
+        validate_note_patch(
+            {
+                "summary": "Convert LaTeX",
+                "note_id": 123,
+                "notetype_id": 7,
+                "field_updates": [{"name": "Front", "html": malformed_html}],
+                "tags": {"replace": None, "add": [], "remove": []},
+            },
+            snapshot(),
+        )
+
+
+def test_validate_note_patch_rejects_document_wrapper_html() -> None:
+    with pytest.raises(PatchValidationError, match="document wrapper"):
+        validate_note_patch(
+            {
+                "summary": "Bad wrapper",
+                "note_id": 123,
+                "notetype_id": 7,
+                "field_updates": [{"name": "Front", "html": "<body>new</body>"}],
+                "tags": {"replace": None, "add": [], "remove": []},
+            },
+            snapshot(),
+        )
+
+
+def test_validate_note_patch_rejects_broken_html_comments() -> None:
+    for bad_html, message in (
+        ("new --> front", "stray HTML comment closer"),
+        ("new <!-- front", "unterminated HTML comment"),
+    ):
+        with pytest.raises(PatchValidationError, match=message):
+            validate_note_patch(
+                {
+                    "summary": "Bad comment",
+                    "note_id": 123,
+                    "notetype_id": 7,
+                    "field_updates": [{"name": "Front", "html": bad_html}],
+                    "tags": {"replace": None, "add": [], "remove": []},
+                },
+                snapshot(),
+            )
+
+
 def test_validate_multi_note_patch_accepts_selected_note_updates() -> None:
     patch = validate_multi_note_patch(
         {
@@ -3053,6 +3450,26 @@ def test_validate_multi_note_patch_accepts_selected_note_updates() -> None:
     assert patch.note_updates[0].field_updates == {"Front": "new front"}
     assert patch.note_updates[0].tag_patch.apply(("keep",)) == ("keep", "agent")
     assert patch.note_updates[1].tag_patch.apply(("cloze",)) == ()
+
+
+def test_validate_multi_note_patch_rejects_malformed_field_html() -> None:
+    with pytest.raises(PatchValidationError, match="malformed clipboard fragment"):
+        validate_multi_note_patch(
+            {
+                "summary": "Tighten selected cards",
+                "note_updates": [
+                    {
+                        "note_id": 101,
+                        "notetype_id": 7,
+                        "field_updates": [
+                            {"name": "Front", "html": "<!--EndFragment>new"}
+                        ],
+                        "tags": {"replace": None, "add": [], "remove": []},
+                    }
+                ],
+            },
+            multi_snapshot(),
+        )
 
 
 def test_validate_multi_note_patch_rejects_unselected_note_or_unknown_field() -> None:

@@ -308,6 +308,9 @@ If the user requested a note edit, patch must contain actual changes:
 - For a single note, include non-empty field_updates at the top level of patch.
 - Use exact field names from context_json.fields.
 - Each field update must contain the full proposed HTML for that field.
+- Field update HTML must be an Anki field fragment only. Do not include
+  StartFragment/EndFragment comments, <!doctype>, <html>, <head>, or <body>
+  wrapper tags.
 - Preserve unrelated field HTML and tags.
 - MathJax delimiters are \\(...\\) for inline math and \\[...\\] for display
   math. Do not use [$]...[/$], [$$]...[/$$], or raw dollar delimiters.

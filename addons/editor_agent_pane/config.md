@@ -16,6 +16,8 @@ direct OpenAI API billing.
   `minimal`, because Codex rejects it when default hosted tools are available.
 - `custom_instructions`: Legacy/default instructions fallback inserted into the agent prompt when the selected provider/model does not have scoped instructions.
 - `custom_instructions_by_model`: Instructions saved per provider and model. The map is keyed first by provider (`codex` or `ollama`), then by the selected model value; an empty model key stores the provider's default model choice.
+- `instructions_collapsed`: Whether the optional instructions editor is collapsed in the pane.
+- `prompt_history_by_model`: Latest user prompts saved per provider and model for message-box recall. Each provider/model bucket keeps at most 10 prompts, newest first.
 - `project_folder`: Optional source folder for the agent. The pane stores an
   empty value when "Don't work in a folder" is selected.
 - `project_folder_access`: Project folder sandbox mode. `workspace-write` lets

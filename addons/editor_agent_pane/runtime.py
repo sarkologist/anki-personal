@@ -31,7 +31,9 @@ from aqt.qt import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QTextCursor,
     Qt,
+    QToolButton,
     QTimer,
     QVBoxLayout,
     QWidget,
@@ -123,6 +125,7 @@ from .ui_text import AGENT_BUTTON_LABEL, AGENT_BUTTON_TIP, AGENT_PANE_SHORTCUT
 ADDON = "editor_agent_pane"
 TOGGLE_COMMAND = "editorAgentPane"
 DEFAULT_SPLITTER_SIZES = [570, 80]
+PROMPT_HISTORY_LIMIT = 10
 SELECTION_CONTEXT_REFRESH_MS = 500
 SELECTION_CONTEXT_JS = (
     "typeof getAgentSelectedTextContext === 'function' "
@@ -138,6 +141,8 @@ DEFAULT_CONFIG = {
     "reasoning_effort": "",
     "custom_instructions": "",
     "custom_instructions_by_model": {},
+    "instructions_collapsed": False,
+    "prompt_history_by_model": {},
     "project_folder": "",
     "project_folder_access": DEFAULT_PROJECT_FOLDER_ACCESS,
     "recent_project_folders": [],
@@ -193,6 +198,13 @@ def _config() -> dict[str, Any]:
     config["reasoning_effort"] = effort_value(config["reasoning_effort"])
     config["custom_instructions_by_model"] = _custom_instructions_by_model(
         config["custom_instructions_by_model"]
+    )
+    config["instructions_collapsed"] = _bool_config(
+        config["instructions_collapsed"],
+        False,
+    )
+    config["prompt_history_by_model"] = _prompt_history_by_model(
+        config["prompt_history_by_model"]
     )
     return config
 
@@ -259,6 +271,70 @@ def _set_custom_instructions_for_model(
     provider_instructions[str(model).strip()] = instructions
     scoped[provider_key] = provider_instructions
     config["custom_instructions_by_model"] = scoped
+
+
+def _prompt_history_by_model(value: Any) -> dict[str, dict[str, list[str]]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, list[str]]] = {}
+    for provider, models in value.items():
+        provider_key = str(provider).strip()
+        if provider_key not in {PROVIDER_CODEX, PROVIDER_OLLAMA}:
+            continue
+        if not isinstance(models, dict):
+            continue
+        history_by_model: dict[str, list[str]] = {}
+        for model, history in models.items():
+            if not isinstance(history, list):
+                continue
+            model_key = str(model).strip()
+            messages: list[str] = []
+            for item in history:
+                if item is None:
+                    continue
+                message = item if isinstance(item, str) else str(item)
+                message = message.strip()
+                if message:
+                    messages.append(message)
+                if len(messages) >= PROMPT_HISTORY_LIMIT:
+                    break
+            if messages:
+                history_by_model[model_key] = messages
+        if history_by_model:
+            normalized[provider_key] = history_by_model
+    return normalized
+
+
+def _prompt_history_for_model(
+    config: dict[str, Any],
+    *,
+    provider: object,
+    model: object,
+) -> tuple[str, ...]:
+    history = _prompt_history_by_model(config.get("prompt_history_by_model", {}))
+    provider_history = history.get(provider_value(provider), {})
+    return tuple(provider_history.get(str(model).strip(), ()))
+
+
+def _record_prompt_history_for_model(
+    config: dict[str, Any],
+    *,
+    provider: object,
+    model: object,
+    prompt: str,
+) -> None:
+    clean_prompt = prompt.strip()
+    if not clean_prompt:
+        return
+    scoped = _prompt_history_by_model(config.get("prompt_history_by_model", {}))
+    provider_key = provider_value(provider)
+    model_key = str(model).strip()
+    provider_history = dict(scoped.get(provider_key, {}))
+    provider_history[model_key] = (
+        [clean_prompt] + list(provider_history.get(model_key, ()))
+    )[:PROMPT_HISTORY_LIMIT]
+    scoped[provider_key] = provider_history
+    config["prompt_history_by_model"] = scoped
 
 
 def _validated_splitter_sizes(value: Any) -> list[int]:
@@ -400,18 +476,76 @@ def _sync_browser_multi_card_pane(browser: Any) -> None:
 
 
 class PromptEdit(QPlainTextEdit):
-    def __init__(self, send_callback: Callable[[], None], parent: QWidget) -> None:
+    def __init__(
+        self,
+        send_callback: Callable[[], None],
+        history_callback: Callable[[], tuple[str, ...]],
+        parent: QWidget,
+    ) -> None:
         super().__init__(parent)
         self._send_callback = send_callback
+        self._history_callback = history_callback
+        self._history_index: int | None = None
+        self._draft_text: str | None = None
 
     def keyPressEvent(self, event: Any) -> None:
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
             event.modifiers() & Qt.KeyboardModifier.ShiftModifier
         ):
+            self._reset_history_navigation()
             self._send_callback()
             event.accept()
             return
+        if event.key() == Qt.Key.Key_Up and self._cursor_on_first_line():
+            if self._show_previous_history_item():
+                event.accept()
+                return
+        if event.key() == Qt.Key.Key_Down and self._cursor_on_last_line():
+            if self._show_next_history_item():
+                event.accept()
+                return
+        if event.key() not in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            self._reset_history_navigation()
         super().keyPressEvent(event)
+
+    def _cursor_on_first_line(self) -> bool:
+        return self.textCursor().blockNumber() == 0
+
+    def _cursor_on_last_line(self) -> bool:
+        return self.textCursor().blockNumber() == self.document().blockCount() - 1
+
+    def _show_previous_history_item(self) -> bool:
+        history = self._history_callback()
+        if not history:
+            return False
+        if self._history_index is None:
+            self._draft_text = self.toPlainText()
+            self._history_index = 0
+        elif self._history_index < len(history) - 1:
+            self._history_index += 1
+        self._replace_text(history[self._history_index])
+        return True
+
+    def _show_next_history_item(self) -> bool:
+        if self._history_index is None:
+            return False
+        history = self._history_callback()
+        if self._history_index > 0 and self._history_index <= len(history):
+            self._history_index -= 1
+            self._replace_text(history[self._history_index])
+            return True
+        draft = self._draft_text or ""
+        self._reset_history_navigation()
+        self._replace_text(draft)
+        return True
+
+    def _replace_text(self, text: str) -> None:
+        self.setPlainText(text)
+        self.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _reset_history_navigation(self) -> None:
+        self._history_index = None
+        self._draft_text = None
 
 
 class MultiCardProposalDialog(QDialog):
@@ -581,6 +715,7 @@ class EditorAgentPane(QWidget):
         self._ollama_models_unavailable = False
         self._loading_settings = False
         self._setting_model_choice = False
+        self._instructions_collapsed = False
         self._multi_proposal_dialog: MultiCardProposalDialog | None = None
 
         self.dock: QDockWidget | None = None
@@ -630,12 +765,19 @@ class EditorAgentPane(QWidget):
         self._add_project_folder_row(layout)
 
         instructions_header = QHBoxLayout()
+        self.instructions_toggle_button = QToolButton()
+        self.instructions_toggle_button.setAutoRaise(True)
+        qconnect(
+            self.instructions_toggle_button.clicked,
+            self._toggle_instructions_collapsed,
+        )
         instructions_label = QLabel("Instructions")
-        instructions_reset = QPushButton("Reset")
-        qconnect(instructions_reset.clicked, self._reset_custom_instructions)
+        self.instructions_reset_button = QPushButton("Reset")
+        qconnect(self.instructions_reset_button.clicked, self._reset_custom_instructions)
+        instructions_header.addWidget(self.instructions_toggle_button)
         instructions_header.addWidget(instructions_label)
         instructions_header.addStretch(1)
-        instructions_header.addWidget(instructions_reset)
+        instructions_header.addWidget(self.instructions_reset_button)
         layout.addLayout(instructions_header)
         self.instructions_edit = QPlainTextEdit()
         self.instructions_edit.setPlaceholderText("Optional custom instructions")
@@ -653,7 +795,11 @@ class EditorAgentPane(QWidget):
             context=self,
         )
 
-        self.prompt = PromptEdit(self._send, self)
+        self.prompt = PromptEdit(
+            self._send,
+            self._prompt_history_for_current_choice,
+            self,
+        )
         self.prompt.setPlaceholderText("Message")
         self.prompt.setMinimumHeight(50)
         self.selection_context_label = QLabel("")
@@ -806,6 +952,7 @@ class EditorAgentPane(QWidget):
                 bool(config["stream_reasoning_summaries"])
             )
             self._load_instructions_for_current_choice(config)
+            self._set_instructions_collapsed(bool(config["instructions_collapsed"]))
             self.text_splitter.setSizes(
                 _validated_splitter_sizes(config["splitter_sizes"])
             )
@@ -825,6 +972,7 @@ class EditorAgentPane(QWidget):
         config["ollama_host"] = normalize_ollama_host(self.ollama_host_edit.text())
         config["reasoning_effort"] = self._reasoning_effort()
         self._save_current_instructions(config)
+        config["instructions_collapsed"] = self._instructions_are_collapsed()
         config["project_folder"] = project_folder
         config["project_folder_access"] = self._project_folder_access()
         config["fast_mode"] = self._fast_mode()
@@ -927,6 +1075,29 @@ class EditorAgentPane(QWidget):
             model=model,
             instructions=self._custom_instructions_text(),
         )
+
+    def _prompt_history_for_current_choice(self) -> tuple[str, ...]:
+        provider, model = self._provider(), self._model_text()
+        return _prompt_history_for_model(_config(), provider=provider, model=model)
+
+    def _set_instructions_collapsed(self, collapsed: bool) -> None:
+        self._instructions_collapsed = collapsed
+        self.instructions_edit.setVisible(not collapsed)
+        self.instructions_reset_button.setVisible(not collapsed)
+        self.instructions_toggle_button.setArrowType(
+            Qt.ArrowType.RightArrow if collapsed else Qt.ArrowType.DownArrow
+        )
+        self.instructions_toggle_button.setToolTip(
+            "Show instructions" if collapsed else "Hide instructions"
+        )
+
+    def _instructions_are_collapsed(self) -> bool:
+        return bool(getattr(self, "_instructions_collapsed", False))
+
+    def _toggle_instructions_collapsed(self) -> None:
+        self._set_instructions_collapsed(not self._instructions_are_collapsed())
+        if not getattr(self, "_loading_settings", False):
+            self._save_settings()
 
     def _on_model_changed(self, _index: int) -> None:
         if getattr(self, "_loading_settings", False) or getattr(
@@ -1423,6 +1594,7 @@ class EditorAgentPane(QWidget):
         config = _config()
         provider = self._provider()
         model = self._model_text() or self._saved_model_for_provider(provider, config)
+        prompt_history_scope = (provider, model)
         if provider == PROVIDER_OLLAMA and not model:
             showWarning("Select an Ollama model first.", parent=self)
             return
@@ -1549,6 +1721,7 @@ class EditorAgentPane(QWidget):
                 notetype=notetype,
                 activity=activity,
                 started_at=started_at,
+                prompt_history_scope=prompt_history_scope,
             )
 
         taskman.run_in_background(task, on_done, uses_collection=False)
@@ -1564,6 +1737,7 @@ class EditorAgentPane(QWidget):
         notetype: dict[str, Any],
         activity: CodexActivityRenderer,
         started_at: float | None = None,
+        prompt_history_scope: tuple[str, str] | None = None,
     ) -> None:
         if generation != self._context_generation:
             return
@@ -1621,6 +1795,15 @@ class EditorAgentPane(QWidget):
         if text or message_html:
             self._append_transcript(render_assistant_message(message_html, text))
         self.history.append((prompt, text))
+        if prompt_history_scope is not None:
+            config = _config()
+            _record_prompt_history_for_model(
+                config,
+                provider=prompt_history_scope[0],
+                model=prompt_history_scope[1],
+                prompt=prompt,
+            )
+            _write_config(config)
         if proposals:
             self.pending_patch = proposals[-1]
             self.pending_snapshot = snapshot
