@@ -9,6 +9,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 TAG_RE = re.compile(r"^[^\s]+$")
+DOCUMENT_HTML_RE = re.compile(
+    r"<\s*!doctype\b|<\s*/?\s*(?:html|head|body)\b",
+    re.IGNORECASE,
+)
+CLIPBOARD_FRAGMENT_MARKERS = ("<!--StartFragment-->", "<!--EndFragment-->")
+CLIPBOARD_FRAGMENT_RE = re.compile(
+    r"<!--\s*(?:StartFragment|EndFragment)\b",
+    re.IGNORECASE,
+)
 
 
 class PatchValidationError(ValueError):
@@ -321,27 +330,10 @@ def validate_note_patch(raw: dict[str, Any], snapshot: EditorSnapshot) -> NotePa
     if notetype_id != snapshot.notetype_id:
         raise PatchValidationError("Patch targets a different note type.")
 
-    known_fields = set(snapshot.field_names())
-    field_updates: dict[str, str] = {}
-    raw_updates = raw.get("field_updates", [])
-    if raw_updates is None:
-        raw_updates = []
-    if not isinstance(raw_updates, list):
-        raise PatchValidationError("field_updates must be a list.")
-    for update in raw_updates:
-        if not isinstance(update, dict):
-            raise PatchValidationError("Each field update must be an object.")
-        name = update.get("name")
-        html = update.get("html")
-        if not isinstance(name, str) or not name:
-            raise PatchValidationError("Field update name must be a string.")
-        if name not in known_fields:
-            raise PatchValidationError(f"Unknown field: {name}.")
-        if name in field_updates:
-            raise PatchValidationError(f"Duplicate field update: {name}.")
-        if not isinstance(html, str):
-            raise PatchValidationError(f"Field update for {name} must contain html.")
-        field_updates[name] = html
+    field_updates = _validate_field_updates(
+        raw.get("field_updates", []),
+        set(snapshot.field_names()),
+    )
 
     raw_tags = raw.get("tags", {})
     if raw_tags is None:
@@ -396,8 +388,44 @@ def _validate_field_updates(
             raise PatchValidationError(f"Duplicate field update: {name}.")
         if not isinstance(html, str):
             raise PatchValidationError(f"Field update for {name} must contain html.")
-        field_updates[name] = html
+        field_updates[name] = _normalize_field_html(name, html)
     return field_updates
+
+
+def _normalize_field_html(field_name: str, value: str) -> str:
+    normalized = value
+    for marker in CLIPBOARD_FRAGMENT_MARKERS:
+        normalized = normalized.replace(marker, "")
+
+    if CLIPBOARD_FRAGMENT_RE.search(normalized):
+        raise PatchValidationError(
+            f"Field update for {field_name} contains a malformed clipboard fragment comment."
+        )
+    if DOCUMENT_HTML_RE.search(normalized):
+        raise PatchValidationError(
+            f"Field update for {field_name} contains document wrapper HTML."
+        )
+    _validate_html_comments(field_name, normalized)
+    return normalized
+
+
+def _validate_html_comments(field_name: str, value: str) -> None:
+    position = 0
+    while True:
+        start = value.find("<!--", position)
+        end = value.find("-->", position)
+        if end != -1 and (start == -1 or end < start):
+            raise PatchValidationError(
+                f"Field update for {field_name} contains a stray HTML comment closer."
+            )
+        if start == -1:
+            return
+        end = value.find("-->", start + 4)
+        if end == -1:
+            raise PatchValidationError(
+                f"Field update for {field_name} contains an unterminated HTML comment."
+            )
+        position = end + 3
 
 
 def _validate_tag_patch(raw_tags: Any) -> TagPatch:

@@ -3343,6 +3343,85 @@ def test_validate_note_patch_accepts_current_note_fields_and_tags() -> None:
     assert patch.tag_patch.apply(snapshot().tags) == ("keep", "agent")
 
 
+def test_validate_note_patch_strips_clipboard_fragment_comments() -> None:
+    patch = validate_note_patch(
+        {
+            "summary": "Tighten wording",
+            "note_id": 123,
+            "notetype_id": 7,
+            "field_updates": [
+                {
+                    "name": "Front",
+                    "html": (
+                        "before<!--StartFragment--><b>new front</b>"
+                        "<!--EndFragment-->after"
+                    ),
+                }
+            ],
+            "tags": {"replace": None, "add": [], "remove": []},
+        },
+        snapshot(),
+    )
+
+    assert patch.field_updates == {"Front": "before<b>new front</b>after"}
+
+
+def test_validate_note_patch_rejects_malformed_clipboard_fragment_html() -> None:
+    malformed_html = (
+        "definition (hilbert spaces)<div><br></div><div>let</div>"
+        "<div><!--StartFragment--><ul><li><anki-mathjax>H</anki-mathjax> "
+        "a Hilbert space</li></ul><!--EndFragment></div>"
+        "<div><anki-mathjax>T</anki-mathjax>&nbsp;is a&nbsp;"
+        '<!--StartFragment--><span class="bigger">Hilbert-Schmidt operator</span>'
+        "<!--EndFragment>&nbsp;(HS)&nbsp;if</div>"
+        "</body></html>--></div>"
+    )
+
+    with pytest.raises(PatchValidationError, match="malformed clipboard fragment"):
+        validate_note_patch(
+            {
+                "summary": "Convert LaTeX",
+                "note_id": 123,
+                "notetype_id": 7,
+                "field_updates": [{"name": "Front", "html": malformed_html}],
+                "tags": {"replace": None, "add": [], "remove": []},
+            },
+            snapshot(),
+        )
+
+
+def test_validate_note_patch_rejects_document_wrapper_html() -> None:
+    with pytest.raises(PatchValidationError, match="document wrapper"):
+        validate_note_patch(
+            {
+                "summary": "Bad wrapper",
+                "note_id": 123,
+                "notetype_id": 7,
+                "field_updates": [{"name": "Front", "html": "<body>new</body>"}],
+                "tags": {"replace": None, "add": [], "remove": []},
+            },
+            snapshot(),
+        )
+
+
+def test_validate_note_patch_rejects_broken_html_comments() -> None:
+    for bad_html, message in (
+        ("new --> front", "stray HTML comment closer"),
+        ("new <!-- front", "unterminated HTML comment"),
+    ):
+        with pytest.raises(PatchValidationError, match=message):
+            validate_note_patch(
+                {
+                    "summary": "Bad comment",
+                    "note_id": 123,
+                    "notetype_id": 7,
+                    "field_updates": [{"name": "Front", "html": bad_html}],
+                    "tags": {"replace": None, "add": [], "remove": []},
+                },
+                snapshot(),
+            )
+
+
 def test_validate_multi_note_patch_accepts_selected_note_updates() -> None:
     patch = validate_multi_note_patch(
         {
@@ -3371,6 +3450,26 @@ def test_validate_multi_note_patch_accepts_selected_note_updates() -> None:
     assert patch.note_updates[0].field_updates == {"Front": "new front"}
     assert patch.note_updates[0].tag_patch.apply(("keep",)) == ("keep", "agent")
     assert patch.note_updates[1].tag_patch.apply(("cloze",)) == ()
+
+
+def test_validate_multi_note_patch_rejects_malformed_field_html() -> None:
+    with pytest.raises(PatchValidationError, match="malformed clipboard fragment"):
+        validate_multi_note_patch(
+            {
+                "summary": "Tighten selected cards",
+                "note_updates": [
+                    {
+                        "note_id": 101,
+                        "notetype_id": 7,
+                        "field_updates": [
+                            {"name": "Front", "html": "<!--EndFragment>new"}
+                        ],
+                        "tags": {"replace": None, "add": [], "remove": []},
+                    }
+                ],
+            },
+            multi_snapshot(),
+        )
 
 
 def test_validate_multi_note_patch_rejects_unselected_note_or_unknown_field() -> None:

@@ -193,6 +193,9 @@ When proposing a patch:
   top level of patch.
 - Use exact field names from the editor context.
 - Preserve HTML where appropriate.
+- Field update HTML must be an Anki field fragment only. Do not include
+  StartFragment/EndFragment comments, <!doctype>, <html>, <head>, or <body>
+  wrapper tags.
 - For delimiter conversions, legacy Anki LaTeX delimiters are [$]...[/$] for
   inline math and [$$]...[/$$] for display math. Convert them to Anki MathJax
   delimiters \\(...\\) for inline math and \\[...\\] for display math.
