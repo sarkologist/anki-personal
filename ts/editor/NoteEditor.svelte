@@ -469,6 +469,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             await plainTextInputs[index].api.setStoredContentWithUndo(html);
         } else {
             fieldStores[index].set(html);
+            richTextInputs[index]?.api.syncFromStoredContent();
         }
         await tick();
         richTextInputs[index]?.api.pushUndoSnapshot();

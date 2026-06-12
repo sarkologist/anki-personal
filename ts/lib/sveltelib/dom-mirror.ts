@@ -24,6 +24,7 @@ interface DOMMirrorAPI {
     mirror: MirrorAction;
     preventResubscription(): () => void;
     flush(): void;
+    syncFromStore(): void;
 }
 
 type CancelIdleCallback = () => void;
@@ -72,6 +73,7 @@ function requestIdle(callback: () => void): CancelIdleCallback {
 function useDOMMirror(): DOMMirrorAPI {
     const allowResubscription = writable(true);
     let flushPendingMirror = noop;
+    let syncFromStore = noop;
 
     function preventResubscription() {
         allowResubscription.set(false);
@@ -159,6 +161,13 @@ function useDOMMirror(): DOMMirrorAPI {
             mirrorToElement(cloneNode(fragment));
         }
 
+        function syncElementFromStore(): void {
+            const unsubscribe = store.subscribe(mirrorFromFragment);
+            unsubscribe();
+        }
+
+        syncFromStore = syncElementFromStore;
+
         const { subscribe, unsubscribe } = storeSubscribe(
             store,
             mirrorFromFragment,
@@ -199,6 +208,9 @@ function useDOMMirror(): DOMMirrorAPI {
                 unsubscribe();
                 unsubResubscription();
                 flushPendingMirror = noop;
+                if (syncFromStore === syncElementFromStore) {
+                    syncFromStore = noop;
+                }
             },
         };
     }
@@ -207,6 +219,7 @@ function useDOMMirror(): DOMMirrorAPI {
         mirror,
         preventResubscription,
         flush: () => flushPendingMirror(),
+        syncFromStore: () => syncFromStore(),
     };
 }
 

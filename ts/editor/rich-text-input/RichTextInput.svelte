@@ -28,6 +28,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         fieldIndex: number;
         /** Flush pending DOM changes into the shared stored-HTML content. */
         flushContent(): void;
+        /** Refresh the editable DOM from shared stored HTML, even while focused. */
+        syncFromStoredContent(): void;
         /** Force a commit of the current state as a standalone undo step. */
         pushUndoSnapshot(): void;
         /** Discard the field's undo history (e.g. when loading a new note). */
@@ -121,7 +123,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const nodes = getNormalizingNodeStore();
     const [richTextPromise, resolve] = useRichTextResolve();
-    const { mirror, preventResubscription, flush: flushMirror } = useDOMMirror();
+    const {
+        mirror,
+        preventResubscription,
+        flush: flushMirror,
+        syncFromStore,
+    } = useDOMMirror();
     const [inputHandler, setupInputHandler] = useInputHandler();
     const [customStyles, stylesResolve] = promiseWithResolver<Record<string, any>>();
 
@@ -186,6 +193,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         flushMirror();
     }
 
+    function syncFromStoredContent(): void {
+        syncFromStore();
+    }
+
     export const api: RichTextInputAPI = {
         name: "rich-text",
         element: richTextPromise,
@@ -203,6 +214,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         fieldName,
         fieldIndex,
         flushContent,
+        syncFromStoredContent,
         pushUndoSnapshot,
         resetUndo,
     };

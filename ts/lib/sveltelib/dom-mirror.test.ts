@@ -142,6 +142,35 @@ describe("useDOMMirror", () => {
         action.destroy();
     });
 
+    test("syncs a focused element from the store on demand", async () => {
+        vi.useFakeTimers();
+        const element = document.createElement("div");
+        element.tabIndex = 0;
+        document.body.append(element);
+        const store = writable(fragmentFromHtml("before"));
+        const values: string[] = [];
+        const mirror = useDOMMirror();
+        const action = mirror.mirror(element, { store });
+
+        store.subscribe((fragment) => values.push(fragmentToHtml(fragment)));
+        element.focus();
+        element.textContent = "stale local";
+        await flushMutationObserver();
+
+        store.set(fragmentFromHtml("<i>converted</i>"));
+        expect(element.textContent).toBe("stale local");
+
+        mirror.syncFromStore();
+
+        expect(element.innerHTML).toBe("<i>converted</i>");
+        expect(document.activeElement).toBe(element);
+
+        vi.runOnlyPendingTimers();
+        expect(values.at(-1)).toBe("<i>converted</i>");
+
+        action.destroy();
+    });
+
     test("destroy cancels a pending element save", async () => {
         vi.useFakeTimers();
         const element = document.createElement("div");
