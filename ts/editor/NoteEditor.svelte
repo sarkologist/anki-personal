@@ -68,6 +68,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import EditorToolbar from "./editor-toolbar";
     import type { FieldData } from "./EditorField.svelte";
     import EditorField from "./EditorField.svelte";
+    import { saveFieldsCommand, transformContentBeforeSave } from "./field-save";
     import Fields from "./Fields.svelte";
     import ImageOverlay from "./image-overlay";
     import LatexOverlay from "./latex-overlay";
@@ -155,7 +156,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             fieldStores.pop();
         }
 
-        loadFieldContent(fieldStores, richTextInputs, fs);
+        fieldSave.clear();
+        const wasSuppressingFieldSave = suppressFieldSave;
+        suppressFieldSave = true;
+        try {
+            loadFieldContent(fieldStores, richTextInputs, fs);
+        } finally {
+            suppressFieldSave = wasSuppressingFieldSave;
+        }
 
         fieldNames = newFieldNames;
     }
@@ -411,10 +419,6 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const fieldSave = new ChangeTimer();
     let suppressFieldSave = false;
 
-    function transformContentBeforeSave(content: string): string {
-        return content.replace(/ data-editor-shrink="(true|false)"/g, "");
-    }
-
     function updateField(index: number, content: string): void {
         if (suppressFieldSave) {
             return;
@@ -490,8 +494,26 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             }
         }
 
-        for (const update of updates) {
-            await applyFieldUpdateWithUndo(update);
+        if (!updates.length) {
+            return 0;
+        }
+
+        const noteId = getNoteId();
+        if (noteId === null) {
+            return 0;
+        }
+
+        const wasSuppressingFieldSave = suppressFieldSave;
+        suppressFieldSave = true;
+        try {
+            for (const update of updates) {
+                await applyFieldUpdateWithUndo(update);
+            }
+            await tick();
+            fieldSave.clear();
+            bridgeCommand(saveFieldsCommand(noteId, fieldStores));
+        } finally {
+            suppressFieldSave = wasSuppressingFieldSave;
         }
 
         return updates.length;

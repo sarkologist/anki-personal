@@ -444,6 +444,21 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
     # JS->Python bridge
     ######################################################################
 
+    def _save_fields(self, note_id: int, fields: list[str]) -> bool:
+        if not self.note or note_id != self.note.id:
+            print("ignored late field batch")
+            return False
+        if len(fields) != len(self.note.fields):
+            print("ignored field batch after notetype change")
+            return False
+
+        self.note.fields = [self.mungeHTML(field) for field in fields]
+        if not self.addMode:
+            self._save_current_note()
+        gui_hooks.editor_did_fire_typing_timer(self.note)
+        self._check_and_update_duplicate_display_async()
+        return True
+
     def onBridgeCmd(self, cmd: str) -> Any:
         if not self.note:
             # shutdown
@@ -483,6 +498,23 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             else:
                 gui_hooks.editor_did_fire_typing_timer(self.note)
                 self._check_and_update_duplicate_display_async()
+
+        elif cmd.startswith("saveFields:"):
+            try:
+                _, nid_str, fields_json = cmd.split(":", 2)
+                nid = int(nid_str)
+                fields = json.loads(fields_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                print("ignored malformed field batch")
+                return
+
+            if not isinstance(fields, list) or not all(
+                isinstance(field, str) for field in fields
+            ):
+                print("ignored malformed field batch")
+                return
+
+            return self._save_fields(nid, fields)
 
         # focused into field?
         elif cmd.startswith("focus"):
