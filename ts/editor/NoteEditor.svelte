@@ -72,6 +72,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import ImageOverlay from "./image-overlay";
     import LatexOverlay from "./latex-overlay";
     import { closeLatexOverlay } from "./latex-overlay/LatexOverlay.svelte";
+    import { loadFieldContent } from "./load-field-content";
     import { shrinkImagesByDefault } from "./image-overlay/ImageOverlay.svelte";
     import MathjaxOverlay from "./mathjax-overlay";
     import { closeMathjaxOverlay } from "./mathjax-overlay/MathjaxOverlay.svelte";
@@ -154,9 +155,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             fieldStores.pop();
         }
 
-        for (const [index, [, fieldContent]] of fs.entries()) {
-            fieldStores[index].set(fieldContent);
-        }
+        loadFieldContent(fieldStores, richTextInputs, fs);
 
         fieldNames = newFieldNames;
     }
