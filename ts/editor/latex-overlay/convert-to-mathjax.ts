@@ -43,7 +43,7 @@ export function normalizeLegacyLatexSource(source: string): string {
         text += textContentWithLegacyBreaks(child);
     }
 
-    return text;
+    return text.replace(/\u00a0/g, " ").replace(/&nbsp;/giu, " ");
 }
 
 function escapeMathjaxSourceForStoredHtml(source: string): string {

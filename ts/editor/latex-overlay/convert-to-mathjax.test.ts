@@ -65,6 +65,12 @@ describe("legacyLatexToMathjaxElement", () => {
         ).toBe("x&y\nz\nw");
     });
 
+    test("normalizes non-breaking spaces to ordinary spaces", () => {
+        expect(normalizeLegacyLatexSource("x&nbsp;y\u00a0z&amp;nbsp;w")).toBe(
+            "x y z w",
+        );
+    });
+
     test("converts legacy delimiters in stored field HTML", () => {
         expect(
             convertLegacyLatexToInlineMathjax(
