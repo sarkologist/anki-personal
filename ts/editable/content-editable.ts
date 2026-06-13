@@ -172,6 +172,44 @@ export function fixRTLKeyboardNav(editable: HTMLElement): void {
     });
 }
 
+export function emacsWordNavDirection(code: string): "backward" | "forward" | null {
+    switch (code) {
+        case "KeyB":
+            return "backward";
+        case "KeyF":
+            return "forward";
+        default:
+            return null;
+    }
+}
+
+/**
+ * macOS provides Emacs/readline-style caret movement (Ctrl+B/F/A/E) in text
+ * fields natively. The only missing bindings are the Alt+B/F word jumps, which
+ * otherwise just insert special characters (∫/ƒ). Add them here so word-wise
+ * navigation matches the platform's Ctrl bindings. macOS only.
+ */
+export function emacsKeyboardNav(editable: HTMLElement): void {
+    if (!isApplePlatform()) {
+        return;
+    }
+
+    editable.addEventListener("keydown", (evt: KeyboardEvent) => {
+        // Only plain Option+key; leave Ctrl/Cmd/Shift combinations untouched.
+        if (!evt.altKey || evt.ctrlKey || evt.metaKey || evt.shiftKey) {
+            return;
+        }
+
+        const direction = emacsWordNavDirection(evt.code);
+        if (!direction) {
+            return;
+        }
+
+        getSelection(editable)?.modify("move", direction, "word");
+        evt.preventDefault();
+    });
+}
+
 /** API */
 
 export interface ContentEditableAPI {

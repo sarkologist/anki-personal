@@ -17,6 +17,7 @@ import CodeMirror from "codemirror";
 import type { Readable } from "svelte/store";
 
 import storeSubscribe from "$lib/sveltelib/store-subscribe";
+import { isApplePlatform } from "@tslib/platform";
 
 export { CodeMirror };
 
@@ -40,7 +41,15 @@ export const baseOptions: CodeMirror.EditorConfiguration = {
     theme: lightTheme,
     lineWrapping: true,
     matchTags: { bothTags: true },
-    extraKeys: { Tab: false, "Shift-Tab": false },
+    extraKeys: {
+        Tab: false,
+        "Shift-Tab": false,
+        // macOS binds Ctrl+A/E/B/F via CodeMirror's built-in "emacsy" keymap;
+        // add the Alt+B/F word jumps to match the platform's readline bindings.
+        ...(isApplePlatform()
+            ? { "Alt-B": "goGroupLeft", "Alt-F": "goGroupRight" }
+            : {}),
+    },
     tabindex: 0,
     viewportMargin: Infinity,
     lineWiseCopyCut: false,

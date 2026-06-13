@@ -425,6 +425,10 @@ class AnkiApp(QApplication):
                         mw._close_active_window()
                     return True
 
+        if is_mac and evt.type() == QEvent.Type.KeyPress:
+            if self._handle_emacs_word_nav(cast(QKeyEvent, evt)):
+                return True
+
         pointer_classes = (
             QPushButton,
             QCheckBox,
@@ -449,6 +453,55 @@ class AnkiApp(QApplication):
             self.restoreOverrideCursor()
             return False
 
+        return False
+
+    def _handle_emacs_word_nav(self, evt: QKeyEvent) -> bool:
+        """macOS binds the Emacs/readline Ctrl variants (Ctrl+B/F/A/E) in text
+        fields natively, but not the Alt+B/F word jumps. Add them here so
+        word-wise caret movement works consistently in Qt text widgets.
+        Returns True if the event was handled."""
+        mods = evt.modifiers().value
+        alt = Qt.KeyboardModifier.AltModifier.value
+        blocked = (
+            Qt.KeyboardModifier.ControlModifier
+            | Qt.KeyboardModifier.MetaModifier
+            | Qt.KeyboardModifier.ShiftModifier
+        ).value
+        if not (mods & alt) or (mods & blocked):
+            return False
+
+        # On macOS, Option+letter composes a glyph (ƒ/∫), so key() may not be
+        # Key_B/Key_F; fall back to the physical virtual key code
+        # (kVK_ANSI_B = 11, kVK_ANSI_F = 3).
+        vk = evt.nativeVirtualKey()
+        if evt.key() == Qt.Key.Key_B or vk == 11:
+            forward = False
+        elif evt.key() == Qt.Key.Key_F or vk == 3:
+            forward = True
+        else:
+            return False
+
+        widget = self.focusWidget()
+        # Editable combo boxes (e.g. the Browser search bar) edit through a
+        # child QLineEdit, which may be reported as the focus widget instead.
+        if isinstance(widget, QComboBox):
+            widget = widget.lineEdit()
+        if isinstance(widget, QLineEdit):
+            if forward:
+                widget.cursorWordForward(False)
+            else:
+                widget.cursorWordBackward(False)
+            return True
+        if isinstance(widget, (QTextEdit, QPlainTextEdit)):
+            cursor = widget.textCursor()
+            cursor.movePosition(
+                QTextCursor.MoveOperation.NextWord
+                if forward
+                else QTextCursor.MoveOperation.PreviousWord,
+                QTextCursor.MoveMode.MoveAnchor,
+            )
+            widget.setTextCursor(cursor)
+            return True
         return False
 
 
