@@ -52,35 +52,38 @@ impl Backend {
         service: u32,
         method: u32,
         input: &Bound<'_, PyBytes>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let in_bytes = input.as_bytes();
-        py.allow_threads(|| self.backend.run_service_method(service, method, in_bytes))
+        py.detach(|| self.backend.run_service_method(service, method, in_bytes))
             .map(|out_bytes| {
                 let out_obj = PyBytes::new(py, &out_bytes);
-                out_obj.into()
+                out_obj.into_any().unbind()
             })
             .map_err(BackendError::new_err)
     }
 
     /// This takes and returns JSON, due to Python's slow protobuf
     /// encoding/decoding.
-    fn db_command(&self, py: Python, input: &Bound<'_, PyBytes>) -> PyResult<PyObject> {
+    fn db_command(&self, py: Python, input: &Bound<'_, PyBytes>) -> PyResult<Py<PyAny>> {
         let in_bytes = input.as_bytes();
-        let out_res = py.allow_threads(|| {
+        let out_res = py.detach(|| {
             self.backend
                 .run_db_command_bytes(in_bytes)
                 .map_err(BackendError::new_err)
         });
         let out_bytes = out_res?;
         let out_obj = PyBytes::new(py, &out_bytes);
-        Ok(out_obj.into())
+        Ok(out_obj.into_any().unbind())
     }
 }
 
 // Module definition
 //////////////////////////////////
 
-#[pymodule]
+// The backend has not been audited for free-threaded (no-GIL) Python, so we
+// keep requiring the GIL. Since PyO3 0.28 the default is `gil_used = false`,
+// which would otherwise claim free-thread safety we haven't verified.
+#[pymodule(gil_used = true)]
 fn _rsbridge(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Backend>()?;
     m.add_wrapped(wrap_pyfunction!(buildhash)).unwrap();
