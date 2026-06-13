@@ -61,6 +61,17 @@ jobs:
       - name: Run format checks
         run: just fmt
 
+  # Audits Rust dependencies against the RUSTSEC advisory database.
+  # cargo-deny's config (including any ignores) lives in .deny.toml.
+  cargo-deny:
+    runs-on: ubuntu-24.04
+    name: cargo-deny
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
   # Runs on pushes to main or on PRs with the check:macos label.
   check-macos:
     if: >-
