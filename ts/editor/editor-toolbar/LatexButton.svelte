@@ -18,7 +18,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { mathjaxConfig } from "../../editable/mathjax-element.svelte";
     import { undecorateFragment } from "../decorated-elements";
-    import { convertLegacyLatexToInlineMathjax } from "../latex-overlay/convert-to-mathjax";
+    import {
+        convertLegacyLatexToInlineMathjax,
+        flattenBlocksToNewlines,
+    } from "../latex-overlay/convert-to-mathjax";
     import { context as noteEditorContext } from "../NoteEditor.svelte";
     import type { RichTextInputAPI } from "../rich-text-input";
     import { editingInputIsRichText } from "../rich-text-input";
@@ -27,9 +30,19 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     const { focusedInput } = noteEditor;
     $: richTextAPI = $focusedInput as RichTextInputAPI;
 
-    async function surround(front: string, back: string): Promise<void> {
+    async function surround(
+        front: string,
+        back: string,
+        flattenBlocks = false,
+    ): Promise<void> {
         const element = await richTextAPI.element;
-        wrapInternal(element, front, back, false, undecorateFragment);
+        const normalize = flattenBlocks
+            ? (fragment: DocumentFragment): void => {
+                  undecorateFragment(fragment);
+                  flattenBlocksToNewlines(fragment);
+              }
+            : undecorateFragment;
+        wrapInternal(element, front, back, false, normalize);
     }
 
     function onMathjaxInline(): void {
@@ -61,13 +74,18 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     function onLatexEquation(): void {
-        surround('<anki-latex data-latex-kind="inline" focusonmount>', "</anki-latex>");
+        surround(
+            '<anki-latex data-latex-kind="inline" focusonmount>',
+            "</anki-latex>",
+            true,
+        );
     }
 
     function onLatexMathEnv(): void {
         surround(
             '<anki-latex data-latex-kind="display" focusonmount>',
             "</anki-latex>",
+            true,
         );
     }
 

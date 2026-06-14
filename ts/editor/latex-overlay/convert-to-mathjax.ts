@@ -46,6 +46,30 @@ export function normalizeLegacyLatexSource(source: string): string {
     return text.replace(/\u00a0/g, " ").replace(/&nbsp;/giu, " ");
 }
 
+/**
+ * Collapse a wrapped selection down to a single multiline text node.
+ *
+ * `<anki-latex>` is an inline element, so the browser hoists block children
+ * (e.g. the `<div>`s a multiline selection is made of) out of it when it is
+ * inserted, tearing the LaTeX source apart. Converting line breaks to `\n`
+ * (matching how the backend normalizes the source) and dropping the markup
+ * leaves nothing for the browser to split, so multiline LaTeX stays in one
+ * element. Newlines are preserved via the element's `white-space: pre`.
+ */
+export function flattenBlocksToNewlines(fragment: DocumentFragment): void {
+    let text = "";
+    for (const child of fragment.childNodes) {
+        text += textContentWithLegacyBreaks(child);
+    }
+
+    text = text
+        .replace(/\u00a0/g, " ")
+        .replace(/^\n*/, "")
+        .replace(/\n*$/, "");
+
+    fragment.replaceChildren(document.createTextNode(text));
+}
+
 function escapeMathjaxSourceForStoredHtml(source: string): string {
     return source.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

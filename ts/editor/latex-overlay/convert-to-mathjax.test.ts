@@ -4,9 +4,12 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+import { wrapInternal } from "@tslib/wrap";
+
 import { fragmentToStored } from "../rich-text-input/transform";
 import {
     convertLegacyLatexToInlineMathjax,
+    flattenBlocksToNewlines,
     legacyLatexToMathjaxElement,
     normalizeLegacyLatexSource,
 } from "./convert-to-mathjax";
@@ -123,5 +126,98 @@ describe("legacyLatexToMathjaxElement", () => {
             "back [latex]invalid[/latex]",
             "extra",
         ]);
+    });
+});
+
+function fragmentFromHtml(html: string): DocumentFragment {
+    const fragment = document.createDocumentFragment();
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    while (container.firstChild) {
+        fragment.appendChild(container.firstChild);
+    }
+    return fragment;
+}
+
+describe("flattenBlocksToNewlines", () => {
+    test("collapses block and line breaks to newlines", () => {
+        const fragment = fragmentFromHtml(
+            "\\begin{tikzcd}&nbsp;<div>&amp; 1 \\\\</div><div>\\end{tikzcd}</div>",
+        );
+
+        flattenBlocksToNewlines(fragment);
+
+        expect(fragment.childNodes.length).toBe(1);
+        expect(fragment.textContent).toBe("\\begin{tikzcd} \n& 1 \\\\\n\\end{tikzcd}");
+    });
+
+    test("leaves single-line content untouched aside from stripping markup", () => {
+        const fragment = fragmentFromHtml("<b>x</b>^2");
+
+        flattenBlocksToNewlines(fragment);
+
+        expect(fragment.textContent).toBe("x^2");
+    });
+});
+
+describe("wrapping a multiline selection as legacy LaTeX", () => {
+    let execCommand: typeof document.execCommand | undefined;
+    let inserted = "";
+
+    beforeEach(() => {
+        execCommand = document.execCommand;
+        inserted = "";
+        document.execCommand = vi.fn((_command, _showUi, value) => {
+            inserted = value ?? "";
+            return true;
+        });
+    });
+
+    afterEach(() => {
+        document.execCommand = execCommand!;
+    });
+
+    function wrapSelectionInLatex(html: string): string {
+        const base = document.createElement("div");
+        base.innerHTML = html;
+        document.body.append(base);
+
+        const range = new Range();
+        range.selectNodeContents(base);
+        const selection = document.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+
+        wrapInternal(
+            base,
+            "<anki-latex data-latex-kind=\"display\">",
+            "</anki-latex>",
+            false,
+            flattenBlocksToNewlines,
+        );
+
+        base.remove();
+        return inserted;
+    }
+
+    test("keeps the source in one element, separated by newlines", () => {
+        expect(
+            wrapSelectionInLatex(
+                "\\begin{tikzcd}<div>&amp; 1 \\\\</div><div>\\end{tikzcd}</div>",
+            ),
+        ).toBe(
+            "<anki-latex data-latex-kind=\"display\">"
+                + "\\begin{tikzcd}\n&amp; 1 \\\\\n\\end{tikzcd}"
+                + "</anki-latex>",
+        );
+    });
+
+    test("does not leak block elements out of the inline element", () => {
+        const result = wrapSelectionInLatex("a<div>b</div><div>c</div>");
+
+        expect(result).not.toContain("<div>");
+        expect(result).toBe(
+            "<anki-latex data-latex-kind=\"display\">a\nb\nc</anki-latex>",
+        );
     });
 });
