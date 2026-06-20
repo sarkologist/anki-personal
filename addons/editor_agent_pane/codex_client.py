@@ -786,7 +786,7 @@ def project_root_status(
     project_folder_access: str = DEFAULT_PROJECT_FOLDER_ACCESS,
 ) -> str:
     if not project_root.strip():
-        return "No project folder selected; Codex will use card context only."
+        return "No project folder selected; the agent will use card context only."
     try:
         root = resolve_project_root(project_root)
     except SourceAccessError as exc:

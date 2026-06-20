@@ -15,6 +15,12 @@ For local models, choose the Ollama provider. The pane discovers installed
 models from local Ollama, then shells out to
 `ollama run MODEL --format json --hidethinking --nowordwrap`.
 
+For Claude, choose the Claude provider. Sign in with the Claude Code CLI first
+(run `claude` once to log in, or `claude setup-token`). The pane shells out to
+`claude -p`, so it uses your Claude CLI account. Like Codex, Claude can work in
+an optional project folder; with no folder selected it answers from the card
+context alone.
+
 The selected project folder is writable by default; use the Access menu to switch
 it to read-only mode, or choose "Don't work in a folder" to use card context only.
 Add optional custom instructions in the pane to steer the agent while keeping the

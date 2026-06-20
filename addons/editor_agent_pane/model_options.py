@@ -5,11 +5,17 @@ from __future__ import annotations
 
 PROVIDER_CODEX = "codex"
 PROVIDER_OLLAMA = "ollama"
+PROVIDER_CLAUDE = "claude"
 DEFAULT_PROVIDER = PROVIDER_CODEX
+
+KNOWN_PROVIDERS: frozenset[str] = frozenset(
+    {PROVIDER_CODEX, PROVIDER_OLLAMA, PROVIDER_CLAUDE}
+)
 
 PROVIDER_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Codex", PROVIDER_CODEX),
     ("Ollama", PROVIDER_OLLAMA),
+    ("Claude", PROVIDER_CLAUDE),
 )
 
 MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -22,10 +28,17 @@ MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
     ("gpt-5.2", "gpt-5.2"),
 )
 
+CLAUDE_MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("Claude default", ""),
+    ("Opus", "opus"),
+    ("Sonnet", "sonnet"),
+    ("Haiku", "haiku"),
+)
+
 
 def provider_value(provider: object) -> str:
     value = str(provider).strip()
-    if value in {PROVIDER_CODEX, PROVIDER_OLLAMA}:
+    if value in KNOWN_PROVIDERS:
         return value
     return DEFAULT_PROVIDER
 
@@ -38,16 +51,25 @@ def provider_option_index(provider: object) -> int:
     return 0
 
 
-def model_options_with_legacy(model: object) -> tuple[tuple[str, str], ...]:
+def model_options_with_legacy(
+    model: object,
+    options: tuple[tuple[str, str], ...] = MODEL_OPTIONS,
+) -> tuple[tuple[str, str], ...]:
     value = _model_value(model)
-    if value and value not in _model_values():
-        return (*MODEL_OPTIONS, (value, value))
-    return MODEL_OPTIONS
+    known = {option_value for _label, option_value in options}
+    if value and value not in known:
+        return (*options, (value, value))
+    return options
 
 
-def model_option_index(model: object) -> int:
+def model_option_index(
+    model: object,
+    options: tuple[tuple[str, str], ...] = MODEL_OPTIONS,
+) -> int:
     value = _model_value(model)
-    for index, (_label, option_value) in enumerate(model_options_with_legacy(value)):
+    for index, (_label, option_value) in enumerate(
+        model_options_with_legacy(value, options)
+    ):
         if option_value == value:
             return index
     return 0
@@ -55,10 +77,6 @@ def model_option_index(model: object) -> int:
 
 def _model_value(model: object) -> str:
     return str(model).strip()
-
-
-def _model_values() -> set[str]:
-    return {value for _label, value in MODEL_OPTIONS}
 
 
 def ollama_model_options_with_legacy(

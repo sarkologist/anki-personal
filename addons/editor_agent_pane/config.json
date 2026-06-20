@@ -5,6 +5,8 @@
     "ollama_path": "",
     "ollama_host": "http://127.0.0.1:11434",
     "ollama_model": "",
+    "claude_path": "",
+    "claude_model": "",
     "reasoning_effort": "",
     "custom_instructions": "",
     "custom_instructions_by_model": {},
