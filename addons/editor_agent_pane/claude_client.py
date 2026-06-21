@@ -205,7 +205,7 @@ class ClaudeCliAgent:
                 raise
 
             try:
-                result_text = _result_text_or_raise(envelope)
+                _raise_for_envelope_error(envelope)
             except Exception as exc:
                 _log_agent_event(
                     run_logger,
@@ -218,14 +218,13 @@ class ClaudeCliAgent:
                 raise
 
             try:
-                data = _parse_json_object(result_text)
+                data = _claude_structured_data(envelope)
             except Exception as exc:
                 _log_agent_event(
                     run_logger,
                     "run_failure",
                     stage="final_json_parse",
                     returncode=completed.returncode,
-                    output_chars=len(result_text),
                     error_type=type(exc).__name__,
                     error_preview=text_preview(str(exc)),
                 )
@@ -461,15 +460,28 @@ def _parse_claude_envelope(text: str) -> dict[str, Any]:
     return parsed
 
 
-def _result_text_or_raise(envelope: dict[str, Any]) -> str:
-    result_text = str(envelope.get("result") or "")
+def _raise_for_envelope_error(envelope: dict[str, Any]) -> None:
     is_error = bool(envelope.get("is_error"))
     subtype = str(envelope.get("subtype") or "")
     if is_error or subtype.startswith("error"):
+        result_text = str(envelope.get("result") or "")
         raise RuntimeError(_format_claude_api_error(result_text, envelope))
+
+
+def _claude_structured_data(envelope: dict[str, Any]) -> dict[str, Any]:
+    # With --json-schema the validated object comes back already parsed in
+    # `structured_output`; the `result` field only carries a short human note
+    # (e.g. "Done."). Fall back to parsing `result` as JSON when there is no
+    # structured payload (no schema honored / older CLI).
+    structured = envelope.get("structured_output")
+    if structured is None:
+        structured = envelope.get("structuredOutput")
+    if isinstance(structured, dict):
+        return structured
+    result_text = str(envelope.get("result") or "")
     if not result_text.strip():
-        raise RuntimeError("Claude did not return a final response.")
-    return result_text
+        raise RuntimeError("Claude did not return a structured response.")
+    return _parse_json_object(result_text)
 
 
 def _format_claude_api_error(result_text: str, envelope: dict[str, Any]) -> str:

@@ -5904,15 +5904,23 @@ def _claude_envelope(
     *,
     is_error: bool = False,
     subtype: str = "success",
+    result_text: str = "Done.",
     **extra: Any,
 ) -> str:
-    result = inner if isinstance(inner, str) else json.dumps(inner)
-    envelope = {
+    # Mirrors the real `claude -p --output-format json --json-schema` envelope:
+    # the validated object is returned (already parsed) in `structured_output`,
+    # while `result` only carries a short human-readable note. A string `inner`
+    # represents the error case, where the message lands in `result`.
+    envelope: dict[str, Any] = {
         "type": "result",
         "subtype": subtype,
         "is_error": is_error,
-        "result": result,
     }
+    if isinstance(inner, str):
+        envelope["result"] = inner
+    else:
+        envelope["structured_output"] = inner
+        envelope["result"] = result_text
     envelope.update(extra)
     return json.dumps(envelope)
 
@@ -6249,6 +6257,97 @@ def test_claude_agent_reports_non_json_envelope(
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
     with pytest.raises(RuntimeError, match="non-JSON"):
+        ClaudeCliAgent(
+            claude_path="claude",
+            model="",
+            timeout_seconds=123,
+        ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+
+def test_claude_agent_reads_structured_output_not_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With --json-schema the answer is in `structured_output`; `result` only has
+    # a short human note. We must read the former, not the latter.
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        return FakePopen(
+            stdout=_claude_envelope(
+                _claude_inner(message="real answer", message_html="<p>real</p>"),
+                result_text="Done.",
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = ClaudeCliAgent(
+        claude_path="claude",
+        model="",
+        timeout_seconds=123,
+    ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+    assert result.text == "real answer"
+    assert result.html == "<p>real</p>"
+
+
+def test_claude_agent_falls_back_to_result_json_without_structured_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Older CLI / no structured payload: the JSON object is in `result` text.
+    inner = json.dumps({"message": "fb", "message_html": "<p>fb</p>", "patch": None})
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        # Passing a string puts it in `result` with no `structured_output`.
+        return FakePopen(stdout=_claude_envelope(inner))
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = ClaudeCliAgent(
+        claude_path="claude",
+        model="",
+        timeout_seconds=123,
+    ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+    assert result.text == "fb"
+    assert result.html == "<p>fb</p>"
+
+
+def test_claude_agent_reports_missing_structured_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Success envelope but neither structured_output nor a result body.
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        return FakePopen(stdout=_claude_envelope(""))
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="did not return a structured response"):
         ClaudeCliAgent(
             claude_path="claude",
             model="",
