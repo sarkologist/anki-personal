@@ -87,6 +87,6 @@ but the report is about legacy LaTeX; left unchanged for now.
 - [x] `./check` green
 
 Note: jsdom cannot reproduce the browser's block-in-inline split, so the wrap
-tests assert the *inserted* HTML is a single newline-separated `<anki-latex>` with
+tests assert the _inserted_ HTML is a single newline-separated `<anki-latex>` with
 no `<div>` (an inline element holding only text + `\n` cannot be split). Live
 in-app spot check still pending.
