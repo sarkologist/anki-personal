@@ -42,7 +42,7 @@ from aqt.qt import (
 from aqt.utils import openFolder, showWarning, tooltip
 from aqt.webview import AnkiWebView
 
-from .activity import CodexActivityRenderer
+from .activity import ClaudeActivityRenderer, CodexActivityRenderer
 from .agent_log import JsonLineAgentRunLogger, ensure_agent_log_folder
 from .claude_client import ClaudeCliAgent, resolve_claude_path
 from .codex_client import (
@@ -170,7 +170,7 @@ PROVIDER_LABELS = {
 PROVIDER_ACTIVITY_START_STATUS = {
     PROVIDER_CODEX: "[Live Codex activity]",
     PROVIDER_OLLAMA: "[Running local Ollama model]",
-    PROVIDER_CLAUDE: "[Running Claude Code]",
+    PROVIDER_CLAUDE: "[Live Claude activity]",
 }
 
 _installed = False
@@ -1714,8 +1714,12 @@ class EditorAgentPane(QWidget):
                 status=PROVIDER_ACTIVITY_START_STATUS.get(provider, "[Running agent]"),
             )
         )
-        activity = CodexActivityRenderer(
-            stream_reasoning_summaries=stream_reasoning_summaries
+        activity: ClaudeActivityRenderer | CodexActivityRenderer = (
+            ClaudeActivityRenderer()
+            if provider == PROVIDER_CLAUDE
+            else CodexActivityRenderer(
+                stream_reasoning_summaries=stream_reasoning_summaries
+            )
         )
         assert aqt.mw is not None
         taskman = aqt.mw.taskman
@@ -1775,6 +1779,7 @@ class EditorAgentPane(QWidget):
                     snapshot=snapshot,
                     project_root=project_root,
                     history=history,
+                    event_callback=on_stream_event,
                     run_logger=run_logger,
                     stop_requested=stop_event.is_set,
                 )
@@ -1782,8 +1787,8 @@ class EditorAgentPane(QWidget):
                     result.text,
                     result.html,
                     result.proposals,
-                    "[Claude activity: agent run]\n",
-                    (),
+                    activity.compact_summary(),
+                    tuple(activity.detail_lines),
                 )
 
             agent = CodexCliAgent(
@@ -1837,7 +1842,7 @@ class EditorAgentPane(QWidget):
         prompt: str,
         snapshot: EditorSnapshot | MultiCardSnapshot,
         notetype: dict[str, Any],
-        activity: CodexActivityRenderer,
+        activity: ClaudeActivityRenderer | CodexActivityRenderer,
         started_at: float | None = None,
         prompt_history_scope: tuple[str, str] | None = None,
     ) -> None:

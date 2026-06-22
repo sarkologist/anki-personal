@@ -24,6 +24,7 @@ from .codex_client import (
     AgentStopped,
     _log_agent_event,
     _parse_json_object,
+    _parse_stream_event,
     _selection_instructions,
     _snapshot_log_payload,
     _start_reader,
@@ -88,6 +89,8 @@ class _ClaudeProcessResult:
     returncode: int
     stdout: str
     stderr: str
+    result_event: dict[str, Any] | None = None
+    event_count: int = 0
 
 
 class ClaudeCliAgent:
@@ -121,7 +124,6 @@ class ClaudeCliAgent:
         run_logger: AgentRunLogger | None = None,
         stop_requested: StopRequestedCallback | None = None,
     ) -> AgentResult:
-        del event_callback  # Claude runs are not streamed into the activity view.
         _log_agent_event(
             run_logger,
             "run_start",
@@ -162,6 +164,7 @@ class ClaudeCliAgent:
                     command,
                     self._prompt(prompt, snapshot, history, project_root),
                     cwd=cwd,
+                    event_callback=event_callback,
                     run_logger=run_logger,
                     stop_requested=stop_requested,
                 )
@@ -190,19 +193,23 @@ class ClaudeCliAgent:
                 )
                 raise RuntimeError(_format_claude_process_error(completed))
 
-            try:
-                envelope = _parse_claude_envelope(completed.stdout)
-            except Exception as exc:
-                _log_agent_event(
-                    run_logger,
-                    "run_failure",
-                    stage="envelope_parse",
-                    returncode=completed.returncode,
-                    output_chars=len(completed.stdout),
-                    error_type=type(exc).__name__,
-                    error_preview=text_preview(str(exc)),
-                )
-                raise
+            envelope = completed.result_event
+            if envelope is None:
+                # No streamed result event (unexpected output); fall back to
+                # parsing whatever the CLI wrote to stdout.
+                try:
+                    envelope = _parse_claude_envelope(completed.stdout)
+                except Exception as exc:
+                    _log_agent_event(
+                        run_logger,
+                        "run_failure",
+                        stage="envelope_parse",
+                        returncode=completed.returncode,
+                        output_chars=len(completed.stdout),
+                        error_type=type(exc).__name__,
+                        error_preview=text_preview(str(exc)),
+                    )
+                    raise
 
             try:
                 _raise_for_envelope_error(envelope)
@@ -256,6 +263,7 @@ class ClaudeCliAgent:
                 stdout_lines=line_count(completed.stdout),
                 stderr_lines=line_count(completed.stderr),
                 final_response_present=True,
+                event_count=completed.event_count,
                 message_chars=len(message),
                 message_html_chars=len(message_html),
                 proposal_count=len(proposals),
@@ -264,7 +272,7 @@ class ClaudeCliAgent:
                 text=message,
                 html=message_html,
                 proposals=proposals,
-                event_count=0,
+                event_count=completed.event_count,
             )
 
     def _working_directory(self, project_root: str, fallback: Path) -> Path:
@@ -276,8 +284,12 @@ class ClaudeCliAgent:
         command = [
             self.claude_path,
             "-p",
+            # Stream events so the pane can show live thinking/tool-use progress
+            # and distinguish a genuine hang from a slow run. stream-json requires
+            # --verbose in -p mode.
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
             "--no-session-persistence",
             "--json-schema",
             json.dumps(CLAUDE_OUTPUT_SCHEMA),
@@ -335,6 +347,7 @@ class ClaudeCliAgent:
         prompt: str,
         *,
         cwd: Path,
+        event_callback: Callable[[dict[str, Any]], None] | None,
         run_logger: AgentRunLogger | None,
         stop_requested: StopRequestedCallback | None,
     ) -> _ClaudeProcessResult:
@@ -360,6 +373,8 @@ class ClaudeCliAgent:
         stderr_chunks: list[str] = []
         stdout_done = False
         stderr_done = False
+        result_event: dict[str, Any] | None = None
+        event_count = 0
 
         stdout_reader = _start_reader(process.stdout, "stdout", lines)
         stderr_reader = _start_reader(process.stderr, "stderr", lines)
@@ -371,11 +386,19 @@ class ClaudeCliAgent:
         except BrokenPipeError:
             pass
 
-        deadline = time.monotonic() + self.timeout_seconds
+        start = time.monotonic()
+        last_activity = start
+        deadline = start + self.timeout_seconds
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _log_agent_event(run_logger, "timeout_kill")
+                idle_seconds = time.monotonic() - last_activity
+                _log_agent_event(
+                    run_logger,
+                    "timeout_kill",
+                    event_count=event_count,
+                    idle_seconds=round(idle_seconds, 1),
+                )
                 process.kill()
                 try:
                     process.wait(timeout=2)
@@ -383,7 +406,11 @@ class ClaudeCliAgent:
                     pass
                 stdout_reader.join(timeout=1)
                 stderr_reader.join(timeout=1)
-                raise RuntimeError("Claude CLI timed out.")
+                raise RuntimeError(
+                    _format_claude_timeout(
+                        self.timeout_seconds, event_count, idle_seconds
+                    )
+                )
 
             try:
                 stream_name, line = lines.get(timeout=min(0.05, remaining))
@@ -395,7 +422,17 @@ class ClaudeCliAgent:
                 if line is None:
                     stdout_done = True
                 else:
+                    last_activity = time.monotonic()
                     stdout_chunks.append(line)
+                    event = _parse_stream_event(line)
+                    if event is not None:
+                        if event.get("type") == "result":
+                            result_event = event
+                        else:
+                            for block in _claude_activity_blocks(event):
+                                event_count += 1
+                                if event_callback is not None:
+                                    event_callback(block)
             elif stream_name == "stderr":
                 if line is None:
                     stderr_done = True
@@ -411,6 +448,8 @@ class ClaudeCliAgent:
                     returncode=returncode,
                     stdout="".join(stdout_chunks),
                     stderr="".join(stderr_chunks),
+                    result_event=result_event,
+                    event_count=event_count,
                 )
 
             if stop_requested is not None and stop_requested():
@@ -506,6 +545,39 @@ def _format_claude_api_error(result_text: str, envelope: dict[str, Any]) -> str:
     if subtype:
         return f"Claude CLI failed: {subtype}"
     return "Claude CLI failed with an unknown error."
+
+
+def _claude_activity_blocks(event: dict[str, Any]) -> list[dict[str, Any]]:
+    # Decompose an assistant/user stream event into its content blocks
+    # (thinking / text / tool_use / tool_result) so each renders as one
+    # activity line. Other event types (system/init, rate_limit) carry no
+    # user-facing progress.
+    if event.get("type") not in ("assistant", "user"):
+        return []
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    return [block for block in content if isinstance(block, dict)]
+
+
+def _format_claude_timeout(
+    timeout_seconds: int, event_count: int, idle_seconds: float
+) -> str:
+    if event_count == 0:
+        return (
+            f"Claude CLI timed out after {timeout_seconds}s with no streamed "
+            "activity — it likely hung before any thinking or tool use."
+        )
+    plural = "" if event_count == 1 else "s"
+    return (
+        f"Claude CLI timed out after {timeout_seconds}s. It reported "
+        f"{event_count} activity event{plural}, the last {idle_seconds:.0f}s "
+        "before the cutoff (a short gap means it was still working — raise the "
+        "timeout; a long gap means it stalled)."
+    )
 
 
 def _format_claude_process_error(completed: _ClaudeProcessResult) -> str:

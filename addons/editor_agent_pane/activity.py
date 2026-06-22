@@ -119,7 +119,9 @@ class CodexActivityRenderer:
         elif self.web_count:
             parts.append(f"{self.web_count} web update{_plural(self.web_count)}")
         if self.output_count:
-            parts.append(f"{self.output_count} output chunk{_plural(self.output_count)}")
+            parts.append(
+                f"{self.output_count} output chunk{_plural(self.output_count)}"
+            )
         if self.reasoning_summaries:
             parts.append(
                 f"reasoning: {_summary_list(self.reasoning_summaries, self.reasoning_count)}"
@@ -129,7 +131,9 @@ class CodexActivityRenderer:
                 f"{self.reasoning_count} reasoning activity update{_plural(self.reasoning_count)}"
             )
         if self.message_count:
-            parts.append(f"{self.message_count} message update{_plural(self.message_count)}")
+            parts.append(
+                f"{self.message_count} message update{_plural(self.message_count)}"
+            )
         if self.errors:
             parts.append(f"errors: {_summary_list(self.errors, self.error_count)}")
         elif self.error_count:
@@ -147,6 +151,135 @@ class CodexActivityRenderer:
     def _line(self, line: str) -> str:
         self.detail_lines.append(line)
         return line
+
+
+@dataclass
+class ClaudeActivityRenderer:
+    """Renders Claude Code stream-json content blocks as activity lines.
+
+    Each call to ``record`` receives one content block (thinking / text /
+    tool_use / tool_result) and returns a single live activity line, mirroring
+    the ``record``/``compact_summary``/``detail_lines`` interface of
+    ``CodexActivityRenderer``.
+    """
+
+    event_count: int = 0
+    tool_count: int = 0
+    thinking_count: int = 0
+    text_count: int = 0
+    error_count: int = 0
+    tools: list[str] = field(default_factory=list)
+    detail_lines: list[str] = field(default_factory=list)
+    _structured_output_ids: set[str] = field(default_factory=set)
+
+    def record(self, block: dict[str, Any]) -> str | None:
+        if not isinstance(block, dict):
+            return None
+        block_type = block.get("type")
+        if block_type == "thinking":
+            text = _preview(str(block.get("thinking") or ""))
+            if not text:
+                return None
+            self.event_count += 1
+            self.thinking_count += 1
+            return self._line(f"[thinking] {text}")
+        if block_type == "text":
+            text = _preview(str(block.get("text") or ""))
+            if not text:
+                return None
+            self.event_count += 1
+            self.text_count += 1
+            return self._line(f"[note] {text}")
+        if block_type == "tool_use":
+            name = str(block.get("name") or "tool")
+            if name == "StructuredOutput":
+                # Internal mechanism that returns the final JSON answer; not a
+                # real tool. Remember its id so its tool_result (including schema
+                # retries) is suppressed too, rather than shown as a tool error.
+                tool_id = block.get("id")
+                if isinstance(tool_id, str):
+                    self._structured_output_ids.add(tool_id)
+                return None
+            self.event_count += 1
+            self.tool_count += 1
+            self._remember(self.tools, name)
+            brief = _claude_tool_brief(name, block.get("input"))
+            return self._line(f"[tool] {name}" + (f": {brief}" if brief else ""))
+        if block_type == "tool_result":
+            if block.get("tool_use_id") in self._structured_output_ids:
+                # Internal StructuredOutput round-trip, not a real tool result.
+                return None
+            if not block.get("is_error"):
+                return None
+            self.event_count += 1
+            self.error_count += 1
+            return self._line(
+                f"[tool error] {_preview(_claude_tool_result_text(block))}"
+            )
+        return None
+
+    def compact_summary(self) -> str:
+        parts = [f"{self.event_count} update{_plural(self.event_count)}"]
+        if self.tools:
+            parts.append(f"tools: {_summary_list(self.tools, self.tool_count)}")
+        if self.thinking_count:
+            parts.append(
+                f"{self.thinking_count} thinking step{_plural(self.thinking_count)}"
+            )
+        if self.error_count:
+            parts.append(f"{self.error_count} tool error{_plural(self.error_count)}")
+        return f"[Claude activity: {', '.join(parts)}]\n"
+
+    def _remember(self, values: list[str], value: str) -> None:
+        if value and value not in values and len(values) < MAX_SUMMARY_ITEMS:
+            values.append(value)
+
+    def _line(self, line: str) -> str:
+        self.detail_lines.append(line)
+        return line
+
+
+def _claude_tool_brief(name: str, tool_input: Any) -> str:
+    if not isinstance(tool_input, dict):
+        return ""
+    if name in ("Read", "Write", "Edit", "MultiEdit", "NotebookEdit"):
+        path = tool_input.get("file_path") or tool_input.get("notebook_path")
+        return _basename(path) if isinstance(path, str) else ""
+    if name == "Bash":
+        return _preview(str(tool_input.get("command") or ""))
+    if name == "Grep":
+        return _preview(str(tool_input.get("pattern") or ""))
+    if name == "Glob":
+        return _preview(str(tool_input.get("pattern") or tool_input.get("glob") or ""))
+    if name == "WebFetch":
+        return _preview(str(tool_input.get("url") or ""))
+    if name == "WebSearch":
+        return _preview(str(tool_input.get("query") or ""))
+    for value in tool_input.values():
+        if isinstance(value, str) and value:
+            return _preview(value)
+    return ""
+
+
+def _basename(path: str) -> str:
+    return path.rstrip("/").rsplit("/", 1)[-1] or path
+
+
+def _claude_tool_result_text(block: dict[str, Any]) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif isinstance(item, str):
+                parts.append(item)
+        return " ".join(parts)
+    return ""
 
 
 def compact_activity_transcript(
@@ -226,12 +359,16 @@ def web_search_activity_text(
     action = _action_payload(event, payload)
     action_type = _action_type(action, event, payload)
     query = _query_text(action, payload, event)
-    url = _first_scalar(action, "url", "uri") or _first_scalar(
-        payload, "url", "uri"
-    ) or _first_scalar(event, "url", "uri")
-    pattern = _first_scalar(action, "pattern", "find_text", "term") or _first_scalar(
-        payload, "pattern", "find_text", "term"
-    ) or _first_scalar(event, "pattern", "find_text", "term")
+    url = (
+        _first_scalar(action, "url", "uri")
+        or _first_scalar(payload, "url", "uri")
+        or _first_scalar(event, "url", "uri")
+    )
+    pattern = (
+        _first_scalar(action, "pattern", "find_text", "term")
+        or _first_scalar(payload, "pattern", "find_text", "term")
+        or _first_scalar(event, "pattern", "find_text", "term")
+    )
 
     if event_type_lower.endswith("_end") or event_type_lower.endswith(".end"):
         duration = _duration_text(
@@ -279,9 +416,11 @@ def safe_event_metadata_text(event: dict[str, Any], payload: dict[str, Any]) -> 
         elif key == "query":
             value = _query_text(action, payload, event)
         elif key == "url":
-            value = _first_scalar(action, "url", "uri") or _first_scalar(
-                payload, "url", "uri"
-            ) or _first_scalar(event, "url", "uri")
+            value = (
+                _first_scalar(action, "url", "uri")
+                or _first_scalar(payload, "url", "uri")
+                or _first_scalar(event, "url", "uri")
+            )
         elif key == "pattern":
             value = _first_scalar(action, "pattern", "find_text", "term") or (
                 _first_scalar(payload, "pattern", "find_text", "term")

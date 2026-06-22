@@ -22,6 +22,7 @@ if str(ADDONS) not in sys.path:
 
 from editor_agent_pane import ollama_client  # noqa: E402
 from editor_agent_pane.activity import (  # noqa: E402
+    ClaudeActivityRenderer,
     CodexActivityRenderer,
     compact_activity_transcript,
 )
@@ -32,6 +33,7 @@ from editor_agent_pane.agent_log import (  # noqa: E402
 )
 from editor_agent_pane.claude_client import (  # noqa: E402
     ClaudeCliAgent,
+    _format_claude_timeout,
     claude_effort_value,
     resolve_claude_path,
 )
@@ -1619,7 +1621,8 @@ def test_agent_request_uses_claude_provider(
         "reasoning_effort": "high",
     }
     assert captured["send_kwargs"]["project_root"] == str(tmp_path)
-    assert "event_callback" not in captured["send_kwargs"]
+    # Claude streams events, so it must receive the activity callback.
+    assert callable(captured["send_kwargs"]["event_callback"])
     assert any("Claude activity" in eval for eval in pane.surface.evals)
 
 
@@ -5986,7 +5989,8 @@ def test_claude_agent_context_only_when_no_project_folder(
 
     command = captured["command"]
     assert command[:2] == ["/usr/local/bin/claude", "-p"]
-    assert command[command.index("--output-format") + 1] == "json"
+    assert command[command.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in command
     assert "--no-session-persistence" in command
     assert "--json-schema" in command
     json.loads(command[command.index("--json-schema") + 1])
@@ -6390,3 +6394,238 @@ def test_claude_agent_stops_running_process(
         )
 
     assert captured["process"].terminated
+
+
+def test_claude_activity_renderer_renders_blocks() -> None:
+    r = ClaudeActivityRenderer()
+    assert r.record({"type": "thinking", "thinking": "pondering  deeply"}) == (
+        "[thinking] pondering deeply"
+    )
+    assert (
+        r.record(
+            {
+                "type": "tool_use",
+                "name": "Read",
+                "input": {"file_path": "/a/b/notes.txt"},
+            }
+        )
+        == "[tool] Read: notes.txt"
+    )
+    assert (
+        r.record({"type": "tool_use", "name": "Grep", "input": {"pattern": "foo"}})
+        == "[tool] Grep: foo"
+    )
+    assert r.record({"type": "text", "text": "intermediate note"}) == (
+        "[note] intermediate note"
+    )
+    # The internal final-answer tool is hidden, and successful tool results are quiet.
+    assert (
+        r.record(
+            {"type": "tool_use", "name": "StructuredOutput", "input": {"message": "x"}}
+        )
+        is None
+    )
+    assert r.record({"type": "tool_result", "is_error": False, "content": "ok"}) is None
+    assert r.record({"type": "tool_result", "is_error": True, "content": "boom"}) == (
+        "[tool error] boom"
+    )
+
+    summary = r.compact_summary()
+    assert summary.startswith("[Claude activity:")
+    assert "tools: Read; Grep" in summary
+    assert "1 thinking step" in summary
+    assert "1 tool error" in summary
+    # Live detail lines exclude the filtered StructuredOutput / ok result.
+    assert r.detail_lines == [
+        "[thinking] pondering deeply",
+        "[tool] Read: notes.txt",
+        "[tool] Grep: foo",
+        "[note] intermediate note",
+        "[tool error] boom",
+    ]
+
+
+def test_claude_agent_streams_activity_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = "\n".join(
+        [
+            json.dumps({"type": "system", "subtype": "init", "tools": ["Read"]}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "thinking", "thinking": "Let me read the file."},
+                            {
+                                "type": "tool_use",
+                                "name": "Read",
+                                "input": {"file_path": "/proj/notes.txt"},
+                            },
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "t1",
+                                "content": "Paris",
+                                "is_error": False,
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "StructuredOutput",
+                                "input": {
+                                    "message": "Paris",
+                                    "message_html": "<p>Paris</p>",
+                                    "patch": None,
+                                },
+                            }
+                        ]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": False,
+                    "structured_output": {
+                        "message": "Paris",
+                        "message_html": "<p>Paris</p>",
+                        "patch": None,
+                    },
+                    "result": "Done.",
+                }
+            ),
+        ]
+    )
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        return FakePopen(stdout=stream + "\n")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    blocks: list[dict[str, Any]] = []
+
+    result = ClaudeCliAgent(
+        claude_path="claude",
+        model="",
+        timeout_seconds=123,
+    ).send(
+        prompt="What is the capital of France?",
+        snapshot=snapshot(),
+        project_root="",
+        history=[],
+        event_callback=blocks.append,
+    )
+
+    # The final answer comes from the result event's structured_output.
+    assert result.text == "Paris"
+    assert result.html == "<p>Paris</p>"
+    # Every content block was streamed (incl. StructuredOutput, which the
+    # renderer later filters); system/result events carry no blocks.
+    assert [b.get("type") for b in blocks] == [
+        "thinking",
+        "tool_use",
+        "tool_result",
+        "tool_use",
+    ]
+    assert result.event_count == 4
+    # Feeding those blocks through the renderer yields a live, filtered trace.
+    renderer = ClaudeActivityRenderer()
+    lines = [line for b in blocks if (line := renderer.record(b)) is not None]
+    assert lines == ["[thinking] Let me read the file.", "[tool] Read: notes.txt"]
+
+
+def test_claude_timeout_message_distinguishes_hang_from_slow() -> None:
+    hung = _format_claude_timeout(600, 0, 600.0)
+    assert "no streamed activity" in hung
+    assert "hung" in hung
+    slow = _format_claude_timeout(600, 5, 3.0)
+    assert "5 activity events" in slow
+    assert "3s before the cutoff" in slow
+
+
+def test_claude_agent_timeout_reports_no_activity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        return FakePopen(returncode=None)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="no streamed activity"):
+        ClaudeCliAgent(
+            claude_path="claude",
+            model="",
+            timeout_seconds=0,
+        ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+
+def test_claude_activity_renderer_suppresses_structured_output_round_trip() -> None:
+    r = ClaudeActivityRenderer()
+    # The internal StructuredOutput tool call is hidden...
+    assert (
+        r.record(
+            {"type": "tool_use", "name": "StructuredOutput", "id": "so1", "input": {}}
+        )
+        is None
+    )
+    # ...and so is its (possibly erroring) result — that's a schema retry, not a
+    # real tool failure.
+    assert (
+        r.record(
+            {
+                "type": "tool_result",
+                "tool_use_id": "so1",
+                "is_error": True,
+                "content": "schema mismatch",
+            }
+        )
+        is None
+    )
+    # But a genuine tool error is still surfaced.
+    assert (
+        r.record(
+            {
+                "type": "tool_result",
+                "tool_use_id": "read1",
+                "is_error": True,
+                "content": "boom",
+            }
+        )
+        == "[tool error] boom"
+    )
+    assert r.error_count == 1
