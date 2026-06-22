@@ -12,17 +12,35 @@ EFFORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("XHigh", "xhigh"),
 )
 
+CLAUDE_EFFORT_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("Claude default", ""),
+    ("Low", "low"),
+    ("Medium", "medium"),
+    ("High", "high"),
+    ("XHigh", "xhigh"),
+    ("Max", "max"),
+)
 
-def effort_options_with_legacy(effort: object) -> tuple[tuple[str, str], ...]:
+
+def effort_options_with_legacy(
+    effort: object,
+    options: tuple[tuple[str, str], ...] = EFFORT_OPTIONS,
+) -> tuple[tuple[str, str], ...]:
     value = _effort_value(effort)
-    if value and value not in _effort_values():
-        return (*EFFORT_OPTIONS, (value, value))
-    return EFFORT_OPTIONS
+    known = {option_value for _label, option_value in options}
+    if value and value not in known:
+        return (*options, (value, value))
+    return options
 
 
-def effort_option_index(effort: object) -> int:
+def effort_option_index(
+    effort: object,
+    options: tuple[tuple[str, str], ...] = EFFORT_OPTIONS,
+) -> int:
     value = _effort_value(effort)
-    for index, (_label, option_value) in enumerate(effort_options_with_legacy(value)):
+    for index, (_label, option_value) in enumerate(
+        effort_options_with_legacy(value, options)
+    ):
         if option_value == value:
             return index
     return 0
@@ -37,7 +55,3 @@ def _effort_value(effort: object) -> str:
     if value == "minimal":
         return ""
     return value
-
-
-def _effort_values() -> set[str]:
-    return {value for _label, value in EFFORT_OPTIONS}

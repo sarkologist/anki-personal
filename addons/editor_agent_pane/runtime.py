@@ -31,10 +31,10 @@ from aqt.qt import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
-    QTextCursor,
     Qt,
-    QToolButton,
+    QTextCursor,
     QTimer,
+    QToolButton,
     QVBoxLayout,
     QWidget,
     qconnect,
@@ -44,6 +44,7 @@ from aqt.webview import AnkiWebView
 
 from .activity import CodexActivityRenderer
 from .agent_log import JsonLineAgentRunLogger, ensure_agent_log_folder
+from .claude_client import ClaudeCliAgent, resolve_claude_path
 from .codex_client import (
     DEFAULT_PROJECT_FOLDER_ACCESS,
     PROJECT_FOLDER_ACCESS_READ_ONLY,
@@ -55,6 +56,7 @@ from .codex_client import (
     resolve_codex_path,
 )
 from .effort_options import (
+    CLAUDE_EFFORT_OPTIONS,
     EFFORT_OPTIONS,
     effort_option_index,
     effort_options_with_legacy,
@@ -62,8 +64,11 @@ from .effort_options import (
 )
 from .latex_preview import LegacyLatexPreviewRenderer
 from .model_options import (
+    CLAUDE_MODEL_OPTIONS,
     DEFAULT_PROVIDER,
+    KNOWN_PROVIDERS,
     MODEL_OPTIONS,
+    PROVIDER_CLAUDE,
     PROVIDER_CODEX,
     PROVIDER_OLLAMA,
     PROVIDER_OPTIONS,
@@ -138,6 +143,8 @@ DEFAULT_CONFIG = {
     "ollama_path": "",
     "ollama_host": DEFAULT_OLLAMA_HOST,
     "ollama_model": "",
+    "claude_path": "",
+    "claude_model": "",
     "reasoning_effort": "",
     "custom_instructions": "",
     "custom_instructions_by_model": {},
@@ -155,6 +162,16 @@ PROJECT_FOLDER_ACCESS_OPTIONS = (
     ("Writable project folder", PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE),
     ("Read-only project folder", PROJECT_FOLDER_ACCESS_READ_ONLY),
 )
+PROVIDER_LABELS = {
+    PROVIDER_CODEX: "Codex",
+    PROVIDER_OLLAMA: "Ollama",
+    PROVIDER_CLAUDE: "Claude",
+}
+PROVIDER_ACTIVITY_START_STATUS = {
+    PROVIDER_CODEX: "[Live Codex activity]",
+    PROVIDER_OLLAMA: "[Running local Ollama model]",
+    PROVIDER_CLAUDE: "[Running Claude Code]",
+}
 
 _installed = False
 _panes: weakref.WeakKeyDictionary[Editor, "EditorAgentPane"] = (
@@ -226,7 +243,7 @@ def _custom_instructions_by_model(value: Any) -> dict[str, dict[str, str]]:
     normalized: dict[str, dict[str, str]] = {}
     for provider, models in value.items():
         provider_key = str(provider).strip()
-        if provider_key not in {PROVIDER_CODEX, PROVIDER_OLLAMA}:
+        if provider_key not in KNOWN_PROVIDERS:
             continue
         if not isinstance(models, dict):
             continue
@@ -279,7 +296,7 @@ def _prompt_history_by_model(value: Any) -> dict[str, dict[str, list[str]]]:
     normalized: dict[str, dict[str, list[str]]] = {}
     for provider, models in value.items():
         provider_key = str(provider).strip()
-        if provider_key not in {PROVIDER_CODEX, PROVIDER_OLLAMA}:
+        if provider_key not in KNOWN_PROVIDERS:
             continue
         if not isinstance(models, dict):
             continue
@@ -347,6 +364,18 @@ def _validated_splitter_sizes(value: Any) -> list[int]:
             return list(DEFAULT_SPLITTER_SIZES)
         sizes.append(size)
     return sizes
+
+
+def _effort_for_provider(provider: str, effort: str) -> str:
+    """Drop an effort value the active provider does not support.
+
+    Effort is shared across providers, so e.g. Claude's ``max`` must not leak
+    into a Codex run (Codex would reject ``model_reasoning_effort="max"``), and
+    Codex's ``none`` must not leak into a Claude ``--effort`` argument.
+    """
+    options = CLAUDE_EFFORT_OPTIONS if provider == PROVIDER_CLAUDE else EFFORT_OPTIONS
+    valid = {value for _label, value in options}
+    return effort if effort in valid else ""
 
 
 def _format_agent_turn_duration(elapsed_seconds: float) -> str:
@@ -773,7 +802,9 @@ class EditorAgentPane(QWidget):
         )
         instructions_label = QLabel("Instructions")
         self.instructions_reset_button = QPushButton("Reset")
-        qconnect(self.instructions_reset_button.clicked, self._reset_custom_instructions)
+        qconnect(
+            self.instructions_reset_button.clicked, self._reset_custom_instructions
+        )
         instructions_header.addWidget(self.instructions_toggle_button)
         instructions_header.addWidget(instructions_label)
         instructions_header.addStretch(1)
@@ -869,6 +900,10 @@ class EditorAgentPane(QWidget):
         self.ollama_host_edit.setPlaceholderText(DEFAULT_OLLAMA_HOST)
         self.ollama_host_label = QLabel("Ollama host")
         form.addRow(self.ollama_host_label, self.ollama_host_edit)
+        self.claude_path_edit = QLineEdit()
+        self.claude_path_edit.setPlaceholderText(resolve_claude_path(""))
+        self.claude_path_label = QLabel("Claude CLI")
+        form.addRow(self.claude_path_label, self.claude_path_edit)
         self.model_combo = QComboBox()
         self.model_combo.setEditable(False)
         for label, value in MODEL_OPTIONS:
@@ -940,7 +975,10 @@ class EditorAgentPane(QWidget):
             self.codex_path_edit.setText(str(config["codex_path"]))
             self.ollama_path_edit.setText(str(config["ollama_path"]))
             self.ollama_host_edit.setText(str(config["ollama_host"]))
-            self._set_model_choice(self._saved_model_for_provider(config["provider"], config))
+            self.claude_path_edit.setText(str(config["claude_path"]))
+            self._set_model_choice(
+                self._saved_model_for_provider(config["provider"], config)
+            )
             self._set_effort_choice(str(config["reasoning_effort"]))
             self._set_project_folder_choices(
                 str(config["project_folder"]),
@@ -970,6 +1008,7 @@ class EditorAgentPane(QWidget):
         config["codex_path"] = self.codex_path_edit.text().strip()
         config["ollama_path"] = self.ollama_path_edit.text().strip()
         config["ollama_host"] = normalize_ollama_host(self.ollama_host_edit.text())
+        config["claude_path"] = self.claude_path_edit.text().strip()
         config["reasoning_effort"] = self._reasoning_effort()
         self._save_current_instructions(config)
         config["instructions_collapsed"] = self._instructions_are_collapsed()
@@ -1015,6 +1054,14 @@ class EditorAgentPane(QWidget):
                         unavailable=self._ollama_models_unavailable,
                     )
                 )
+            elif provider == PROVIDER_CLAUDE:
+                for label, value in model_options_with_legacy(
+                    model, CLAUDE_MODEL_OPTIONS
+                ):
+                    self.model_combo.addItem(label, value)
+                self.model_combo.setCurrentIndex(
+                    model_option_index(model, CLAUDE_MODEL_OPTIONS)
+                )
             else:
                 for label, value in model_options_with_legacy(model):
                     self.model_combo.addItem(label, value)
@@ -1036,13 +1083,19 @@ class EditorAgentPane(QWidget):
         provider: object,
         config: dict[str, Any],
     ) -> str:
-        if provider_value(provider) == PROVIDER_OLLAMA:
+        provider = provider_value(provider)
+        if provider == PROVIDER_OLLAMA:
             return str(config["ollama_model"])
+        if provider == PROVIDER_CLAUDE:
+            return str(config["claude_model"])
         return str(config["codex_model"])
 
     def _save_current_model_choice(self, config: dict[str, Any]) -> None:
-        if getattr(self, "_model_provider", PROVIDER_CODEX) == PROVIDER_OLLAMA:
+        provider = getattr(self, "_model_provider", PROVIDER_CODEX)
+        if provider == PROVIDER_OLLAMA:
             config["ollama_model"] = self._model_text()
+        elif provider == PROVIDER_CLAUDE:
+            config["claude_model"] = self._model_text()
         else:
             config["codex_model"] = self._model_text()
 
@@ -1120,42 +1173,56 @@ class EditorAgentPane(QWidget):
             config["provider"] = self._provider()
             _write_config(config)
         self._set_model_choice(self._saved_model_for_provider(self._provider(), config))
+        self._set_effort_choice(str(config["reasoning_effort"]))
         self._load_instructions_for_current_choice(config)
         self._update_provider_controls()
         self.refresh_context_label()
-        if not getattr(self, "_loading_settings", False) and self._provider() == PROVIDER_OLLAMA:
+        if (
+            not getattr(self, "_loading_settings", False)
+            and self._provider() == PROVIDER_OLLAMA
+        ):
             self._refresh_ollama_models()
 
     def _update_provider_controls(self) -> None:
-        codex_enabled = self._provider() == PROVIDER_CODEX
+        provider = self._provider()
+        is_codex = provider == PROVIDER_CODEX
+        is_ollama = provider == PROVIDER_OLLAMA
+        is_claude = provider == PROVIDER_CLAUDE
+        # Codex and Claude are agentic CLIs that can work in a project folder and
+        # take a reasoning-effort setting; Ollama is local context-only.
+        folder_capable = is_codex or is_claude
         self._set_form_row_visible(
-            self.codex_path_label, self.codex_path_edit, codex_enabled
+            self.codex_path_label, self.codex_path_edit, is_codex
         )
         self._set_form_row_visible(
-            self.ollama_path_label, self.ollama_path_edit, not codex_enabled
+            self.claude_path_label, self.claude_path_edit, is_claude
         )
         self._set_form_row_visible(
-            self.ollama_host_label, self.ollama_host_edit, not codex_enabled
+            self.ollama_path_label, self.ollama_path_edit, is_ollama
         )
-        self.model_refresh_button.setVisible(not codex_enabled)
-        self._set_form_row_visible(self.effort_label, self.effort_combo, codex_enabled)
         self._set_form_row_visible(
-            self.fast_mode_label, self.fast_mode_checkbox, codex_enabled
+            self.ollama_host_label, self.ollama_host_edit, is_ollama
         )
-        self._set_form_row_visible(self.access_label, self.access_combo, codex_enabled)
+        self.model_refresh_button.setVisible(is_ollama)
+        self._set_form_row_visible(self.effort_label, self.effort_combo, folder_capable)
         self._set_form_row_visible(
-            self.reasoning_label, self.reasoning_checkbox, codex_enabled
+            self.fast_mode_label, self.fast_mode_checkbox, is_codex
         )
-        self.project_row_widget.setVisible(codex_enabled)
-        self.codex_path_edit.setEnabled(codex_enabled)
-        self.ollama_path_edit.setEnabled(not codex_enabled)
-        self.ollama_host_edit.setEnabled(not codex_enabled)
-        self.model_refresh_button.setEnabled(not codex_enabled)
-        self.effort_combo.setEnabled(codex_enabled)
-        self.fast_mode_checkbox.setEnabled(codex_enabled)
-        self.access_combo.setEnabled(codex_enabled)
-        self.reasoning_checkbox.setEnabled(codex_enabled)
-        self.project_row_widget.setEnabled(codex_enabled)
+        self._set_form_row_visible(self.access_label, self.access_combo, folder_capable)
+        self._set_form_row_visible(
+            self.reasoning_label, self.reasoning_checkbox, is_codex
+        )
+        self.project_row_widget.setVisible(folder_capable)
+        self.codex_path_edit.setEnabled(is_codex)
+        self.claude_path_edit.setEnabled(is_claude)
+        self.ollama_path_edit.setEnabled(is_ollama)
+        self.ollama_host_edit.setEnabled(is_ollama)
+        self.model_refresh_button.setEnabled(is_ollama)
+        self.effort_combo.setEnabled(folder_capable)
+        self.fast_mode_checkbox.setEnabled(is_codex)
+        self.access_combo.setEnabled(folder_capable)
+        self.reasoning_checkbox.setEnabled(is_codex)
+        self.project_row_widget.setEnabled(folder_capable)
 
     def _set_form_row_visible(
         self,
@@ -1210,10 +1277,16 @@ class EditorAgentPane(QWidget):
         taskman.run_in_background(task, on_done, uses_collection=False)
 
     def _set_effort_choice(self, effort: str) -> None:
+        options = self._effort_options_for_provider()
         self.effort_combo.clear()
-        for label, value in effort_options_with_legacy(effort):
+        for label, value in effort_options_with_legacy(effort, options):
             self.effort_combo.addItem(label, value)
-        self.effort_combo.setCurrentIndex(effort_option_index(effort))
+        self.effort_combo.setCurrentIndex(effort_option_index(effort, options))
+
+    def _effort_options_for_provider(self) -> tuple[tuple[str, str], ...]:
+        if self._provider() == PROVIDER_CLAUDE:
+            return CLAUDE_EFFORT_OPTIONS
+        return EFFORT_OPTIONS
 
     def _reasoning_effort(self) -> str:
         data = self.effort_combo.currentData()
@@ -1598,14 +1671,22 @@ class EditorAgentPane(QWidget):
         if provider == PROVIDER_OLLAMA and not model:
             showWarning("Select an Ollama model first.", parent=self)
             return
-        provider_label = "Ollama" if provider == PROVIDER_OLLAMA else "Codex"
-        reasoning_effort = self._reasoning_effort() if provider == PROVIDER_CODEX else ""
+        provider_label = PROVIDER_LABELS.get(provider, "Codex")
+        reasoning_effort = (
+            self._reasoning_effort()
+            if provider in (PROVIDER_CODEX, PROVIDER_CLAUDE)
+            else ""
+        )
+        # Effort is shared across providers; drop a value the active provider
+        # does not support (e.g. Claude's "max" must not reach a Codex run).
+        reasoning_effort = _effort_for_provider(provider, reasoning_effort)
         project_root = self._project_folder_text()
         project_folder_access = self._project_folder_access()
         custom_instructions = self._custom_instructions_text()
         codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
         ollama_path = self.ollama_path_edit.text().strip() or str(config["ollama_path"])
         ollama_host = self.ollama_host_edit.text().strip() or str(config["ollama_host"])
+        claude_path = self.claude_path_edit.text().strip() or str(config["claude_path"])
         fast_mode = self._fast_mode() if provider == PROVIDER_CODEX else False
         stream_reasoning_summaries = (
             self._stream_reasoning_summaries() if provider == PROVIDER_CODEX else False
@@ -1630,11 +1711,7 @@ class EditorAgentPane(QWidget):
             render_activity_start(
                 self._activity_id,
                 role=provider_label,
-                status=(
-                    "[Live Codex activity]"
-                    if provider == PROVIDER_CODEX
-                    else "[Running local Ollama model]"
-                ),
+                status=PROVIDER_ACTIVITY_START_STATUS.get(provider, "[Running agent]"),
             )
         )
         activity = CodexActivityRenderer(
@@ -1681,6 +1758,31 @@ class EditorAgentPane(QWidget):
                     result.html,
                     result.proposals,
                     "[Ollama activity: local model run]\n",
+                    (),
+                )
+
+            if provider == PROVIDER_CLAUDE:
+                agent = ClaudeCliAgent(
+                    claude_path=claude_path,
+                    model=model,
+                    timeout_seconds=int(config["timeout_seconds"]),
+                    project_folder_access=project_folder_access,
+                    custom_instructions=custom_instructions,
+                    reasoning_effort=reasoning_effort,
+                )
+                result = agent.send(
+                    prompt=prompt,
+                    snapshot=snapshot,
+                    project_root=project_root,
+                    history=history,
+                    run_logger=run_logger,
+                    stop_requested=stop_event.is_set,
+                )
+                return (
+                    result.text,
+                    result.html,
+                    result.proposals,
+                    "[Claude activity: agent run]\n",
                     (),
                 )
 

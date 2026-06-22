@@ -30,6 +30,11 @@ from editor_agent_pane.agent_log import (  # noqa: E402
     JsonLineAgentRunLogger,
     ensure_agent_log_folder,
 )
+from editor_agent_pane.claude_client import (  # noqa: E402
+    ClaudeCliAgent,
+    claude_effort_value,
+    resolve_claude_path,
+)
 from editor_agent_pane.codex_client import (  # noqa: E402
     PROJECT_FOLDER_ACCESS_READ_ONLY,
     PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
@@ -39,6 +44,7 @@ from editor_agent_pane.codex_client import (  # noqa: E402
     resolve_codex_path,
 )
 from editor_agent_pane.effort_options import (  # noqa: E402
+    CLAUDE_EFFORT_OPTIONS,
     EFFORT_OPTIONS,
     effort_option_index,
     effort_options_with_legacy,
@@ -50,9 +56,12 @@ from editor_agent_pane.latex_preview import (  # noqa: E402
     PreviewExtractedLatexOutput,
 )
 from editor_agent_pane.model_options import (  # noqa: E402
+    CLAUDE_MODEL_OPTIONS,
     MODEL_OPTIONS,
+    PROVIDER_CLAUDE,
     PROVIDER_CODEX,
     PROVIDER_OLLAMA,
+    PROVIDER_OPTIONS,
     model_option_index,
     model_options_with_legacy,
     ollama_model_option_index,
@@ -891,6 +900,7 @@ def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
     pane.codex_path_edit = types.SimpleNamespace(text=lambda: "")
     pane.ollama_path_edit = types.SimpleNamespace(text=lambda: "")
     pane.ollama_host_edit = types.SimpleNamespace(text=lambda: "")
+    pane.claude_path_edit = types.SimpleNamespace(text=lambda: "")
     pane._provider = lambda: PROVIDER_CODEX
     pane._saved_model_for_provider = (
         lambda provider, config: str(config["ollama_model"])
@@ -1559,6 +1569,107 @@ def test_agent_request_uses_ollama_provider(
     assert any("Ollama activity" in eval for eval in pane.surface.evals)
 
 
+def test_agent_request_uses_claude_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane._provider = lambda: PROVIDER_CLAUDE
+    pane._model_text = lambda: "opus"
+    pane._reasoning_effort = lambda: "high"
+    pane._project_folder_text = lambda: str(tmp_path)
+    pane.claude_path_edit = types.SimpleNamespace(text=lambda: "/usr/local/bin/claude")
+    runtime.aqt.mw = types.SimpleNamespace(
+        taskman=ImmediateTaskman(),
+        addonManager=FakeAddonManager(),
+    )
+    config = dict(runtime.DEFAULT_CONFIG)
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    captured: dict[str, Any] = {}
+
+    class CapturingClaudeAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["agent_kwargs"] = kwargs
+
+        def send(self, **kwargs: Any) -> Any:
+            captured["send_kwargs"] = kwargs
+            return types.SimpleNamespace(text="Done", html="<p>Done</p>", proposals=())
+
+    monkeypatch.setattr(
+        runtime,
+        "CodexCliAgent",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Codex")),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "OllamaCliAgent",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Ollama")),
+    )
+    monkeypatch.setattr(runtime, "ClaudeCliAgent", CapturingClaudeAgent)
+
+    pane._start_agent_request("Improve this", generation=0)
+
+    assert captured["agent_kwargs"] == {
+        "claude_path": "/usr/local/bin/claude",
+        "model": "opus",
+        "timeout_seconds": 300,
+        "project_folder_access": PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
+        "custom_instructions": "",
+        "reasoning_effort": "high",
+    }
+    assert captured["send_kwargs"]["project_root"] == str(tmp_path)
+    assert "event_callback" not in captured["send_kwargs"]
+    assert any("Claude activity" in eval for eval in pane.surface.evals)
+
+
+def test_effort_for_provider_drops_unsupported_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    # Claude's "max" must not leak into a Codex run.
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "max") == ""
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "high") == "high"
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "none") == "none"
+    # Codex's "none" must not leak into a Claude --effort; "max" is valid there.
+    assert runtime._effort_for_provider(PROVIDER_CLAUDE, "none") == ""
+    assert runtime._effort_for_provider(PROVIDER_CLAUDE, "max") == "max"
+    assert runtime._effort_for_provider(PROVIDER_CLAUDE, "high") == "high"
+    # The empty default is always preserved.
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "") == ""
+    assert runtime._effort_for_provider(PROVIDER_CLAUDE, "") == ""
+
+
+def test_agent_request_passes_claude_effort_but_drops_codex_max(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane._provider = lambda: PROVIDER_CODEX
+    pane._reasoning_effort = lambda: "max"  # a Claude-only effort
+    runtime.aqt.mw = types.SimpleNamespace(
+        taskman=ImmediateTaskman(),
+        addonManager=FakeAddonManager(),
+    )
+    config = dict(runtime.DEFAULT_CONFIG)
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    captured: dict[str, Any] = {}
+
+    class CapturingAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["agent_kwargs"] = kwargs
+
+        def send(self, **_kwargs: Any) -> Any:
+            return types.SimpleNamespace(text="", html="", proposals=())
+
+    monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
+
+    pane._start_agent_request("Improve this", generation=0)
+
+    assert captured["agent_kwargs"]["reasoning_effort"] == ""
+
+
 def test_agent_request_blocks_ollama_without_model(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1594,6 +1705,7 @@ def test_load_settings_restores_reasoning_effort(
     pane.codex_path_edit = types.SimpleNamespace(setText=lambda text: None)
     pane.ollama_path_edit = types.SimpleNamespace(setText=lambda text: None)
     pane.ollama_host_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane.claude_path_edit = types.SimpleNamespace(setText=lambda text: None)
     pane._set_model_choice = lambda model: None
     pane._set_project_folder_choices = lambda folder, recent: None
     pane._set_project_folder_access = lambda access: None
@@ -1624,6 +1736,7 @@ def test_load_settings_restores_model_scoped_instructions(
     pane.codex_path_edit = types.SimpleNamespace(setText=lambda text: None)
     pane.ollama_path_edit = types.SimpleNamespace(setText=lambda text: None)
     pane.ollama_host_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane.claude_path_edit = types.SimpleNamespace(setText=lambda text: None)
     pane._set_model_choice = lambda model: None
     pane._set_project_folder_choices = lambda folder, recent: None
     pane._set_project_folder_access = lambda access: None
@@ -1679,6 +1792,7 @@ def test_load_settings_restores_collapsed_instructions(
     pane.codex_path_edit = types.SimpleNamespace(setText=lambda text: None)
     pane.ollama_path_edit = types.SimpleNamespace(setText=lambda text: None)
     pane.ollama_host_edit = types.SimpleNamespace(setText=lambda text: None)
+    pane.claude_path_edit = types.SimpleNamespace(setText=lambda text: None)
     pane._set_model_choice = lambda model: None
     pane._set_project_folder_choices = lambda folder, recent: None
     pane._set_project_folder_access = lambda access: None
@@ -1790,6 +1904,7 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     pane.codex_path_edit = types.SimpleNamespace(text=lambda: "/usr/bin/codex")
     pane.ollama_path_edit = types.SimpleNamespace(text=lambda: "/usr/bin/ollama")
     pane.ollama_host_edit = types.SimpleNamespace(text=lambda: "localhost:11434")
+    pane.claude_path_edit = types.SimpleNamespace(text=lambda: "/usr/bin/claude")
     pane._provider = lambda: PROVIDER_CODEX
     pane._model_text = lambda: "gpt-5.5"
     pane._custom_instructions_text = lambda: "be concise"
@@ -1810,6 +1925,7 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     assert saved["codex_path"] == "/usr/bin/codex"
     assert saved["ollama_path"] == "/usr/bin/ollama"
     assert saved["ollama_host"] == "http://localhost:11434"
+    assert saved["claude_path"] == "/usr/bin/claude"
     assert saved["provider"] == PROVIDER_CODEX
     assert saved["codex_model"] == "gpt-5.5"
     assert saved["custom_instructions"] == "legacy fallback"
@@ -1888,6 +2004,47 @@ def test_agent_provider_options_default_to_codex() -> None:
     assert provider_value("ollama") == PROVIDER_OLLAMA
     assert provider_value("unknown") == PROVIDER_CODEX
     assert provider_option_index(PROVIDER_OLLAMA) == 1
+
+
+def test_agent_provider_options_include_claude() -> None:
+    assert provider_value("claude") == PROVIDER_CLAUDE
+    assert provider_value(" claude ") == PROVIDER_CLAUDE
+    assert ("Claude", PROVIDER_CLAUDE) in PROVIDER_OPTIONS
+    assert provider_option_index(PROVIDER_CLAUDE) == 2
+
+
+def test_claude_model_options_include_default_and_aliases() -> None:
+    assert CLAUDE_MODEL_OPTIONS[0] == ("Claude default", "")
+    values = [value for _label, value in CLAUDE_MODEL_OPTIONS]
+    assert values == ["", "opus", "sonnet", "haiku"]
+    assert (
+        model_options_with_legacy("opus", CLAUDE_MODEL_OPTIONS) == CLAUDE_MODEL_OPTIONS
+    )
+    assert model_option_index("sonnet", CLAUDE_MODEL_OPTIONS) == 2
+    assert model_option_index("", CLAUDE_MODEL_OPTIONS) == 0
+
+
+def test_claude_model_options_preserve_unknown_legacy_model() -> None:
+    options = model_options_with_legacy(" claude-opus-4-8 ", CLAUDE_MODEL_OPTIONS)
+    assert options[-1] == ("claude-opus-4-8", "claude-opus-4-8")
+    assert (
+        model_option_index("claude-opus-4-8", CLAUDE_MODEL_OPTIONS) == len(options) - 1
+    )
+
+
+def test_claude_effort_options_offer_max_and_drop_none() -> None:
+    values = [value for _label, value in CLAUDE_EFFORT_OPTIONS]
+    assert values == ["", "low", "medium", "high", "xhigh", "max"]
+    assert "none" not in values
+    for index, (_label, value) in enumerate(CLAUDE_EFFORT_OPTIONS):
+        assert effort_options_with_legacy(value, CLAUDE_EFFORT_OPTIONS) == (
+            CLAUDE_EFFORT_OPTIONS
+        )
+        assert effort_option_index(value, CLAUDE_EFFORT_OPTIONS) == index
+    # A Codex-only effort is kept as a legacy entry (the client drops it before
+    # passing --effort to the claude CLI; see the ClaudeCliAgent effort tests).
+    legacy = effort_options_with_legacy("none", CLAUDE_EFFORT_OPTIONS)
+    assert legacy[-1] == ("none", "none")
 
 
 def test_ollama_model_options_use_discovered_models() -> None:
@@ -2285,6 +2442,7 @@ def test_agent_pane_provider_change_saves_and_restores_scoped_instructions(
     pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
     pane.provider_combo.addItem("Ollama", PROVIDER_OLLAMA)
     pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
     pane.instructions_edit = FakeInstructionsEdit()
     pane._ollama_models = ("qwen3:latest",)
     pane._ollama_models_unavailable = False
@@ -2327,6 +2485,8 @@ def _pane_for_provider_control_visibility(runtime: Any, provider: str) -> Any:
     pane._provider = lambda: provider
     pane.codex_path_label = FakeLabel()
     pane.codex_path_edit = FakeLineEdit()
+    pane.claude_path_label = FakeLabel()
+    pane.claude_path_edit = FakeLineEdit()
     pane.ollama_path_label = FakeLabel()
     pane.ollama_path_edit = FakeLineEdit()
     pane.ollama_host_label = FakeLabel()
@@ -2355,6 +2515,9 @@ def test_agent_pane_hides_ollama_controls_for_codex_provider(
     assert pane.codex_path_label.visible is True
     assert pane.codex_path_edit.visible is True
     assert pane.codex_path_edit.enabled is True
+    assert pane.claude_path_label.visible is False
+    assert pane.claude_path_edit.visible is False
+    assert pane.claude_path_edit.enabled is False
     assert pane.ollama_path_label.visible is False
     assert pane.ollama_path_edit.visible is False
     assert pane.ollama_path_edit.enabled is False
@@ -2383,6 +2546,9 @@ def test_agent_pane_hides_codex_controls_for_ollama_provider(
     assert pane.codex_path_label.visible is False
     assert pane.codex_path_edit.visible is False
     assert pane.codex_path_edit.enabled is False
+    assert pane.claude_path_label.visible is False
+    assert pane.claude_path_edit.visible is False
+    assert pane.claude_path_edit.enabled is False
     assert pane.ollama_path_label.visible is True
     assert pane.ollama_path_edit.visible is True
     assert pane.ollama_path_edit.enabled is True
@@ -2402,6 +2568,35 @@ def test_agent_pane_hides_codex_controls_for_ollama_provider(
     assert pane.reasoning_checkbox.enabled is False
     assert pane.project_row_widget.visible is False
     assert pane.project_row_widget.enabled is False
+
+
+def test_agent_pane_shows_claude_controls_for_claude_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_provider_control_visibility(runtime, PROVIDER_CLAUDE)
+
+    pane._update_provider_controls()
+
+    # Claude is agentic like Codex: project folder + effort + access are shown.
+    assert pane.claude_path_label.visible is True
+    assert pane.claude_path_edit.visible is True
+    assert pane.claude_path_edit.enabled is True
+    assert pane.effort_label.visible is True
+    assert pane.effort_combo.visible is True
+    assert pane.effort_combo.enabled is True
+    assert pane.access_label.visible is True
+    assert pane.access_combo.visible is True
+    assert pane.project_row_widget.visible is True
+    assert pane.project_row_widget.enabled is True
+    # Codex- and Ollama-specific controls stay hidden.
+    assert pane.codex_path_label.visible is False
+    assert pane.codex_path_edit.visible is False
+    assert pane.ollama_path_label.visible is False
+    assert pane.ollama_host_label.visible is False
+    assert pane.model_refresh_button.visible is False
+    assert pane.fast_mode_checkbox.visible is False
+    assert pane.reasoning_checkbox.visible is False
 
 
 def test_agent_pane_model_dropdown_uses_current_provider(
@@ -5702,3 +5897,496 @@ def _git_status() -> str:
 
 def test_resolve_codex_path_prefers_configured_value() -> None:
     assert resolve_codex_path("/custom/codex") == "/custom/codex"
+
+
+def _claude_envelope(
+    inner: dict[str, Any] | str,
+    *,
+    is_error: bool = False,
+    subtype: str = "success",
+    result_text: str = "Done.",
+    **extra: Any,
+) -> str:
+    # Mirrors the real `claude -p --output-format json --json-schema` envelope:
+    # the validated object is returned (already parsed) in `structured_output`,
+    # while `result` only carries a short human-readable note. A string `inner`
+    # represents the error case, where the message lands in `result`.
+    envelope: dict[str, Any] = {
+        "type": "result",
+        "subtype": subtype,
+        "is_error": is_error,
+    }
+    if isinstance(inner, str):
+        envelope["result"] = inner
+    else:
+        envelope["structured_output"] = inner
+        envelope["result"] = result_text
+    envelope.update(extra)
+    return json.dumps(envelope)
+
+
+def _claude_inner(
+    *,
+    message: str = "All set.",
+    message_html: str = "<p>All set.</p>",
+    patch: Any = None,
+) -> dict[str, Any]:
+    return {"message": message, "message_html": message_html, "patch": patch}
+
+
+def test_resolve_claude_path_prefers_configured_value() -> None:
+    assert resolve_claude_path("/custom/claude") == "/custom/claude"
+    assert resolve_claude_path("  /spaced/claude  ") == "/spaced/claude"
+
+
+def test_claude_effort_value_filters_to_valid_levels() -> None:
+    for level in ("low", "medium", "high", "xhigh", "max"):
+        assert claude_effort_value(level) == level
+    for invalid in ("", "none", "minimal", "ultra", "Low"):
+        assert claude_effort_value(invalid) == ""
+
+
+def test_claude_agent_context_only_when_no_project_folder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        captured["command"] = command
+        captured["cwd"] = cwd
+        process = FakePopen(
+            stdout=_claude_envelope(
+                _claude_inner(message="Considered.", message_html="<p>Considered.</p>")
+            )
+        )
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = ClaudeCliAgent(
+        claude_path="/usr/local/bin/claude",
+        model="",
+        timeout_seconds=123,
+    ).send(
+        prompt="Improve this",
+        snapshot=snapshot(),
+        project_root="",
+        history=[],
+    )
+
+    command = captured["command"]
+    assert command[:2] == ["/usr/local/bin/claude", "-p"]
+    assert command[command.index("--output-format") + 1] == "json"
+    assert "--no-session-persistence" in command
+    assert "--json-schema" in command
+    json.loads(command[command.index("--json-schema") + 1])
+    assert command[command.index("--tools") + 1] == ""
+    assert "--add-dir" not in command
+    assert "--permission-mode" not in command
+    assert "--model" not in command
+    assert "--effort" not in command
+    assert "tools are disabled" in captured["process"].stdin.text
+    assert "Improve this" in captured["process"].stdin.text
+    assert "Current editor context is JSON" in captured["process"].stdin.text
+    assert result.text == "Considered."
+    assert result.html == "<p>Considered.</p>"
+    assert result.proposals == ()
+    assert result.event_count == 0
+
+
+def test_claude_agent_uses_writable_project_folder_and_parses_patch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        captured["command"] = command
+        captured["cwd"] = cwd
+        process = FakePopen(
+            stdout=_claude_envelope(
+                _claude_inner(
+                    message="Shorter front.",
+                    message_html="<p>Shorter front.</p>",
+                    patch={
+                        "summary": "Shorten front",
+                        "note_id": 123,
+                        "notetype_id": 7,
+                        "field_updates": [{"name": "Front", "html": "new front"}],
+                        "tags": {"replace": None, "add": ["agent"], "remove": []},
+                    },
+                )
+            )
+        )
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = ClaudeCliAgent(
+        claude_path="claude",
+        model="",
+        timeout_seconds=123,
+        project_folder_access=PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
+    ).send(
+        prompt="Improve this",
+        snapshot=snapshot(),
+        project_root=str(project),
+        history=[],
+    )
+
+    command = captured["command"]
+    assert command[command.index("--add-dir") + 1] == str(project.resolve())
+    assert command[command.index("--permission-mode") + 1] == "acceptEdits"
+    assert "--allowedTools" not in command
+    assert "--tools" not in command
+    assert captured["cwd"] == str(project.resolve())
+    assert "inspect and edit files" in captured["process"].stdin.text
+    assert "Do not modify files" not in captured["process"].stdin.text
+    assert result.proposals[0].field_updates == {"Front": "new front"}
+
+
+def test_claude_agent_read_only_project_folder_uses_allow_list(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        captured["command"] = command
+        process = FakePopen(stdout=_claude_envelope(_claude_inner()))
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    ClaudeCliAgent(
+        claude_path="claude",
+        model="",
+        timeout_seconds=123,
+        project_folder_access=PROJECT_FOLDER_ACCESS_READ_ONLY,
+    ).send(
+        prompt="Explain this",
+        snapshot=snapshot(),
+        project_root=str(project),
+        history=[],
+    )
+
+    command = captured["command"]
+    # Read-only is an allow-list of read-only tools: no edits, shell, or network,
+    # and no acceptEdits permission mode.
+    assert command[command.index("--allowedTools") + 1] == "Read Grep Glob"
+    assert "--permission-mode" not in command
+    assert "--disallowedTools" not in command
+    assert "read-only tools" in captured["process"].stdin.text
+    assert "Do not modify files" in captured["process"].stdin.text
+    assert "inspect and edit files" not in captured["process"].stdin.text
+
+
+def test_claude_agent_passes_model_and_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        captured["command"] = command
+        return FakePopen(stdout=_claude_envelope(_claude_inner()))
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    ClaudeCliAgent(
+        claude_path="claude",
+        model="opus",
+        timeout_seconds=123,
+        reasoning_effort="high",
+    ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+    command = captured["command"]
+    assert command[command.index("--model") + 1] == "opus"
+    assert command[command.index("--effort") + 1] == "high"
+
+
+def test_claude_agent_drops_invalid_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        captured["command"] = command
+        return FakePopen(stdout=_claude_envelope(_claude_inner()))
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    ClaudeCliAgent(
+        claude_path="claude",
+        model="",
+        timeout_seconds=123,
+        reasoning_effort="none",
+    ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+    assert "--effort" not in captured["command"]
+
+
+def test_claude_agent_surfaces_login_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        return FakePopen(
+            stdout=_claude_envelope(
+                "Failed to authenticate. API Error: 401 authentication_error",
+                is_error=True,
+                api_error_status=401,
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="not logged in"):
+        ClaudeCliAgent(
+            claude_path="claude",
+            model="",
+            timeout_seconds=123,
+        ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+
+def test_claude_agent_surfaces_generic_api_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        return FakePopen(
+            stdout=_claude_envelope(
+                "529 overloaded_error",
+                is_error=True,
+                subtype="error_during_execution",
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="overloaded_error"):
+        ClaudeCliAgent(
+            claude_path="claude",
+            model="",
+            timeout_seconds=123,
+        ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+
+def test_claude_agent_reports_non_json_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        return FakePopen(stdout="not json at all\n")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="non-JSON"):
+        ClaudeCliAgent(
+            claude_path="claude",
+            model="",
+            timeout_seconds=123,
+        ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+
+def test_claude_agent_reads_structured_output_not_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With --json-schema the answer is in `structured_output`; `result` only has
+    # a short human note. We must read the former, not the latter.
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        return FakePopen(
+            stdout=_claude_envelope(
+                _claude_inner(message="real answer", message_html="<p>real</p>"),
+                result_text="Done.",
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = ClaudeCliAgent(
+        claude_path="claude",
+        model="",
+        timeout_seconds=123,
+    ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+    assert result.text == "real answer"
+    assert result.html == "<p>real</p>"
+
+
+def test_claude_agent_falls_back_to_result_json_without_structured_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Older CLI / no structured payload: the JSON object is in `result` text.
+    inner = json.dumps({"message": "fb", "message_html": "<p>fb</p>", "patch": None})
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        # Passing a string puts it in `result` with no `structured_output`.
+        return FakePopen(stdout=_claude_envelope(inner))
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = ClaudeCliAgent(
+        claude_path="claude",
+        model="",
+        timeout_seconds=123,
+    ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+    assert result.text == "fb"
+    assert result.html == "<p>fb</p>"
+
+
+def test_claude_agent_reports_missing_structured_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Success envelope but neither structured_output nor a result body.
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        return FakePopen(stdout=_claude_envelope(""))
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(RuntimeError, match="did not return a structured response"):
+        ClaudeCliAgent(
+            claude_path="claude",
+            model="",
+            timeout_seconds=123,
+        ).send(prompt="Explain", snapshot=snapshot(), project_root="", history=[])
+
+
+def test_claude_agent_stops_running_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+        cwd: str,
+    ) -> FakePopen:
+        process = FakePopen(returncode=None)
+        captured["process"] = process
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(AgentStopped):
+        ClaudeCliAgent(
+            claude_path="claude",
+            model="",
+            timeout_seconds=123,
+        ).send(
+            prompt="Explain",
+            snapshot=snapshot(),
+            project_root="",
+            history=[],
+            stop_requested=lambda: True,
+        )
+
+    assert captured["process"].terminated
