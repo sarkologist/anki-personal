@@ -54,18 +54,20 @@ Ollama runs use only the provided Anki editor context; they do not get Codex
 tooling, web access, or project folder access.
 
 For Claude, sign in with the Claude Code CLI first (run `claude` once to log in,
-or `claude setup-token`). The pane invokes `claude -p --output-format json
---json-schema ...` with your normal Claude CLI auth, config, and skills, and
-asks for the same fixed JSON response so proposals stay reviewable. When a
-writable project folder is selected the pane passes `--add-dir` with
-`--permission-mode acceptEdits`. Read-only access instead allow-lists only the
-read-only tools (`Read`, `Grep`, `Glob`) via `--allowedTools`, so the run
-cannot edit files, run shell commands, or reach the network. Unlike Codex, this
-is enforced by tool restrictions rather than an OS sandbox. With no project
-folder selected the pane disables tools (`--tools ""`) so the run answers purely
-from the card context. Claude runs are not streamed
-into the activity view; the activity line is compacted when the final response
-arrives. Note images are not attached to Claude runs.
+or `claude setup-token`). The pane invokes `claude -p --output-format
+stream-json --verbose --json-schema ...` with your normal Claude CLI auth,
+config, and skills, and asks for the same fixed JSON response so proposals stay
+reviewable. When a writable project folder is selected the pane passes
+`--add-dir` with `--permission-mode acceptEdits`. Read-only access instead
+allow-lists only the read-only tools (`Read`, `Grep`, `Glob`) via
+`--allowedTools`, so the run cannot edit files, run shell commands, or reach the
+network. Unlike Codex, this is enforced by tool restrictions rather than an OS
+sandbox. With no project folder selected the pane disables tools (`--tools ""`)
+so the run answers purely from the card context. Claude streams live
+thinking and tool-use into the activity view (so a slow run is distinguishable
+from a hang), then compacts that activity when the final response arrives; if a
+run hits the timeout, the error reports how many activity events occurred and
+how long since the last one. Note images are not attached to Claude runs.
 
 To smoke-test the real CLI integration manually, run the editor agent pane tests
 with `ANKI_CODEX_CLI_INTEGRATION=1`. Optionally set `ANKI_CODEX_CLI_PATH` to a
