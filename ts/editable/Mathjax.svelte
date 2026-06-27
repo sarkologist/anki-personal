@@ -2,27 +2,12 @@
 Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
-<script context="module" lang="ts">
-    import { LRUCache } from "lru-cache";
-
-    type Cache = LRUCache<string, [string, string]>;
-
-    const caches: { [key: string]: Cache } = {};
-
-    function getCache(...keyParts: any) {
-        const key = keyParts.toString(); // primitive parts or arrays only
-        if (!(key in caches)) {
-            caches[key] = new LRUCache({ max: 10 });
-        }
-        return caches[key];
-    }
-</script>
-
 <script lang="ts">
     import { onDestroy, tick } from "svelte";
 
     import { convertMathjax, unescapeSomeEntities } from "./mathjax";
     import { CooldownTimer } from "./cooldown-timer";
+    import { getCachedMathjaxConversion } from "./mathjax-cache";
     import { mathjaxConfig } from "./mathjax-element.svelte";
 
     export let mathjax: string;
@@ -37,15 +22,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     $: debouncer.schedule(() => {
         // Color is now handled via `currentColor` and inheritance, so the cache
         // key only depends on the rendered geometry / template version.
-        const cache = getCache(fontSize, mathjaxConfig.templateScriptVersion);
-        const entry = cache.get(mathjax);
-        if (entry) {
-            [converted, title] = entry;
-        } else {
-            const entry = convertMathjax(unescapeSomeEntities(mathjax), fontSize);
-            [converted, title] = entry;
-            cache.set(mathjax, entry);
-        }
+        [converted, title] = getCachedMathjaxConversion(
+            mathjax,
+            fontSize,
+            mathjaxConfig.templateScriptVersion,
+            () => convertMathjax(unescapeSomeEntities(mathjax), fontSize),
+        );
     });
     $: empty = title === "MathJax";
 
