@@ -51,6 +51,17 @@ function killCmRange(
     cm.replaceRange("", from, to);
 }
 
+// Kill an active selection (Emacs C-w on a region). Returns true if it handled
+// the kill, so callers can skip their caret-based motion.
+function killCmSelection(cm: CodeMirror.Editor): boolean {
+    if (!cm.somethingSelected()) {
+        return false;
+    }
+    setKillText(cm.getSelection());
+    cm.replaceSelection("");
+    return true;
+}
+
 // macOS binds Ctrl+A/E/B/F via CodeMirror's built-in "emacsy" keymap; add the
 // bindings it leaves out — Alt+B/F word jumps and the kill/yank commands, sharing
 // the same kill ring as the rich text fields.
@@ -59,10 +70,16 @@ function macEmacsKeymap(): CodeMirror.KeyMap {
         "Alt-B": "goGroupLeft",
         "Alt-F": "goGroupRight",
         "Alt-D": (cm: CodeMirror.Editor) => {
+            if (killCmSelection(cm)) {
+                return;
+            }
             const cur = cm.getCursor();
             killCmRange(cm, cur, cm.findPosH(cur, 1, "word", false));
         },
         "Ctrl-K": (cm: CodeMirror.Editor) => {
+            if (killCmSelection(cm)) {
+                return;
+            }
             const cur = cm.getCursor();
             const lineLength = cm.getLine(cur.line).length;
             const to = cur.ch < lineLength
@@ -73,15 +90,24 @@ function macEmacsKeymap(): CodeMirror.KeyMap {
             }
         },
         "Ctrl-U": (cm: CodeMirror.Editor) => {
+            if (killCmSelection(cm)) {
+                return;
+            }
             const cur = cm.getCursor();
             killCmRange(cm, { line: cur.line, ch: 0 }, cur);
         },
         "Ctrl-W": (cm: CodeMirror.Editor) => {
+            if (killCmSelection(cm)) {
+                return;
+            }
             const cur = cm.getCursor();
             killCmRange(cm, cm.findPosH(cur, -1, "word", false), cur);
         },
         "Ctrl-Y": (cm: CodeMirror.Editor) => {
-            cm.replaceSelection(getKillText());
+            const text = getKillText();
+            if (text) {
+                cm.replaceSelection(text);
+            }
         },
     };
 }

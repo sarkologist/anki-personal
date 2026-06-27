@@ -527,14 +527,15 @@ class AnkiApp(QApplication):
     def _emacs_kill(self, kind: str) -> bool:
         widget = self._emacs_target()
         if isinstance(widget, QLineEdit):
-            if kind == "line_end":
-                widget.end(True)
-            elif kind == "line_start":
-                widget.home(True)
-            elif kind == "word_back":
-                widget.cursorWordBackward(True)
-            elif kind == "word_forward":
-                widget.cursorWordForward(True)
+            if not widget.hasSelectedText():
+                if kind == "line_end":
+                    widget.end(True)
+                elif kind == "line_start":
+                    widget.home(True)
+                elif kind == "word_back":
+                    widget.cursorWordBackward(True)
+                elif kind == "word_forward":
+                    widget.cursorWordForward(True)
             killed = widget.selectedText()
             if killed:
                 self._emacs_kill_buffer = killed
@@ -543,16 +544,19 @@ class AnkiApp(QApplication):
         if isinstance(widget, (QTextEdit, QPlainTextEdit)):
             cursor = widget.textCursor()
             keep = QTextCursor.MoveMode.KeepAnchor
-            if kind == "line_end":
-                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, keep)
-                if not cursor.hasSelection():
-                    cursor.movePosition(QTextCursor.MoveOperation.NextCharacter, keep)
-            elif kind == "line_start":
-                cursor.movePosition(QTextCursor.MoveOperation.StartOfLine, keep)
-            elif kind == "word_back":
-                cursor.movePosition(QTextCursor.MoveOperation.PreviousWord, keep)
-            elif kind == "word_forward":
-                cursor.movePosition(QTextCursor.MoveOperation.NextWord, keep)
+            if not cursor.hasSelection():
+                if kind == "line_end":
+                    cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, keep)
+                    if not cursor.hasSelection():
+                        cursor.movePosition(
+                            QTextCursor.MoveOperation.NextCharacter, keep
+                        )
+                elif kind == "line_start":
+                    cursor.movePosition(QTextCursor.MoveOperation.StartOfLine, keep)
+                elif kind == "word_back":
+                    cursor.movePosition(QTextCursor.MoveOperation.PreviousWord, keep)
+                elif kind == "word_forward":
+                    cursor.movePosition(QTextCursor.MoveOperation.NextWord, keep)
             killed = cursor.selectedText()
             if killed:
                 # QTextCursor reports line breaks in selected text as U+2029.
@@ -564,15 +568,17 @@ class AnkiApp(QApplication):
 
     def _emacs_yank(self) -> bool:
         widget = self._emacs_target()
+        if not isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            return False
+        if not self._emacs_kill_buffer:
+            return True  # nothing to yank; consume so Ctrl+Y stays a no-op
         if isinstance(widget, QLineEdit):
             widget.insert(self._emacs_kill_buffer.replace("\n", " "))
-            return True
-        if isinstance(widget, (QTextEdit, QPlainTextEdit)):
+        else:
             cursor = widget.textCursor()
             cursor.insertText(self._emacs_kill_buffer)
             widget.setTextCursor(cursor)
-            return True
-        return False
+        return True
 
 
 def parseArgs(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:

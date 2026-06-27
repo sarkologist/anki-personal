@@ -195,10 +195,14 @@ function killRange(
         return;
     }
 
-    selection.modify("extend", direction, granularity);
-    if (eatLineBreak && selection.isCollapsed) {
-        // Ctrl+K at the end of a line removes the line break.
-        selection.modify("extend", "forward", "character");
+    // With an active selection, kill it directly (Emacs C-w on a region);
+    // otherwise extend the caret to the word/line boundary.
+    if (selection.isCollapsed) {
+        selection.modify("extend", direction, granularity);
+        if (eatLineBreak && selection.isCollapsed) {
+            // Ctrl+K at the end of a line removes the line break.
+            selection.modify("extend", "forward", "character");
+        }
     }
 
     const text = selection.toString();
