@@ -1,6 +1,7 @@
 # Editor sluggishness with many MathJax elements — investigation plan
 
-**Status:** diagnosis updated, F1 implemented locally; micro-profile complete
+**Status:** diagnosis updated, F1 implemented locally; micro-profile complete.
+F7 (MathJax render-cache size) implemented + verified — see below.
 
 ## Problem
 
@@ -118,6 +119,48 @@ If the post-`restore()` no-op behaviour matters in practice, replace with a "ski
 
 **Status:** not started. Profile result: TBD. Decision: TBD.
 
+### F7. Enlarge the MathJax render cache (load / undo / re-decorate path)
+
+**This is a different axis from F1–F6.** F1–F6 target the per-keystroke
+mutation chain. F7 targets the cost of _rendering_ the field's MathJax, which is
+paid on **load, undo/redo, plain↔rich-text sync, and note reload** — every time
+the field re-decorates and re-mounts its `<anki-mathjax>` components.
+
+The earlier note "tex2svg is not re-running per keystroke" is correct for
+_steady-state typing_ but said nothing about re-decoration, where every formula
+re-renders. The render cache ([ts/editable/Mathjax.svelte](ts/editable/Mathjax.svelte))
+was `LRUCache({max: 10})` per (fontSize, templateVersion) bucket — smaller than
+the distinct-expression count of any real math note, so it thrashed.
+
+**Repro fixture (stable, the one F0/§"Synthetic test field" asked for):**
+[ts/editor/perf-fixtures/large-cloze-note.html](ts/editor/perf-fixtures/large-cloze-note.html)
+— a real cloze note, **118 `<anki-mathjax>`, 82 distinct, 236 frame handles**.
+
+**Profile — `tex2svg` render count over a load + one re-decoration cycle**
+(deterministic, engine-independent; from `mathjax-cache.test.ts` and the bench):
+
+| note size               | cache max 10 (before) | cache max 512 (after) |
+| ----------------------- | --------------------- | --------------------- |
+| 118 elems (82 distinct) | 206                   | **82**                |
+| 236 elems (2× dup)      | 412                   | **82**                |
+| 472 elems (4× dup)      | 824                   | **82**                |
+
+Re-decoration (undo/redo/sync/reload) drops from "re-render the whole field" to
+**0 renders**; first load also dedupes repeated expressions (82 vs 118).
+
+**Change:** extracted the cache to [ts/editable/mathjax-cache.ts](ts/editable/mathjax-cache.ts)
+and raised the cap to 512 (cached values are short SVG strings → cheap). Pure
+display path; **no effect on the stored-HTML round-trip**, so no DB risk.
+
+**Rejected while here (DB-correctness risk):** doing the decorated→stored
+conversion on the DOM before serialize (to avoid `Mathjax.toStored` reparsing
+each frame via `<template>`, the largest engine-independent per-keystroke cost
+at ~3 ms / 118 elems) changes entity escaping of `<`/`>`/`&` inside math vs the
+current regex substitution — not byte-equivalent. Left alone.
+
+**Status:** implemented + verified. `mathjax-cache.test.ts` green; existing
+editor/editable suites green. Decision: **keep.**
+
 ## Working log
 
 Append entries as the work proceeds — each agent / session adds at the bottom.
@@ -127,3 +170,4 @@ Append entries as the work proceeds — each agent / session adds at the bottom.
 - `2026-05-10` — F1 implemented locally by removing the eager `innerHTML` equality check from `FieldUndo.onMutation()`. `commit()` still performs the equality check after the debounce, preserving no-op restore behavior without serializing on every mutation batch.
 - `2026-05-10` — Verification: `./yarn svelte-check:once` passed; `PATH="$HOME/.cargo/bin:$PATH" ./ninja check:svelte` passed. Full `./check` was attempted with the same PATH fix, but failed in `check:minilints` because commit author `oon.guo.liang@gmail.com` is not listed in `CONTRIBUTORS`; no F1-specific failure was reported before the build stopped.
 - `2026-05-10` — Profiling: launched Anki with `QTWEBENGINE_REMOTE_DEBUGGING=8080` against `/private/tmp/anki-editor-profile-base`, but the temp Add Cards path did not expose an editor target and invoking the toolbar `pycmd("add")` through DevTools crashed the process with `Segmentation fault: 11`. As a fallback, ran a headless Chrome DOM micro-profile of the exact F1 hotspot using a 30-MathJax-like field: old eager `innerHTML` compare median `0.0225 ms`/mutation batch, new debounce-only median `0.00075 ms`/mutation batch, about `0.02175 ms` synchronous work removed per mutation batch. Full editor trace remains pending.
+- `2026-06-27` — Added the stable repro fixture (`ts/editor/perf-fixtures/large-cloze-note.html`, 118 MathJax / 82 distinct) and a jsdom benchmark of the hot paths. Confirmed via breakdown that, in the production Blink webview (DOM ops much faster than jsdom), the largest _engine-independent_ per-keystroke cost is `Mathjax.toStored` (~3 ms, reparsing each frame via `<template>`); investigated a DOM-side rewrite but rejected it as not byte-equivalent for the DB round-trip (entity escaping of `<`/`>`/`&` inside math). New finding: the MathJax render cache (`max: 10`) was far too small for real notes — every undo/redo/sync re-rendered the whole field. Implemented **F7**: extracted the cache to `mathjax-cache.ts` and raised the cap to 512. Verified by deterministic `tex2svg` render-count (load + re-decorate: 206→82 at 118 elems, 824→82 at 472 elems; re-decoration now 0 renders). `mathjax-cache.test.ts` + existing editor/editable vitest suites green. Decision: keep.
