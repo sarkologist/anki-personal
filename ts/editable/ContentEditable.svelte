@@ -16,7 +16,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import type { ContentEditableAPI } from "./content-editable";
     import {
-        emacsKeyboardNav,
+        emacsKeyboardShortcuts,
         fixRTLKeyboardNav,
         preventBuiltinShortcuts,
         useFocusHandler,
@@ -51,7 +51,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     use:setupFocusHandling
     use:preventBuiltinShortcuts
     use:fixRTLKeyboardNav
-    use:emacsKeyboardNav
+    use:emacsKeyboardShortcuts
     use:mirrorAction={mirrorOptions}
     use:inputHandlerAction={{}}
     on:focus

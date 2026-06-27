@@ -319,6 +319,7 @@ class AnkiApp(QApplication):
         QApplication.__init__(self, argv)
         self.installEventFilter(self)
         self._argv = argv
+        self._emacs_kill_buffer = ""
         self._native_event_filter = NativeEventFilter()
         if is_win:
             self.installNativeEventFilter(self._native_event_filter)
@@ -426,7 +427,7 @@ class AnkiApp(QApplication):
                     return True
 
         if is_mac and evt.type() == QEvent.Type.KeyPress:
-            if self._handle_emacs_word_nav(cast(QKeyEvent, evt)):
+            if self._handle_emacs_keys(cast(QKeyEvent, evt)):
                 return True
 
         pointer_classes = (
@@ -455,37 +456,56 @@ class AnkiApp(QApplication):
 
         return False
 
-    def _handle_emacs_word_nav(self, evt: QKeyEvent) -> bool:
-        """macOS binds the Emacs/readline Ctrl variants (Ctrl+B/F/A/E) in text
-        fields natively, but not the Alt+B/F word jumps. Add them here so
-        word-wise caret movement works consistently in Qt text widgets.
-        Returns True if the event was handled."""
+    def _handle_emacs_keys(self, evt: QKeyEvent) -> bool:
+        """On macOS, add the Emacs/readline editing bindings that the platform
+        leaves out of Qt text widgets: Alt+B/F word movement, Alt+D kill word
+        forward, Ctrl+K/U/W kills and Ctrl+Y yank. The Ctrl variants arrive as
+        MetaModifier because macOS swaps Control and Command. Returns True if the
+        event was handled."""
         mods = evt.modifiers().value
         alt = Qt.KeyboardModifier.AltModifier.value
-        blocked = (
-            Qt.KeyboardModifier.ControlModifier
-            | Qt.KeyboardModifier.MetaModifier
-            | Qt.KeyboardModifier.ShiftModifier
+        meta = Qt.KeyboardModifier.MetaModifier.value  # physical Control on macOS
+        others = (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
         ).value
-        if not (mods & alt) or (mods & blocked):
+        key = evt.key()
+
+        # Option (Alt) combos. Option+letter composes a glyph, so fall back to
+        # the physical virtual key code (kVK_ANSI_B=11, F=3, D=2).
+        if (mods & alt) and not (mods & (meta | others)):
+            vk = evt.nativeVirtualKey()
+            if key == Qt.Key.Key_B or vk == 11:
+                return self._emacs_move_word(forward=False)
+            if key == Qt.Key.Key_F or vk == 3:
+                return self._emacs_move_word(forward=True)
+            if key == Qt.Key.Key_D or vk == 2:
+                return self._emacs_kill("word_forward")
             return False
 
-        # On macOS, Option+letter composes a glyph (ƒ/∫), so key() may not be
-        # Key_B/Key_F; fall back to the physical virtual key code
-        # (kVK_ANSI_B = 11, kVK_ANSI_F = 3).
-        vk = evt.nativeVirtualKey()
-        if evt.key() == Qt.Key.Key_B or vk == 11:
-            forward = False
-        elif evt.key() == Qt.Key.Key_F or vk == 3:
-            forward = True
-        else:
+        # Physical Control (MetaModifier) combos: kills and yank.
+        if (mods & meta) and not (mods & (alt | others)):
+            if key == Qt.Key.Key_K:
+                return self._emacs_kill("line_end")
+            if key == Qt.Key.Key_U:
+                return self._emacs_kill("line_start")
+            if key == Qt.Key.Key_W:
+                return self._emacs_kill("word_back")
+            if key == Qt.Key.Key_Y:
+                return self._emacs_yank()
             return False
 
+        return False
+
+    def _emacs_target(self) -> QWidget | None:
         widget = self.focusWidget()
         # Editable combo boxes (e.g. the Browser search bar) edit through a
         # child QLineEdit, which may be reported as the focus widget instead.
         if isinstance(widget, QComboBox):
-            widget = widget.lineEdit()
+            return widget.lineEdit()
+        return widget
+
+    def _emacs_move_word(self, forward: bool) -> bool:
+        widget = self._emacs_target()
         if isinstance(widget, QLineEdit):
             if forward:
                 widget.cursorWordForward(False)
@@ -500,6 +520,56 @@ class AnkiApp(QApplication):
                 else QTextCursor.MoveOperation.PreviousWord,
                 QTextCursor.MoveMode.MoveAnchor,
             )
+            widget.setTextCursor(cursor)
+            return True
+        return False
+
+    def _emacs_kill(self, kind: str) -> bool:
+        widget = self._emacs_target()
+        if isinstance(widget, QLineEdit):
+            if kind == "line_end":
+                widget.end(True)
+            elif kind == "line_start":
+                widget.home(True)
+            elif kind == "word_back":
+                widget.cursorWordBackward(True)
+            elif kind == "word_forward":
+                widget.cursorWordForward(True)
+            killed = widget.selectedText()
+            if killed:
+                self._emacs_kill_buffer = killed
+                widget.backspace()  # deletes the selection
+            return True
+        if isinstance(widget, (QTextEdit, QPlainTextEdit)):
+            cursor = widget.textCursor()
+            keep = QTextCursor.MoveMode.KeepAnchor
+            if kind == "line_end":
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, keep)
+                if not cursor.hasSelection():
+                    cursor.movePosition(QTextCursor.MoveOperation.NextCharacter, keep)
+            elif kind == "line_start":
+                cursor.movePosition(QTextCursor.MoveOperation.StartOfLine, keep)
+            elif kind == "word_back":
+                cursor.movePosition(QTextCursor.MoveOperation.PreviousWord, keep)
+            elif kind == "word_forward":
+                cursor.movePosition(QTextCursor.MoveOperation.NextWord, keep)
+            killed = cursor.selectedText()
+            if killed:
+                # QTextCursor reports line breaks in selected text as U+2029.
+                self._emacs_kill_buffer = killed.replace(" ", "\n")
+                cursor.removeSelectedText()
+                widget.setTextCursor(cursor)
+            return True
+        return False
+
+    def _emacs_yank(self) -> bool:
+        widget = self._emacs_target()
+        if isinstance(widget, QLineEdit):
+            widget.insert(self._emacs_kill_buffer.replace("\n", " "))
+            return True
+        if isinstance(widget, (QTextEdit, QPlainTextEdit)):
+            cursor = widget.textCursor()
+            cursor.insertText(self._emacs_kill_buffer)
             widget.setTextCursor(cursor)
             return True
         return False

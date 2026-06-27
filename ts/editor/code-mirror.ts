@@ -17,6 +17,7 @@ import CodeMirror from "codemirror";
 import type { Readable } from "svelte/store";
 
 import storeSubscribe from "$lib/sveltelib/store-subscribe";
+import { getKillText, setKillText } from "@tslib/kill-ring";
 import { isApplePlatform } from "@tslib/platform";
 
 export { CodeMirror };
@@ -37,6 +38,54 @@ export const htmlanki = {
 export const lightTheme = "default";
 export const darkTheme = "monokai";
 
+function killCmRange(
+    cm: CodeMirror.Editor,
+    from: CodeMirror.Position,
+    to: CodeMirror.Position,
+): void {
+    const text = cm.getRange(from, to);
+    if (!text) {
+        return;
+    }
+    setKillText(text);
+    cm.replaceRange("", from, to);
+}
+
+// macOS binds Ctrl+A/E/B/F via CodeMirror's built-in "emacsy" keymap; add the
+// bindings it leaves out — Alt+B/F word jumps and the kill/yank commands, sharing
+// the same kill ring as the rich text fields.
+function macEmacsKeymap(): CodeMirror.KeyMap {
+    return {
+        "Alt-B": "goGroupLeft",
+        "Alt-F": "goGroupRight",
+        "Alt-D": (cm: CodeMirror.Editor) => {
+            const cur = cm.getCursor();
+            killCmRange(cm, cur, cm.findPosH(cur, 1, "word", false));
+        },
+        "Ctrl-K": (cm: CodeMirror.Editor) => {
+            const cur = cm.getCursor();
+            const lineLength = cm.getLine(cur.line).length;
+            const to = cur.ch < lineLength
+                ? { line: cur.line, ch: lineLength }
+                : { line: cur.line + 1, ch: 0 };
+            if (to.line <= cm.lastLine()) {
+                killCmRange(cm, cur, to);
+            }
+        },
+        "Ctrl-U": (cm: CodeMirror.Editor) => {
+            const cur = cm.getCursor();
+            killCmRange(cm, { line: cur.line, ch: 0 }, cur);
+        },
+        "Ctrl-W": (cm: CodeMirror.Editor) => {
+            const cur = cm.getCursor();
+            killCmRange(cm, cm.findPosH(cur, -1, "word", false), cur);
+        },
+        "Ctrl-Y": (cm: CodeMirror.Editor) => {
+            cm.replaceSelection(getKillText());
+        },
+    };
+}
+
 export const baseOptions: CodeMirror.EditorConfiguration = {
     theme: lightTheme,
     lineWrapping: true,
@@ -44,11 +93,7 @@ export const baseOptions: CodeMirror.EditorConfiguration = {
     extraKeys: {
         Tab: false,
         "Shift-Tab": false,
-        // macOS binds Ctrl+A/E/B/F via CodeMirror's built-in "emacsy" keymap;
-        // add the Alt+B/F word jumps to match the platform's readline bindings.
-        ...(isApplePlatform()
-            ? { "Alt-B": "goGroupLeft", "Alt-F": "goGroupRight" }
-            : {}),
+        ...(isApplePlatform() ? macEmacsKeymap() : {}),
     },
     tabindex: 0,
     viewportMargin: Infinity,
