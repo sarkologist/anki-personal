@@ -4,6 +4,7 @@
 import { bridgeCommand } from "@tslib/bridgecommand";
 import { getSelection } from "@tslib/cross-browser";
 import { on, preventDefault } from "@tslib/events";
+import { getKillText, setKillText } from "@tslib/kill-ring";
 import { isApplePlatform } from "@tslib/platform";
 import { registerShortcut } from "@tslib/shortcuts";
 import type { Callback } from "@tslib/typing";
@@ -183,30 +184,93 @@ export function emacsWordNavDirection(code: string): "backward" | "forward" | nu
     }
 }
 
+function killRange(
+    editable: HTMLElement,
+    direction: "forward" | "backward",
+    granularity: "word" | "lineboundary",
+    eatLineBreak = false,
+): void {
+    const selection = getSelection(editable);
+    if (!selection) {
+        return;
+    }
+
+    // With an active selection, kill it directly (Emacs C-w on a region);
+    // otherwise extend the caret to the word/line boundary.
+    if (selection.isCollapsed) {
+        selection.modify("extend", direction, granularity);
+        if (eatLineBreak && selection.isCollapsed) {
+            // Ctrl+K at the end of a line removes the line break.
+            selection.modify("extend", "forward", "character");
+        }
+    }
+
+    const text = selection.toString();
+    if (!text) {
+        return;
+    }
+
+    setKillText(text);
+    document.execCommand("delete");
+}
+
+function yank(): void {
+    const text = getKillText();
+    if (text) {
+        document.execCommand("insertText", false, text);
+    }
+}
+
 /**
  * macOS provides Emacs/readline-style caret movement (Ctrl+B/F/A/E) in text
- * fields natively. The only missing bindings are the Alt+B/F word jumps, which
- * otherwise just insert special characters (∫/ƒ). Add them here so word-wise
- * navigation matches the platform's Ctrl bindings. macOS only.
+ * fields natively. Add the bindings it leaves out: the Alt+B/F word jumps (which
+ * otherwise insert ∫/ƒ), and the kill/yank editing commands — Alt+D (kill word
+ * forward), Ctrl+K (kill to line end), Ctrl+U (kill to line start), Ctrl+W (kill
+ * word back) and Ctrl+Y (yank), backed by a shared kill ring. macOS only.
  */
-export function emacsKeyboardNav(editable: HTMLElement): void {
+export function emacsKeyboardShortcuts(editable: HTMLElement): void {
     if (!isApplePlatform()) {
         return;
     }
 
     editable.addEventListener("keydown", (evt: KeyboardEvent) => {
-        // Only plain Option+key; leave Ctrl/Cmd/Shift combinations untouched.
-        if (!evt.altKey || evt.ctrlKey || evt.metaKey || evt.shiftKey) {
+        // Leave Cmd and Shift combinations to their defaults.
+        if (evt.metaKey || evt.shiftKey) {
             return;
         }
 
-        const direction = emacsWordNavDirection(evt.code);
-        if (!direction) {
-            return;
-        }
+        if (evt.altKey && !evt.ctrlKey) {
+            if (evt.code === "KeyD") {
+                killRange(editable, "forward", "word");
+                evt.preventDefault();
+                return;
+            }
 
-        getSelection(editable)?.modify("move", direction, "word");
-        evt.preventDefault();
+            const direction = emacsWordNavDirection(evt.code);
+            if (direction) {
+                getSelection(editable)?.modify("move", direction, "word");
+                evt.preventDefault();
+            }
+        } else if (evt.ctrlKey && !evt.altKey) {
+            // Ctrl+B/F/A/E navigation is native; only add the kill/yank commands.
+            switch (evt.code) {
+                case "KeyK":
+                    killRange(editable, "forward", "lineboundary", true);
+                    break;
+                case "KeyU":
+                    killRange(editable, "backward", "lineboundary");
+                    break;
+                case "KeyW":
+                    killRange(editable, "backward", "word");
+                    break;
+                case "KeyY":
+                    yank();
+                    break;
+                default:
+                    return;
+            }
+            evt.preventDefault();
+        }
     });
 }
 
