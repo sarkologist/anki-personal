@@ -3,6 +3,8 @@
 
 /// <reference types="./mathjax-types" />
 
+import { renderCacheActions } from "./render-cache";
+
 const packages = ["noerrors", "mathtools", "html"];
 
 function packagesForLoading(packages: string[]): string[] {
@@ -28,5 +30,10 @@ window.MathJax = {
     },
     startup: {
         typeset: false,
+    },
+    options: {
+        // Reuse identical expressions across card flips instead of
+        // re-typesetting them; see render-cache.ts.
+        renderActions: renderCacheActions(),
     },
 };
