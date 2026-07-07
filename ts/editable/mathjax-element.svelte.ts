@@ -39,7 +39,13 @@ function hasBlockAttribute(element: Element): boolean {
     return typeof block === "string" && block !== "false";
 }
 
-function mathjaxHtmlToStored(html: string): string {
+/**
+ * Slow but always-correct decorated->stored conversion of one matched frame
+ * (or bare tag): parse it with a `<template>` so the browser decodes the
+ * `data-mathjax` attribute, then read source + block. Used as the fallback
+ * for anything the fast path below declines to handle.
+ */
+function slowMathjaxHtmlToStored(html: string): string {
     const element = mathjaxElementFromHtml(html);
     if (!element) {
         return html;
@@ -52,6 +58,116 @@ function mathjaxHtmlToStored(html: string): string {
 
     return hasBlockAttribute(element) ? `\\[${trimmed}\\]` : `\\(${trimmed}\\)`;
 }
+
+/**
+ * Shared, lazily-created element for decoding HTML entities in a `data-mathjax`
+ * value. A `<textarea>`'s RCDATA content decodes named/numeric entities
+ * identically to an attribute value (verified against the parser), and is far
+ * cheaper than building an element tree for every frame.
+ */
+let entityDecoder: HTMLTextAreaElement | null = null;
+
+function decodeHtmlEntities(value: string): string {
+    if (!value.includes("&")) {
+        return value;
+    }
+    if (!entityDecoder) {
+        entityDecoder = document.createElement("textarea");
+    }
+    entityDecoder.innerHTML = value;
+    return entityDecoder.value;
+}
+
+/**
+ * Return the attribute text of `tagName`'s opening tag (everything between the
+ * tag name and its closing `>`), scanning quote-aware so a `>` inside an
+ * attribute value doesn't end the tag early. `null` if the tag isn't found or
+ * the opening tag is unterminated.
+ */
+function openTagAttributes(html: string, tagName: string): string | null {
+    const marker = `<${tagName}`;
+    const start = html.indexOf(marker);
+    if (start < 0) {
+        return null;
+    }
+    const attrsStart = start + marker.length;
+    const doubleQuote = "\"";
+    const singleQuote = "'";
+    let quote = "";
+    for (let i = attrsStart; i < html.length; i++) {
+        const ch = html[i];
+        if (quote) {
+            if (ch === quote) {
+                quote = "";
+            }
+        } else if (ch === doubleQuote || ch === singleQuote) {
+            quote = ch;
+        } else if (ch === ">") {
+            return html.slice(attrsStart, i);
+        }
+    }
+    return null;
+}
+
+/** Read a double-quoted attribute's raw value from an opening-tag attr string. */
+function doubleQuotedAttribute(attrs: string, name: string): string | null {
+    const marker = `${name}="`;
+    let from = 0;
+    // find `name="` at an attribute boundary (preceded by whitespace or start)
+    for (;;) {
+        const at = attrs.indexOf(marker, from);
+        if (at < 0) {
+            return null;
+        }
+        if (at === 0 || /\s/u.test(attrs[at - 1])) {
+            const valueStart = at + marker.length;
+            const end = attrs.indexOf("\"", valueStart);
+            return end < 0 ? null : attrs.slice(valueStart, end);
+        }
+        from = at + 1;
+    }
+}
+
+/**
+ * Fast decorated->stored conversion for the common case: a frame/tag whose
+ * `data-mathjax` attribute holds no literal `<` (so a shared `<textarea>` can
+ * decode it without RCDATA ambiguity). Returns `null` to defer to
+ * {@link slowMathjaxHtmlToStored} for anything unusual, keeping the output
+ * byte-identical to the original parser in every case.
+ */
+function fastMathjaxHtmlToStored(html: string): string | null {
+    const tagAttrs = openTagAttributes(html, "anki-mathjax");
+    if (tagAttrs === null) {
+        return null;
+    }
+    const rawSource = doubleQuotedAttribute(tagAttrs, "data-mathjax");
+    if (rawSource === null || rawSource.includes("<")) {
+        // no data-mathjax (slow path reads innerHTML instead), or a literal
+        // `<` the textarea decoder can't be trusted with — defer.
+        return null;
+    }
+
+    const trimmed = trimBreaks(decodeHtmlEntities(rawSource));
+
+    // block: tag attribute wins, else the enclosing frame's (mirrors
+    // `getAttribute("block") ?? closest("anki-frame")?.getAttribute("block")`).
+    let block = doubleQuotedAttribute(tagAttrs, "block");
+    if (block === null) {
+        const frameAttrs = openTagAttributes(html, "anki-frame");
+        block = frameAttrs === null ? null : doubleQuotedAttribute(frameAttrs, "block");
+    }
+    // Decode before comparing: the parser-based path reads the decoded value,
+    // so e.g. `block="&#102;alse"` must be treated as `"false"` (inline).
+    const isBlock = block !== null && decodeHtmlEntities(block) !== "false";
+
+    return isBlock ? `\\[${trimmed}\\]` : `\\(${trimmed}\\)`;
+}
+
+function mathjaxHtmlToStored(html: string): string {
+    return fastMathjaxHtmlToStored(html) ?? slowMathjaxHtmlToStored(html);
+}
+
+export const __testing = { fastMathjaxHtmlToStored };
 
 export const mathjaxConfig = {
     enabled: true,

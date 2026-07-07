@@ -156,10 +156,64 @@ display path; **no effect on the stored-HTML round-trip**, so no DB risk.
 conversion on the DOM before serialize (to avoid `Mathjax.toStored` reparsing
 each frame via `<template>`, the largest engine-independent per-keystroke cost
 at ~3 ms / 118 elems) changes entity escaping of `<`/`>`/`&` inside math vs the
-current regex substitution — not byte-equivalent. Left alone.
+current regex substitution — not byte-equivalent. Left alone. **Superseded by
+F8**, which speeds up the same hotspot a different (byte-equivalent) way.
 
 **Status:** implemented + verified. `mathjax-cache.test.ts` green; existing
 editor/editable suites green. Decision: **keep.**
+
+### F8. Speed up `Mathjax.toStored` without the per-frame `<template>` reparse
+
+**Same hotspot F7 identified, different fix.** On every keystroke batch the
+rich-text editor serializes the field: the `nodes`→`content` subscription runs
+`content.set(fragmentToStored(clone))`. `fragmentToStored`
+([transform.ts](ts/editor/rich-text-input/transform.ts)) serializes the clone
+to a string, then `Mathjax.toStored` regex-matches each decorated frame and —
+for **every** frame — parses it back into DOM via a fresh `<template>` just to
+read `data-mathjax` (browser-decoded) and the `block` attribute.
+
+**Profile (headless Chrome, real fixture, real shipped code; median per
+`fragmentToStored` call, byte-identical output verified at each scale):**
+
+| frames | `fragmentToStored` before | after                | `Mathjax.toStored` share before |
+| ------ | ------------------------- | -------------------- | ------------------------------- |
+| 112    | 1.1 ms                    | **0.6 ms**           | ~0.9 ms of 1.2 ms (~70%)        |
+| 448    | 4.6 ms                    | **2.4 ms**           | ~3.5 ms of 5.0 ms (~70%)        |
+| 896    | 9.4 ms (p95 12.5)         | **4.9 ms** (p95 5.3) | —                               |
+
+**Why F7 rejected the DOM rewrite but F8 is safe:** the rejected idea replaced
+frames in the _DOM_ before serializing, so the browser re-encoded `<`/`>`/`&`
+in math and in surrounding markup — not byte-equivalent. F8 keeps the exact
+regex-on-string structure (surrounding HTML untouched as a string) and only
+makes the _attribute read_ cheaper: a quote-aware string scan pulls the raw
+`data-mathjax` value, and a shared `<textarea>` decodes its entities —
+identical decoding to the parser (verified: jsdom `textarea.value` ===
+attribute `dataset` for named/numeric/`<br>`/nested-entity cases). The fast
+path **bails to the original `<template>` implementation** whenever it can't be
+certain (no `data-mathjax`, or a literal `<` in the value where `<textarea>`
+RCDATA could be ambiguous), so output is byte-identical in every case.
+
+**Change:** [ts/editable/mathjax-element.svelte.ts](ts/editable/mathjax-element.svelte.ts)
+— `fastMathjaxHtmlToStored` + `slowMathjaxHtmlToStored` (original, kept as
+fallback). Guarded by a 4000-case fuzz test
+([mathjax-tostored.test.ts](ts/editable/mathjax-tostored.test.ts)) asserting
+byte-equivalence against a frozen copy of the original parser across random
+sources / attribute orders / block-inline / bare-tag / entity / `<br>` /
+`>`-in-value / cloze-brace cases, plus a guard that the fast path is actually
+taken. Existing decorated/round-trip suites still green.
+
+**Status:** implemented + verified. Decision: **keep.**
+
+### Not done: F2 (defer serialization off the keystroke path)
+
+Still the biggest _potential_ win — `content`'s serialized value is consumed
+live only by the two empty-checks (need just length) and PlainTextInput (only
+when the HTML-source view is open); the 600 ms-debounced backend save reads it
+lazily. So most per-keystroke serializations are thrown away. But `content` is
+a reactive `Writable<string>` and PlainTextInput expects it current, so
+deferring needs explicit flush points and can't be verified headlessly (no
+drivable editor webview). Left for a session that can drive the real editor.
+F8 cuts the cost of the serialization that F2 would eventually remove.
 
 ## Working log
 
@@ -171,3 +225,4 @@ Append entries as the work proceeds — each agent / session adds at the bottom.
 - `2026-05-10` — Verification: `./yarn svelte-check:once` passed; `PATH="$HOME/.cargo/bin:$PATH" ./ninja check:svelte` passed. Full `./check` was attempted with the same PATH fix, but failed in `check:minilints` because commit author `oon.guo.liang@gmail.com` is not listed in `CONTRIBUTORS`; no F1-specific failure was reported before the build stopped.
 - `2026-05-10` — Profiling: launched Anki with `QTWEBENGINE_REMOTE_DEBUGGING=8080` against `/private/tmp/anki-editor-profile-base`, but the temp Add Cards path did not expose an editor target and invoking the toolbar `pycmd("add")` through DevTools crashed the process with `Segmentation fault: 11`. As a fallback, ran a headless Chrome DOM micro-profile of the exact F1 hotspot using a 30-MathJax-like field: old eager `innerHTML` compare median `0.0225 ms`/mutation batch, new debounce-only median `0.00075 ms`/mutation batch, about `0.02175 ms` synchronous work removed per mutation batch. Full editor trace remains pending.
 - `2026-06-27` — Added the stable repro fixture (`ts/editor/perf-fixtures/large-cloze-note.html`, 118 MathJax / 82 distinct) and a jsdom benchmark of the hot paths. Confirmed via breakdown that, in the production Blink webview (DOM ops much faster than jsdom), the largest _engine-independent_ per-keystroke cost is `Mathjax.toStored` (~3 ms, reparsing each frame via `<template>`); investigated a DOM-side rewrite but rejected it as not byte-equivalent for the DB round-trip (entity escaping of `<`/`>`/`&` inside math). New finding: the MathJax render cache (`max: 10`) was far too small for real notes — every undo/redo/sync re-rendered the whole field. Implemented **F7**: extracted the cache to `mathjax-cache.ts` and raised the cap to 512. Verified by deterministic `tex2svg` render-count (load + re-decorate: 206→82 at 118 elems, 824→82 at 472 elems; re-decoration now 0 renders). `mathjax-cache.test.ts` + existing editor/editable vitest suites green. Decision: keep.
+- `2026-07-07` — Implemented **F8**: sped up the `Mathjax.toStored` hotspot F7 identified, byte-equivalently (unlike F7's rejected DOM rewrite). Confirmed via headless-Chrome benchmark of the real shipped code on the fixture that `fragmentToStored` — the per-keystroke-batch serialization — roughly halves (112 frames 1.1→0.6 ms, 448 frames 4.6→2.4 ms, 896 frames 9.4→4.9 ms; p95 12.5→5.3 ms at 896), with output verified byte-identical to the original at every scale. The win is replacing the per-frame `<template>` reparse (~70% of the cost) with a quote-aware string scan + shared-`<textarea>` entity decode, falling back to the original parser on anything ambiguous. Guarded by a 4000-case byte-equivalence fuzz test (`ts/editable/mathjax-tostored.test.ts`) against a frozen copy of the original parser, plus the existing decorated/round-trip suites. Also mapped **F2**'s feasibility (see section): still the biggest remaining win, but reactive-`content` risk + no drivable editor webview means it needs a session that can drive the real editor. Decision: keep F8.
