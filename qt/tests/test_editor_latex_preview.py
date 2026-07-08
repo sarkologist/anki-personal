@@ -147,8 +147,9 @@ def test_render_preview_writes_saved_latex_to_collection_media(monkeypatch) -> N
     monkeypatch.setattr(
         editor_latex_preview,
         "_saved_fields_contain_latex",
-        lambda col, saved_fields, filename, svg: bool(saved_fields)
-        and filename == extracted.filename,
+        lambda col, saved_fields, filename, svg: (
+            bool(saved_fields) and filename == extracted.filename
+        ),
     )
 
     def save_latex_image_to_media(**kwargs) -> None:
