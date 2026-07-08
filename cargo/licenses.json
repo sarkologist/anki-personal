@@ -1,13 +1,5 @@
 [
   {
-    "authors": null,
-    "description": "A cross-platform symbolication library written in Rust, using `gimli`",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "addr2line",
-    "repository": "https://github.com/gimli-rs/addr2line"
-  },
-  {
     "authors": "Jonas Schievink <jonasschievink@gmail.com>|oyvindln <oyvindln@users.noreply.github.com>",
     "description": "A simple clean-room implementation of the Adler-32 checksum",
     "license": "0BSD OR Apache-2.0 OR MIT",
@@ -46,14 +38,6 @@
     "license_file": null,
     "name": "ammonia",
     "repository": "https://github.com/rust-ammonia/ammonia"
-  },
-  {
-    "authors": "RumovZ",
-    "description": "Parser for the Android-specific tzdata file",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "android-tzdata",
-    "repository": "https://github.com/RumovZ/android-tzdata"
   },
   {
     "authors": "Nicolas Silva <nical@fastmail.com>",
@@ -254,14 +238,6 @@
     "license_file": null,
     "name": "axum-macros",
     "repository": "https://github.com/tokio-rs/axum"
-  },
-  {
-    "authors": "The Rust Project Developers",
-    "description": "A library to acquire a stack trace (backtrace) at runtime in a Rust program.",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "backtrace",
-    "repository": "https://github.com/rust-lang/backtrace-rs"
   },
   {
     "authors": "Marshall Pierce <marshall@mpierce.org>",
@@ -586,7 +562,7 @@
   {
     "authors": "Frank Denis <github@pureftpd.org>",
     "description": "Time and duration crate optimized for speed",
-    "license": "ISC",
+    "license": "BSD-2-Clause",
     "license_file": null,
     "name": "coarsetime",
     "repository": "https://github.com/jedisct1/rust-coarsetime"
@@ -1576,14 +1552,6 @@
     "repository": "https://github.com/rust-random/getrandom"
   },
   {
-    "authors": null,
-    "description": "A library for reading and writing the DWARF debugging format.",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "gimli",
-    "repository": "https://github.com/gimli-rs/gimli"
-  },
-  {
     "authors": "Brendan Zabarauskas <bjzaba@yahoo.com.au>|Corey Richardson|Arseny Kapoulkine",
     "description": "Code generators for creating bindings to the Khronos OpenGL APIs.",
     "license": "Apache-2.0",
@@ -1689,6 +1657,14 @@
   },
   {
     "authors": "Amanieu d'Antras <amanieu@gmail.com>",
+    "description": "A Rust port of Google's SwissTable hash map",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "hashbrown",
+    "repository": "https://github.com/rust-lang/hashbrown"
+  },
+  {
+    "authors": null,
     "description": "A Rust port of Google's SwissTable hash map",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -2000,14 +1976,6 @@
     "repository": "https://github.com/zbraniecki/pluralrules"
   },
   {
-    "authors": "quininer <quininer@live.com>",
-    "description": "The low-level `io_uring` userspace interface for Rust",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "io-uring",
-    "repository": "https://github.com/tokio-rs/io-uring"
-  },
-  {
     "authors": "Kris Price <kris@krisprice.nz>",
     "description": "Provides types and useful methods for working with IPv4 and IPv6 network addresses, commonly called IP prefixes. The new `IpNet`, `Ipv4Net`, and `Ipv6Net` types build on the existing `IpAddr`, `Ipv4Addr`, and `Ipv6Addr` types already provided in Rust's standard library and align to their design to stay consistent. The module also provides useful traits that extend `Ipv4Addr` and `Ipv6Addr` with methods for `Add`, `Sub`, `BitAnd`, and `BitOr` operations. The module only uses stable feature so it is guaranteed to compile using the stable toolchain.",
     "license": "Apache-2.0 OR MIT",
@@ -2126,14 +2094,6 @@
     "license_file": null,
     "name": "libsqlite3-sys",
     "repository": "https://github.com/rusqlite/rusqlite"
-  },
-  {
-    "authors": null,
-    "description": "A memory-safe zlib implementation written in rust",
-    "license": "Zlib",
-    "license_file": null,
-    "name": "libz-rs-sys",
-    "repository": "https://github.com/trifectatechfoundation/zlib-rs"
   },
   {
     "authors": "Dan Gohman <dev@sunfishcode.online>",
@@ -2544,14 +2504,6 @@
     "repository": "http://github.com/SSheldon/rust-objc"
   },
   {
-    "authors": null,
-    "description": "A unified interface for reading and writing object file formats.",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "object",
-    "repository": "https://github.com/gimli-rs/object"
-  },
-  {
     "authors": "Aleksey Kladov <aleksey.kladov@gmail.com>",
     "description": "Single assignment cells and lazy values.",
     "license": "Apache-2.0 OR MIT",
@@ -2782,14 +2734,6 @@
     "license_file": null,
     "name": "pin-project-lite",
     "repository": "https://github.com/taiki-e/pin-project-lite"
-  },
-  {
-    "authors": "Josef Brandl <mail@josefbrandl.de>",
-    "description": "Utilities for pinning",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "pin-utils",
-    "repository": "https://github.com/rust-lang-nursery/pin-utils"
   },
   {
     "authors": "Alex Crichton <alex@alexcrichton.com>",
@@ -3256,14 +3200,6 @@
     "repository": "https://github.com/rusqlite/rusqlite"
   },
   {
-    "authors": "Alex Crichton <alex@alexcrichton.com>",
-    "description": "Rust compiler symbol demangling.",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "rustc-demangle",
-    "repository": "https://github.com/rust-lang/rustc-demangle"
-  },
-  {
     "authors": "The Rust Project Developers",
     "description": "speed, non-cryptographic hash used in rustc",
     "license": "Apache-2.0 OR MIT",
@@ -3664,6 +3600,14 @@
     "repository": "https://github.com/rust-lang/socket2"
   },
   {
+    "authors": "Alex Crichton <alex@alexcrichton.com>|Thomas de Zeeuw <thomasdezeeuw@gmail.com>",
+    "description": "Utilities for handling networking sockets with a maximal amount of configuration possible intended.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "socket2",
+    "repository": "https://github.com/rust-lang/socket2"
+  },
+  {
     "authors": "Mathijs van de Nes <git@mathijs.vd-nes.nl>|John Ericson <git@JohnEricson.me>|Joshua Barretto <joshua.s.barretto@gmail.com>",
     "description": "Spin-based synchronization primitives",
     "license": "MIT",
@@ -3766,6 +3710,14 @@
     "license_file": null,
     "name": "subtle",
     "repository": "https://github.com/dalek-cryptography/subtle"
+  },
+  {
+    "authors": "Chris Morgan <me@chrismorgan.info>",
+    "description": "Create symlinks in a cross-platform manner",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "symlink",
+    "repository": "https://gitlab.com/chris-morgan/symlink"
   },
   {
     "authors": "David Tolnay <dtolnay@gmail.com>",
@@ -4248,6 +4200,14 @@
     "repository": "https://github.com/unicode-rs/unicode-width"
   },
   {
+    "authors": "kwantam <kwantam@gmail.com>|Manish Goregaokar <manishsmail@gmail.com>",
+    "description": "Determine displayed width of `char` and `str` types according to Unicode Standard Annex #11 rules.",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "unicode-width",
+    "repository": "https://github.com/unicode-rs/unicode-width"
+  },
+  {
     "authors": "erick.tryzelaar <erick.tryzelaar@gmail.com>|kwantam <kwantam@gmail.com>|Manish Goregaokar <manishsmail@gmail.com>",
     "description": "Determine whether characters have the XID_Start or XID_Continue properties according to Unicode Standard Annex #31.",
     "license": "Apache-2.0 OR MIT",
@@ -4673,6 +4633,14 @@
   },
   {
     "authors": null,
+    "description": "Linking for Windows",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "windows-link",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "authors": null,
     "description": "Windows numeric types",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -4745,6 +4713,14 @@
   },
   {
     "authors": "Microsoft",
+    "description": "Rust for Windows",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "windows-sys",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "authors": null,
     "description": "Rust for Windows",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
@@ -5134,6 +5110,14 @@
     "license_file": null,
     "name": "zlib-rs",
     "repository": "https://github.com/trifectatechfoundation/zlib-rs"
+  },
+  {
+    "authors": "David Tolnay <dtolnay@gmail.com>",
+    "description": "A double-to-string conversion algorithm based on Schubfach and yy",
+    "license": "MIT",
+    "license_file": null,
+    "name": "zmij",
+    "repository": "https://github.com/dtolnay/zmij"
   },
   {
     "authors": null,
