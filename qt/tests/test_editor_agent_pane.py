@@ -904,8 +904,8 @@ def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
     pane.ollama_host_edit = types.SimpleNamespace(text=lambda: "")
     pane.claude_path_edit = types.SimpleNamespace(text=lambda: "")
     pane._provider = lambda: PROVIDER_CODEX
-    pane._saved_model_for_provider = (
-        lambda provider, config: str(config["ollama_model"])
+    pane._saved_model_for_provider = lambda provider, config: (
+        str(config["ollama_model"])
         if provider == PROVIDER_OLLAMA
         else str(config["codex_model"])
     )
