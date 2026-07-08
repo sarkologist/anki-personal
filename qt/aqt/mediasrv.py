@@ -352,7 +352,7 @@ def handle_request(pathin: str) -> Response:
 
 
 def is_sveltekit_page(path: str) -> bool:
-    page_name = path.split("/")[0]
+    page_name = path.split("/", maxsplit=1)[0]
     return page_name in [
         "graphs",
         "congrats",
