@@ -275,7 +275,9 @@ mod test {
         let req = monitor.zstd_request_with_timeout(
             reqwest::Client::new().post(mock_server.uri()),
             vec![],
-            millis(10),
+            // generous timeout: this asserts the success path, so it must not
+            // race a slow CI runner. The failure-path test below keeps 10ms.
+            millis(1000),
         );
         req.await.unwrap();
     }

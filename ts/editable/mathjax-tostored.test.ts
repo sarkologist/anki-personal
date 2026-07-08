@@ -231,5 +231,9 @@ describe("Mathjax.toStored matches the original per-frame parser", () => {
             const input = parts.join(" text & <b>more</b> ");
             expect(Mathjax.toStored(input)).toBe(oracleToStored(input));
         }
-    });
+        // 4000 iterations of jsdom DOM scaffolding (input build + oracle parse)
+        // run ~0.9s locally but 6-10x slower on the shared CI runner; the
+        // production Mathjax.toStored itself is ~50µs/call. Generous timeout so
+        // it never races the default 5s.
+    }, 30_000);
 });
