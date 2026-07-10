@@ -198,6 +198,7 @@ mod test {
 
     use super::*;
     use crate::sync::error::HttpError;
+    use crate::sync::request::header_and_stream::encode_zstd_body;
 
     /// The delays in the tests are aggressively short, and false positives slip
     /// through on a loaded system - especially on Windows. Fix by applying
@@ -263,12 +264,30 @@ mod test {
         req.await.unwrap_err();
     }
 
+    /// Encode `data` into the zstd frame a real server would send. Even empty
+    /// content produces a non-empty frame; a bare 0-byte body is not a valid
+    /// zstd stream and is rejected by newer async-compression, so tests must
+    /// mock a real frame rather than an empty body.
+    async fn zstd_frame(data: Vec<u8>) -> Vec<u8> {
+        encode_zstd_body(data)
+            .try_fold(Vec::new(), |mut acc, chunk| async move {
+                acc.extend_from_slice(&chunk);
+                Ok(acc)
+            })
+            .await
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn http_success() {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).insert_header(ORIGINAL_SIZE.as_str(), "0"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header(ORIGINAL_SIZE.as_str(), "0")
+                    .set_body_bytes(zstd_frame(vec![]).await),
+            )
             .mount(&mock_server)
             .await;
         let monitor = IoMonitor::new();
