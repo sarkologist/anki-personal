@@ -25,6 +25,11 @@ interface DOMMirrorAPI {
     preventResubscription(): () => void;
     flush(): void;
     syncFromStore(): void;
+    /**
+     * Whether the store already reflects the element's given raw innerHTML,
+     * i.e. a flush would be a no-op.
+     */
+    isClean(elementHTML: string): boolean;
 }
 
 type CancelIdleCallback = () => void;
@@ -74,6 +79,7 @@ function useDOMMirror(): DOMMirrorAPI {
     const allowResubscription = writable(true);
     let flushPendingMirror = noop;
     let syncFromStore = noop;
+    let isClean: (elementHTML: string) => boolean = () => false;
 
     function preventResubscription() {
         allowResubscription.set(false);
@@ -89,8 +95,13 @@ function useDOMMirror(): DOMMirrorAPI {
         { store }: { store: Writable<DocumentFragment> },
     ): { destroy(): void } {
         let cancelPendingSave: CancelIdleCallback | null = null;
-        let localStoreHTML: string | null = null;
-        let savingLocalHTML = false;
+        /**
+         * The fragment the store last received from this element (or retained,
+         * when the new one was equal). Used by {@link mirrorFromFragment} to
+         * recognize its own echo by identity, without serializing anything.
+         */
+        let lastMirroredFragment: DocumentFragment | null = null;
+        let lastSavedHTML: string | null = null;
 
         function cancelScheduledSave(): void {
             cancelPendingSave?.();
@@ -99,16 +110,35 @@ function useDOMMirror(): DOMMirrorAPI {
 
         function saveHTMLToStore(): void {
             cancelScheduledSave();
-            savingLocalHTML = true;
-            try {
-                store.set(cloneNode(element));
-                const unsubscribe = store.subscribe((fragment) => {
-                    localStoreHTML = nodeContentsHTML(fragment);
-                });
-                unsubscribe();
-            } finally {
-                savingLocalHTML = false;
+            /* Mutations that leave the serialized content unchanged (e.g.
+             * shadow-DOM bookkeeping right after decoration) don't need the
+             * expensive clone/normalize pipeline below. */
+            const currentHTML = element.innerHTML;
+            if (currentHTML === lastSavedHTML) {
+                return;
             }
+            const fragment = cloneNode(element);
+            /* Assign before set: subscribers run synchronously inside it. */
+            lastMirroredFragment = fragment;
+            store.set(fragment);
+            /* The store keeps its previous fragment when the new one is
+             * equal; record whichever object it retained. */
+            const unsubscribe = store.subscribe((retained) => {
+                lastMirroredFragment = retained;
+            });
+            unsubscribe();
+            /* Only after a successful set: if it threw, the store never
+             * received this state and the next flush must retry. */
+            lastSavedHTML = currentHTML;
+        }
+
+        function storeFragment(): DocumentFragment | undefined {
+            let current: DocumentFragment | undefined;
+            const unsubscribe = store.subscribe((fragment) => {
+                current = fragment;
+            });
+            unsubscribe();
+            return current;
         }
 
         function scheduleSaveHTMLToStore(): void {
@@ -123,6 +153,17 @@ function useDOMMirror(): DOMMirrorAPI {
         }
 
         flushPendingMirror = saveHTMLToStore;
+        const isCleanForElement = (elementHTML: string): boolean =>
+            /* The raw-HTML check alone is not enough: while the element is
+             * focused the store can be updated externally (e.g. from the
+             * plain-text input) without the element changing, so also require
+             * that the store still holds the exact fragment this mirror last
+             * recorded. */
+            lastSavedHTML !== null
+            && elementHTML === lastSavedHTML
+            && lastMirroredFragment !== null
+            && storeFragment() === lastMirroredFragment;
+        isClean = isCleanForElement;
 
         const observer = new MutationObserver(scheduleSaveHTMLToStore);
         observer.observe(element, config);
@@ -133,6 +174,9 @@ function useDOMMirror(): DOMMirrorAPI {
                 return;
             }
 
+            /* The element is about to be rewritten from the store, so the
+             * saved-HTML shortcut no longer reflects the store's value. */
+            lastSavedHTML = null;
             observer.disconnect();
             // element.replaceChildren(...node.childNodes); // TODO use once available
             while (element.firstChild) {
@@ -146,18 +190,11 @@ function useDOMMirror(): DOMMirrorAPI {
         }
 
         function mirrorFromFragment(fragment: DocumentFragment): void {
-            const fragmentHTML = nodeContentsHTML(fragment);
-            if (savingLocalHTML) {
-                localStoreHTML = fragmentHTML;
+            if (fragment === lastMirroredFragment) {
                 return;
             }
 
-            if (localStoreHTML === fragmentHTML) {
-                localStoreHTML = null;
-                return;
-            }
-
-            localStoreHTML = null;
+            lastMirroredFragment = null;
             mirrorToElement(cloneNode(fragment));
         }
 
@@ -208,6 +245,9 @@ function useDOMMirror(): DOMMirrorAPI {
                 unsubscribe();
                 unsubResubscription();
                 flushPendingMirror = noop;
+                if (isClean === isCleanForElement) {
+                    isClean = () => false;
+                }
                 if (syncFromStore === syncElementFromStore) {
                     syncFromStore = noop;
                 }
@@ -220,6 +260,7 @@ function useDOMMirror(): DOMMirrorAPI {
         preventResubscription,
         flush: () => flushPendingMirror(),
         syncFromStore: () => syncFromStore(),
+        isClean: (elementHTML) => isClean(elementHTML),
     };
 }
 

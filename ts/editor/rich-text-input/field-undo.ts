@@ -56,6 +56,12 @@ export class FieldUndo {
     private past: Snapshot[] = [];
     private future: Snapshot[] = [];
     private last: Snapshot;
+    /**
+     * The base element's raw (decorated) innerHTML at the time of the last
+     * snapshot, or null when it is unknown. Lets {@link commit} skip the
+     * expensive clone/normalize snapshot when nothing serializable changed.
+     */
+    private lastRawHtml: string | null = null;
     private debounceHandle: ReturnType<typeof setTimeout> | null = null;
     private cancelIdleCommit: CancelIdleCallback | null = null;
     private readonly observer: MutationObserver;
@@ -63,15 +69,29 @@ export class FieldUndo {
     constructor(
         private readonly base: HTMLElement,
         private readonly normalizeSnapshot?: NormalizeSnapshot,
+        /**
+         * Optional cheaper source for the normalized snapshot HTML, e.g. an
+         * already-normalized fragment maintained elsewhere. Receives the base
+         * element's current raw innerHTML so it can check that its fragment
+         * is not stale. Returning null falls back to cloning and normalizing
+         * the base element.
+         */
+        private readonly snapshotSource?: (rawHtml: string) => string | null,
     ) {
-        this.last = this.snapshot();
+        this.lastRawHtml = base.innerHTML;
+        this.last = this.snapshot(this.lastRawHtml);
         this.observer = new MutationObserver(() => this.onMutation());
         this.observer.observe(base, observerConfig);
     }
 
-    private snapshotHtml(): string {
+    private snapshotHtml(rawHtml: string): string {
+        const sourced = this.snapshotSource?.(rawHtml);
+        if (typeof sourced === "string") {
+            return sourced;
+        }
+
         if (!this.normalizeSnapshot) {
-            return this.base.innerHTML;
+            return rawHtml;
         }
 
         const range = document.createRange();
@@ -81,9 +101,9 @@ export class FieldUndo {
         return fragmentToString(fragment);
     }
 
-    private snapshot(): Snapshot {
+    private snapshot(rawHtml: string): Snapshot {
         return {
-            html: this.snapshotHtml(),
+            html: this.snapshotHtml(rawHtml),
             selection: saveSelection(this.base),
         };
     }
@@ -116,7 +136,12 @@ export class FieldUndo {
     }
 
     private commit(): void {
-        const current = this.snapshot();
+        const rawHtml = this.base.innerHTML;
+        if (rawHtml === this.lastRawHtml) {
+            return;
+        }
+        const current = this.snapshot(rawHtml);
+        this.lastRawHtml = rawHtml;
         if (current.html === this.last.html) {
             return;
         }
@@ -130,6 +155,9 @@ export class FieldUndo {
 
     private restore(snap: Snapshot): void {
         this.base.innerHTML = snap.html;
+        /* Decoration mutates the DOM after this, so the raw HTML that
+         * corresponds to this snapshot isn't knowable here. */
+        this.lastRawHtml = null;
         this.last = snap;
         if (snap.selection) {
             try {
@@ -185,7 +213,8 @@ export class FieldUndo {
         this.cancelScheduledIdleCommit();
         this.past.length = 0;
         this.future.length = 0;
-        this.last = this.snapshot();
+        this.lastRawHtml = this.base.innerHTML;
+        this.last = this.snapshot(this.lastRawHtml);
     }
 
     destroy(): void {
