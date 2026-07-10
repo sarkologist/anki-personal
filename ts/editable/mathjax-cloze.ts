@@ -176,7 +176,13 @@ export function revealMathjaxClozeAnswers(input: string): string {
             continue;
         }
 
-        output += `[${revealMathjaxClozeAnswers(clozedText(input.slice(openEnd, closeStart)))}]`;
+        // Wrap the reveal in a TeX group so the leading `[` can't be captured
+        // as an argument of a preceding token — e.g. `\\[…]` (a row break with
+        // an optional spacing argument, which errors) or `a_[x]` (subscript of
+        // just `[`). The group changes how the reveal binds to surrounding
+        // tokens (and confines any scoped declarations inside the cloze); the
+        // bracketed answer itself looks the same.
+        output += `{[${revealMathjaxClozeAnswers(clozedText(input.slice(openEnd, closeStart)))}]}`;
         index = closeStart + 2;
     }
 
