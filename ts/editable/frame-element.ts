@@ -82,7 +82,6 @@ export class FrameElement extends HTMLElement {
     constructor() {
         super();
         this.block = hasBlockAttribute(this);
-        frameObserver.observe(this, { childList: true });
     }
 
     attributeChangedCallback(name: string, old: string, newValue: string): void {
@@ -125,11 +124,14 @@ export class FrameElement extends HTMLElement {
         this.handleStart = this.getHandleFrom(this.firstElementChild, true);
         this.handleEnd = this.getHandleFrom(this.lastElementChild, false);
 
-        if (!this.handleStart.isConnected) {
+        /* Positional checks rather than isConnected: on disconnected clones
+         * (e.g. during field serialization) the handles are already in place
+         * and re-inserting them is pure churn. */
+        if (this.firstElementChild !== this.handleStart) {
             this.prepend(this.handleStart);
         }
 
-        if (!this.handleEnd.isConnected) {
+        if (this.lastElementChild !== this.handleEnd) {
             this.append(this.handleEnd);
         }
     }
@@ -160,6 +162,10 @@ export class FrameElement extends HTMLElement {
     }
 
     connectedCallback(): void {
+        /* Observing here rather than in the constructor keeps the shared
+         * observer off the disconnected clones made when serializing the
+         * field (re-observing the same target is idempotent). */
+        frameObserver.observe(this, { childList: true });
         frameElements.add(this);
         this.addEventListeners();
     }
@@ -231,12 +237,18 @@ document.addEventListener("selectionchange", onSelectionChange);
  */
 export function frameElement(element: HTMLElement, block: boolean): FrameElement {
     const frame = document.createElement(FrameElement.tagName) as FrameElement;
-    frame.setAttribute("block", String(block));
     frame.dataset.frames = element.tagName.toLowerCase();
 
+    /* Surround before setting "block": surroundContents empties the new
+     * parent ("replace all" per spec), so handles created by the block
+     * attribute's refreshHandles would be silently removed again. In this
+     * order the empty frame is inserted first, and refreshHandles then
+     * builds the handles around the already-framed element. */
     const range = new Range();
     range.selectNode(element);
     range.surroundContents(frame);
+
+    frame.setAttribute("block", String(block));
 
     return frame;
 }

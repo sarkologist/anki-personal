@@ -129,11 +129,6 @@ export abstract class FrameHandle extends HTMLElement {
 
     constructor() {
         super();
-        handleObserver.observe(this, {
-            childList: true,
-            subtree: true,
-            characterData: true,
-        });
         this.unsubscribe = null;
     }
 
@@ -171,6 +166,15 @@ export abstract class FrameHandle extends HTMLElement {
     }
 
     connectedCallback(): void {
+        /* Observing here rather than in the constructor keeps the shared
+         * observer off the disconnected clones made when serializing the
+         * field (re-observing the same target is idempotent). */
+        handleObserver.observe(this, {
+            childList: true,
+            subtree: true,
+            characterData: true,
+        });
+
         if (this.invalidSpace()) {
             this.refreshSpace();
         }

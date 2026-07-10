@@ -5,7 +5,7 @@ import { on } from "@tslib/events";
 
 import { placeCaretAfter, placeCaretBefore } from "$lib/domlib/place-caret";
 
-import { mount, tick } from "svelte";
+import { mount, tick, unmount } from "svelte";
 import { autoDecorationSuspended } from "./decorated";
 import type { DecoratedElement, DecoratedElementConstructor } from "./decorated";
 import { FrameElement, frameElement } from "./frame-element";
@@ -224,6 +224,20 @@ export const Mathjax: DecoratedElementConstructor = class Mathjax extends HTMLEl
 
     disconnectedCallback(): void {
         this.removeEventListeners();
+        this.unmountComponent();
+    }
+
+    /**
+     * Svelte 5 components stay registered in the reactive graph until
+     * unmounted, so skipping this leaks every decorated element (and its
+     * whole frame subtree) each time a note is (re)loaded.
+     */
+    unmountComponent(): void {
+        if (this.component) {
+            unmount(this.component);
+            this.component = null;
+            this.props = undefined;
+        }
     }
 
     attributeChangedCallback(name: string, old: string, newValue: string): void {
@@ -302,6 +316,8 @@ export const Mathjax: DecoratedElementConstructor = class Mathjax extends HTMLEl
     }
 
     undecorate(): void {
+        this.unmountComponent();
+
         if (this.parentElement?.tagName === FrameElement.tagName.toUpperCase()) {
             this.parentElement.replaceWith(this);
         }

@@ -3,7 +3,7 @@ Copyright: Ankitects Pty Ltd and contributors
 License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 -->
 <script context="module" lang="ts">
-    import { writable } from "svelte/store";
+    import { get, writable } from "svelte/store";
 
     import type { InputHandlerAPI } from "$lib/sveltelib/input-handler";
 
@@ -75,6 +75,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 <script lang="ts">
     import { directionKey, fontFamilyKey, fontSizeKey } from "@tslib/context-keys";
+    import { fragmentToString } from "@tslib/dom";
     import { promiseWithResolver } from "@tslib/promise";
     import { registerShortcut } from "@tslib/shortcuts";
     import { singleCallback } from "@tslib/typing";
@@ -128,6 +129,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         preventResubscription,
         flush: flushMirror,
         syncFromStore,
+        isClean: mirrorIsClean,
     } = useDOMMirror();
     const [inputHandler, setupInputHandler] = useInputHandler();
     const [customStyles, stylesResolve] = promiseWithResolver<Record<string, any>>();
@@ -220,7 +222,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     };
 
     richTextPromise.then((editable: HTMLElement) => {
-        fieldUndo = new FieldUndo(editable, undecorateFragment);
+        fieldUndo = new FieldUndo(editable, undecorateFragment, (rawHtml) => {
+            /* When the mirror has already flushed this exact DOM state, its
+             * store holds the normalized (undecorated) fragment; serializing
+             * that is much cheaper than cloning and normalizing the decorated
+             * DOM again. When the mirror is behind (or the content came from
+             * the store side), fall back to the normalizing path rather than
+             * forcing a synchronous flush here. */
+            if (!mirrorIsClean(rawHtml)) {
+                return null;
+            }
+            const fragment = get(nodes);
+            if (!fragment) {
+                return null;
+            }
+            return fragmentToString(fragment.cloneNode(true) as DocumentFragment);
+        });
 
         const updateSelectionContext = (): void => {
             const { inside, context } = richTextAgentSelectionContext(

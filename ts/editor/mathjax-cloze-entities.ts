@@ -51,6 +51,21 @@ function rightBraceRunEnd(text: string, index: number): number {
 }
 
 /**
+ * Characters that can begin one of the special sequences the scanner below
+ * cares about, outside and inside MathJax respectively. Everything between
+ * two specials is plain text that can be copied in one slice instead of
+ * character by character.
+ */
+const outsideMathjaxSpecials = /[{}\\]/g;
+const insideMathjaxSpecials = /[{}\\&]/g;
+
+function plainRunEnd(text: string, index: number, specials: RegExp): number {
+    specials.lastIndex = index;
+    const match = specials.exec(text);
+    return match ? match.index : text.length;
+}
+
+/**
  * Escape MathJax right braces that would otherwise be interpreted as cloze
  * close markers while the field is still raw stored text.
  */
@@ -95,8 +110,11 @@ export function escapeMathjaxClozeEntities(storedHtml: string): string {
                 continue;
             }
 
-            output += storedHtml[index];
-            index++;
+            /* Copy the current (possibly special but unhandled) character
+             * plus the plain run after it in one slice. */
+            const runEnd = plainRunEnd(storedHtml, index + 1, outsideMathjaxSpecials);
+            output += storedHtml.slice(index, runEnd);
+            index = runEnd;
             continue;
         }
 
@@ -177,8 +195,9 @@ export function escapeMathjaxClozeEntities(storedHtml: string): string {
             continue;
         }
 
-        output += storedHtml[index];
-        index++;
+        const plainEnd = plainRunEnd(storedHtml, index + 1, insideMathjaxSpecials);
+        output += storedHtml.slice(index, plainEnd);
+        index = plainEnd;
     }
 
     return output;

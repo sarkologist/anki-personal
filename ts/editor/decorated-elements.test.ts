@@ -14,6 +14,7 @@ vi.mock("svelte", async () => {
             moveCaretAfter: vi.fn(),
             selectAll: vi.fn(),
         })),
+        unmount: vi.fn(),
         tick: vi.fn(() => Promise.resolve()),
     };
 });
@@ -238,4 +239,30 @@ describe("decorated editor elements", () => {
             "before \\(\\alpha\\) and \\[x+y\\] after",
         );
     });
+
+    /**
+     * Regression guard: handle creation must not depend on mutation-observer
+     * round-trips. frameElement()'s surroundContents empties the new parent
+     * ("replace all" per spec), so handles created before the surround would
+     * be silently deleted, leaving frames without handles.
+     */
+    test.each([
+        ["inline", "<anki-mathjax>\\omega</anki-mathjax>", "false"],
+        ["block", "<anki-mathjax block=\"true\">x+y</anki-mathjax>", "true"],
+    ])(
+        "decorating a bare %s mathjax element creates both frame handles",
+        (_kind, html, block) => {
+            const base = document.createElement("div");
+            document.body.append(base);
+            base.innerHTML = html;
+
+            const frame = base.querySelector("anki-frame");
+            expect(frame).not.toBeNull();
+            expect(frame!.getAttribute("block")).toBe(block);
+            expect(
+                [...frame!.children].map((child) => child.tagName.toLowerCase()),
+            ).toEqual(["frame-start", "anki-mathjax", "frame-end"]);
+            base.remove();
+        },
+    );
 });
