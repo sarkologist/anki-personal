@@ -64,6 +64,42 @@ describe("revealMathjaxClozeAnswers", () => {
         ).toBe(String.raw`\sum_{\substack{x\bmod c\\{[x\bar x\equiv 1\,(c)]}}}`);
     });
 
+    test("splits the reveal around \\hfill so it stays top-level", () => {
+        // \hfill can't live inside a group, so the wrap is split around it
+        // (matching the backend's \class{cloze}{…} splitting).
+        expect(revealMathjaxClozeAnswers(String.raw`{{c1::0 \hfill y}}`)).toBe(
+            String.raw`{[0 ]}\hfill{[ y]}`,
+        );
+    });
+
+    test("splits around \\hfil and \\hfilll but not \\hfilneg", () => {
+        expect(revealMathjaxClozeAnswers(String.raw`{{c1::a \hfil b}}`)).toBe(
+            String.raw`{[a ]}\hfil{[ b]}`,
+        );
+        // \hfilll also routes to MathJax's restricted HFill handler.
+        expect(revealMathjaxClozeAnswers(String.raw`{{c1::a \hfilll b}}`)).toBe(
+            String.raw`{[a ]}\hfilll{[ b]}`,
+        );
+        // \hfilneg is legal inside a group — must not be split.
+        expect(revealMathjaxClozeAnswers(String.raw`{{c1::a \hfilneg b}}`)).toBe(
+            String.raw`{[a \hfilneg b]}`,
+        );
+        // \hfillll (four l's) is not a MathJax command — the boundary check
+        // must not over-match it as \hfilll.
+        expect(revealMathjaxClozeAnswers(String.raw`{{c1::a \hfillll b}}`)).toBe(
+            String.raw`{[a \hfillll b]}`,
+        );
+    });
+
+    test("does not split a \\hfill nested inside braces or an environment", () => {
+        expect(revealMathjaxClozeAnswers(String.raw`{{c1::{a \hfill b}}}`)).toBe(
+            String.raw`{[{a \hfill b}]}`,
+        );
+        expect(
+            revealMathjaxClozeAnswers(String.raw`{{c1::\begin{cases}a \hfill b\end{cases}}}`),
+        ).toBe(String.raw`{[\begin{cases}a \hfill b\end{cases}]}`);
+    });
+
     test("leaves malformed clozes unchanged", () => {
         const input = String.raw`{{c1::\{1\}}`;
         expect(revealMathjaxClozeAnswers(input)).toBe(input);

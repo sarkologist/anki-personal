@@ -35,4 +35,28 @@ describe("revealed mathjax clozes render", () => {
         const revealed = revealMathjaxClozeAnswers(String.raw`\frac{{{c1::a}}}{b}`);
         expect(rendersWithoutError(revealed)).toBe(true);
     });
+
+    // Regression for "Unsupported use of \hfill": \hfill can't sit inside the
+    // wrapping group, so the reveal is split around it.
+    test("cloze spanning a \\hfill in \\begin{cases}", () => {
+        const revealed = revealMathjaxClozeAnswers(
+            String
+                .raw`Tw_k = \begin{cases} Tu_j \hfill \text{ if } w_k = u_j\\ {{c1::0 \hfill \text{ if } w_k = v_j}}\end{cases}`,
+        );
+        expect(rendersWithoutError(revealed)).toBe(true);
+    });
+
+    test("cloze wrapping a whole \\begin{cases} that contains \\hfill", () => {
+        const revealed = revealMathjaxClozeAnswers(
+            String.raw`{{c1::\begin{cases} a \hfill b\\ c \hfill d\end{cases}}}`,
+        );
+        expect(rendersWithoutError(revealed)).toBe(true);
+    });
+
+    test("cloze spanning \\hfilll renders once split", () => {
+        const revealed = revealMathjaxClozeAnswers(
+            String.raw`\begin{cases} a \hfilll b\\ {{c1::c \hfilll d}}\end{cases}`,
+        );
+        expect(rendersWithoutError(revealed)).toBe(true);
+    });
 });

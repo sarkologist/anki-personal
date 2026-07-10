@@ -659,6 +659,23 @@ fn tex_environment_command_end(text: &str, start: usize, command: &str) -> Optio
     tex_group_end(text, idx)
 }
 
+/// Match a TeX control word (e.g. `\hfill`) at `start`, requiring a non-letter
+/// boundary so `\hfil` does not match inside `\hfill`/`\hfilneg`.
+fn tex_control_word_end(text: &str, start: usize, command: &str) -> Option<usize> {
+    if !text[start..].starts_with(command) {
+        return None;
+    }
+    let end = start + command.len();
+    if text[end..]
+        .chars()
+        .next()
+        .is_some_and(|char| char.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    Some(end)
+}
+
 fn mathjax_alignment_separator_end(text: &str, start: usize) -> Option<usize> {
     let rest = &text[start..];
     if rest.starts_with('&') {
@@ -667,6 +684,18 @@ fn mathjax_alignment_separator_end(text: &str, start: usize) -> Option<usize> {
         }
         return Some(start + 1);
     }
+
+    // \hfilll / \hfill / \hfil are the infinite-glue fills MathJax routes to
+    // its `HFill` handler, which only permits them at the top level of an
+    // alignment cell (not inside a group), so treat them like &/\\ and split
+    // the cloze around them. Longest command first; \hfilneg is legal inside a
+    // group, so the non-letter boundary check excludes it.
+    for command in [r"\hfilll", r"\hfill", r"\hfil"] {
+        if let Some(end) = tex_control_word_end(text, start, command) {
+            return Some(end);
+        }
+    }
+
     if !rest.starts_with(r"\\") {
         return None;
     }
@@ -1257,6 +1286,43 @@ mod test {
                 r#"\[\begin{aligned}a &amp;=<span class="cloze" data-ordinal="1">b \\ &amp;= c</span>\end{aligned}\]"#
             ),
             r#"\[\begin{aligned}a &amp;=\class{cloze}{b }\\ &amp;\class{cloze}{= c}\end{aligned}\]"#
+        );
+        // \hfill / \hfil must stay at the top level of an alignment cell —
+        // MathJax rejects them inside a group, so the cloze is split around
+        // them just like &/\\.
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\[\begin{cases}a\\<span class="cloze" data-ordinal="1">0 \hfill y</span>\end{cases}\]"#
+            ),
+            r#"\[\begin{cases}a\\\class{cloze}{0 }\hfill\class{cloze}{ y}\end{cases}\]"#
+        );
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\(<span class="cloze" data-ordinal="1">a \hfil b</span>\)"#
+            ),
+            r#"\(\class{cloze}{a }\hfil\class{cloze}{ b}\)"#
+        );
+        // \hfilll also routes to MathJax's restricted HFill handler.
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\(<span class="cloze" data-ordinal="1">a \hfilll b</span>\)"#
+            ),
+            r#"\(\class{cloze}{a }\hfilll\class{cloze}{ b}\)"#
+        );
+        // \hfilneg renders fine inside a group, so it must NOT be split, and
+        // \hfillll (four l's) is not a command — the boundary must not
+        // over-match it as \hfilll.
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\(<span class="cloze" data-ordinal="1">a \hfilneg b</span>\)"#
+            ),
+            r#"\(\class{cloze}{a \hfilneg b}\)"#
+        );
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\(<span class="cloze" data-ordinal="1">a \hfillll b</span>\)"#
+            ),
+            r#"\(\class{cloze}{a \hfillll b}\)"#
         );
         let question_ctx = RenderContext {
             fields: &Default::default(),
