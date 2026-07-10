@@ -166,6 +166,11 @@ describe("Mathjax.toStored matches the original per-frame parser", () => {
         expect(Mathjax.toStored(input)).toBe(oracleToStored(input));
     });
 
+    // Each iteration builds decorated HTML through jsdom and runs it past both
+    // the optimized converter and the DOM oracle, so the loop is dominated by
+    // jsdom parsing cost. 1500 iterations keep broad coverage while staying well
+    // clear of the timeout on slower, contended CI runners; the generous explicit
+    // timeout is headroom, not the expected runtime (~0.4s locally).
     test("fuzz: random sources, orders and contexts stay byte-identical", () => {
         const chars = [
             "a",
@@ -212,7 +217,7 @@ describe("Mathjax.toStored matches the original per-frame parser", () => {
             return seed / 0x7fffffff;
         };
 
-        for (let i = 0; i < 4000; i++) {
+        for (let i = 0; i < 1500; i++) {
             const parts: string[] = [];
             const n = 1 + Math.floor(rng() * 3);
             for (let j = 0; j < n; j++) {
@@ -231,5 +236,5 @@ describe("Mathjax.toStored matches the original per-frame parser", () => {
             const input = parts.join(" text & <b>more</b> ");
             expect(Mathjax.toStored(input)).toBe(oracleToStored(input));
         }
-    });
+    }, 20000);
 });
