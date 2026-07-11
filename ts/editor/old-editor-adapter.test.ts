@@ -65,6 +65,30 @@ describe("pasteHTML", () => {
             ].join(""),
         );
     });
+
+    test("collapses decorated MathJax frames in an internal paste to plain tags", () => {
+        // Internal pastes carry the fully decorated frame (handles + rendered
+        // svg); inserting that verbatim can split the surrounding block. It
+        // should be normalized back to a plain <anki-mathjax> before insertion.
+        pasteHTML(
+            [
+                "text <anki-frame data-frames=\"anki-mathjax\" block=\"false\">",
+                "<frame-start data-frames=\"anki-mathjax\"> </frame-start>",
+                "<anki-mathjax data-mathjax=\"x^2\" contenteditable=\"false\" decorated=\"true\">",
+                "<span class=\"mathjax\"><svg><path d=\"M0 0\"></path></svg></span>",
+                "</anki-mathjax>",
+                "<frame-end data-frames=\"anki-mathjax\"> </frame-end></anki-frame> end",
+            ].join(""),
+            true,
+            false,
+        );
+
+        expect(execCommand).toHaveBeenCalledWith(
+            "inserthtml",
+            false,
+            "text <anki-mathjax>x^2</anki-mathjax> end",
+        );
+    });
 });
 
 describe("unwrapHeadingsWrappingBlocks", () => {

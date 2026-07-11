@@ -157,6 +157,15 @@ export function pasteHTML(
 ): void {
     html = normalizeMarkdownMathElements(html);
     html = filterHTML(html, internal, extendedMode);
+    if (internal) {
+        // An internal paste carries fully decorated MathJax — the `<anki-frame>`
+        // wrapper, frame handles and rendered `<svg>`. Handing that to
+        // `execCommand("insertHTML")` can split the surrounding block, stranding
+        // the math (and the text after it) as a bare node on its own line.
+        // Collapse it back to plain `<anki-mathjax>` first so it inserts cleanly
+        // and re-decorates in context.
+        html = decoratedElements.toStored(html);
+    }
     html = decoratedElements.toUndecorated(html);
 
     if (html !== "") {
