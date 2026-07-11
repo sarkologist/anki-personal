@@ -24,6 +24,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     function scheduleRender(
         mathjax: string,
         fontSize: number,
+        block: boolean,
         templateScriptVersion: number,
     ): void {
         const generation = ++renderGeneration;
@@ -34,7 +35,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             // key only depends on the rendered geometry / template version.
             // Empty input needs no MathJax; the same icon doubles as the loading
             // placeholder for non-empty input.
-            [converted, title] = convertMathjax("", fontSize);
+            [converted, title] = convertMathjax("", fontSize, block);
             if (source.trim().length === 0) {
                 return;
             }
@@ -42,9 +43,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             void getCachedMathjaxConversionAfterLoad(
                 mathjax,
                 fontSize,
+                block,
                 templateScriptVersion,
                 loadMathjax,
-                () => convertMathjax(source, fontSize),
+                () => convertMathjax(source, fontSize, block),
             ).then(
                 (conversion) => {
                     if (generation === renderGeneration) {
@@ -61,7 +63,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         });
     }
 
-    $: scheduleRender(mathjax, fontSize, mathjaxConfig.templateScriptVersion);
+    $: scheduleRender(mathjax, fontSize, block, mathjaxConfig.templateScriptVersion);
     $: empty = title === "MathJax";
 
     let host: HTMLElement;
