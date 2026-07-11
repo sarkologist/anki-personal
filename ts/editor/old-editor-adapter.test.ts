@@ -13,7 +13,9 @@ vi.mock("$lib/domlib", () => ({
     execCommand: vi.fn(),
 }));
 
-import { pasteHTML } from "./old-editor-adapter";
+import { __testing, pasteHTML } from "./old-editor-adapter";
+
+const { unwrapHeadingsWrappingBlocks, collectHeadingsWrappingBlocks } = __testing;
 
 describe("pasteHTML", () => {
     beforeEach(() => {
@@ -62,5 +64,96 @@ describe("pasteHTML", () => {
                 "<anki-mathjax>z</anki-mathjax>",
             ].join(""),
         );
+    });
+
+    test("collapses decorated MathJax frames in an internal paste to plain tags", () => {
+        // Internal pastes carry the fully decorated frame (handles + rendered
+        // svg); inserting that verbatim can split the surrounding block. It
+        // should be normalized back to a plain <anki-mathjax> before insertion.
+        pasteHTML(
+            [
+                "text <anki-frame data-frames=\"anki-mathjax\" block=\"false\">",
+                "<frame-start data-frames=\"anki-mathjax\"> </frame-start>",
+                "<anki-mathjax data-mathjax=\"x^2\" contenteditable=\"false\" decorated=\"true\">",
+                "<span class=\"mathjax\"><svg><path d=\"M0 0\"></path></svg></span>",
+                "</anki-mathjax>",
+                "<frame-end data-frames=\"anki-mathjax\"> </frame-end></anki-frame> end",
+            ].join(""),
+            true,
+            false,
+        );
+
+        expect(execCommand).toHaveBeenCalledWith(
+            "inserthtml",
+            false,
+            "text <anki-mathjax>x^2</anki-mathjax> end",
+        );
+    });
+});
+
+describe("unwrapHeadingsWrappingBlocks", () => {
+    function normalize(html: string): string {
+        const root = document.createElement("div");
+        root.innerHTML = html;
+        unwrapHeadingsWrappingBlocks(root);
+        return root.innerHTML;
+    }
+
+    test("unwraps a heading that wraps a block element (paste corruption)", () => {
+        // execCommand("insertHTML") nests the pasted paragraph inside a
+        // duplicate heading; the inline MathJax inside would then inherit the
+        // heading font size and drop onto its own line.
+        expect(
+            normalize(
+                "<h1>Title</h1><h1><div>text <anki-mathjax>x</anki-mathjax></div></h1>",
+            ),
+        ).toBe("<h1>Title</h1><div>text <anki-mathjax>x</anki-mathjax></div>");
+    });
+
+    test("unwraps a heading wrapping a block-attributed element", () => {
+        // A frame/element that is block only via its `block` attribute (not its
+        // tag name) must still count as block, so `elementIsBlock` is used.
+        const root = document.createElement("div");
+        root.innerHTML = "<h2><anki-frame block=\"true\">x</anki-frame></h2>";
+
+        unwrapHeadingsWrappingBlocks(root);
+
+        expect(root.querySelector("h2")).toBeNull();
+        expect(root.querySelector("anki-frame")?.parentElement).toBe(root);
+    });
+
+    test("unwraps nested block-wrapping headings", () => {
+        expect(normalize("<h1><div><h2><div>x</div></h2></div></h1>")).toBe(
+            "<div><div>x</div></div>",
+        );
+    });
+
+    test("leaves a heading with only inline content untouched", () => {
+        const html = "<h2>Intro <anki-mathjax>x</anki-mathjax> and <b>bold</b></h2>";
+        expect(normalize(html)).toBe(html);
+    });
+
+    test("leaves a mixed heading (inline text + block) untouched to avoid data loss", () => {
+        const html = "<h1>Title<div>body</div></h1>";
+        expect(normalize(html)).toBe(html);
+    });
+
+    test("leaves a heading that legitimately follows a block untouched", () => {
+        const html = "<div>para</div><h2>Heading</h2><div>more</div>";
+        expect(normalize(html)).toBe(html);
+    });
+
+    test("does not rewrite a pre-existing offender the paste did not introduce", () => {
+        const root = document.createElement("div");
+        root.innerHTML = "<h1><div>old</div></h1><h2><div>pasted</div></h2>";
+
+        // Snapshot offenders before the "paste"; the <h1> is pre-existing, so
+        // only the freshly introduced <h2> should be unwrapped.
+        const preexisting = collectHeadingsWrappingBlocks(root);
+        root.querySelector("h2")!.remove();
+        root.insertAdjacentHTML("beforeend", "<h2><div>pasted</div></h2>");
+        unwrapHeadingsWrappingBlocks(root, preexisting);
+
+        expect(root.innerHTML).toBe("<h1><div>old</div></h1><div>pasted</div>");
     });
 });
