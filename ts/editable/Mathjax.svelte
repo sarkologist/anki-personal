@@ -91,7 +91,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         // the host is a <span>, not a replaced element, so without it
         // `display: block` would fill the parent width and the auto margins
         // would collapse to zero, leaving the math flush-left.
-        ":host(.block) { display: block; overflow: visible; width: fit-content; max-width: none !important; margin: 1rem auto; transform: scale(1.1); }",
+        //
+        // A block equation wider than the field must not be clipped. Cap it to
+        // the field width (`max-width: 100%`) and let it scroll horizontally
+        // (`overflow-x: auto`) so the left edge stays visible — the old
+        // `overflow: visible` + `margin: auto` centred the overflow and cut off
+        // *both* ends. The 10% enlargement uses `zoom`, not `transform: scale`:
+        // a transform is applied after layout, so its overflow isn't scrollable
+        // and the scaled math would spill past the field and clip again.
+        ":host(.block) { display: block; overflow-x: auto; overflow-y: hidden; width: fit-content; max-width: 100% !important; margin: 1rem auto; zoom: 1.1; }",
         ":host(.empty) { vertical-align: text-bottom; }",
         ":host(.empty) svg { width: var(--font-size); height: var(--font-size); }",
     ].join("\n");
