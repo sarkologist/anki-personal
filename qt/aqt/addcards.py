@@ -347,6 +347,26 @@ class AddCards(QMainWindow):
         else:
             super().keyPressEvent(evt)
 
+    def changeEvent(self, evt: QEvent | None) -> None:
+        super().changeEvent(evt)
+        if evt is None:
+            return
+        if evt.type() in (
+            QEvent.Type.ActivationChange,
+            QEvent.Type.WindowStateChange,
+        ):
+            editor = getattr(self, "editor", None)
+            if (
+                editor
+                and not self._close_event_has_cleaned_up
+                and self.isActiveWindow()
+                and not self.isMinimized()
+            ):
+                # QtWebEngine can leave the editor surface blank after the window
+                # is re-activated or restored (macOS/Metal); force a repaint so
+                # returning to the window brings the fields back.
+                editor.refresh_web_view_surface()
+
     def closeEvent(self, evt: QCloseEvent) -> None:
         if self._close_event_has_cleaned_up:
             evt.accept()
@@ -375,14 +395,23 @@ class AddCards(QMainWindow):
             if self.editor.fieldsAreBlank(self._last_added_note):
                 return onOk()
 
-            ask_user_dialog(
-                tr.adding_discard_current_input(),
-                callback=callback,
-                buttons=[
-                    QMessageBox.StandardButton.Discard,
-                    (tr.adding_keep_editing(), QMessageBox.ButtonRole.RejectRole),
-                ],
-            )
+            def prompt_discard() -> None:
+                ask_user_dialog(
+                    tr.adding_discard_current_input(),
+                    callback=callback,
+                    buttons=[
+                        QMessageBox.StandardButton.Discard,
+                        (tr.adding_keep_editing(), QMessageBox.ButtonRole.RejectRole),
+                    ],
+                )
+
+            # Fields still hold content, but the editor surface may have gone
+            # blank (QtWebEngine/Metal). Repaint it, then show the discard prompt
+            # a beat later so the user sees their content before deciding —
+            # ask_user_dialog opens non-modally, so we must not race the queued
+            # repaint (and WebEngine presents its surface asynchronously).
+            self.editor.refresh_web_view_surface(reset_surface=True)
+            self.mw.progress.timer(120, prompt_discard, False, parent=self)
 
         self.editor.call_after_note_saved(afterSave)
 

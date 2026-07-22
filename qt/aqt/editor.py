@@ -11,6 +11,7 @@ import json
 import mimetypes
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -191,6 +192,10 @@ class Editor:
         # used for the io mask editor's context menu
         self.last_io_image_path: str | None = None
         self._latex_preview_cache: dict[str, LegacyLatexPreviewResult] = {}
+        # guards against reentrant / runaway webview crash recovery
+        self._recovering_webview = False
+        self._recent_recovery_times: list[float] = []
+        self._recovery_retry_scheduled = False
         self._init_links()
         self.setupOuter()
         self.add_webview()
@@ -870,13 +875,84 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
 
     saveNow = call_after_note_saved
 
+    def refresh_web_view_surface(self, *, reset_surface: bool = False) -> None:
+        """Force the editor webview to repaint its surface.
+
+        Works around QtWebEngine intermittently presenting a blank (white)
+        surface while the underlying page and its JavaScript stay alive — most
+        often on macOS/Metal, where Chromium's composited image is imported into
+        Qt's pipeline and that import can fail without a process crash. Safe to
+        call frequently; it schedules a single repaint on the main thread and
+        does nothing if the webview has since been torn down.
+
+        Pass ``reset_surface=True`` for the more forceful hide/show sequence when
+        a plain repaint is not enough (e.g. right before we might ask the user to
+        discard). Do not call the reset variant on a hot path (e.g. per keypress)
+        — it can disturb focus and the active input-method composition.
+        """
+        web = self.web
+        if not web:
+            return
+
+        def refresh() -> None:
+            # The editor may have been cleaned up or swapped out before the
+            # timer fired; never touch a dead or replaced webview.
+            if not self.web or self.web is not web or not web.isVisible():
+                return
+            focused = QApplication.focusWidget()
+            if reset_surface:
+                web.hide()
+                web.show()
+            web.update()
+            web.repaint()
+            # hide()/show() can steal focus from the active field; restore it if
+            # it belonged to this editor's window.
+            if focused and focused.window() is self.parentWindow.window():
+                focused.setFocus()
+
+        self.mw.progress.timer(0, refresh, False, parent=web)
+
     def recover_webview_after_crash(self) -> None:
         if not self.web or not self.note:
             return
 
-        focus_to = self.currentField
-        self.setupWeb()
-        self.loadNote(focusTo=focus_to)
+        # Avoid reentrancy and runaway reload/crash loops: if the renderer keeps
+        # dying we reload a bounded number of times, then back off. A genuine
+        # dead renderer has no live JS state to lose, so reloading from
+        # self.note is safe here.
+        if self._recovering_webview:
+            return
+        now = time.monotonic()
+        self._recent_recovery_times = [
+            t for t in self._recent_recovery_times if now - t < 30
+        ]
+        if len(self._recent_recovery_times) >= 3:
+            # Too many reloads too fast. Back off — but a terminated renderer
+            # won't emit another signal, so we must not leave the webview blank
+            # forever: schedule a single coalesced retry once the oldest reload
+            # ages out of the window.
+            if not self._recovery_retry_scheduled:
+                self._recovery_retry_scheduled = True
+                delay_ms = (
+                    int((30 - (now - self._recent_recovery_times[0])) * 1000) + 50
+                )
+
+                def retry() -> None:
+                    self._recovery_retry_scheduled = False
+                    self.recover_webview_after_crash()
+
+                self.mw.progress.timer(delay_ms, retry, False, parent=self.web)
+            print("editor webview crashing repeatedly; backing off before retry")
+            return
+        self._recent_recovery_times.append(now)
+
+        self._recovering_webview = True
+        try:
+            focus_to = self.currentField
+            self.setupWeb()
+            self.loadNote(focusTo=focus_to)
+        finally:
+            self._recovering_webview = False
 
     def _check_and_update_duplicate_display_async(self) -> None:
         note = self.note
