@@ -232,32 +232,8 @@ class Browser(QMainWindow):
         if self._closeEventHasCleanedUp or not editor:
             return
 
-        web = editor.web
-        if not web:
-            return
-
-        def refresh() -> None:
-            current_editor = getattr(self, "editor", None)
-            if (
-                self._closeEventHasCleanedUp
-                or not current_editor
-                or current_editor.web is not web
-                or not web.isVisible()
-            ):
-                return
-
-            focused = QApplication.focusWidget()
-            if reset_surface:
-                web.hide()
-                web.show()
-
-            web.update()
-            web.repaint()
-
-            if focused and focused.window() is self:
-                focused.setFocus()
-
-        self.mw.progress.timer(0, refresh, False, parent=web)
+        # Recovery logic lives on Editor so the Add window shares it.
+        editor.refresh_web_view_surface(reset_surface=reset_surface)
 
     def set_layout(self, mode: BrowserLayout, init: bool = False) -> None:
         self.mw.pm.set_browser_layout(mode)
