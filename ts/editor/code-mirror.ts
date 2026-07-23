@@ -193,6 +193,15 @@ export function setupCodeMirror(
         (value: string): void => {
             if (editor.getValue() !== value) {
                 editor.setValue(value);
+                /* A store-driven populate is a programmatic baseline, not a
+                 * user edit, so it must not be an undoable step. Otherwise the
+                 * first undo after opening an editor reverts the initial
+                 * `setValue` and wipes the content — e.g. blanking a MathJax
+                 * equation (and its decorated block) on Ctrl+Z. User edits are
+                 * made while focused, when this subscription is inactive, so
+                 * their history is unaffected. Deliberate undoable replacements
+                 * go through `replaceValueWithUndo`, which bypasses this path. */
+                editor.clearHistory();
             }
         },
         false,
