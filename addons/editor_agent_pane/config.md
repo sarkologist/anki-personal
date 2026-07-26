@@ -11,7 +11,7 @@ direct OpenAI API billing.
 - `ollama_host`: Ollama host used for model discovery and as `OLLAMA_HOST` for `ollama run`. Defaults to `http://127.0.0.1:11434`.
 - `ollama_model`: Local Ollama model selected from discovered models. The pane discovers installed models from `/api/tags`, falling back to `ollama list`.
 - `claude_path`: Optional path to the Claude CLI. Leave blank to use `claude` from `PATH`, then common install locations such as `~/.local/bin/claude`.
-- `claude_model`: Optional Claude model override selected from the Model pulldown. `Claude default` stores an empty value and uses your Claude CLI's default model; the other choices pass the `fable`, `opus`, `sonnet`, or `haiku` alias to `--model`, so each one follows the latest model of that family.
+- `claude_model`: Optional Claude model override selected from the Model pulldown. `Claude default` stores an empty value and uses your Claude CLI's default model. `Fable`, `Opus (latest)`, `Sonnet`, and `Haiku` pass the matching alias to `--model`, so each one follows the latest model of that family as the installed CLI resolves it. `Opus 5` passes the full `claude-opus-5` id, because a CLI that still maps `opus` to Opus 4.8 has no alias for it.
 - `reasoning_effort`: Optional reasoning effort override selected from the
   Effort pulldown, shared by the Codex and Claude providers. `Codex default` /
   `Claude default` stores an empty value and uses the CLI's normal effort

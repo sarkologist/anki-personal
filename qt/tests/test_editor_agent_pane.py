@@ -2034,7 +2034,7 @@ def test_codex_effort_options_gate_max_and_ultra_by_model() -> None:
 
 
 def test_claude_effort_options_gate_xhigh_and_max_by_model() -> None:
-    for model in ("fable", "opus", "sonnet"):
+    for model in ("fable", "opus", "claude-opus-5", "sonnet"):
         assert claude_effort_options(model) == CLAUDE_EFFORT_OPTIONS
     # Haiku 4.5 has no xhigh/max effort.
     haiku = [value for _label, value in claude_effort_options("haiku")]
@@ -2117,12 +2117,15 @@ def test_agent_provider_options_include_claude() -> None:
 def test_claude_model_options_include_default_and_aliases() -> None:
     assert CLAUDE_MODEL_OPTIONS[0] == ("Claude default", "")
     values = [value for _label, value in CLAUDE_MODEL_OPTIONS]
-    assert values == ["", "fable", "opus", "sonnet", "haiku"]
+    # The aliases follow whatever the installed CLI maps them to; the pinned id
+    # is there because that CLI still resolves `opus` to Opus 4.8.
+    assert values == ["", "fable", "opus", "claude-opus-5", "sonnet", "haiku"]
     assert (
         model_options_with_legacy("opus", CLAUDE_MODEL_OPTIONS) == CLAUDE_MODEL_OPTIONS
     )
-    assert model_option_index("sonnet", CLAUDE_MODEL_OPTIONS) == 3
+    assert model_option_index("sonnet", CLAUDE_MODEL_OPTIONS) == 4
     assert model_option_index("fable", CLAUDE_MODEL_OPTIONS) == 1
+    assert model_option_index("claude-opus-5", CLAUDE_MODEL_OPTIONS) == 3
     assert model_option_index("", CLAUDE_MODEL_OPTIONS) == 0
 
 

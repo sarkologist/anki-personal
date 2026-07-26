@@ -44,6 +44,7 @@ _CLAUDE_THROUGH_MAX = frozenset({"low", "medium", "high", "xhigh", "max"})
 CLAUDE_MODEL_EFFORT_LEVELS: dict[str, frozenset[str]] = {
     "fable": _CLAUDE_THROUGH_MAX,
     "opus": _CLAUDE_THROUGH_MAX,
+    "claude-opus-5": _CLAUDE_THROUGH_MAX,
     "sonnet": _CLAUDE_THROUGH_MAX,
     # Haiku 4.5 has no xhigh/max effort.
     "haiku": frozenset({"low", "medium", "high"}),

@@ -34,11 +34,15 @@ MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
 )
 
 # Family aliases rather than pinned ids, so each one follows the latest model
-# the installed claude CLI maps it to.
+# the installed claude CLI maps it to. Opus 5 is listed by its full id as well,
+# because the CLI resolves the `opus` alias per version and current builds still
+# point it at Opus 4.8; the CLI passes an unrecognised --model straight through,
+# so the pinned id works whether or not that build knows the name.
 CLAUDE_MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Claude default", ""),
     ("Fable", "fable"),
-    ("Opus", "opus"),
+    ("Opus (latest)", "opus"),
+    ("Opus 5", "claude-opus-5"),
     ("Sonnet", "sonnet"),
     ("Haiku", "haiku"),
 )
