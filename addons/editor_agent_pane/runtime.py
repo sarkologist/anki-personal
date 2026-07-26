@@ -1169,8 +1169,9 @@ class EditorAgentPane(QWidget):
         self._save_current_model_choice(config)
         config["provider"] = self._provider()
         # The new model may reason to a different depth, so re-offer the effort
-        # levels it takes and persist the (possibly reset) choice.
-        self._set_effort_choice(str(config["reasoning_effort"]))
+        # levels it takes and persist the (possibly reset) choice. The pulldown
+        # only reaches the config on save, so start from the live pick.
+        self._set_effort_choice(self._reasoning_effort())
         config["reasoning_effort"] = self._reasoning_effort()
         _write_config(config)
         self._load_instructions_for_current_choice(config)
@@ -1178,13 +1179,20 @@ class EditorAgentPane(QWidget):
 
     def _on_provider_changed(self, _index: int) -> None:
         config = _config()
-        if not getattr(self, "_loading_settings", False):
+        loading = getattr(self, "_loading_settings", False)
+        # Effort is shared across providers, so the pick carries over - but the
+        # pulldown only reaches the config on save, so read it before the new
+        # provider rebuilds it. While loading, the config is the only truth.
+        effort = str(config["reasoning_effort"]) if loading else self._reasoning_effort()
+        if not loading:
             self._save_current_instructions(config)
             self._save_current_model_choice(config)
             config["provider"] = self._provider()
-            _write_config(config)
         self._set_model_choice(self._saved_model_for_provider(self._provider(), config))
-        self._set_effort_choice(str(config["reasoning_effort"]))
+        self._set_effort_choice(effort)
+        if not loading:
+            config["reasoning_effort"] = self._reasoning_effort()
+            _write_config(config)
         self._load_instructions_for_current_choice(config)
         self._update_provider_controls()
         self.refresh_context_label()

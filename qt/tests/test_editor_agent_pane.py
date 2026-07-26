@@ -2613,6 +2613,117 @@ def test_agent_pane_model_change_keeps_effort_the_new_model_supports(
     assert saved["reasoning_effort"] == "high"
 
 
+def test_agent_pane_model_change_keeps_an_unsaved_effort_pick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.setCurrentIndex(0)
+    pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CODEX
+    pane.refresh_context_label = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["reasoning_effort"] = "low"
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._set_model_choice("gpt-5.6-sol")
+    # The effort pulldown is only written to the config on save, so a fresh pick
+    # lives in the widget alone - a model change must not throw it away.
+    pane._set_effort_choice("max")
+    pane.model_combo.setCurrentIndex(model_option_index("gpt-5.6-luna"))
+    pane._on_model_changed(pane.model_combo.current_index)
+
+    assert pane.effort_combo.currentData() == "max"
+    assert saved["reasoning_effort"] == "max"
+
+
+def test_agent_pane_provider_change_carries_an_unsaved_effort_pick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.addItem("Claude", PROVIDER_CLAUDE)
+    pane.provider_combo.setCurrentIndex(1)
+    pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CLAUDE
+    pane._update_provider_controls = lambda: None
+    pane.refresh_context_label = lambda: None
+    pane._refresh_ollama_models = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["reasoning_effort"] = "low"
+    config["codex_model"] = "gpt-5.6-sol"
+    config["claude_model"] = "opus"
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._set_model_choice("opus")
+    pane._set_effort_choice("max")
+    pane.provider_combo.setCurrentIndex(0)
+
+    pane._on_provider_changed(0)
+
+    # gpt-5.6-sol reasons that deep too, so the unsaved pick survives the switch.
+    assert pane.effort_combo.currentData() == "max"
+    assert saved["reasoning_effort"] == "max"
+
+
+def test_agent_pane_provider_change_drops_an_effort_the_new_pair_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.addItem("Claude", PROVIDER_CLAUDE)
+    pane.provider_combo.setCurrentIndex(0)
+    pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CODEX
+    pane._update_provider_controls = lambda: None
+    pane.refresh_context_label = lambda: None
+    pane._refresh_ollama_models = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["codex_model"] = "gpt-5.6-sol"
+    config["claude_model"] = "haiku"
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._set_model_choice("gpt-5.6-sol")
+    pane._set_effort_choice("ultra")
+    pane.provider_combo.setCurrentIndex(1)
+
+    pane._on_provider_changed(1)
+
+    # Haiku has no "ultra"; the pane must not carry it into the Claude run.
+    assert pane.effort_combo.currentData() == ""
+    assert saved["reasoning_effort"] == ""
+
+
 def test_agent_pane_effort_choice_keeps_unknown_legacy_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
