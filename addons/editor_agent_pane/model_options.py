@@ -18,18 +18,26 @@ PROVIDER_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Claude", PROVIDER_CLAUDE),
 )
 
+# The models the Codex CLI currently offers. The gpt-5.3 Codex models were
+# retired from its catalogue (the API rejects them), so they are no longer
+# listed - a config that still names one keeps working through the legacy entry
+# `model_options_with_legacy` appends.
 MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Codex default", ""),
+    ("gpt-5.6-sol", "gpt-5.6-sol"),
+    ("gpt-5.6-terra", "gpt-5.6-terra"),
+    ("gpt-5.6-luna", "gpt-5.6-luna"),
     ("gpt-5.5", "gpt-5.5"),
     ("gpt-5.4", "gpt-5.4"),
     ("gpt-5.4-mini", "gpt-5.4-mini"),
-    ("gpt-5.3-codex", "gpt-5.3-codex"),
-    ("gpt-5.3-codex-spark", "gpt-5.3-codex-spark"),
     ("gpt-5.2", "gpt-5.2"),
 )
 
+# Family aliases rather than pinned ids, so each one follows the latest model
+# the installed claude CLI maps it to.
 CLAUDE_MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Claude default", ""),
+    ("Fable", "fable"),
     ("Opus", "opus"),
     ("Sonnet", "sonnet"),
     ("Haiku", "haiku"),

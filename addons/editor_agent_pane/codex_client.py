@@ -42,7 +42,17 @@ PROJECT_FOLDER_ACCESS_MODES = (
     PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
     PROJECT_FOLDER_ACCESS_READ_ONLY,
 )
-MODELS_WITHOUT_REASONING_SUMMARIES = frozenset({"gpt-5.3-codex-spark"})
+# Models that never emit reasoning summaries, whatever `model_reasoning_summary`
+# asks for - the gpt-5.6 family reports no reasoning items even at high effort.
+# Asking them for "concise" would just misdescribe the run.
+MODELS_WITHOUT_REASONING_SUMMARIES = frozenset(
+    {
+        "gpt-5.3-codex-spark",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    }
+)
 
 PROJECT_ACCESS_INSTRUCTIONS = {
     PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE: (
