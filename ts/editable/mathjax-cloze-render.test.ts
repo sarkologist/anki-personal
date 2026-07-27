@@ -85,6 +85,13 @@ describe("revealed mathjax clozes render", () => {
         expect(rendersWithoutError(revealed)).toBe(true);
     });
 
+    test("cloze spanning a \\cr row break", () => {
+        const revealed = revealMathjaxClozeAnswers(
+            String.raw`\begin{aligned}a&={{c1::b\cr c}}\end{aligned}`,
+        );
+        expect(rendersWithoutError(revealed)).toBe(true);
+    });
+
     // The narrowed wrap leaves fills at the cell's top level too, so an answer
     // holding both a separator and a fill needs no splitting on top.
     test("cloze spanning both an alignment tab and a \\hfill", () => {

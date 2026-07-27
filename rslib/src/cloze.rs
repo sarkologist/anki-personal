@@ -696,6 +696,12 @@ fn mathjax_alignment_separator_end(text: &str, start: usize) -> Option<usize> {
         }
     }
 
+    // \cr is a row break in MathJax's alignment environments just as \\ is;
+    // the boundary check keeps it from matching e.g. \crown.
+    if let Some(end) = tex_control_word_end(text, start, r"\cr") {
+        return Some(end);
+    }
+
     if !rest.starts_with(r"\\") {
         return None;
     }
@@ -1323,6 +1329,19 @@ mod test {
                 r#"\(<span class="cloze" data-ordinal="1">a \hfillll b</span>\)"#
             ),
             r#"\(\class{cloze}{a \hfillll b}\)"#
+        );
+        // \cr is a row break just like \\, and must not match \crown.
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\[\begin{aligned}a &=<span class="cloze" data-ordinal="1">b \cr = c</span>\end{aligned}\]"#
+            ),
+            r#"\[\begin{aligned}a &=\class{cloze}{b }\cr\class{cloze}{ = c}\end{aligned}\]"#
+        );
+        assert_eq!(
+            strip_html_inside_mathjax(
+                r#"\(<span class="cloze" data-ordinal="1">a\crown b</span>\)"#
+            ),
+            r#"\(\class{cloze}{a\crown b}\)"#
         );
         let question_ctx = RenderContext {
             fields: &Default::default(),

@@ -152,6 +152,18 @@ describe("revealMathjaxClozeAnswers", () => {
             ).toBe(String.raw`{[}a \hfill b\\c{]}`);
         });
 
+        test("keeps a \\cr row break out of the group", () => {
+            expect(revealMathjaxClozeAnswers(String.raw`{{c1::a\cr b}}`)).toBe(
+                String.raw`{[}a\cr b{]}`,
+            );
+        });
+
+        test("ignores a longer control word starting with \\cr", () => {
+            expect(revealMathjaxClozeAnswers(String.raw`{{c1::a\crown b}}`)).toBe(
+                String.raw`{[a\crown b]}`,
+            );
+        });
+
         test("ignores an escaped ampersand", () => {
             expect(revealMathjaxClozeAnswers(String.raw`{{c1::a\&b}}`)).toBe(
                 String.raw`{[a\&b]}`,

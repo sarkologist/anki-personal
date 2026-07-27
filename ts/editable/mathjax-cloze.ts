@@ -186,12 +186,17 @@ function texOptionalArgumentEnd(text: string, start: number): number | null {
 }
 
 /**
- * End index of the alignment separator at `index` — an `&`, or a `\\` row
- * break along with its optional `*` and `[…]` spacing argument — or null.
+ * End index of the alignment separator at `index` — an `&`, a `\cr`, or a `\\`
+ * row break along with its optional `*` and `[…]` spacing argument — or null.
  */
 function alignmentSeparatorEnd(text: string, index: number): number | null {
     if (text[index] === "&") {
         return index + 1;
+    }
+
+    // the boundary check excludes a longer control word, e.g. `\crown`
+    if (text.startsWith("\\cr", index) && !/[a-zA-Z]/u.test(text[index + 3] ?? "")) {
+        return index + 3;
     }
 
     if (!text.startsWith("\\\\", index)) {
