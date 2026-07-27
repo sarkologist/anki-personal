@@ -161,6 +161,53 @@ function fillCommandEnd(text: string, index: number): number | null {
     return null;
 }
 
+/** End index of the `[…]` optional argument starting at `start`, or null. */
+function texOptionalArgumentEnd(text: string, start: number): number | null {
+    let depth = 0;
+    let index = start;
+    while (index < text.length) {
+        if (text[index] === "\\") {
+            const next = text[index + 1];
+            index += next === "[" || next === "]" ? 2 : 1;
+            continue;
+        }
+        const char = text[index];
+        if (char === "[") {
+            depth++;
+        } else if (char === "]") {
+            if (depth === 1) {
+                return index + 1;
+            }
+            depth = Math.max(0, depth - 1);
+        }
+        index++;
+    }
+    return null;
+}
+
+/**
+ * End index of the alignment separator at `index` — an `&`, or a `\\` row
+ * break along with its optional `*` and `[…]` spacing argument — or null.
+ */
+function alignmentSeparatorEnd(text: string, index: number): number | null {
+    if (text[index] === "&") {
+        return index + 1;
+    }
+
+    if (!text.startsWith("\\\\", index)) {
+        return null;
+    }
+
+    let end = index + 2;
+    if (text[end] === "*") {
+        end++;
+    }
+    if (text[end] === "[") {
+        end = texOptionalArgumentEnd(text, end) ?? end;
+    }
+    return end;
+}
+
 /** End index of the `{…}` group starting at `start` (a `{`), or null. */
 function texGroupEnd(text: string, start: number): number | null {
     let depth = 0;
@@ -206,11 +253,15 @@ function envCommandEnd(text: string, index: number, command: string): number | n
 }
 
 /**
- * Spans of top-level fill commands — those not nested inside a group or a
- * `\begin…\end` environment. Mirrors the backend's alignment-separator
- * scanning in rslib/src/cloze.rs so the editor preview matches the card.
+ * Spans matched by `spanEnd` that sit at the top level of `text` — not nested
+ * inside a group or a `\begin…\end` environment. Mirrors the backend's
+ * alignment-separator scanning in rslib/src/cloze.rs so the editor preview
+ * matches the card.
  */
-function topLevelFillSpans(text: string): Array<[number, number]> {
+function topLevelSpans(
+    text: string,
+    spanEnd: (text: string, index: number) => number | null,
+): Array<[number, number]> {
     const spans: Array<[number, number]> = [];
     let braceDepth = 0;
     let envDepth = 0;
@@ -218,7 +269,7 @@ function topLevelFillSpans(text: string): Array<[number, number]> {
 
     while (index < text.length) {
         if (braceDepth === 0 && envDepth === 0) {
-            const end = fillCommandEnd(text, index);
+            const end = spanEnd(text, index);
             if (end !== null) {
                 spans.push([index, end]);
                 index = end;
@@ -266,9 +317,22 @@ function wrapClozeSegment(segment: string): string {
  * Wrap a revealed cloze answer in `{[…]}`, splitting the wrap around any
  * top-level fill command (which MathJax forbids inside a group) so the fill
  * stays at the alignment cell's top level.
+ *
+ * An answer spanning rows or columns of an environment *outside* it can't be
+ * wrapped that way at all: MathJax rejects an `&`, `\\` or `\cr` that belongs
+ * to an outer environment but sits inside a group, and splitting per segment
+ * would bracket every row. Such an answer gets a group around each bracket
+ * instead — `{[}…{]}` — which still keeps the leading `[` from being read as
+ * `\\`'s optional argument while leaving the separators, any fills, and each
+ * aligned cell's content at the top level. Grouping a cell would also demote a
+ * leading relation to an ordinary atom and lose its alignment spacing.
  */
 function wrapClozeReveal(content: string): string {
-    const spans = topLevelFillSpans(content);
+    if (topLevelSpans(content, alignmentSeparatorEnd).length > 0) {
+        return `{[}${content}{]}`;
+    }
+
+    const spans = topLevelSpans(content, fillCommandEnd);
     if (spans.length === 0) {
         return `{[${content}]}`;
     }
@@ -325,7 +389,9 @@ export function revealMathjaxClozeAnswers(input: string): string {
         // just `[`). The group changes how the reveal binds to surrounding
         // tokens (and confines any scoped declarations inside the cloze); the
         // bracketed answer itself looks the same. The wrap is split around any
-        // top-level `\hfill`/`\hfil`, which MathJax rejects inside a group.
+        // top-level `\hfill`/`\hfil`, which MathJax rejects inside a group, and
+        // narrows to the brackets alone when the answer spans an outer
+        // environment's alignment separators.
         output += wrapClozeReveal(
             revealMathjaxClozeAnswers(clozedText(input.slice(openEnd, closeStart))),
         );
