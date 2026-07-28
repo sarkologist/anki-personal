@@ -48,6 +48,8 @@ from editor_agent_pane.codex_client import (  # noqa: E402
 from editor_agent_pane.effort_options import (  # noqa: E402
     CLAUDE_EFFORT_OPTIONS,
     EFFORT_OPTIONS,
+    claude_effort_options,
+    codex_effort_options,
     effort_option_index,
     effort_options_with_legacy,
 )
@@ -1630,27 +1632,51 @@ def test_effort_for_provider_drops_unsupported_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    # Claude's "max" must not leak into a Codex run.
-    assert runtime._effort_for_provider(PROVIDER_CODEX, "max") == ""
-    assert runtime._effort_for_provider(PROVIDER_CODEX, "high") == "high"
-    assert runtime._effort_for_provider(PROVIDER_CODEX, "none") == "none"
-    # Codex's "none" must not leak into a Claude --effort; "max" is valid there.
+    # Codex's "none" must not leak into a Claude --effort.
     assert runtime._effort_for_provider(PROVIDER_CLAUDE, "none") == ""
     assert runtime._effort_for_provider(PROVIDER_CLAUDE, "max") == "max"
     assert runtime._effort_for_provider(PROVIDER_CLAUDE, "high") == "high"
+    # Codex's "ultra" must not leak into a Claude --effort either.
+    assert runtime._effort_for_provider(PROVIDER_CLAUDE, "ultra") == ""
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "high") == "high"
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "none") == "none"
     # The empty default is always preserved.
     assert runtime._effort_for_provider(PROVIDER_CODEX, "") == ""
     assert runtime._effort_for_provider(PROVIDER_CLAUDE, "") == ""
 
 
-def test_agent_request_passes_claude_effort_but_drops_codex_max(
+def test_effort_for_provider_drops_values_the_model_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    # Only the gpt-5.6 models reason past xhigh.
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "ultra", "gpt-5.6-sol") == (
+        "ultra"
+    )
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "max", "gpt-5.6-luna") == "max"
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "ultra", "gpt-5.6-luna") == ""
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "max", "gpt-5.5") == ""
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "xhigh", "gpt-5.5") == "xhigh"
+    # Haiku has no xhigh/max effort; the other Claude aliases do.
+    assert runtime._effort_for_provider(PROVIDER_CLAUDE, "max", "haiku") == ""
+    assert runtime._effort_for_provider(PROVIDER_CLAUDE, "xhigh", "haiku") == ""
+    assert runtime._effort_for_provider(PROVIDER_CLAUDE, "high", "haiku") == "high"
+    assert runtime._effort_for_provider(PROVIDER_CLAUDE, "max", "fable") == "max"
+    # An unset model means the CLI picks one from its own config, so nothing is
+    # dropped here - the CLI reports it if the effort does not fit.
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "ultra", "") == "ultra"
+    assert runtime._effort_for_provider(PROVIDER_CLAUDE, "max", "") == "max"
+
+
+def test_agent_request_drops_effort_the_codex_model_rejects(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     runtime = _import_runtime_with_aqt_stubs(monkeypatch)
     pane = _pane_for_agent_request(runtime, tmp_path)
     pane._provider = lambda: PROVIDER_CODEX
-    pane._reasoning_effort = lambda: "max"  # a Claude-only effort
+    pane._model_text = lambda: "gpt-5.5"
+    pane._reasoning_effort = lambda: "ultra"  # only the gpt-5.6 models reason that far
     runtime.aqt.mw = types.SimpleNamespace(
         taskman=ImmediateTaskman(),
         addonManager=FakeAddonManager(),
@@ -1671,6 +1697,38 @@ def test_agent_request_passes_claude_effort_but_drops_codex_max(
     pane._start_agent_request("Improve this", generation=0)
 
     assert captured["agent_kwargs"]["reasoning_effort"] == ""
+
+
+def test_agent_request_passes_ultra_effort_for_a_codex_model_that_supports_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane._provider = lambda: PROVIDER_CODEX
+    pane._model_text = lambda: "gpt-5.6-sol"
+    pane._reasoning_effort = lambda: "ultra"
+    runtime.aqt.mw = types.SimpleNamespace(
+        taskman=ImmediateTaskman(),
+        addonManager=FakeAddonManager(),
+    )
+    config = dict(runtime.DEFAULT_CONFIG)
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    captured: dict[str, Any] = {}
+
+    class CapturingAgent:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["agent_kwargs"] = kwargs
+
+        def send(self, **_kwargs: Any) -> Any:
+            return types.SimpleNamespace(text="", html="", proposals=())
+
+    monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
+
+    pane._start_agent_request("Improve this", generation=0)
+
+    assert captured["agent_kwargs"]["model"] == "gpt-5.6-sol"
+    assert captured["agent_kwargs"]["reasoning_effort"] == "ultra"
 
 
 def test_agent_request_blocks_ollama_without_model(
@@ -1952,8 +2010,37 @@ def test_agent_effort_options_include_default_and_known_efforts() -> None:
         ("Medium", "medium"),
         ("High", "high"),
         ("XHigh", "xhigh"),
+        ("Max", "max"),
+        ("Ultra", "ultra"),
     )
     assert effort_option_index("") == 0
+
+
+def test_codex_effort_options_gate_max_and_ultra_by_model() -> None:
+    # gpt-5.6 Sol/Terra are the only models that reason all the way to "ultra".
+    assert codex_effort_options("gpt-5.6-sol") == EFFORT_OPTIONS
+    assert codex_effort_options("gpt-5.6-terra") == EFFORT_OPTIONS
+    # Luna stops at "max".
+    luna = [value for _label, value in codex_effort_options("gpt-5.6-luna")]
+    assert luna == ["", "none", "low", "medium", "high", "xhigh", "max"]
+    # Older models reject both; the API 400s on reasoning.effort otherwise.
+    for model in ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2"):
+        values = [value for _label, value in codex_effort_options(model)]
+        assert values == ["", "none", "low", "medium", "high", "xhigh"]
+    # The CLI default (and any unknown model) keeps every level on offer, since
+    # the effective model comes from the user's Codex config.
+    assert codex_effort_options("") == EFFORT_OPTIONS
+    assert codex_effort_options("gpt-future") == EFFORT_OPTIONS
+
+
+def test_claude_effort_options_gate_xhigh_and_max_by_model() -> None:
+    for model in ("fable", "opus", "claude-opus-5", "sonnet"):
+        assert claude_effort_options(model) == CLAUDE_EFFORT_OPTIONS
+    # Haiku 4.5 has no xhigh/max effort.
+    haiku = [value for _label, value in claude_effort_options("haiku")]
+    assert haiku == ["", "low", "medium", "high"]
+    assert claude_effort_options("") == CLAUDE_EFFORT_OPTIONS
+    assert claude_effort_options("claude-future-9") == CLAUDE_EFFORT_OPTIONS
 
 
 def test_agent_effort_options_round_trip_known_efforts() -> None:
@@ -1978,14 +2065,25 @@ def test_agent_effort_options_reset_unsupported_minimal_effort() -> None:
 def test_agent_model_options_include_default_and_known_models() -> None:
     assert MODEL_OPTIONS == (
         ("Codex default", ""),
+        ("gpt-5.6-sol", "gpt-5.6-sol"),
+        ("gpt-5.6-terra", "gpt-5.6-terra"),
+        ("gpt-5.6-luna", "gpt-5.6-luna"),
         ("gpt-5.5", "gpt-5.5"),
         ("gpt-5.4", "gpt-5.4"),
         ("gpt-5.4-mini", "gpt-5.4-mini"),
-        ("gpt-5.3-codex", "gpt-5.3-codex"),
-        ("gpt-5.3-codex-spark", "gpt-5.3-codex-spark"),
         ("gpt-5.2", "gpt-5.2"),
     )
     assert model_option_index("") == 0
+
+
+def test_agent_model_options_keep_retired_model_as_legacy_entry() -> None:
+    # The gpt-5.3 Codex models were dropped from the Codex catalog, but a saved
+    # config that still names one must keep selecting it.
+    options = model_options_with_legacy("gpt-5.3-codex")
+
+    assert options[:-1] == MODEL_OPTIONS
+    assert options[-1] == ("gpt-5.3-codex", "gpt-5.3-codex")
+    assert model_option_index("gpt-5.3-codex") == len(options) - 1
 
 
 def test_agent_model_options_round_trip_known_models() -> None:
@@ -2019,11 +2117,15 @@ def test_agent_provider_options_include_claude() -> None:
 def test_claude_model_options_include_default_and_aliases() -> None:
     assert CLAUDE_MODEL_OPTIONS[0] == ("Claude default", "")
     values = [value for _label, value in CLAUDE_MODEL_OPTIONS]
-    assert values == ["", "opus", "sonnet", "haiku"]
+    # The aliases follow whatever the installed CLI maps them to; the pinned id
+    # is there because that CLI still resolves `opus` to Opus 4.8.
+    assert values == ["", "fable", "opus", "claude-opus-5", "sonnet", "haiku"]
     assert (
         model_options_with_legacy("opus", CLAUDE_MODEL_OPTIONS) == CLAUDE_MODEL_OPTIONS
     )
-    assert model_option_index("sonnet", CLAUDE_MODEL_OPTIONS) == 2
+    assert model_option_index("sonnet", CLAUDE_MODEL_OPTIONS) == 4
+    assert model_option_index("fable", CLAUDE_MODEL_OPTIONS) == 1
+    assert model_option_index("claude-opus-5", CLAUDE_MODEL_OPTIONS) == 3
     assert model_option_index("", CLAUDE_MODEL_OPTIONS) == 0
 
 
@@ -2368,6 +2470,7 @@ def test_agent_pane_model_change_saves_and_restores_scoped_instructions(
     pane.provider_combo.addItem("Ollama", PROVIDER_OLLAMA)
     pane.provider_combo.setCurrentIndex(0)
     pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
     pane.instructions_edit = FakeInstructionsEdit()
     pane._ollama_models = ()
     pane._ollama_models_unavailable = False
@@ -2410,6 +2513,7 @@ def test_agent_pane_model_change_does_not_bleed_current_instructions(
     pane.provider_combo.addItem("Ollama", PROVIDER_OLLAMA)
     pane.provider_combo.setCurrentIndex(0)
     pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
     pane.instructions_edit = FakeInstructionsEdit()
     pane._ollama_models = ()
     pane._ollama_models_unavailable = False
@@ -2434,6 +2538,231 @@ def test_agent_pane_model_change_does_not_bleed_current_instructions(
         "gpt-5.4": "first model instructions"
     }
     assert pane.instructions_edit.text == ""
+
+
+def test_agent_pane_model_change_drops_effort_the_new_model_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.setCurrentIndex(0)
+    pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CODEX
+    pane.refresh_context_label = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["reasoning_effort"] = "ultra"
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._set_model_choice("gpt-5.6-sol")
+    pane._set_effort_choice("ultra")
+    assert pane.effort_combo.currentData() == "ultra"
+
+    pane.model_combo.setCurrentIndex(model_option_index("gpt-5.5"))
+    pane._on_model_changed(pane.model_combo.current_index)
+
+    # gpt-5.5 has no "ultra", so the pane falls back to the Codex default and
+    # saves it - the stale value must not reach the next run.
+    assert [value for _label, value in pane.effort_combo.items] == [
+        "",
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    ]
+    assert pane.effort_combo.currentData() == ""
+    assert saved["reasoning_effort"] == ""
+
+
+def test_agent_pane_model_change_keeps_effort_the_new_model_supports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.setCurrentIndex(0)
+    pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CODEX
+    pane.refresh_context_label = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["reasoning_effort"] = "high"
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._set_model_choice("gpt-5.6-sol")
+    pane._set_effort_choice("high")
+    pane.model_combo.setCurrentIndex(model_option_index("gpt-5.6-luna"))
+    pane._on_model_changed(pane.model_combo.current_index)
+
+    assert pane.effort_combo.currentData() == "high"
+    assert saved["reasoning_effort"] == "high"
+
+
+def test_agent_pane_model_change_keeps_an_unsaved_effort_pick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.setCurrentIndex(0)
+    pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CODEX
+    pane.refresh_context_label = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["reasoning_effort"] = "low"
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._set_model_choice("gpt-5.6-sol")
+    # The effort pulldown is only written to the config on save, so a fresh pick
+    # lives in the widget alone - a model change must not throw it away.
+    pane._set_effort_choice("max")
+    pane.model_combo.setCurrentIndex(model_option_index("gpt-5.6-luna"))
+    pane._on_model_changed(pane.model_combo.current_index)
+
+    assert pane.effort_combo.currentData() == "max"
+    assert saved["reasoning_effort"] == "max"
+
+
+def test_agent_pane_provider_change_carries_an_unsaved_effort_pick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.addItem("Claude", PROVIDER_CLAUDE)
+    pane.provider_combo.setCurrentIndex(1)
+    pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CLAUDE
+    pane._update_provider_controls = lambda: None
+    pane.refresh_context_label = lambda: None
+    pane._refresh_ollama_models = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["reasoning_effort"] = "low"
+    config["codex_model"] = "gpt-5.6-sol"
+    config["claude_model"] = "opus"
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._set_model_choice("opus")
+    pane._set_effort_choice("max")
+    pane.provider_combo.setCurrentIndex(0)
+
+    pane._on_provider_changed(0)
+
+    # gpt-5.6-sol reasons that deep too, so the unsaved pick survives the switch.
+    assert pane.effort_combo.currentData() == "max"
+    assert saved["reasoning_effort"] == "max"
+
+
+def test_agent_pane_provider_change_drops_an_effort_the_new_pair_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.addItem("Claude", PROVIDER_CLAUDE)
+    pane.provider_combo.setCurrentIndex(0)
+    pane.model_combo = FakeCombo()
+    pane.effort_combo = FakeCombo()
+    pane.instructions_edit = FakeInstructionsEdit()
+    pane._ollama_models = ()
+    pane._ollama_models_unavailable = False
+    pane._loading_settings = False
+    pane._setting_model_choice = False
+    pane._model_provider = PROVIDER_CODEX
+    pane._update_provider_controls = lambda: None
+    pane.refresh_context_label = lambda: None
+    pane._refresh_ollama_models = lambda: None
+    config = dict(runtime.DEFAULT_CONFIG)
+    config["codex_model"] = "gpt-5.6-sol"
+    config["claude_model"] = "haiku"
+    monkeypatch.setattr(runtime, "_config", lambda: config)
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
+
+    pane._set_model_choice("gpt-5.6-sol")
+    pane._set_effort_choice("ultra")
+    pane.provider_combo.setCurrentIndex(1)
+
+    pane._on_provider_changed(1)
+
+    # Haiku has no "ultra"; the pane must not carry it into the Claude run.
+    assert pane.effort_combo.currentData() == ""
+    assert saved["reasoning_effort"] == ""
+
+
+def test_agent_pane_effort_choice_keeps_unknown_legacy_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Codex", PROVIDER_CODEX)
+    pane.provider_combo.setCurrentIndex(0)
+    pane.model_combo = FakeCombo()
+    pane.model_combo.addItem("gpt-5.5", "gpt-5.5")
+    pane.effort_combo = FakeCombo()
+
+    pane._set_effort_choice("experimental")
+
+    # An effort no build of the addon knows about is still a valid config value,
+    # so it stays selectable; only known-but-unsupported levels are dropped.
+    assert pane.effort_combo.currentData() == "experimental"
+
+
+def test_agent_pane_effort_choice_drops_a_level_from_the_other_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.provider_combo = FakeCombo()
+    pane.provider_combo.addItem("Claude", PROVIDER_CLAUDE)
+    pane.provider_combo.setCurrentIndex(0)
+    pane.model_combo = FakeCombo()
+    pane.model_combo.addItem("Opus", "opus")
+    pane.effort_combo = FakeCombo()
+
+    # Effort is shared across providers, so a Codex run can leave "ultra" behind.
+    pane._set_effort_choice("ultra")
+
+    assert pane.effort_combo.currentData() == ""
+    assert "ultra" not in [value for _label, value in pane.effort_combo.items]
 
 
 def test_agent_pane_provider_change_saves_and_restores_scoped_instructions(
@@ -5187,6 +5516,55 @@ def test_codex_agent_omits_unsupported_minimal_reasoning_effort(
 
     command = captured["command"]
     assert 'model_reasoning_effort="minimal"' not in command
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+)
+def test_codex_agent_disables_reasoning_summaries_for_gpt_5_6_models(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    model: str,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_popen(
+        command: list[str],
+        *,
+        stdin: int,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        bufsize: int,
+    ) -> FakePopen:
+        captured["command"] = command
+        write_codex_response(
+            command,
+            {
+                "message": "No changes.",
+                "message_html": "<p>No changes.</p>",
+                "patch": None,
+            },
+        )
+        return FakePopen(stdout='{"type":"turn.completed"}\n')
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    CodexCliAgent(
+        codex_path="/usr/local/bin/codex",
+        model=model,
+        timeout_seconds=123,
+        stream_reasoning_summaries=True,
+    ).send(
+        prompt="Improve this",
+        snapshot=snapshot(),
+        project_root=str(tmp_path),
+        history=[],
+    )
+
+    command = captured["command"]
+    assert command[command.index("-c") + 1] == 'model_reasoning_summary="none"'
 
 
 def test_codex_agent_disables_reasoning_summaries_for_spark_model(

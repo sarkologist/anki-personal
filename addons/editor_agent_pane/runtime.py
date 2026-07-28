@@ -56,10 +56,13 @@ from .codex_client import (
     resolve_codex_path,
 )
 from .effort_options import (
-    CLAUDE_EFFORT_OPTIONS,
     EFFORT_OPTIONS,
+    claude_effort_options,
+    codex_effort_options,
+    effort_choice_for_options,
     effort_option_index,
     effort_options_with_legacy,
+    effort_supported_by_options,
     effort_value,
 )
 from .latex_preview import LegacyLatexPreviewRenderer
@@ -366,16 +369,20 @@ def _validated_splitter_sizes(value: Any) -> list[int]:
     return sizes
 
 
-def _effort_for_provider(provider: str, effort: str) -> str:
-    """Drop an effort value the active provider does not support.
+def _effort_for_provider(provider: str, effort: str, model: str = "") -> str:
+    """Drop an effort value the active provider or model does not support.
 
-    Effort is shared across providers, so e.g. Claude's ``max`` must not leak
-    into a Codex run (Codex would reject ``model_reasoning_effort="max"``), and
-    Codex's ``none`` must not leak into a Claude ``--effort`` argument.
+    Effort is shared across providers and models, so e.g. Codex's ``none`` must
+    not leak into a Claude ``--effort`` argument, and ``ultra`` must not reach a
+    Codex model that stops at ``xhigh`` (Codex answers such a run with a 400).
     """
-    options = CLAUDE_EFFORT_OPTIONS if provider == PROVIDER_CLAUDE else EFFORT_OPTIONS
-    valid = {value for _label, value in options}
-    return effort if effort in valid else ""
+    return effort_supported_by_options(effort, _effort_options(provider, model))
+
+
+def _effort_options(provider: str, model: str) -> tuple[tuple[str, str], ...]:
+    if provider == PROVIDER_CLAUDE:
+        return claude_effort_options(model)
+    return codex_effort_options(model)
 
 
 def _format_agent_turn_duration(elapsed_seconds: float) -> str:
@@ -1161,19 +1168,31 @@ class EditorAgentPane(QWidget):
         self._save_current_instructions(config)
         self._save_current_model_choice(config)
         config["provider"] = self._provider()
+        # The new model may reason to a different depth, so re-offer the effort
+        # levels it takes and persist the (possibly reset) choice. The pulldown
+        # only reaches the config on save, so start from the live pick.
+        self._set_effort_choice(self._reasoning_effort())
+        config["reasoning_effort"] = self._reasoning_effort()
         _write_config(config)
         self._load_instructions_for_current_choice(config)
         self.refresh_context_label()
 
     def _on_provider_changed(self, _index: int) -> None:
         config = _config()
-        if not getattr(self, "_loading_settings", False):
+        loading = getattr(self, "_loading_settings", False)
+        # Effort is shared across providers, so the pick carries over - but the
+        # pulldown only reaches the config on save, so read it before the new
+        # provider rebuilds it. While loading, the config is the only truth.
+        effort = str(config["reasoning_effort"]) if loading else self._reasoning_effort()
+        if not loading:
             self._save_current_instructions(config)
             self._save_current_model_choice(config)
             config["provider"] = self._provider()
-            _write_config(config)
         self._set_model_choice(self._saved_model_for_provider(self._provider(), config))
-        self._set_effort_choice(str(config["reasoning_effort"]))
+        self._set_effort_choice(effort)
+        if not loading:
+            config["reasoning_effort"] = self._reasoning_effort()
+            _write_config(config)
         self._load_instructions_for_current_choice(config)
         self._update_provider_controls()
         self.refresh_context_label()
@@ -1278,15 +1297,15 @@ class EditorAgentPane(QWidget):
 
     def _set_effort_choice(self, effort: str) -> None:
         options = self._effort_options_for_provider()
+        effort = effort_choice_for_options(effort, options)
         self.effort_combo.clear()
         for label, value in effort_options_with_legacy(effort, options):
             self.effort_combo.addItem(label, value)
         self.effort_combo.setCurrentIndex(effort_option_index(effort, options))
 
     def _effort_options_for_provider(self) -> tuple[tuple[str, str], ...]:
-        if self._provider() == PROVIDER_CLAUDE:
-            return CLAUDE_EFFORT_OPTIONS
-        return EFFORT_OPTIONS
+        """Effort levels the selected provider *and* model both support."""
+        return _effort_options(self._provider(), self._model_text())
 
     def _reasoning_effort(self) -> str:
         data = self.effort_combo.currentData()
@@ -1677,9 +1696,10 @@ class EditorAgentPane(QWidget):
             if provider in (PROVIDER_CODEX, PROVIDER_CLAUDE)
             else ""
         )
-        # Effort is shared across providers; drop a value the active provider
-        # does not support (e.g. Claude's "max" must not reach a Codex run).
-        reasoning_effort = _effort_for_provider(provider, reasoning_effort)
+        # Effort is shared across providers and models; drop a value the active
+        # pair does not support (e.g. Codex's "none" must not reach Claude, and
+        # "ultra" must not reach a Codex model that stops at "xhigh").
+        reasoning_effort = _effort_for_provider(provider, reasoning_effort, model)
         project_root = self._project_folder_text()
         project_folder_access = self._project_folder_access()
         custom_instructions = self._custom_instructions_text()

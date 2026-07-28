@@ -11,13 +11,18 @@ direct OpenAI API billing.
 - `ollama_host`: Ollama host used for model discovery and as `OLLAMA_HOST` for `ollama run`. Defaults to `http://127.0.0.1:11434`.
 - `ollama_model`: Local Ollama model selected from discovered models. The pane discovers installed models from `/api/tags`, falling back to `ollama list`.
 - `claude_path`: Optional path to the Claude CLI. Leave blank to use `claude` from `PATH`, then common install locations such as `~/.local/bin/claude`.
-- `claude_model`: Optional Claude model override selected from the Model pulldown. `Claude default` stores an empty value and uses your Claude CLI's default model; the other choices pass the `opus`, `sonnet`, or `haiku` alias to `--model`.
+- `claude_model`: Optional Claude model override selected from the Model pulldown. `Claude default` stores an empty value and uses your Claude CLI's default model. `Fable`, `Opus (latest)`, `Sonnet`, and `Haiku` pass the matching alias to `--model`, so each one follows the latest model of that family as the installed CLI resolves it. `Opus 5` passes the full `claude-opus-5` id, because a CLI that still maps `opus` to Opus 4.8 has no alias for it.
 - `reasoning_effort`: Optional reasoning effort override selected from the
   Effort pulldown, shared by the Codex and Claude providers. `Codex default` /
   `Claude default` stores an empty value and uses the CLI's normal effort
   setting. Codex does not offer `minimal` (it rejects it when default hosted
-  tools are available); Claude additionally offers `max`. Values that the
-  selected provider does not support are ignored when the CLI is invoked.
+  tools are available). The rest of the levels are per-model: the pulldown only
+  lists what the selected model takes - `max` and `ultra` for gpt-5.6 Sol and
+  Terra, `max` for gpt-5.6 Luna, up to `xhigh` for the older Codex models, and
+  up to `max` for every Claude alias except `haiku`, which stops at `high`. A
+  model left on the CLI default keeps every level on offer, since the CLI picks
+  the model from its own config. Values the selected provider or model does not
+  support are ignored when the CLI is invoked.
 - `custom_instructions`: Legacy/default instructions fallback inserted into the agent prompt when the selected provider/model does not have scoped instructions.
 - `custom_instructions_by_model`: Instructions saved per provider and model. The map is keyed first by provider (`codex`, `ollama`, or `claude`), then by the selected model value; an empty model key stores the provider's default model choice.
 - `instructions_collapsed`: Whether the optional instructions editor is collapsed in the pane.
