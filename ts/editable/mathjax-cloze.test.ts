@@ -104,4 +104,86 @@ describe("revealMathjaxClozeAnswers", () => {
         const input = String.raw`{{c1::\{1\}}`;
         expect(revealMathjaxClozeAnswers(input)).toBe(input);
     });
+
+    // A cloze spanning rows of an outer `aligned` must not put that
+    // environment's `&`/`\\` inside the reveal's group — MathJax rejects
+    // alignment separators nested in a group. The brackets get their own
+    // minimal groups instead, so nothing wraps the cell content.
+    describe("alignment separators", () => {
+        test("keeps a row break and alignment tab out of the group", () => {
+            expect(
+                revealMathjaxClozeAnswers(
+                    String.raw`\begin{aligned}a&={{c1::b\\&=c}}\end{aligned}`,
+                ),
+            ).toBe(String.raw`\begin{aligned}a&={[}b\\&=c{]}\end{aligned}`);
+        });
+
+        test("keeps a row break's optional argument with the separator", () => {
+            expect(revealMathjaxClozeAnswers(String.raw`{{c1::a\\[2pt]b}}`)).toBe(
+                String.raw`{[}a\\[2pt]b{]}`,
+            );
+        });
+
+        test("keeps a starred row break out of the group", () => {
+            expect(revealMathjaxClozeAnswers(String.raw`{{c1::a\\*b}}`)).toBe(
+                String.raw`{[}a\\*b{]}`,
+            );
+        });
+
+        test("ignores an alignment tab nested in a TeX group", () => {
+            expect(revealMathjaxClozeAnswers(String.raw`{{c1::\text{a&b}}}`)).toBe(
+                String.raw`{[\text{a&b}]}`,
+            );
+        });
+
+        test("ignores separators belonging to a nested environment", () => {
+            expect(
+                revealMathjaxClozeAnswers(
+                    String.raw`{{c1::\begin{matrix}a&b\\c&d\end{matrix}}}`,
+                ),
+            ).toBe(String.raw`{[\begin{matrix}a&b\\c&d\end{matrix}]}`);
+        });
+
+        test("narrows the wrap instead of splitting around a fill", () => {
+            // The narrowed form already leaves the fill at the cell's top
+            // level, so it does not also get the fill splitting.
+            expect(
+                revealMathjaxClozeAnswers(String.raw`{{c1::a \hfill b\\c}}`),
+            ).toBe(String.raw`{[}a \hfill b\\c{]}`);
+        });
+
+        test("keeps a \\cr row break out of the group", () => {
+            expect(revealMathjaxClozeAnswers(String.raw`{{c1::a\cr b}}`)).toBe(
+                String.raw`{[}a\cr b{]}`,
+            );
+        });
+
+        test("ignores a longer control word starting with \\cr", () => {
+            expect(revealMathjaxClozeAnswers(String.raw`{{c1::a\crown b}}`)).toBe(
+                String.raw`{[a\crown b]}`,
+            );
+        });
+
+        test("ignores an escaped ampersand", () => {
+            expect(revealMathjaxClozeAnswers(String.raw`{{c1::a\&b}}`)).toBe(
+                String.raw`{[a\&b]}`,
+            );
+        });
+
+        test("splits a multi-row derivation cloze", () => {
+            const input = String.raw`\begin{aligned}
+\overline{L(s,\chi)}
+&={{c1::\overline{\sum_n\frac{\chi(n)}{n^s} }\\
+&=\sum_n\overline{\chi(n)}\,e^{-\overline s\log n} }}
+=L(\overline s,\overline\chi).
+\end{aligned}`;
+            const expected = String.raw`\begin{aligned}
+\overline{L(s,\chi)}
+&={[}\overline{\sum_n\frac{\chi(n)}{n^s} }\\
+&=\sum_n\overline{\chi(n)}\,e^{-\overline s\log n} {]}
+=L(\overline s,\overline\chi).
+\end{aligned}`;
+            expect(revealMathjaxClozeAnswers(input)).toBe(expected);
+        });
+    });
 });

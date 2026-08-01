@@ -59,4 +59,53 @@ describe("revealed mathjax clozes render", () => {
         );
         expect(rendersWithoutError(revealed)).toBe(true);
     });
+
+    // Regression for "Misplaced alignment tab character &": a cloze spanning
+    // rows of an outer `aligned` used to reveal as one group holding that
+    // environment's `&` and `\\`.
+    test("cloze spanning rows of an outer aligned", () => {
+        const revealed = revealMathjaxClozeAnswers(
+            String.raw`\begin{aligned}
+\overline{L(s,\chi)}
+&={{c1::\overline{\sum_{n=1}^{\infty}\frac{\chi(n)}{n^s} }
+=\sum_{n=1}^{\infty}\overline{\chi(n)n^{-s} }\\
+&=\sum_{n=1}^{\infty}\overline{\chi(n)}\,\overline{e^{-s\log n} }
+=\sum_{n=1}^{\infty}\overline{\chi(n)}\,e^{-\overline s\log n}\\
+&=\sum_{n=1}^{\infty}\frac{\overline\chi(n)}{n^{\overline s} } }}
+=L(\overline s,\overline\chi).
+\end{aligned}`,
+        );
+        expect(rendersWithoutError(revealed)).toBe(true);
+    });
+
+    test("cloze spanning a row break with a spacing argument", () => {
+        const revealed = revealMathjaxClozeAnswers(
+            String.raw`\begin{aligned}a&={{c1::b\\[2pt]&=c}}\end{aligned}`,
+        );
+        expect(rendersWithoutError(revealed)).toBe(true);
+    });
+
+    test("cloze spanning a \\cr row break", () => {
+        const revealed = revealMathjaxClozeAnswers(
+            String.raw`\begin{aligned}a&={{c1::b\cr c}}\end{aligned}`,
+        );
+        expect(rendersWithoutError(revealed)).toBe(true);
+    });
+
+    // The narrowed wrap leaves fills at the cell's top level too, so an answer
+    // holding both a separator and a fill needs no splitting on top.
+    test("cloze spanning both an alignment tab and a \\hfill", () => {
+        const revealed = revealMathjaxClozeAnswers(
+            String.raw`\begin{aligned}a&={{c1::b \hfill c\\&=d}}\end{aligned}`,
+        );
+        expect(rendersWithoutError(revealed)).toBe(true);
+    });
+
+    test("cloze holding a whole nested environment stays grouped", () => {
+        const revealed = revealMathjaxClozeAnswers(
+            String.raw`M={{c1::\begin{pmatrix}a&b\\c&d\end{pmatrix}}}`,
+        );
+        expect(revealed).toContain(String.raw`{[\begin{pmatrix}`);
+        expect(rendersWithoutError(revealed)).toBe(true);
+    });
 });
