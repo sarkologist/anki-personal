@@ -25,7 +25,7 @@ dev = [
   "types-markdown",
   "types-waitress",
   "types-pywin32",
-  "briefcase>=0.4.2",
+  "briefcase>=0.4.4",
   "jinja2",
 ]
 docs = [
