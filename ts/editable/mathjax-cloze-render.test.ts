@@ -14,6 +14,14 @@ function rendersWithoutError(tex: string): boolean {
     return !out.innerHTML.includes("data-mjx-error");
 }
 
+describe("card mathjax clozes render", () => {
+    test("card cloze as an unbraced font-command argument", () => {
+        expect(rendersWithoutError(String.raw`\mathbb {\class{cloze}{[...]}}`)).toBe(
+            true,
+        );
+    });
+});
+
 describe("revealed mathjax clozes render", () => {
     // Regression for "Bracket argument to \\ must be a dimension": a cloze on
     // the line after a `\\` used to reveal as `\\[…]`, which MathJax read as an
