@@ -925,6 +925,26 @@ fn wrap_mathjax_cloze_content(content: &str) -> String {
     output
 }
 
+fn follows_tex_control_word(text: &str) -> bool {
+    let bytes = text
+        .trim_end_matches(|char: char| char.is_ascii_whitespace())
+        .as_bytes();
+    let mut index = bytes.len();
+    while index > 0 && bytes[index - 1].is_ascii_alphabetic() {
+        index -= 1;
+    }
+    if index == bytes.len() {
+        return false;
+    }
+
+    let mut backslashes = 0;
+    while index > 0 && bytes[index - 1] == b'\\' {
+        backslashes += 1;
+        index -= 1;
+    }
+    backslashes % 2 == 1
+}
+
 struct MathjaxSpan {
     cloze: bool,
     content: String,
@@ -938,7 +958,16 @@ fn append_mathjax_span(span: MathjaxSpan, output: &mut String) {
             .as_deref()
             .map(|hidden| mathjax_brace_depth(output).min(trailing_unescaped_right_braces(hidden)))
             .unwrap_or(0);
+        // A command such as `\mathbb` must consume the cloze as a group. If it
+        // consumes `\class` directly, MathJax rejects the command argument.
+        let group_as_command_argument = follows_tex_control_word(output);
+        if group_as_command_argument {
+            output.push('{');
+        }
         output.push_str(&wrap_mathjax_cloze_content(&span.content));
+        if group_as_command_argument {
+            output.push('}');
+        }
         for _ in 0..outer_closing_braces {
             output.push('}');
         }
@@ -1360,6 +1389,14 @@ mod test {
         assert_eq!(
             cloze_filter(r#"\[\frac{3+4{{c1::\cos x}}}{y}\]"#, &question_ctx),
             r#"\[\frac{3+4\class{cloze}{[...]}}{y}\]"#
+        );
+        assert_eq!(
+            cloze_filter(r#"\(\mathbb {{c1::R}}\)"#, &question_ctx),
+            r#"\(\mathbb {\class{cloze}{[...]}}\)"#
+        );
+        assert_eq!(
+            cloze_filter(r#"\(\mathbb {{c2::R}}\)"#, &answer_ctx),
+            r#"\(\mathbb {\class{cloze}{R}}\)"#
         );
         assert_eq!(
             cloze_filter(r#"\[\frac{3+4{{c1::\cos x&#125;}}{y}\]"#, &question_ctx,),
