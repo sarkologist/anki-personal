@@ -9,7 +9,11 @@ const mathjaxWindow = window as MathJaxWindow;
 let mathjaxLoading: Promise<void> | null = mathjaxWindow.MathJax?.startup?.promise ?? null;
 
 export function lazyLoadMathJax(): Promise<void> {
-    return mathjaxLoading || (mathjaxLoading = new Promise((resolve, reject) => {
+    if (mathjaxLoading) {
+        return mathjaxLoading;
+    }
+
+    const loading = new Promise<void>((resolve, reject) => {
         const configScript = document.createElement("script");
         configScript.src = "/_anki/js/mathjax.js";
         configScript.onload = () => {
@@ -21,11 +25,22 @@ export function lazyLoadMathJax(): Promise<void> {
         };
         configScript.onerror = () => reject(new Error("Failed to load MathJax config"));
         document.head.appendChild(configScript);
-    }));
+    });
+    mathjaxLoading = loading;
+    void loading.catch(() => {
+        if (mathjaxLoading === loading) {
+            mathjaxLoading = null;
+        }
+    });
+    return loading;
 }
 
 export function isMathJaxLoading(): boolean {
     return mathjaxLoading !== null;
+}
+
+export function getMathJaxStartupPromise(): Promise<void> | undefined {
+    return mathjaxWindow.MathJax?.startup?.promise;
 }
 
 // follows mathjaxBlockDelimiterPattern and mathjaxInlineDelimiterPattern

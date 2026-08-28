@@ -21,7 +21,13 @@ import { registerPackage } from "@tslib/runtime-require";
 
 import { locateActiveCloze, locateRevealedClozeAnswer } from "./cloze-locator";
 import { allImagesLoaded, preloadAnswerImages } from "./images";
-import { containsMathjax, isMathJaxLoading, lazyLoadMathJax, replaceEditorMathjaxElements } from "./mathjax";
+import {
+    containsMathjax,
+    getMathJaxStartupPromise,
+    isMathJaxLoading,
+    lazyLoadMathJax,
+    replaceEditorMathjaxElements,
+} from "./mathjax";
 import { preloadResources } from "./preload";
 
 declare const MathJax: any;
@@ -58,7 +64,9 @@ function _runHook(
 let _updatingQueue: Promise<void> = Promise.resolve();
 
 export function _queueAction(action: Callback): void {
-    _updatingQueue = _updatingQueue.then(action);
+    _updatingQueue = _updatingQueue.then(action).catch((error) => {
+        console.error(error);
+    });
 }
 
 // Setting innerHTML does not evaluate the contents of script tags, so we need
@@ -147,30 +155,31 @@ export async function _updateQA(
     qa.style.opacity = "0";
 
     try {
-        await setInnerHTML(qa, html);
-    } catch (error) {
-        await setInnerHTML(qa, renderError("html")(error));
-    }
+        try {
+            await setInnerHTML(qa, html);
+        } catch (error) {
+            await setInnerHTML(qa, renderError("html")(error));
+        }
 
-    await _runHook(onUpdateHook);
-    replaceEditorMathjaxElements(qa);
+        await _runHook(onUpdateHook);
+        replaceEditorMathjaxElements(qa);
 
-    // dynamic toolbar background
-    bridgeCommand("updateToolbar");
+        // dynamic toolbar background
+        bridgeCommand("updateToolbar");
 
-    if (containsMathJax && typeof MathJax !== "undefined" && MathJax.startup) {
-        // wait for mathjax to ready
-        await MathJax.startup.promise
-            .then(() => {
+        const startupPromise = getMathJaxStartupPromise();
+        if (containsMathJax && typeof MathJax !== "undefined" && startupPromise) {
+            // wait for mathjax to ready
+            await startupPromise.then(() => {
                 // clear MathJax buffers from previous typesets
                 MathJax.typesetClear();
 
                 return MathJax.typesetPromise([qa]);
-            })
-            .catch(renderError("MathJax"));
+            }).catch(renderError("MathJax"));
+        }
+    } finally {
+        qa.style.opacity = "1";
     }
-
-    qa.style.opacity = "1";
 
     await _runHook(onShownHook);
 }
@@ -193,7 +202,9 @@ export function _showQuestion(q: string, a: string, bodyclass: string): void {
                     typeans.focus();
                 }
                 if (!isMathJaxLoading() && containsMathjax(a)) {
-                    lazyLoadMathJax();
+                    void lazyLoadMathJax().catch((error) => {
+                        console.error(error);
+                    });
                 }
                 // preload images
                 allImagesLoaded().then(() => {

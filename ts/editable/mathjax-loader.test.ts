@@ -11,6 +11,10 @@ import { getCachedMathjaxConversionAfterLoad, resetMathjaxCache } from "./mathja
 const mathjaxWindow = window as Window & {
     MathJax?: {
         startup?: { promise?: Promise<void>; typeset?: boolean };
+        tex?: {
+            packages?: Record<string, unknown>;
+            [name: string]: unknown;
+        };
         tex2svg?: (input: string) => Element;
     };
 };
@@ -68,6 +72,48 @@ test("adopts a pre-existing tex2svg implementation", async () => {
     expect(document.head.querySelector("script")).toBeNull();
 });
 
+test("adopts a pending startup promise without injecting another script", async () => {
+    let finishStartup!: () => void;
+    const startupPromise = new Promise<void>((resolve) => {
+        finishStartup = resolve;
+    });
+    mathjaxWindow.MathJax = { startup: { promise: startupPromise } };
+    const { loadMathjax } = await import("./mathjax-loader");
+
+    const loading = loadMathjax();
+    expect(document.head.querySelector("script")).toBeNull();
+
+    mathjaxWindow.MathJax.tex2svg = vi.fn();
+    finishStartup();
+    await expect(loading).resolves.toBeUndefined();
+});
+
+test("a rejected adopted startup resets and permits a retry", async () => {
+    let rejectStartup!: (error: Error) => void;
+    const startupPromise = new Promise<void>((_resolve, reject) => {
+        rejectStartup = reject;
+    });
+    mathjaxWindow.MathJax = { startup: { promise: startupPromise } };
+    const { loadMathjax } = await import("./mathjax-loader");
+
+    const first = loadMathjax();
+    rejectStartup(new Error("startup failed"));
+    await expect(first).rejects.toThrow("startup failed");
+
+    const second = loadMathjax();
+    expect(second).not.toBe(first);
+    expect(document.head.querySelectorAll("script")).toHaveLength(1);
+});
+
+test("rejects adopted startup that completes without tex2svg", async () => {
+    mathjaxWindow.MathJax = { startup: { promise: Promise.resolve() } };
+    const { loadMathjax } = await import("./mathjax-loader");
+
+    await expect(loadMathjax()).rejects.toThrow(
+        "MathJax startup completed without tex2svg",
+    );
+});
+
 test("adopts MathJax injected after the loader module initializes", async () => {
     const { loadMathjax } = await import("./mathjax-loader");
     mathjaxWindow.MathJax = { tex2svg: vi.fn() };
@@ -88,17 +134,30 @@ test("rejects a failed script load and permits a retry", async () => {
     expect(document.head.querySelectorAll("script")).toHaveLength(1);
 });
 
-test("preserves existing editor configuration while disabling auto-typeset", async () => {
-    const configuredStartup = { promise: Promise.resolve(), typeset: true };
-    mathjaxWindow.MathJax = { startup: configuredStartup };
+test("sets editor config before loading while preserving existing config", async () => {
+    const configuredStartup = { typeset: true };
+    mathjaxWindow.MathJax = {
+        startup: configuredStartup,
+        tex: {
+            inlineMath: [["$", "$"]],
+            packages: { "[+]": ["custom"], "[-]": ["existing"] },
+        },
+    };
     const { loadMathjax } = await import("./mathjax-loader");
 
     void loadMathjax();
 
     expect(mathjaxWindow.MathJax.startup).toMatchObject({
-        promise: configuredStartup.promise,
         typeset: false,
     });
+    expect(mathjaxWindow.MathJax.tex).toMatchObject({
+        inlineMath: [["$", "$"]],
+        packages: {
+            "[+]": ["custom"],
+            "[-]": ["existing", "textmacros"],
+        },
+    });
+    expect(document.head.querySelector("script")).not.toBeNull();
 });
 
 test("converts and caches the real SVG only after loading", async () => {

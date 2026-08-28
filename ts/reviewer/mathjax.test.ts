@@ -5,7 +5,7 @@
 
 import { afterEach, expect, test, vi } from "vitest";
 
-import { containsMathjax, replaceEditorMathjaxElements } from "./mathjax";
+import { containsMathjax, getMathJaxStartupPromise, replaceEditorMathjaxElements } from "./mathjax";
 
 const mathjaxWindow = window as Window & {
     MathJax?: { startup?: { promise?: Promise<void> } };
@@ -35,6 +35,33 @@ test("lazy loader adopts an existing MathJax startup promise", async () => {
 
     expect(lazyLoadMathJax()).toBe(startupPromise);
     expect(document.head.querySelector("script")).toBeNull();
+});
+
+test("lazy loader resets after failure and retries", async () => {
+    vi.resetModules();
+    const { lazyLoadMathJax } = await import("./mathjax");
+
+    const first = lazyLoadMathJax();
+    const configScript = document.head.querySelector<HTMLScriptElement>("script");
+    configScript?.dispatchEvent(new Event("load"));
+    const componentScript = document.head.querySelectorAll<HTMLScriptElement>("script")[1];
+    componentScript.dispatchEvent(new Event("error"));
+
+    await expect(first).rejects.toThrow("Failed to load MathJax");
+    const second = lazyLoadMathJax();
+
+    expect(second).not.toBe(first);
+    expect(
+        [...document.head.querySelectorAll<HTMLScriptElement>("script")].filter((script) =>
+            script.src.endsWith("/_anki/js/mathjax.js")
+        ),
+    ).toHaveLength(2);
+});
+
+test("config-only MathJax has no startup promise", () => {
+    mathjaxWindow.MathJax = { startup: {} };
+
+    expect(getMathJaxStartupPromise()).toBeUndefined();
 });
 
 test("replaces editor mathjax tags with reviewer delimiters", () => {
