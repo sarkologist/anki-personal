@@ -1,6 +1,40 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+type MathJaxWindow = Window & {
+    MathJax?: { startup?: { promise?: Promise<void> } };
+};
+
+const mathjaxWindow = window as MathJaxWindow;
+let mathjaxLoading: Promise<void> | null = mathjaxWindow.MathJax?.startup?.promise ?? null;
+
+export function lazyLoadMathJax(): Promise<void> {
+    return mathjaxLoading || (mathjaxLoading = new Promise((resolve, reject) => {
+        const configScript = document.createElement("script");
+        configScript.src = "/_anki/js/mathjax.js";
+        configScript.onload = () => {
+            const mathjaxScript = document.createElement("script");
+            mathjaxScript.src = "/_anki/js/vendor/mathjax/tex-chtml-full.js";
+            mathjaxScript.onload = () => resolve();
+            mathjaxScript.onerror = () => reject(new Error("Failed to load MathJax"));
+            document.head.appendChild(mathjaxScript);
+        };
+        configScript.onerror = () => reject(new Error("Failed to load MathJax config"));
+        document.head.appendChild(configScript);
+    }));
+}
+
+export function isMathJaxLoading(): boolean {
+    return mathjaxLoading !== null;
+}
+
+// follows mathjaxBlockDelimiterPattern and mathjaxInlineDelimiterPattern
+const mathjaxRegex = /<anki-mathjax(?:\s|>)|\\\[(.*?)\\\]|\\\((.*?)\\\)/isu;
+
+export function containsMathjax(html: string): boolean {
+    return mathjaxRegex.test(html);
+}
+
 function trimBreaks(text: string): string {
     return text.replace(/^\n*/, "").replace(/\n*$/, "");
 }

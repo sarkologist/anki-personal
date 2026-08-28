@@ -21,35 +21,10 @@ import { registerPackage } from "@tslib/runtime-require";
 
 import { locateActiveCloze, locateRevealedClozeAnswer } from "./cloze-locator";
 import { allImagesLoaded, preloadAnswerImages } from "./images";
-import { replaceEditorMathjaxElements } from "./mathjax";
+import { containsMathjax, isMathJaxLoading, lazyLoadMathJax, replaceEditorMathjaxElements } from "./mathjax";
 import { preloadResources } from "./preload";
 
 declare const MathJax: any;
-
-let mathjaxLoading: Promise<void> | null = window?.["MathJax"]?.startup?.promise ?? null;
-
-function _lazyLoadMathJax(): Promise<void> {
-    return mathjaxLoading || (mathjaxLoading = new Promise((resolve, reject) => {
-        const configScript = document.createElement("script");
-        configScript.src = "/_anki/js/mathjax.js";
-        configScript.onload = () => {
-            const mathjaxScript = document.createElement("script");
-            mathjaxScript.src = "/_anki/js/vendor/mathjax/tex-chtml-full.js";
-            mathjaxScript.onload = () => resolve();
-            mathjaxScript.onerror = () => reject(new Error("Failed to load MathJax"));
-            document.head.appendChild(mathjaxScript);
-        };
-        configScript.onerror = () => reject(new Error("Failed to load MathJax config"));
-        document.head.appendChild(configScript);
-    }));
-}
-
-// follows mathjaxBlockDelimiterPattern and mathjaxInlineDelimiterPattern
-const mathjaxRegex = /\\\[(.*?)\\\]|\\\((.*?)\\\)/su;
-
-function _containsMathjax(html: string): boolean {
-    return mathjaxRegex.test(html);
-}
 
 type Callback = () => void | Promise<void>;
 
@@ -159,10 +134,10 @@ export async function _updateQA(
 
     const qa = document.getElementById("qa")!;
 
-    const containsMathJax = _containsMathjax(html);
+    const containsMathJax = containsMathjax(html);
     if (containsMathJax) {
         try {
-            await _lazyLoadMathJax();
+            await lazyLoadMathJax();
         } catch (error) {
             console.error(error);
         }
@@ -217,8 +192,8 @@ export function _showQuestion(q: string, a: string, bodyclass: string): void {
                 if (typeans) {
                     typeans.focus();
                 }
-                if (!mathjaxLoading && _containsMathjax(a)) {
-                    _lazyLoadMathJax();
+                if (!isMathJaxLoading() && containsMathjax(a)) {
+                    lazyLoadMathJax();
                 }
                 // preload images
                 allImagesLoaded().then(() => {
