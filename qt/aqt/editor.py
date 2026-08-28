@@ -232,7 +232,6 @@ class Editor:
             "",
             css=["css/editor.css"],
             js=[
-                "js/mathjax.js",
                 "js/editor.js",
             ],
             context=self,
@@ -782,6 +781,7 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
 
         js = f"""
             saveSession();
+            setMathjaxEnabled({json.dumps(self.mw.col.get_config("renderMathjax", True))});
             setFields({json.dumps(data)});
             setIsImageOcclusion({json.dumps(self.current_notetype_is_image_occlusion())});
             setNotetypeMeta({json.dumps(notetype_meta)});
@@ -797,7 +797,6 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             setColorButtons({json.dumps([text_color, highlight_color])});
             setTags({json.dumps(self.note.tags)});
             setTagsCollapsed({json.dumps(self.mw.pm.tags_collapsed(self.editorMode))});
-            setMathjaxEnabled({json.dumps(self.mw.col.get_config("renderMathjax", True))});
             setShrinkImages({json.dumps(self.mw.col.get_config("shrinkEditorImages", True))});
             setCloseHTMLTags({json.dumps(self.mw.col.get_config("closeHTMLTags", True))});
             triggerChanges();

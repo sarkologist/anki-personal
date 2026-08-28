@@ -17,6 +17,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import WithFloating from "$lib/components/WithFloating.svelte";
 
     import { mathjaxConfig } from "../../editable/mathjax-element.svelte";
+    import { loadMathjax } from "../../editable/mathjax-loader";
     import { undecorateFragment } from "../decorated-elements";
     import {
         convertLegacyLatexToInlineMathjax,
@@ -90,6 +91,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     async function onConvertAllToMathjax(): Promise<void> {
+        await loadMathjax();
         await noteEditor.transformFieldsWithUndo(convertLegacyLatexToInlineMathjax);
     }
 
