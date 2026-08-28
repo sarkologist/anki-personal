@@ -411,7 +411,7 @@ fn build_and_check_mathjax(build: &mut Build) -> Result<()> {
     build.add_action(
         "ts:mathjax",
         EsbuildScript {
-            script: "ts/transform_ts.mjs".into(),
+            script: "ts/bundle_mathjax.mjs".into(),
             entrypoint: "ts/mathjax/index.ts".into(),
             deps: files.clone(),
             output_stem: "ts/mathjax/mathjax",
