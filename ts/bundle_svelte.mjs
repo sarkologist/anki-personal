@@ -10,7 +10,17 @@ import { argv, env } from "process";
 import sveltePreprocess from "svelte-preprocess";
 import { typescript } from "svelte-preprocess-esbuild";
 
-const [_tsx, _script, entrypoint, bundle_js, bundle_css, page_html] = argv;
+const args = argv.slice(2);
+// some entrypoints are bundled only for the CSS the Svelte components emit; in
+// that case the JS is built in memory and thrown away
+const cssOnly = args[0] === "--css-only";
+if (cssOnly) {
+    args.shift();
+}
+const [entrypoint, ...outputs] = args;
+const bundle_js = cssOnly ? outputs[0].replace(/\.css$/, ".js") : outputs[0];
+const bundle_css = cssOnly ? outputs[0] : outputs[1];
+const page_html = cssOnly ? undefined : outputs[2];
 
 if (page_html != null) {
     const template = readFileSync("ts/page.html", { encoding: "utf8" });
@@ -61,5 +71,14 @@ build({
         }),
     ],
     target,
+    write: !cssOnly,
     // logLevel: "info",
-}).catch(() => process.exit(1));
+})
+    .then((result) => {
+        if (!cssOnly) {
+            return;
+        }
+        const css = result.outputFiles.find((file) => file.path.endsWith(".css"));
+        writeFileSync(bundle_css, css ? css.contents : "");
+    })
+    .catch(() => process.exit(1));

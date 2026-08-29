@@ -13,6 +13,7 @@ mod web;
 
 use std::env;
 
+use anyhow::Context;
 use anyhow::Result;
 use aqt::build_and_check_aqt;
 use audio::build_audio;
@@ -42,9 +43,31 @@ fn anki_version() -> String {
         .to_string()
 }
 
+/// Neither n2 nor ninja prunes outputs a previous configuration produced, and
+/// the wheels package everything under out/qt/_aqt, so a file that stops being
+/// built lingers in existing build folders - and in wheels built from them -
+/// until we delete it ourselves. This runs when build.ninja is regenerated,
+/// which is whenever the list below changes.
+fn remove_obsolete_outputs(build: &Build) -> Result<()> {
+    for relative_path in [
+        // ts/editable is bundled for its CSS only; it used to be built as a page
+        "qt/_aqt/data/web/pages/editable.js",
+        "qt/_aqt/data/web/pages/editable.css",
+        "ts/editable/editable.js",
+    ] {
+        let path = build.buildroot.join(relative_path);
+        if path.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("removing {path}"))?;
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut build = Build::new()?;
     let build = &mut build;
+
+    remove_obsolete_outputs(build)?;
 
     setup_protoc(build)?;
     check_proto(build, inputs![glob!["proto/**/*.proto"]])?;

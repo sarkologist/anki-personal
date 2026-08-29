@@ -11,6 +11,7 @@ use ninja_gen::inputs;
 use ninja_gen::node::node_archive;
 use ninja_gen::node::CompileSass;
 use ninja_gen::node::DPrint;
+use ninja_gen::node::EsbuildCssOnly;
 use ninja_gen::node::EsbuildScript;
 use ninja_gen::node::Eslint;
 use ninja_gen::node::GenTypescriptProto;
@@ -29,6 +30,7 @@ pub fn build_and_check_web(build: &mut Build) -> Result<()> {
     build_sveltekit(build)?;
     declare_and_check_other_libraries(build)?;
     build_and_check_pages(build)?;
+    build_editable_css(build)?;
     build_and_check_editor(build)?;
     build_and_check_reviewer(build)?;
     build_and_check_mathjax(build)?;
@@ -203,20 +205,6 @@ fn build_and_check_pages(build: &mut Build) -> Result<()> {
 
         Ok(())
     };
-    // we use the generated .css file separately
-    build_page(
-        "editable",
-        false,
-        inputs![
-            //
-            ":ts:lib",
-            ":ts:components",
-            ":ts:domlib",
-            ":ts:sveltelib",
-            ":sass",
-            ":sveltekit",
-        ],
-    )?;
     build_page(
         "congrats",
         true,
@@ -230,6 +218,31 @@ fn build_and_check_pages(build: &mut Build) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// The editable module is bundled purely to extract the styles its Svelte
+/// components emit, which get injected into the rich text field's shadow root
+/// as _anki/css/editable.css. Nothing loads its JavaScript, so we don't write
+/// it out.
+fn build_editable_css(build: &mut Build) -> Result<()> {
+    build.add_action(
+        "ts:editable",
+        EsbuildCssOnly {
+            script: inputs!["ts/bundle_svelte.mjs"],
+            entrypoint: inputs!["ts/editable/index.ts"],
+            output_stem: "ts/editable/editable",
+            deps: inputs![
+                //
+                ":ts:lib",
+                ":ts:components",
+                ":ts:domlib",
+                ":ts:sveltelib",
+                ":sass",
+                ":sveltekit",
+                glob!("ts/editable/**")
+            ],
+        },
+    )
 }
 
 fn build_and_check_editor(build: &mut Build) -> Result<()> {
