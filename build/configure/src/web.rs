@@ -434,10 +434,9 @@ fn build_and_check_mathjax(build: &mut Build) -> Result<()> {
 }
 
 pub const MATHJAX_FILES: &[&str] = &[
+    // Bundled inside tex-chtml-full.js (it preloads a11y/assistive-mml), but kept
+    // vendored so the component is available if that ever stops being true.
     "mathjax/es5/a11y/assistive-mml.js",
-    "mathjax/es5/a11y/complexity.js",
-    "mathjax/es5/a11y/explorer.js",
-    "mathjax/es5/a11y/semantic-enrich.js",
     "mathjax/es5/input/tex/extensions/html.js",
     "mathjax/es5/output/chtml/fonts/woff-v2/MathJax_AMS-Regular.woff",
     "mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Calligraphic-Bold.woff",
@@ -464,13 +463,6 @@ pub const MATHJAX_FILES: &[&str] = &[
     "mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Zero.woff",
     "mathjax/es5/tex-chtml-full.js",
     "mathjax/es5/tex-svg-full.js",
-    "mathjax/es5/sre/mathmaps/de.json",
-    "mathjax/es5/sre/mathmaps/en.json",
-    "mathjax/es5/sre/mathmaps/es.json",
-    "mathjax/es5/sre/mathmaps/fr.json",
-    "mathjax/es5/sre/mathmaps/hi.json",
-    "mathjax/es5/sre/mathmaps/it.json",
-    "mathjax/es5/sre/mathmaps/nemeth.json",
 ];
 
 pub fn copy_mathjax() -> impl BuildAction {

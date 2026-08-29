@@ -54,11 +54,23 @@ fn remove_obsolete_outputs(build: &Build) -> Result<()> {
         "qt/_aqt/data/web/pages/editable.js",
         "qt/_aqt/data/web/pages/editable.css",
         "ts/editable/editable.js",
+        // MathJax a11y components we no longer vendor: they can't load, as their
+        // own dependencies (input/mml.js, a11y/sre.js) were never shipped
+        "qt/_aqt/data/web/js/vendor/mathjax/a11y/complexity.js",
+        "qt/_aqt/data/web/js/vendor/mathjax/a11y/explorer.js",
+        "qt/_aqt/data/web/js/vendor/mathjax/a11y/semantic-enrich.js",
     ] {
         let path = build.buildroot.join(relative_path);
         if path.exists() {
             std::fs::remove_file(&path).with_context(|| format!("removing {path}"))?;
         }
+    }
+    // the mathmaps under it are only read by the a11y/sre.js we never shipped
+    let sre = build
+        .buildroot
+        .join("qt/_aqt/data/web/js/vendor/mathjax/sre");
+    if sre.exists() {
+        std::fs::remove_dir_all(&sre).with_context(|| format!("removing {sre}"))?;
     }
     Ok(())
 }
