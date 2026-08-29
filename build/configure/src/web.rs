@@ -411,7 +411,7 @@ fn build_and_check_mathjax(build: &mut Build) -> Result<()> {
     build.add_action(
         "ts:mathjax",
         EsbuildScript {
-            script: "ts/transform_ts.mjs".into(),
+            script: "ts/bundle_mathjax.mjs".into(),
             entrypoint: "ts/mathjax/index.ts".into(),
             deps: files.clone(),
             output_stem: "ts/mathjax/mathjax",
@@ -450,6 +450,7 @@ pub const MATHJAX_FILES: &[&str] = &[
     "mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Vector-Regular.woff",
     "mathjax/es5/output/chtml/fonts/woff-v2/MathJax_Zero.woff",
     "mathjax/es5/tex-chtml-full.js",
+    "mathjax/es5/tex-svg-full.js",
     "mathjax/es5/sre/mathmaps/de.json",
     "mathjax/es5/sre/mathmaps/en.json",
     "mathjax/es5/sre/mathmaps/es.json",

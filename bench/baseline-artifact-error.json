@@ -1,0 +1,193 @@
+{
+    "artifact_js_dir": "/Users/sark/code/anki/out/qt/_aqt/data/web/js",
+    "config_override": null,
+    "driver": "QtWebEngine fallback, one fresh process/page per observation (custom URL scheme; no HTTP transfer timing)",
+    "iterations_per_case": 1,
+    "machine": {
+        "chip": "Apple M2 Max",
+        "macOS": "26.5.2",
+        "machine": "arm64",
+        "memory": "32 GB",
+        "model_identifier": "Mac14,6",
+        "qt_chromium": "140.0.7339.225",
+        "qt_webengine": "6.11.0"
+    },
+    "runs": {
+        "math": [
+            {
+                "case": "math",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 5.699999809265137,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1395774,
+                "error": "page reported script/runtime errors",
+                "errors": [
+                    "Uncaught SyntaxError: Cannot use import statement outside a module"
+                ],
+                "first_card_ms": 142.19999980926514,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 71.5,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 408,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1368,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 19360,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 34160,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 5792,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 3244,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Size3-Regular.woff"
+                    }
+                ],
+                "startup_after_main_ms": 25.59999990463257,
+                "startup_ms": 115.7999997138977,
+                "status": "error",
+                "transfer_bytes": null,
+                "typeset_ms": 26.40000009536743
+            }
+        ],
+        "nomath": [
+            {
+                "case": "nomath",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 4.099999904632568,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1331723,
+                "error": "page reported script/runtime errors",
+                "errors": [
+                    "Uncaught SyntaxError: Cannot use import statement outside a module"
+                ],
+                "first_card_ms": 90.09999990463257,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 70,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 408,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    }
+                ],
+                "startup_after_main_ms": 2.5,
+                "startup_ms": 89.90000009536743,
+                "status": "error",
+                "transfer_bytes": null,
+                "typeset_ms": 0.19999980926513672
+            }
+        ]
+    },
+    "summary": {
+        "math": {
+            "config_fetch_ms": null,
+            "config_fetch_parse_eval_ms": {
+                "max": 5.699999809265137,
+                "median": 5.699999809265137,
+                "min": 5.699999809265137
+            },
+            "config_parse_eval_residual_ms": null,
+            "encoded_body_bytes": {
+                "max": 1395774.0,
+                "median": 1395774.0,
+                "min": 1395774.0
+            },
+            "first_card_ms": {
+                "max": 142.19999980926514,
+                "median": 142.19999980926514,
+                "min": 142.19999980926514
+            },
+            "main_fetch_ms": null,
+            "main_fetch_parse_eval_ms": {
+                "max": 71.5,
+                "median": 71.5,
+                "min": 71.5
+            },
+            "main_parse_eval_residual_ms": null,
+            "startup_after_main_ms": {
+                "max": 25.59999990463257,
+                "median": 25.59999990463257,
+                "min": 25.59999990463257
+            },
+            "startup_ms": {
+                "max": 115.7999997138977,
+                "median": 115.7999997138977,
+                "min": 115.7999997138977
+            },
+            "transfer_bytes": null,
+            "typeset_ms": {
+                "max": 26.40000009536743,
+                "median": 26.40000009536743,
+                "min": 26.40000009536743
+            }
+        },
+        "nomath": {
+            "config_fetch_ms": null,
+            "config_fetch_parse_eval_ms": {
+                "max": 4.099999904632568,
+                "median": 4.099999904632568,
+                "min": 4.099999904632568
+            },
+            "config_parse_eval_residual_ms": null,
+            "encoded_body_bytes": {
+                "max": 1331723.0,
+                "median": 1331723.0,
+                "min": 1331723.0
+            },
+            "first_card_ms": {
+                "max": 90.09999990463257,
+                "median": 90.09999990463257,
+                "min": 90.09999990463257
+            },
+            "main_fetch_ms": null,
+            "main_fetch_parse_eval_ms": {
+                "max": 70.0,
+                "median": 70.0,
+                "min": 70.0
+            },
+            "main_parse_eval_residual_ms": null,
+            "startup_after_main_ms": {
+                "max": 2.5,
+                "median": 2.5,
+                "min": 2.5
+            },
+            "startup_ms": {
+                "max": 89.90000009536743,
+                "median": 89.90000009536743,
+                "min": 89.90000009536743
+            },
+            "transfer_bytes": null,
+            "typeset_ms": {
+                "max": 0.19999980926513672,
+                "median": 0.19999980926513672,
+                "min": 0.19999980926513672
+            }
+        }
+    }
+}

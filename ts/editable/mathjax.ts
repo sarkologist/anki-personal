@@ -5,8 +5,6 @@
 @typescript-eslint/no-explicit-any: "off",
  */
 
-import "mathjax/es5/tex-svg-full";
-
 import mathIcon from "@mdi/svg/svg/math-integral-box.svg?src";
 
 import { revealMathjaxClozeAnswers } from "./mathjax-cloze";

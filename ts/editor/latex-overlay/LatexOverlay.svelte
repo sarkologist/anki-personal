@@ -24,6 +24,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { LegacyLatex } from "../../editable/legacy-latex-element.svelte";
     import type { LegacyLatexKind } from "../../editable/legacy-latex-preview";
+    import { loadMathjax } from "../../editable/mathjax-loader";
     import type { AgentSelectedTextContext } from "../agent-selection";
     import type { EditingInputAPI } from "../EditingArea.svelte";
     import HandleBackground from "../HandleBackground.svelte";
@@ -225,6 +226,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             return;
         }
 
+        await loadMathjax();
         const mathjaxElement = legacyLatexToMathjaxElement(source, isDisplay);
         if (!mathjaxElement) {
             return;

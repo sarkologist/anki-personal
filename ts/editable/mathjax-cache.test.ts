@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 
 import {
     getCachedMathjaxConversion,
+    getCachedMathjaxConversionAfterLoad,
     type MathjaxConversion,
     MAX_ENTRIES_PER_BUCKET,
     resetMathjaxCache,
@@ -21,6 +22,35 @@ function conversion(text: string): MathjaxConversion {
 }
 
 describe("mathjax render cache", () => {
+    test("does not compute or cache a placeholder while MathJax loads", async () => {
+        let finishLoading!: () => void;
+        const loading = new Promise<void>((resolve) => {
+            finishLoading = resolve;
+        });
+        let computes = 0;
+
+        const pending = getCachedMathjaxConversionAfterLoad(
+            "x",
+            20,
+            0,
+            () => loading,
+            () => {
+                computes++;
+                return conversion("real");
+            },
+        );
+
+        await Promise.resolve();
+        expect(computes).toBe(0);
+
+        finishLoading();
+        await expect(pending).resolves.toEqual(conversion("real"));
+        expect(
+            getCachedMathjaxConversion("x", 20, 0, () => conversion("wrong")),
+        ).toEqual(conversion("real"));
+        expect(computes).toBe(1);
+    });
+
     test("computes once per distinct expression, hits on repeat", () => {
         let computes = 0;
         const render = (src: string) =>

@@ -1,0 +1,639 @@
+{
+    "artifact_js_dir": "/Users/sark/code/anki/out/qt/_aqt/data/web/js",
+    "config_override": "/Users/sark/code/anki/.claude/worktrees/codex-sol-mathjax-speed-5982d8/bench/fixtures/mathjax-config-bundled.js",
+    "driver": "QtWebEngine fallback, one fresh process/page per observation (custom URL scheme; no HTTP transfer timing)",
+    "iterations_per_case": 7,
+    "machine": {
+        "chip": "Apple M2 Max",
+        "macOS": "26.5.2",
+        "machine": "arm64",
+        "memory": "32 GB",
+        "model_identifier": "Mac14,6",
+        "qt_chromium": "140.0.7339.225",
+        "qt_webengine": "6.11.0"
+    },
+    "runs": {
+        "math": [
+            {
+                "case": "math",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 4.900000095367432,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1410321,
+                "errors": [],
+                "first_card_ms": 113.30000019073486,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 71.5,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1368,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 19360,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 34160,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 5792,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff"
+                    }
+                ],
+                "startup_after_main_ms": 0.40000009536743164,
+                "startup_ms": 88.90000009536743,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 24.40000009536743
+            },
+            {
+                "case": "math",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 5.099999904632568,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1410321,
+                "errors": [],
+                "first_card_ms": 113.30000019073486,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 70.7000002861023,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1368,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 19360,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 34160,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 5792,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff"
+                    }
+                ],
+                "startup_after_main_ms": 0.19999980926513672,
+                "startup_ms": 89,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 24.09999990463257
+            },
+            {
+                "case": "math",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 4.900000095367432,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1410321,
+                "errors": [],
+                "first_card_ms": 114.5,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 71.69999980926514,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1368,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 19360,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 34160,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 5792,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff"
+                    }
+                ],
+                "startup_after_main_ms": 0.3000001907348633,
+                "startup_ms": 89.90000009536743,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 24.5
+            },
+            {
+                "case": "math",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 5.5,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1410321,
+                "errors": [],
+                "first_card_ms": 115.10000038146973,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 71.19999980926514,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1368,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 19360,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 34160,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 5792,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff"
+                    }
+                ],
+                "startup_after_main_ms": 0.3000001907348633,
+                "startup_ms": 90.10000038146973,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 25
+            },
+            {
+                "case": "math",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 4.900000095367432,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1410321,
+                "errors": [],
+                "first_card_ms": 116.2999997138977,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 72.59999990463257,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1368,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 19360,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 34160,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 5792,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff"
+                    }
+                ],
+                "startup_after_main_ms": 0.20000028610229492,
+                "startup_ms": 90.5,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 25.799999713897705
+            },
+            {
+                "case": "math",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 5,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1410321,
+                "errors": [],
+                "first_card_ms": 114.5,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 72,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1368,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 19360,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 34160,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 5792,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff"
+                    }
+                ],
+                "startup_after_main_ms": 0.3000001907348633,
+                "startup_ms": 90.40000009536743,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 24
+            },
+            {
+                "case": "math",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 5,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1410321,
+                "errors": [],
+                "first_card_ms": 116,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 72.40000009536743,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1368,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Zero.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 19360,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Math-Italic.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 34160,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Main-Regular.woff"
+                    },
+                    {
+                        "encoded_body_bytes": 5792,
+                        "name": "/_anki/js/vendor/mathjax/output/chtml/fonts/woff-v2/MathJax_Size1-Regular.woff"
+                    }
+                ],
+                "startup_after_main_ms": 0.19999980926513672,
+                "startup_ms": 90.2999997138977,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 25.59999990463257
+            }
+        ],
+        "nomath": [
+            {
+                "case": "nomath",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 4.699999809265137,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1349514,
+                "errors": [],
+                "first_card_ms": 92.2000002861023,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 71.40000009536743,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    }
+                ],
+                "startup_after_main_ms": 0.2999997138977051,
+                "startup_ms": 90,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 2.0999999046325684
+            },
+            {
+                "case": "nomath",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 5.300000190734863,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1349514,
+                "errors": [],
+                "first_card_ms": 93.59999990463257,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 71.90000009536743,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    }
+                ],
+                "startup_after_main_ms": 0.2999997138977051,
+                "startup_ms": 91.59999990463257,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 2
+            },
+            {
+                "case": "nomath",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 5,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1349514,
+                "errors": [],
+                "first_card_ms": 95.40000009536743,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 73.40000009536743,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    }
+                ],
+                "startup_after_main_ms": 0.3000001907348633,
+                "startup_ms": 92.90000009536743,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 2.5
+            },
+            {
+                "case": "nomath",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 4.899999618530273,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1349514,
+                "errors": [],
+                "first_card_ms": 91.59999990463257,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 71.90000009536743,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    }
+                ],
+                "startup_after_main_ms": 0.40000009536743164,
+                "startup_ms": 89.40000009536743,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 2.0999999046325684
+            },
+            {
+                "case": "nomath",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 5,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1349514,
+                "errors": [],
+                "first_card_ms": 92,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 71.30000019073486,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    }
+                ],
+                "startup_after_main_ms": 0.3000001907348633,
+                "startup_ms": 89.60000038146973,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 2.299999713897705
+            },
+            {
+                "case": "nomath",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 5.099999904632568,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1349514,
+                "errors": [],
+                "first_card_ms": 91.90000009536743,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 71.5,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    }
+                ],
+                "startup_after_main_ms": 0.20000028610229492,
+                "startup_ms": 89.90000009536743,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 2
+            },
+            {
+                "case": "nomath",
+                "config_fetch_ms": null,
+                "config_fetch_parse_eval_ms": 5.099999904632568,
+                "config_parse_eval_residual_ms": null,
+                "config_resource": null,
+                "encoded_body_bytes": 1349514,
+                "errors": [],
+                "first_card_ms": 93,
+                "main_fetch_ms": null,
+                "main_fetch_parse_eval_ms": 72.30000019073486,
+                "main_parse_eval_residual_ms": null,
+                "main_resource": null,
+                "resources": [],
+                "served_resources": [
+                    {
+                        "encoded_body_bytes": 18199,
+                        "name": "/_anki/js/mathjax.js"
+                    },
+                    {
+                        "encoded_body_bytes": 1327522,
+                        "name": "/_anki/js/vendor/mathjax/tex-chtml-full.js"
+                    }
+                ],
+                "startup_after_main_ms": 0.40000009536743164,
+                "startup_ms": 90.7000002861023,
+                "status": "ok",
+                "transfer_bytes": null,
+                "typeset_ms": 2.299999713897705
+            }
+        ]
+    },
+    "summary": {
+        "math": {
+            "config_fetch_ms": null,
+            "config_fetch_parse_eval_ms": {
+                "max": 5.5,
+                "median": 5.0,
+                "min": 4.900000095367432
+            },
+            "config_parse_eval_residual_ms": null,
+            "encoded_body_bytes": {
+                "max": 1410321.0,
+                "median": 1410321.0,
+                "min": 1410321.0
+            },
+            "first_card_ms": {
+                "max": 116.2999997138977,
+                "median": 114.5,
+                "min": 113.30000019073486
+            },
+            "main_fetch_ms": null,
+            "main_fetch_parse_eval_ms": {
+                "max": 72.59999990463257,
+                "median": 71.69999980926514,
+                "min": 70.7000002861023
+            },
+            "main_parse_eval_residual_ms": null,
+            "startup_after_main_ms": {
+                "max": 0.40000009536743164,
+                "median": 0.3000001907348633,
+                "min": 0.19999980926513672
+            },
+            "startup_ms": {
+                "max": 90.5,
+                "median": 90.10000038146973,
+                "min": 88.90000009536743
+            },
+            "transfer_bytes": null,
+            "typeset_ms": {
+                "max": 25.799999713897705,
+                "median": 24.5,
+                "min": 24.0
+            }
+        },
+        "nomath": {
+            "config_fetch_ms": null,
+            "config_fetch_parse_eval_ms": {
+                "max": 5.300000190734863,
+                "median": 5.0,
+                "min": 4.699999809265137
+            },
+            "config_parse_eval_residual_ms": null,
+            "encoded_body_bytes": {
+                "max": 1349514.0,
+                "median": 1349514.0,
+                "min": 1349514.0
+            },
+            "first_card_ms": {
+                "max": 95.40000009536743,
+                "median": 92.2000002861023,
+                "min": 91.59999990463257
+            },
+            "main_fetch_ms": null,
+            "main_fetch_parse_eval_ms": {
+                "max": 73.40000009536743,
+                "median": 71.90000009536743,
+                "min": 71.30000019073486
+            },
+            "main_parse_eval_residual_ms": null,
+            "startup_after_main_ms": {
+                "max": 0.40000009536743164,
+                "median": 0.3000001907348633,
+                "min": 0.20000028610229492
+            },
+            "startup_ms": {
+                "max": 92.90000009536743,
+                "median": 90.0,
+                "min": 89.40000009536743
+            },
+            "transfer_bytes": null,
+            "typeset_ms": {
+                "max": 2.5,
+                "median": 2.0999999046325684,
+                "min": 2.0
+            }
+        }
+    }
+}

@@ -7,8 +7,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import { convertMathjax, unescapeSomeEntities } from "./mathjax";
     import { CooldownTimer } from "./cooldown-timer";
-    import { getCachedMathjaxConversion } from "./mathjax-cache";
+    import { getCachedMathjaxConversionAfterLoad } from "./mathjax-cache";
     import { mathjaxConfig } from "./mathjax-element.svelte";
+    import { loadMathjax } from "./mathjax-loader";
 
     export let mathjax: string;
     export let block: boolean;
@@ -18,17 +19,49 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let title: string = "";
 
     const debouncer = new CooldownTimer(500);
+    let renderGeneration = 0;
 
-    $: debouncer.schedule(() => {
-        // Color is now handled via `currentColor` and inheritance, so the cache
-        // key only depends on the rendered geometry / template version.
-        [converted, title] = getCachedMathjaxConversion(
-            mathjax,
-            fontSize,
-            mathjaxConfig.templateScriptVersion,
-            () => convertMathjax(unescapeSomeEntities(mathjax), fontSize),
-        );
-    });
+    function scheduleRender(
+        mathjax: string,
+        fontSize: number,
+        templateScriptVersion: number,
+    ): void {
+        const generation = ++renderGeneration;
+        debouncer.schedule(() => {
+            const source = unescapeSomeEntities(mathjax);
+
+            // Color is now handled via `currentColor` and inheritance, so the cache
+            // key only depends on the rendered geometry / template version.
+            // Empty input needs no MathJax; the same icon doubles as the loading
+            // placeholder for non-empty input.
+            [converted, title] = convertMathjax("", fontSize);
+            if (source.trim().length === 0) {
+                return;
+            }
+
+            void getCachedMathjaxConversionAfterLoad(
+                mathjax,
+                fontSize,
+                templateScriptVersion,
+                loadMathjax,
+                () => convertMathjax(source, fontSize),
+            ).then(
+                (conversion) => {
+                    if (generation === renderGeneration) {
+                        [converted, title] = conversion;
+                    }
+                },
+                (error) => {
+                    if (generation === renderGeneration) {
+                        converted = "Mathjax Error";
+                        title = String(error);
+                    }
+                },
+            );
+        });
+    }
+
+    $: scheduleRender(mathjax, fontSize, mathjaxConfig.templateScriptVersion);
     $: empty = title === "MathJax";
 
     let host: HTMLElement;
@@ -141,6 +174,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     onDestroy(() => {
+        renderGeneration++;
         observer?.disconnect();
         observer = null;
     });

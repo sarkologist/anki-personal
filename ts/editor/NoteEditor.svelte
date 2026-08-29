@@ -63,6 +63,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         resetIOImage,
     } from "../routes/image-occlusion/mask-editor";
     import { ChangeTimer } from "../editable/change-timer";
+    import { loadMathjax } from "../editable/mathjax-loader";
     import { clearableArray } from "./destroyable";
     import DuplicateLink from "./DuplicateLink.svelte";
     import EditorToolbar from "./editor-toolbar";
@@ -280,18 +281,22 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     }
 
     let lastTemplateScriptKey = "";
-    function setNotetypeTemplates(templates: [string, string][]): void {
+    let pendingTemplateScript: { key: string; promise: Promise<void> } | null = null;
+    function setNotetypeTemplates(templates: [string, string][]): Promise<void> {
         const key = `${notetypeMeta.id}:${notetypeMeta.modTime}`;
         if (key === lastTemplateScriptKey) {
-            return;
+            return Promise.resolve();
         }
-        lastTemplateScriptKey = key;
+        if (key === pendingTemplateScript?.key) {
+            return pendingTemplateScript.promise;
+        }
 
         const nonce =
             document
                 .querySelector('meta[name="anki-csp-nonce"]')
                 ?.getAttribute("content") ?? "";
         const parser = new DOMParser();
+        const scripts: HTMLScriptElement[] = [];
         for (const [qfmt, afmt] of templates) {
             for (const html of [qfmt, afmt]) {
                 const doc = parser.parseFromString(html, "text/html");
@@ -307,11 +312,38 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         newScript.nonce = nonce;
                     }
                     newScript.textContent = oldScript.textContent;
-                    document.body.appendChild(newScript);
+                    scripts.push(newScript);
                 }
             }
         }
-        mathjaxConfig.templateScriptVersion++;
+
+        const execution = (async () => {
+            if (scripts.some((script) => script.textContent?.includes("MathJax"))) {
+                try {
+                    await loadMathjax();
+                } catch (error) {
+                    console.error(error);
+                    return;
+                }
+            }
+
+            if (key === lastTemplateScriptKey) {
+                return;
+            }
+            lastTemplateScriptKey = key;
+            for (const script of scripts) {
+                document.body.appendChild(script);
+            }
+            mathjaxConfig.templateScriptVersion++;
+        })();
+
+        const tracked = execution.finally(() => {
+            if (pendingTemplateScript?.promise === tracked) {
+                pendingTemplateScript = null;
+            }
+        });
+        pendingTemplateScript = { key, promise: tracked };
+        return tracked;
     }
 
     let currentNotetypeCss = "";

@@ -232,7 +232,6 @@ class Editor:
             "",
             css=["css/editor.css"],
             js=[
-                "js/mathjax.js",
                 "js/editor.js",
             ],
             context=self,
@@ -782,11 +781,12 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
 
         js = f"""
             saveSession();
-            setFields({json.dumps(data)});
+            setMathjaxEnabled({json.dumps(self.mw.col.get_config("renderMathjax", True))});
             setIsImageOcclusion({json.dumps(self.current_notetype_is_image_occlusion())});
             setNotetypeMeta({json.dumps(notetype_meta)});
-            setNotetypeTemplates({json.dumps(notetype_templates)});
+            await setNotetypeTemplates({json.dumps(notetype_templates)});
             setNotetypeCss({json.dumps(notetype_css)});
+            setFields({json.dumps(data)});
             setCollapsed({json.dumps(collapsed)});
             setClozeFields({json.dumps(cloze_fields)});
             setPlainTexts({json.dumps(plain_texts)});
@@ -797,7 +797,6 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             setColorButtons({json.dumps([text_color, highlight_color])});
             setTags({json.dumps(self.note.tags)});
             setTagsCollapsed({json.dumps(self.mw.pm.tags_collapsed(self.editorMode))});
-            setMathjaxEnabled({json.dumps(self.mw.col.get_config("renderMathjax", True))});
             setShrinkImages({json.dumps(self.mw.col.get_config("shrinkEditorImages", True))});
             setCloseHTMLTags({json.dumps(self.mw.col.get_config("closeHTMLTags", True))});
             triggerChanges();
@@ -822,7 +821,7 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
 
         js = gui_hooks.editor_will_load_note(js, self.note, self)
         self.web.evalWithCallback(
-            f'require("anki/ui").loaded.then(() => {{ {js} }})', oncallback
+            f'require("anki/ui").loaded.then(async () => {{ {js} }})', oncallback
         )
 
     def _save_current_note(self) -> None:

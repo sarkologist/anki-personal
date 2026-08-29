@@ -61,6 +61,26 @@ export function getCachedMathjaxConversion(
     return conversion;
 }
 
+/**
+ * Wait for MathJax before consulting the render cache. In particular, the
+ * loading placeholder must never occupy the cache entry for the real SVG.
+ */
+export async function getCachedMathjaxConversionAfterLoad(
+    mathjax: string,
+    fontSize: number,
+    templateScriptVersion: number,
+    load: () => Promise<void>,
+    compute: () => MathjaxConversion,
+): Promise<MathjaxConversion> {
+    await load();
+    return getCachedMathjaxConversion(
+        mathjax,
+        fontSize,
+        templateScriptVersion,
+        compute,
+    );
+}
+
 /** Test seam: drop all cached conversions. */
 export function resetMathjaxCache(): void {
     buckets.clear();

@@ -26,6 +26,7 @@ beforeEach(() => {
     const emptyRects = () => ({
         length: 0,
         item: () => null,
+        // eslint-disable-next-line @typescript-eslint/no-empty-function
         [Symbol.iterator]: function*() {},
     });
     (Range.prototype as any).getBoundingClientRect = rect;
