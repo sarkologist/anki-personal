@@ -113,11 +113,11 @@ PR to fork.
 
 ## Results (QtWebEngine cold driver, Apple M2 Max, medians)
 
-| Case | Before | After | Δ |
-|---|---|---|---|
-| Reviewer first card, no math (n=7) | 91.4ms / 1.36MB | 12.9ms / 4.8KB | −86% / −99.6% |
-| Reviewer first card, with math (n=7) | 116.3ms | 116.8ms | unchanged |
-| editor.js fetch+parse+eval (Chrome, n=5) | 122.5ms / 6.52MB | 55.8ms / 3.59MB | −54% / −45% |
+| Case                                     | Before           | After           | Δ             |
+| ---------------------------------------- | ---------------- | --------------- | ------------- |
+| Reviewer first card, no math (n=7)       | 91.4ms / 1.36MB  | 12.9ms / 4.8KB  | −86% / −99.6% |
+| Reviewer first card, with math (n=7)     | 116.3ms          | 116.8ms         | unchanged     |
+| editor.js fetch+parse+eval (Chrome, n=5) | 122.5ms / 6.52MB | 55.8ms / 3.59MB | −54% / −45%   |
 
 Raw data: `bench/baseline.json` (eager, pre-change), `bench/candidate.json` (all four cases on
 the branch's built artifacts). Reproduce with `bench/run-qt-cold.sh <web-dir> 7 --cases
