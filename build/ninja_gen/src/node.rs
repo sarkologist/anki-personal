@@ -192,6 +192,31 @@ impl BuildAction for EsbuildScript<'_> {
     }
 }
 
+/// Bundles an entrypoint for the CSS its Svelte components emit, discarding the
+/// JavaScript instead of writing it to disk.
+pub struct EsbuildCssOnly<'a> {
+    pub script: BuildInput,
+    pub entrypoint: BuildInput,
+    pub deps: BuildInput,
+    /// .css will be appended
+    pub output_stem: &'a str,
+}
+
+impl BuildAction for EsbuildCssOnly<'_> {
+    fn command(&self) -> &str {
+        "$node_bin $script --css-only $entrypoint $out"
+    }
+
+    fn files(&mut self, build: &mut impl build::FilesHandle) {
+        build.add_inputs("node_bin", inputs![":node_binary"]);
+        build.add_inputs("script", &self.script);
+        build.add_inputs("entrypoint", &self.entrypoint);
+        build.add_inputs("", inputs!["yarn.lock", ":node_modules", &self.deps]);
+        build.add_inputs("", inputs!["out/env"]);
+        build.add_outputs("out", vec![format!("{}.css", self.output_stem)]);
+    }
+}
+
 pub struct DPrint {
     pub inputs: BuildInput,
     pub check_only: bool,
