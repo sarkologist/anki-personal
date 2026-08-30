@@ -3600,14 +3600,6 @@
     "repository": "https://github.com/rust-lang/socket2"
   },
   {
-    "authors": "Alex Crichton <alex@alexcrichton.com>|Thomas de Zeeuw <thomasdezeeuw@gmail.com>",
-    "description": "Utilities for handling networking sockets with a maximal amount of configuration possible intended.",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "socket2",
-    "repository": "https://github.com/rust-lang/socket2"
-  },
-  {
     "authors": "Mathijs van de Nes <git@mathijs.vd-nes.nl>|John Ericson <git@JohnEricson.me>|Joshua Barretto <joshua.s.barretto@gmail.com>",
     "description": "Spin-based synchronization primitives",
     "license": "MIT",
@@ -3766,6 +3758,22 @@
     "license_file": null,
     "name": "sysinfo",
     "repository": "https://github.com/GuillaumeGomez/sysinfo"
+  },
+  {
+    "authors": "Mullvad VPN",
+    "description": "Bindings to SystemConfiguration framework for macOS",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "system-configuration",
+    "repository": "https://github.com/mullvad/system-configuration-rs"
+  },
+  {
+    "authors": "Mullvad VPN",
+    "description": "Low level bindings to SystemConfiguration framework for macOS",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "system-configuration-sys",
+    "repository": "https://github.com/mullvad/system-configuration-rs"
   },
   {
     "authors": "Val Packett <val@packett.cool>",
@@ -4190,14 +4198,6 @@
     "license_file": null,
     "name": "unicode-segmentation",
     "repository": "https://github.com/unicode-rs/unicode-segmentation"
-  },
-  {
-    "authors": "kwantam <kwantam@gmail.com>|Manish Goregaokar <manishsmail@gmail.com>",
-    "description": "Determine displayed width of `char` and `str` types according to Unicode Standard Annex #11 rules.",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "unicode-width",
-    "repository": "https://github.com/unicode-rs/unicode-width"
   },
   {
     "authors": "kwantam <kwantam@gmail.com>|Manish Goregaokar <manishsmail@gmail.com>",
@@ -4645,6 +4645,14 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "windows-numerics",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "authors": "Microsoft",
+    "description": "Windows registry",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "windows-registry",
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
