@@ -221,12 +221,27 @@ function yank(): void {
     }
 }
 
+function deleteForward(editable: HTMLElement): void {
+    const selection = getSelection(editable);
+    if (!selection) {
+        return;
+    }
+
+    if (selection.isCollapsed) {
+        selection.modify("extend", "forward", "character");
+    }
+    if (!selection.isCollapsed) {
+        document.execCommand("delete");
+    }
+}
+
 /**
  * macOS provides Emacs/readline-style caret movement (Ctrl+B/F/A/E) in text
  * fields natively. Add the bindings it leaves out: the Alt+B/F word jumps (which
- * otherwise insert ∫/ƒ), and the kill/yank editing commands — Alt+D (kill word
- * forward), Ctrl+K (kill to line end), Ctrl+U (kill to line start), Ctrl+W (kill
- * word back) and Ctrl+Y (yank), backed by a shared kill ring. macOS only.
+ * otherwise insert ∫/ƒ), Ctrl+D (delete forward), and the kill/yank editing
+ * commands — Alt+D (kill word forward), Ctrl+K (kill to line end), Ctrl+U (kill
+ * to line start), Ctrl+W (kill word back) and Ctrl+Y (yank), backed by a shared
+ * kill ring. macOS only.
  */
 export function emacsKeyboardShortcuts(editable: HTMLElement): void {
     if (!isApplePlatform()) {
@@ -252,8 +267,11 @@ export function emacsKeyboardShortcuts(editable: HTMLElement): void {
                 evt.preventDefault();
             }
         } else if (evt.ctrlKey && !evt.altKey) {
-            // Ctrl+B/F/A/E navigation is native; only add the kill/yank commands.
+            // Ctrl+B/F/A/E navigation is native; add forward delete and kill/yank.
             switch (evt.code) {
+                case "KeyD":
+                    deleteForward(editable);
+                    break;
                 case "KeyK":
                     killRange(editable, "forward", "lineboundary", true);
                     break;
