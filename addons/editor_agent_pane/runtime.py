@@ -7,7 +7,7 @@ import os
 import time
 import weakref
 from collections.abc import Callable
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError
 from threading import Event
 from typing import Any
 
@@ -44,6 +44,13 @@ from aqt.webview import AnkiWebView
 
 from .activity import ClaudeActivityRenderer, CodexActivityRenderer
 from .agent_log import JsonLineAgentRunLogger, ensure_agent_log_folder
+from .card_access import (
+    CARD_ACCESS_OPTIONS,
+    CardReadScope,
+    normalize_card_access,
+    read_cards,
+    send_with_card_reads,
+)
 from .claude_client import ClaudeCliAgent, resolve_claude_path
 from .codex_client import (
     DEFAULT_PROJECT_FOLDER_ACCESS,
@@ -155,6 +162,7 @@ DEFAULT_CONFIG = {
     "prompt_history_by_model": {},
     "project_folder": "",
     "project_folder_access": DEFAULT_PROJECT_FOLDER_ACCESS,
+    "card_access": "current",
     "recent_project_folders": [],
     "fast_mode": False,
     "stream_reasoning_summaries": True,
@@ -206,6 +214,7 @@ def _config() -> dict[str, Any]:
     if "codex_path" not in saved and config["codex_model"] == "gpt-5.2":
         config["codex_model"] = ""
     config["provider"] = provider_value(config["provider"])
+    config["card_access"] = normalize_card_access(config["card_access"])
     config["project_folder_access"] = normalize_project_folder_access(
         str(config["project_folder_access"])
     )
@@ -943,8 +952,22 @@ class EditorAgentPane(QWidget):
             self.access_combo.currentIndexChanged,
             lambda _index: self.refresh_context_label(),
         )
-        self.access_label = QLabel("Access")
+        self.access_label = QLabel("Folder access")
         form.addRow(self.access_label, self.access_combo)
+        self.card_access_combo = QComboBox()
+        for label, value in CARD_ACCESS_OPTIONS:
+            self.card_access_combo.addItem(label, value)
+        self.card_access_combo.setToolTip(
+            "Read-only access to additional cards. Deck access uses the current "
+            "card's home deck (no subdecks), or the decks of selected cards. "
+            "In Add Cards it uses the selected target deck. Current card only "
+            "keeps the existing editor/selected-card context. Changing access "
+            "stops the active run and clears the chat."
+        )
+        qconnect(
+            self.card_access_combo.currentIndexChanged, self._on_card_access_changed
+        )
+        form.addRow("Card access", self.card_access_combo)
         self.reasoning_checkbox = QCheckBox("Show reasoning summaries")
         self.reasoning_label = QLabel("")
         form.addRow(self.reasoning_label, self.reasoning_checkbox)
@@ -992,6 +1015,13 @@ class EditorAgentPane(QWidget):
                 config["recent_project_folders"],
             )
             self._set_project_folder_access(str(config["project_folder_access"]))
+            self.card_access_combo.setCurrentIndex(
+                next(
+                    i
+                    for i, (_, value) in enumerate(CARD_ACCESS_OPTIONS)
+                    if value == config["card_access"]
+                )
+            )
             self.fast_mode_checkbox.setChecked(bool(config["fast_mode"]))
             self.reasoning_checkbox.setChecked(
                 bool(config["stream_reasoning_summaries"])
@@ -1021,6 +1051,7 @@ class EditorAgentPane(QWidget):
         config["instructions_collapsed"] = self._instructions_are_collapsed()
         config["project_folder"] = project_folder
         config["project_folder_access"] = self._project_folder_access()
+        config["card_access"] = self._card_access()
         config["fast_mode"] = self._fast_mode()
         config["stream_reasoning_summaries"] = self._stream_reasoning_summaries()
         config["recent_project_folders"] = remember_project_folder(
@@ -1183,7 +1214,9 @@ class EditorAgentPane(QWidget):
         # Effort is shared across providers, so the pick carries over - but the
         # pulldown only reaches the config on save, so read it before the new
         # provider rebuilds it. While loading, the config is the only truth.
-        effort = str(config["reasoning_effort"]) if loading else self._reasoning_effort()
+        effort = (
+            str(config["reasoning_effort"]) if loading else self._reasoning_effort()
+        )
         if not loading:
             self._save_current_instructions(config)
             self._save_current_model_choice(config)
@@ -1322,6 +1355,40 @@ class EditorAgentPane(QWidget):
     def _project_folder_access(self) -> str:
         data = self.access_combo.currentData()
         return normalize_project_folder_access(str(data) if data is not None else "")
+
+    def _card_access(self) -> str:
+        return normalize_card_access(self.card_access_combo.currentData())
+
+    def _on_card_access_changed(self, _index: int) -> None:
+        if getattr(self, "_loading_settings", False):
+            return
+        self._clear_chat_context()
+        self._save_settings()
+        self.refresh_context_label()
+
+    def _card_read_scope(
+        self, snapshot: EditorSnapshot | MultiCardSnapshot
+    ) -> CardReadScope:
+        access = self._card_access()
+        deck_ids: set[int] = set()
+        if access == "deck":
+            if isinstance(snapshot, MultiCardSnapshot):
+                deck_ids.update(
+                    card.deck_id for card in snapshot.cards if card.deck_id is not None
+                )
+            else:
+                assert self.editor is not None
+                if self.editor.card is not None:
+                    deck_ids.add(int(self.editor.card.current_deck_id()))
+                elif self.editor.editorMode is EditorMode.ADD_CARDS:
+                    chooser = getattr(self.editor.parentWindow, "deck_chooser", None)
+                    if chooser is not None:
+                        deck_ids.add(int(chooser.selected_deck_id))
+                elif self.editor.note is not None and self.editor.note.id:
+                    deck_ids.update(
+                        int(card.current_deck_id()) for card in self.editor.note.cards()
+                    )
+        return CardReadScope(access, tuple(sorted(deck_ids)))
 
     def _fast_mode(self) -> bool:
         return self.fast_mode_checkbox.isChecked()
@@ -1487,6 +1554,7 @@ class EditorAgentPane(QWidget):
             self._agent_stop_event.set()
             self._agent_stop_event = None
         self.history.clear()
+        self._history_card_scope: CardReadScope | None = None
         self.pending_patch = None
         self.pending_snapshot = None
         self._activity_id = None
@@ -1671,14 +1739,24 @@ class EditorAgentPane(QWidget):
             browser = getattr(self, "browser", None)
             if browser is not None:
                 snapshot = browser_multi_card_snapshot(browser)
+                collection = browser.col
                 notetype: dict[str, Any] = {}
             else:
                 assert self.editor is not None
                 snapshot = editor_snapshot(self.editor, selected_text)
+                collection = self.editor.mw.col
                 notetype = dict(self.editor.note_type())
+            card_scope = self._card_read_scope(snapshot)
         except RuntimeError as exc:
             showWarning(str(exc), parent=self)
             return
+        previous_scope = getattr(self, "_history_card_scope", None)
+        if previous_scope is not None and previous_scope != card_scope:
+            # A different card or Add Cards target can change the permitted
+            # decks without changing the note or the permission selector.
+            self._clear_chat_context()
+            generation = self._context_generation
+        self._history_card_scope = card_scope
         selected_snapshot = (
             snapshot.selected_text if isinstance(snapshot, EditorSnapshot) else None
         )
@@ -1754,6 +1832,65 @@ class EditorAgentPane(QWidget):
                     )
                 )
 
+        def lookup_cards(request: Any) -> dict[str, Any]:
+            # The CLI runs without the collection lock. Schedule each lookup
+            # separately on Anki's serialized collection executor.
+            response: Future = Future()
+
+            def begin_lookup() -> None:
+                if (
+                    stop_event.is_set()
+                    or generation != self._context_generation
+                    or aqt.mw is None
+                    or aqt.mw.col is not collection
+                ):
+                    response.set_exception(
+                        AgentStopped("Card access changed or collection closed.")
+                    )
+                    return
+
+                def query() -> dict[str, Any]:
+                    if stop_event.is_set():
+                        raise AgentStopped("Agent run stopped.")
+                    return read_cards(collection, card_scope, request)
+
+                def done(future: Future) -> None:
+                    try:
+                        response.set_result(future.result())
+                    except AgentStopped as exc:
+                        response.set_exception(exc)
+                    except Exception:
+                        response.set_result(
+                            {
+                                "error": "Card lookup failed. Check the Anki search query and retry."
+                            }
+                        )
+
+                self._append_activity_line_if_current(
+                    generation, "[cards] Reading permitted cards"
+                )
+                try:
+                    taskman.run_in_background(query, done, uses_collection=True)
+                except Exception as exc:
+                    response.set_exception(exc)
+
+            taskman.run_on_main(begin_lookup)
+            while True:
+                if stop_event.is_set():
+                    raise AgentStopped("Agent run stopped.")
+                try:
+                    return response.result(timeout=0.1)
+                except TimeoutError:
+                    continue
+
+        def send_agent(agent: Any, **kwargs: Any) -> Any:
+            return send_with_card_reads(
+                agent.send,
+                scope=card_scope,
+                read=lookup_cards,
+                **kwargs,
+            )
+
         def task() -> tuple[
             str,
             str,
@@ -1769,7 +1906,8 @@ class EditorAgentPane(QWidget):
                     timeout_seconds=int(config["timeout_seconds"]),
                     custom_instructions=custom_instructions,
                 )
-                result = agent.send(
+                result = send_agent(
+                    agent,
                     prompt=prompt,
                     snapshot=snapshot,
                     project_root="",
@@ -1794,7 +1932,8 @@ class EditorAgentPane(QWidget):
                     custom_instructions=custom_instructions,
                     reasoning_effort=reasoning_effort,
                 )
-                result = agent.send(
+                result = send_agent(
+                    agent,
                     prompt=prompt,
                     snapshot=snapshot,
                     project_root=project_root,
@@ -1821,7 +1960,8 @@ class EditorAgentPane(QWidget):
                 reasoning_effort=reasoning_effort,
                 stream_reasoning_summaries=stream_reasoning_summaries,
             )
-            result = agent.send(
+            result = send_agent(
+                agent,
                 prompt=prompt,
                 snapshot=snapshot,
                 project_root=project_root,

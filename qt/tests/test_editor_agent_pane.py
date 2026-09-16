@@ -7,6 +7,7 @@ import importlib
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import types
@@ -914,6 +915,7 @@ def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
     pane._model_text = lambda: ""
     pane._reasoning_effort = lambda: ""
     pane._project_folder_text = lambda: ""
+    pane._card_access = lambda: "current"
     pane._project_folder_access = lambda: PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE
     pane._custom_instructions_text = lambda: ""
     pane._fast_mode = lambda: False
@@ -1459,7 +1461,9 @@ def test_agent_request_transcript_mentions_validated_selection_context(
 
         def send(self, **kwargs: Any) -> Any:
             captured["send_kwargs"] = kwargs
-            return types.SimpleNamespace(text="", html="", proposals=())
+            return types.SimpleNamespace(
+                text="", html="", proposals=(), card_request=None
+            )
 
     monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
     selected_text = {
@@ -1517,7 +1521,9 @@ def test_agent_request_passes_selected_reasoning_effort(
             captured["agent_kwargs"] = kwargs
 
         def send(self, **_kwargs: Any) -> Any:
-            return types.SimpleNamespace(text="", html="", proposals=())
+            return types.SimpleNamespace(
+                text="", html="", proposals=(), card_request=None
+            )
 
     monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
 
@@ -1550,7 +1556,9 @@ def test_agent_request_uses_ollama_provider(
 
         def send(self, **kwargs: Any) -> Any:
             captured["send_kwargs"] = kwargs
-            return types.SimpleNamespace(text="Done", html="<p>Done</p>", proposals=())
+            return types.SimpleNamespace(
+                text="Done", html="<p>Done</p>", proposals=(), card_request=None
+            )
 
     monkeypatch.setattr(
         runtime,
@@ -1598,7 +1606,9 @@ def test_agent_request_uses_claude_provider(
 
         def send(self, **kwargs: Any) -> Any:
             captured["send_kwargs"] = kwargs
-            return types.SimpleNamespace(text="Done", html="<p>Done</p>", proposals=())
+            return types.SimpleNamespace(
+                text="Done", html="<p>Done</p>", proposals=(), card_request=None
+            )
 
     monkeypatch.setattr(
         runtime,
@@ -1690,7 +1700,9 @@ def test_agent_request_drops_effort_the_codex_model_rejects(
             captured["agent_kwargs"] = kwargs
 
         def send(self, **_kwargs: Any) -> Any:
-            return types.SimpleNamespace(text="", html="", proposals=())
+            return types.SimpleNamespace(
+                text="", html="", proposals=(), card_request=None
+            )
 
     monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
 
@@ -1721,7 +1733,9 @@ def test_agent_request_passes_ultra_effort_for_a_codex_model_that_supports_it(
             captured["agent_kwargs"] = kwargs
 
         def send(self, **_kwargs: Any) -> Any:
-            return types.SimpleNamespace(text="", html="", proposals=())
+            return types.SimpleNamespace(
+                text="", html="", proposals=(), card_request=None
+            )
 
     monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
 
@@ -1770,6 +1784,7 @@ def test_load_settings_restores_reasoning_effort(
     pane._set_model_choice = lambda model: None
     pane._set_project_folder_choices = lambda folder, recent: None
     pane._set_project_folder_access = lambda access: None
+    pane.card_access_combo = types.SimpleNamespace(setCurrentIndex=lambda index: None)
     pane._set_effort_choice = lambda effort: restored.update(effort=effort)
     pane.fast_mode_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
     pane.reasoning_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
@@ -1801,6 +1816,7 @@ def test_load_settings_restores_model_scoped_instructions(
     pane._set_model_choice = lambda model: None
     pane._set_project_folder_choices = lambda folder, recent: None
     pane._set_project_folder_access = lambda access: None
+    pane.card_access_combo = types.SimpleNamespace(setCurrentIndex=lambda index: None)
     pane._set_effort_choice = lambda effort: None
     pane.fast_mode_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
     pane.reasoning_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
@@ -1857,6 +1873,7 @@ def test_load_settings_restores_collapsed_instructions(
     pane._set_model_choice = lambda model: None
     pane._set_project_folder_choices = lambda folder, recent: None
     pane._set_project_folder_access = lambda access: None
+    pane.card_access_combo = types.SimpleNamespace(setCurrentIndex=lambda index: None)
     pane._set_effort_choice = lambda effort: None
     pane.fast_mode_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
     pane.reasoning_checkbox = types.SimpleNamespace(setChecked=lambda checked: None)
@@ -1921,7 +1938,9 @@ def test_agent_request_drops_stale_selection_from_transcript(
 
         def send(self, **kwargs: Any) -> Any:
             captured["snapshot"] = kwargs["snapshot"]
-            return types.SimpleNamespace(text="", html="", proposals=())
+            return types.SimpleNamespace(
+                text="", html="", proposals=(), card_request=None
+            )
 
     monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
 
@@ -1969,6 +1988,7 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     pane._provider = lambda: PROVIDER_CODEX
     pane._model_text = lambda: "gpt-5.5"
     pane._custom_instructions_text = lambda: "be concise"
+    pane._card_access = lambda: "deck"
     pane._project_folder_access = lambda: PROJECT_FOLDER_ACCESS_READ_ONLY
     pane._reasoning_effort = lambda: "high"
     pane._fast_mode = lambda: True
@@ -1996,6 +2016,7 @@ def test_save_settings_persists_fast_mode_and_no_project_folder(
     assert saved["instructions_collapsed"] is True
     assert saved["project_folder"] == ""
     assert saved["project_folder_access"] == PROJECT_FOLDER_ACCESS_READ_ONLY
+    assert saved["card_access"] == "deck"
     assert saved["reasoning_effort"] == "high"
     assert saved["fast_mode"] is True
     assert saved["stream_reasoning_summaries"] is False
@@ -7007,3 +7028,339 @@ def test_claude_activity_renderer_suppresses_structured_output_round_trip() -> N
         == "[tool error] boom"
     )
     assert r.error_count == 1
+
+
+def test_card_reads_enforce_scope_before_returning_fields() -> None:
+    from editor_agent_pane.card_access import CardReadScope, read_cards
+
+    notes = {
+        i: FakeMutableNote(
+            note_id=i, mid=7, field_names=("Front",), fields=(f"card {i}",)
+        )
+        for i in range(1, 4)
+    }
+    cards = {
+        i: FakeCardForSnapshot(
+            card_id=i,
+            note=notes[i],
+            ord=0,
+            template_name="Card 1",
+            deck_id=1 if i < 3 else 2,
+        )
+        for i in notes
+    }
+    col = FakeCollectionForCards(cards)
+    searches = []
+    col.find_cards = lambda query: searches.append(query) or [3, 2, 1]
+    db = sqlite3.connect(":memory:")
+    db.execute("create table cards (id integer, did integer, odid integer)")
+    # Card 2 is temporarily in filtered deck 99; its home deck is still 1.
+    db.executemany(
+        "insert into cards values (?, ?, ?)", [(1, 1, 0), (2, 99, 1), (3, 2, 0)]
+    )
+    col.db = types.SimpleNamespace(
+        list=lambda sql, *args: [row[0] for row in db.execute(sql, args)]
+    )
+    request = {"query": "deck:Other OR cid:3", "offset": 0, "limit": 10}
+    denied = read_cards(col, CardReadScope("current"), request)
+    assert "error" in denied
+    assert searches == []
+    scoped = read_cards(col, CardReadScope("deck", (1,)), request)
+    assert [card["card_id"] for card in scoped["cards"]] == [1, 2]
+    assert "card 3" not in json.dumps(scoped)
+    all_cards = read_cards(col, CardReadScope("all"), request)
+    assert [card["card_id"] for card in all_cards["cards"]] == [1, 2, 3]
+    page = read_cards(col, CardReadScope("all"), {**request, "limit": 1})
+    assert page["next_offset"] == 1
+    assert page["total"] == 3
+    assert page["cards"][0]["fields"][0]["html"] == "card 1"
+    assert "error" in read_cards(col, CardReadScope("deck"), request)
+
+
+@pytest.mark.parametrize(
+    "card_request",
+    [
+        {},
+        {"query": "", "offset": -1, "limit": 1},
+        {"query": "", "offset": False, "limit": 1},
+        {"query": "", "offset": 0, "limit": 100000},
+        {"query": "", "offset": 0, "limit": 1, "write": True},
+    ],
+)
+def test_card_reads_reject_invalid_requests(card_request: Any) -> None:
+    from editor_agent_pane.card_access import CardReadScope, read_cards
+
+    assert "error" in read_cards(None, CardReadScope("all"), card_request)
+
+
+def test_agent_can_request_card_context_then_answer() -> None:
+    from editor_agent_pane.card_access import CardReadScope, send_with_card_reads
+    from editor_agent_pane.codex_client import AgentResult
+
+    prompts = []
+    request = {"query": "tag:biology", "offset": 0, "limit": 5}
+
+    def send(**kwargs: Any) -> AgentResult:
+        prompts.append(kwargs["prompt"])
+        if len(prompts) == 1:
+            return AgentResult("", "", (), card_request=request)
+        assert "mitochondria" in prompts[-1]
+        return AgentResult("Related cards found.", "", ())
+
+    reads = []
+    result = send_with_card_reads(
+        send,
+        prompt="Find related cards",
+        scope=CardReadScope("all"),
+        read=lambda req: reads.append(req) or {"cards": ["mitochondria"]},
+        stop_requested=lambda: False,
+    )
+    assert result.text == "Related cards found."
+    assert reads == [request]
+    assert len(prompts) == 2
+
+
+def test_card_permission_change_cancels_run_and_clears_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.BROWSER,
+        current_note_id=123,
+        last_browser_note_id=123,
+    )
+    stopped = []
+    saved = []
+    pane._agent_stop_event = types.SimpleNamespace(set=lambda: stopped.append(True))
+    pane._save_settings = lambda: saved.append(True)
+    pane._on_card_access_changed(0)
+    assert stopped == [True]
+    assert saved == [True]
+    assert pane.history == []
+    assert pane._context_generation == 1
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude", "ollama"])
+def test_providers_return_card_lookup_requests(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    request = {"query": "cid:42", "offset": 0, "limit": 1}
+    payload = {
+        "message": "",
+        "message_html": "",
+        "patch": None,
+        "card_request": request,
+    }
+
+    def popen(command: list[str], **kwargs: Any) -> FakePopen:
+        if provider == "codex":
+            Path(command[command.index("--output-last-message") + 1]).write_text(
+                json.dumps(payload)
+            )
+            return FakePopen(stdout="")
+        return FakePopen(
+            stdout=_claude_envelope(payload)
+            if provider == "claude"
+            else json.dumps(payload)
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    agent = (
+        CodexCliAgent(codex_path="codex", model="", timeout_seconds=30)
+        if provider == "codex"
+        else ClaudeCliAgent(claude_path="claude", model="", timeout_seconds=30)
+        if provider == "claude"
+        else OllamaCliAgent(
+            ollama_path="ollama",
+            ollama_host="localhost:11434",
+            model="local",
+            timeout_seconds=30,
+        )
+    )
+    result = agent.send(
+        prompt="Find related cards", snapshot=snapshot(), project_root="", history=[]
+    )
+    assert result.card_request == request
+    assert result.proposals == ()
+
+
+def test_current_only_lookup_never_calls_collection_and_loop_is_bounded() -> None:
+    from editor_agent_pane.card_access import (
+        MAX_CARD_REQUESTS,
+        CardReadScope,
+        send_with_card_reads,
+    )
+    from editor_agent_pane.codex_client import AgentResult
+
+    calls = []
+
+    def send(**kwargs: Any) -> AgentResult:
+        calls.append(kwargs)
+        return AgentResult(
+            "", "", (), card_request={"query": "", "offset": 0, "limit": 1}
+        )
+
+    with pytest.raises(RuntimeError, match="lookup limit"):
+        send_with_card_reads(
+            send,
+            prompt="Read",
+            scope=CardReadScope("current"),
+            read=lambda request: pytest.fail("Collection must not be read"),
+            stop_requested=lambda: False,
+        )
+    assert len(calls) == MAX_CARD_REQUESTS + 1
+    assert '"requests_remaining": 0' in calls[-1]["prompt"]
+
+
+def test_card_read_stops_before_reusing_results_after_revocation() -> None:
+    from editor_agent_pane.card_access import CardReadScope, send_with_card_reads
+    from editor_agent_pane.codex_client import AgentResult
+
+    stopped = False
+    calls = []
+
+    def send(**kwargs: Any) -> AgentResult:
+        calls.append(kwargs)
+        return AgentResult(
+            "", "", (), card_request={"query": "", "offset": 0, "limit": 1}
+        )
+
+    def read(request: Any) -> dict[str, Any]:
+        nonlocal stopped
+        stopped = True
+        return {"cards": ["private card"]}
+
+    with pytest.raises(AgentStopped):
+        send_with_card_reads(
+            send,
+            prompt="Read",
+            scope=CardReadScope("all"),
+            read=read,
+            stop_requested=lambda: stopped,
+        )
+    assert len(calls) == 1
+
+
+def test_card_read_scope_uses_home_decks_and_add_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane._card_access = lambda: "deck"
+    assert pane._card_read_scope(multi_snapshot()).deck_ids == (1, 2)
+    pane.editor.card = types.SimpleNamespace(current_deck_id=lambda: 7, did=99)
+    assert pane._card_read_scope(snapshot()).deck_ids == (7,)
+    pane.editor.card = None
+    pane.editor.editorMode = runtime.EditorMode.ADD_CARDS
+    pane.editor.parentWindow = types.SimpleNamespace(
+        deck_chooser=types.SimpleNamespace(selected_deck_id=8)
+    )
+    assert pane._card_read_scope(snapshot()).deck_ids == (8,)
+    pane.editor.parentWindow.deck_chooser = None
+    assert pane._card_read_scope(snapshot()).deck_ids == ()
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude", "ollama"])
+def test_runtime_routes_card_lookup_through_collection_task(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, provider: str
+) -> None:
+    from editor_agent_pane.codex_client import AgentResult
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane._card_access = lambda: "all"
+    pane._provider = lambda: provider
+    pane._model_text = lambda: "model"
+    runtime.aqt.mw = types.SimpleNamespace(
+        taskman=ImmediateTaskman(),
+        addonManager=FakeAddonManager(),
+        col=pane.editor.mw.col,
+    )
+    monkeypatch.setattr(runtime, "_config", lambda: dict(runtime.DEFAULT_CONFIG))
+    queries = []
+    monkeypatch.setattr(
+        runtime,
+        "read_cards",
+        lambda col, scope, request: (
+            queries.append((col, scope, request)) or {"cards": ["related fact"]}
+        ),
+    )
+    calls = []
+
+    class Agent:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def send(self, **kwargs: Any) -> AgentResult:
+            calls.append(kwargs)
+            return AgentResult(
+                "Done",
+                "",
+                (),
+                card_request={"query": "tag:topic", "offset": 0, "limit": 1}
+                if len(calls) == 1
+                else None,
+            )
+
+    monkeypatch.setattr(
+        runtime,
+        {
+            "codex": "CodexCliAgent",
+            "claude": "ClaudeCliAgent",
+            "ollama": "OllamaCliAgent",
+        }[provider],
+        Agent,
+    )
+    pane._start_agent_request("Find related cards", generation=0)
+    assert len(queries) == 1
+    assert queries[0][0] is pane.editor.mw.col
+    assert queries[0][1].access == "all"
+    assert "related fact" in calls[1]["prompt"]
+    assert pane.history == [("Find related cards", "Done")]
+
+
+def test_changing_decks_discards_previous_card_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from editor_agent_pane.card_access import CardReadScope
+    from editor_agent_pane.codex_client import AgentResult
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane._card_access = lambda: "deck"
+    pane._history_card_scope = CardReadScope("deck", (1,))
+    pane.history = [("Old query", "Private data from deck 1")]
+    pane.editor.card = types.SimpleNamespace(id=42, current_deck_id=lambda: 2)
+    runtime.aqt.mw = types.SimpleNamespace(
+        taskman=ImmediateTaskman(), addonManager=FakeAddonManager()
+    )
+    monkeypatch.setattr(runtime, "_config", lambda: dict(runtime.DEFAULT_CONFIG))
+
+    class Agent:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def send(self, **kwargs: Any) -> AgentResult:
+            assert kwargs["history"] == []
+            assert '"deck_ids": [2]' in kwargs["prompt"]
+            return AgentResult("New answer", "", ())
+
+    monkeypatch.setattr(runtime, "CodexCliAgent", Agent)
+    pane._start_agent_request("New query", generation=0)
+    assert pane.history == [("New query", "New answer")]
+    assert pane._context_generation == 1
+
+
+@pytest.mark.parametrize("invalid", [None, "write", "", [], {}, True])
+def test_unknown_card_access_fails_closed(invalid: Any) -> None:
+    from editor_agent_pane.card_access import (
+        CardReadScope,
+        normalize_card_access,
+        read_cards,
+    )
+
+    assert normalize_card_access(invalid) == "current"
+    assert "error" in read_cards(
+        None, CardReadScope(invalid), {"query": "", "offset": 0, "limit": 1}
+    )
