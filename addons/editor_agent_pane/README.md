@@ -27,3 +27,15 @@ Add optional custom instructions in the pane to steer the agent while keeping th
 fixed JSON response and patch safety rules in place. Press Enter to send and
 Shift+Enter for a newline. Proposed note edits are shown as a diff and require
 explicit approval.
+
+Use **Card access** to choose **Current card only** (the default), **Other cards
+in deck**, or **All other cards**. Agents can search permitted cards using Anki
+search syntax and read their fields, tags, and card metadata on demand, with all
+three providers. Additional cards are reference material only; they cannot be
+edited through these lookups. Existing proposals still target the current editor
+note or explicitly selected Browser notes and require approval.
+
+Deck access means the exact home deck of the current card, the home decks of
+explicitly selected Browser cards, or the target deck in Add Cards. It does not
+include subdecks. Changing card access stops the running request and clears the
+chat so previously shared context is not sent with the new permission.

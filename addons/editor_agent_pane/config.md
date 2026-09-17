@@ -77,3 +77,19 @@ how long since the last one. Note images are not attached to Claude runs.
 To smoke-test the real CLI integration manually, run the editor agent pane tests
 with `ANKI_CODEX_CLI_INTEGRATION=1`. Optionally set `ANKI_CODEX_CLI_PATH` to a
 specific Codex binary.
+
+`card_access` controls additional read-only card context: `current` (default),
+`deck`, or `all`. Invalid values fall back to `current`. This is independent of
+project folder access and applies to Codex, Claude, and Ollama. Change it using
+**Card access** in the pane; changes save immediately, stop any running request,
+and clear the chat. Current access keeps the existing current-note or selected
+Browser-card context.
+
+Deck scope uses exact home deck IDs (including cards in filtered decks), without
+subdecks. In Add Cards it uses the selected target deck. A missing deck fails
+closed. Lookups use Anki search syntax and return fields, tags, note type, template,
+and deck metadata, ordered by card ID. Results are paginated at up to 20 cards per
+lookup, with a maximum of 12 lookups per message. Agents can narrow searches or
+request further pages; no collection write operation is exposed. Retrieved cards
+do not become eligible patch targets. The permission applies to these
+Anki-mediated lookups; project folder tools retain their separate access setting.
