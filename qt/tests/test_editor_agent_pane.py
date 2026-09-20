@@ -1659,7 +1659,12 @@ def test_effort_for_provider_drops_values_the_model_rejects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    # Only the gpt-5.6 models reason past xhigh.
+    # Astra supports ultra, but rejects non-reasoning requests.
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "ultra", "gpt-6-astra") == (
+        "ultra"
+    )
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "none", "gpt-6-astra") == ""
+    # The gpt-5.6 models also reason past xhigh.
     assert runtime._effort_for_provider(PROVIDER_CODEX, "ultra", "gpt-5.6-sol") == (
         "ultra"
     )
@@ -1686,7 +1691,7 @@ def test_agent_request_drops_effort_the_codex_model_rejects(
     pane = _pane_for_agent_request(runtime, tmp_path)
     pane._provider = lambda: PROVIDER_CODEX
     pane._model_text = lambda: "gpt-5.5"
-    pane._reasoning_effort = lambda: "ultra"  # only the gpt-5.6 models reason that far
+    pane._reasoning_effort = lambda: "ultra"  # gpt-5.5 does not reason that far
     runtime.aqt.mw = types.SimpleNamespace(
         taskman=ImmediateTaskman(),
         addonManager=FakeAddonManager(),
@@ -1711,14 +1716,16 @@ def test_agent_request_drops_effort_the_codex_model_rejects(
     assert captured["agent_kwargs"]["reasoning_effort"] == ""
 
 
+@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6-astra"])
 def test_agent_request_passes_ultra_effort_for_a_codex_model_that_supports_it(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    model: str,
 ) -> None:
     runtime = _import_runtime_with_aqt_stubs(monkeypatch)
     pane = _pane_for_agent_request(runtime, tmp_path)
     pane._provider = lambda: PROVIDER_CODEX
-    pane._model_text = lambda: "gpt-5.6-sol"
+    pane._model_text = lambda: model
     pane._reasoning_effort = lambda: "ultra"
     runtime.aqt.mw = types.SimpleNamespace(
         taskman=ImmediateTaskman(),
@@ -1741,7 +1748,7 @@ def test_agent_request_passes_ultra_effort_for_a_codex_model_that_supports_it(
 
     pane._start_agent_request("Improve this", generation=0)
 
-    assert captured["agent_kwargs"]["model"] == "gpt-5.6-sol"
+    assert captured["agent_kwargs"]["model"] == model
     assert captured["agent_kwargs"]["reasoning_effort"] == "ultra"
 
 
@@ -2038,7 +2045,17 @@ def test_agent_effort_options_include_default_and_known_efforts() -> None:
 
 
 def test_codex_effort_options_gate_max_and_ultra_by_model() -> None:
-    # gpt-5.6 Sol/Terra are the only models that reason all the way to "ultra".
+    # Astra reasons through ultra, but has no non-reasoning mode.
+    assert [value for _label, value in codex_effort_options("gpt-6-astra")] == [
+        "",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    ]
+    # gpt-5.6 Sol/Terra also reason all the way to "ultra".
     assert codex_effort_options("gpt-5.6-sol") == EFFORT_OPTIONS
     assert codex_effort_options("gpt-5.6-terra") == EFFORT_OPTIONS
     # Luna stops at "max".
@@ -2086,6 +2103,7 @@ def test_agent_effort_options_reset_unsupported_minimal_effort() -> None:
 def test_agent_model_options_include_default_and_known_models() -> None:
     assert MODEL_OPTIONS == (
         ("Codex default", ""),
+        ("gpt-6-astra", "gpt-6-astra"),
         ("gpt-5.6-sol", "gpt-5.6-sol"),
         ("gpt-5.6-terra", "gpt-5.6-terra"),
         ("gpt-5.6-luna", "gpt-5.6-luna"),
