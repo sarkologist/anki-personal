@@ -89,6 +89,23 @@ describe("pasteHTML", () => {
             "text <anki-mathjax>x^2</anki-mathjax> end",
         );
     });
+
+    test.each([false, true])(
+        "preserves copied formula source when the internal clipboard flag is lost (extended: %s)",
+        (extended) => {
+            pasteHTML(
+                "<anki-mathjax data-mathjax=\"x\"></anki-mathjax>",
+                false,
+                extended,
+            );
+
+            expect(execCommand).toHaveBeenCalledWith(
+                "inserthtml",
+                false,
+                "<anki-mathjax>x</anki-mathjax>",
+            );
+        },
+    );
 });
 
 describe("unwrapHeadingsWrappingBlocks", () => {

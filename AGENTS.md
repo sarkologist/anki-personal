@@ -53,6 +53,11 @@ communicating with the Rust backend (which happens over POST requests).
 
 Use red/green test-driven development for new behavior and bug fixes
 
+Minimize failing counterexamples before adding regression tests. Keep only the
+input and setup needed to reproduce the bug, and verify that the minimized test
+fails without the fix and passes with it. Cover independent edge cases in
+separate focused tests.
+
 ## Fixing errors
 
 When dealing with build errors or failing tests, invoke 'check' or one
