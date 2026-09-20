@@ -31,6 +31,7 @@ CLAUDE_EFFORT_OPTIONS: tuple[tuple[str, str], ...] = (
 # config and we cannot tell what it will pick.
 _CODEX_THROUGH_XHIGH = frozenset({"none", "low", "medium", "high", "xhigh"})
 CODEX_MODEL_EFFORT_LEVELS: dict[str, frozenset[str]] = {
+    "gpt-6-astra": frozenset({"low", "medium", "high", "xhigh", "max", "ultra"}),
     "gpt-5.6-sol": _CODEX_THROUGH_XHIGH | {"max", "ultra"},
     "gpt-5.6-terra": _CODEX_THROUGH_XHIGH | {"max", "ultra"},
     "gpt-5.6-luna": _CODEX_THROUGH_XHIGH | {"max"},
