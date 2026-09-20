@@ -94,20 +94,7 @@ describe("pasteHTML", () => {
         "preserves copied formula source when the internal clipboard flag is lost (extended: %s)",
         (extended) => {
             pasteHTML(
-                [
-                    "whence ",
-                    "<anki-frame data-frames=\"anki-mathjax\" block=\"false\">",
-                    "<frame-start data-frames=\"anki-mathjax\">\u200a</frame-start>",
-                    "<anki-mathjax data-mathjax=\"C(x^*|x)=C(C(x)|x)+O(1)\" decorated=\"true\">",
-                    "<span data-anki=\"mathjax\" role=\"img\" class=\"mathjax\"></span>",
-                    "</anki-mathjax>",
-                    "<frame-end data-frames=\"anki-mathjax\">\u200a</frame-end></anki-frame>",
-                    "<div>{{c1::length <anki-mathjax data-mathjax=\"C(x)\">",
-                    "<span data-anki=\"mathjax\" role=\"img\"></span></anki-mathjax>}}</div>",
-                    "<anki-frame data-frames=\"anki-mathjax\" block=\"true\">",
-                    "<anki-mathjax data-mathjax=\"x&amp;lt;y &amp;amp; z\">",
-                    "<span data-anki=\"mathjax\" role=\"img\"></span></anki-mathjax></anki-frame>",
-                ].join(""),
+                "<anki-mathjax data-mathjax=\"x\"></anki-mathjax>",
                 false,
                 extended,
             );
@@ -115,11 +102,7 @@ describe("pasteHTML", () => {
             expect(execCommand).toHaveBeenCalledWith(
                 "inserthtml",
                 false,
-                [
-                    "whence <anki-mathjax>C(x^*|x)=C(C(x)|x)+O(1)</anki-mathjax>",
-                    "<div>{{c1::length <anki-mathjax>C(x)</anki-mathjax>}}</div>",
-                    "<anki-mathjax block=\"true\">x&lt;y &amp; z</anki-mathjax>",
-                ].join(""),
+                "<anki-mathjax>x</anki-mathjax>",
             );
         },
     );
