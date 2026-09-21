@@ -24,6 +24,9 @@ jobs:
           fetch-depth: 0
           filter: blob:none
 
+      - name: Test cargo-deny repair security gates
+        run: python3 -m unittest discover -s .github/scripts/tests
+
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
 

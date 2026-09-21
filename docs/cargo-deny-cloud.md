@@ -11,8 +11,13 @@ The controller submits repair tasks to the Codex Web environment
 opens a PR, enables the full macOS CI job, and submits a **separate cloud task**
 for adversarial review. The review must identify the exact head and base commits.
 The runner does not execute generated code or expose GitHub credentials to the
-cloud agent. Only modifications to existing Cargo manifests, Cargo.lock, and generated cargo/licenses.json are
-accepted. Policy changes, new files, deleted files, symlinks, source changes, and
+cloud agent. Only modifications to the existing Cargo.lock are accepted. A deterministic gate
+allows stable forward patch upgrades of existing crates.io packages, preserving
+package names, sources, counts, and dependency edges apart from version references.
+Unchanged package versions must retain their checksums. Manifest or license metadata
+changes, new dependencies, larger upgrades, and non-registry updates require manual review.
+The gate compares every round against the original main lockfile, preventing cumulative drift.
+This limits scope; it does not prove a new crate release is trustworthy. Policy changes, new files, deleted files, symlinks, source changes, and
 workflow changes stop automation for manual attention.
 
 There are at most three fix/review rounds, two hours per cloud task or CI wait,
