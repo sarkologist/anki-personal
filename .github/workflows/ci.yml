@@ -19,7 +19,7 @@ jobs:
   minilints:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           filter: blob:none
@@ -28,7 +28,7 @@ jobs:
         run: python3 -m unittest discover -s .github/scripts/tests
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
 
       - name: Run minilints
         run: cargo run -p minilints -- check /tmp/minilints.stamp
@@ -40,16 +40,16 @@ jobs:
   format:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '20'
 
@@ -59,7 +59,7 @@ jobs:
           RUSTFLAGS: "--cap-lints warn"
 
       - name: Install just
-        uses: extractions/setup-just@v4
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
       - name: Run format checks
         run: just fmt
@@ -70,8 +70,8 @@ jobs:
     runs-on: ubuntu-24.04
     name: cargo-deny
     steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check advisories
 
@@ -83,10 +83,10 @@ jobs:
     runs-on: macos-latest
     name: check (macos)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Restore cargo cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -99,7 +99,7 @@ jobs:
           restore-keys: cargo-macOS-
 
       - name: Restore build output cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: out
           key: build-macOS-${{ github.event.pull_request.number || 'main' }}-${{ github.run_id }}
@@ -112,7 +112,7 @@ jobs:
         uses: ./.github/actions/setup-anki
 
       - name: Install just
-        uses: extractions/setup-just@v4
+        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
       - name: Symlink node_modules
         run: ln -sf out/node_modules .
@@ -133,7 +133,7 @@ jobs:
 
       - name: Save build output cache
         if: always()
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: out
           key: build-macOS-${{ github.event.pull_request.number || 'main' }}-${{ github.run_id }}
