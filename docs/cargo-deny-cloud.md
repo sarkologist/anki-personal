@@ -38,11 +38,36 @@ Create these encrypted Actions secrets in **sarkologist/anki-personal**:
   dedicated account with access to this environment. Do not paste it into issues,
   task prompts, logs, or repository files. The workflow writes it to a private
   temporary directory and deletes the directory afterward.
-- `CODEX_REPAIR_GITHUB_TOKEN`: preferably a fine-grained token restricted to this
-  repository, with Contents and Pull requests read/write, Issues read/write
-  (labels/comments), Actions read, and Administration read (to verify branch protection). It must be allowed to merge under the
-  repository's branch rules. The built-in `GITHUB_TOKEN` is unsuitable because
-  its PR events require manual workflow approval, and its label events do not trigger CI.
+- `CODEX_REPAIR_APP_PRIVATE_KEY`: a PEM private key for a private GitHub App
+  installed only on `sarkologist/anki-personal`. Set the App ID or client ID in
+  repository variable `CODEX_REPAIR_APP_ID`. Grant Contents, Pull requests, and
+  Issues read/write; Actions and Administration read-only. Metadata read is
+  implicit. No workflow-write permission, organization permissions, webhook,
+  user authorization, or branch-protection bypass is needed.
+
+The trusted controller signs a short-lived RS256 JWT with OpenSSL and requests
+installation tokens restricted to this repository and those exact permissions.
+It renews tokens with ten minutes remaining before each GitHub/Git operation,
+so multi-hour cloud tasks do not leave it using an expired token. Old tokens are
+revoked after renewal and the last token is revoked on normal exit. A revocation
+failure is reported without response bodies; token expiry still limits lifetime.
+The private key is stored in a temporary 0700 directory/0600 file, removed on
+normal exit; GitHub-hosted runner teardown handles abrupt termination. GitHub
+credentials are stripped from Codex subprocess environments. Candidate code is
+never run on the controller runner.
+
+The App private key remains a long-lived credential. Restrict the installation,
+protect that secret, rotate keys when needed, and never give this App a bypass.
+An App does not isolate the personal ChatGPT account used by the Codex login.
+
+For migration, install the App and save its variable/key before merging the
+workflow change. There is no PAT fallback. Dispatch the workflow with
+`auth_only=true` to verify repository access, strict protection reads, and a real
+token renewal/revocation without launching a cloud task. This check does not
+prove PR creation/merge permissions; validate those on the next real repair.
+After successful replacement validation, revoke the dedicated PAT in GitHub's
+personal token settings and remove `CODEX_REPAIR_GITHUB_TOKEN`. Removing a
+repository secret alone does not revoke its underlying token.
 
 Codex session credentials can expire or rotate. A refreshed token in an ephemeral
 runner is deliberately not written back into GitHub secrets; renew the secret
