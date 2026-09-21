@@ -14,10 +14,11 @@ spec.loader.exec_module(m)
 
 class Gates(unittest.TestCase):
     def test_dependency_scope(self):
-        m.validate_changes(
-            [("M", "100644", "Cargo.lock"), ("M", "100644", "rslib/Cargo.toml")]
-        )
+        m.validate_changes([("M", "100644", "Cargo.lock")])
         for path in [
+            "Cargo.toml",
+            "rslib/Cargo.toml",
+            "cargo/licenses.json",
             ".deny.toml",
             ".github/workflows/ci.yml",
             "build.rs",
@@ -154,6 +155,71 @@ class PatchIntegration(unittest.TestCase):
             with patch.object(m, "cloud", return_value=diff):
                 with self.assertRaises(ValueError):
                     m.review("test", head, head, directory)
+
+
+class LockPolicy(unittest.TestCase):
+    def lock(self, version="1.2.3", source=None, checksum="a" * 64):
+        return {
+            "version": 4,
+            "package": [
+                {
+                    "name": "example",
+                    "version": version,
+                    "source": source
+                    or "registry+https://github.com/rust-lang/crates.io-index",
+                    "checksum": checksum,
+                }
+            ],
+        }
+
+    def test_patch_upgrade_allowed(self):
+        m.validate_lock(self.lock(), self.lock("1.2.4", checksum="b" * 64))
+
+    def test_unsafe_changes_rejected(self):
+        import copy
+
+        original = self.lock()
+        candidates = [
+            self.lock("1.2.2"),
+            self.lock("1.3.0"),
+            self.lock("1.2.4-beta.1"),
+            self.lock(source="git+https://evil.invalid/repo"),
+            self.lock(checksum="b" * 64),
+        ]
+        for key, value in [
+            ("name", "new-package"),
+            ("replace", "evil"),
+            ("checksum", "invalid"),
+        ]:
+            changed = copy.deepcopy(original)
+            changed["package"][0][key] = value
+            candidates.append(changed)
+        changed = copy.deepcopy(original)
+        changed["package"].append(dict(changed["package"][0]))
+        candidates.append(changed)
+        for candidate in candidates:
+            with self.subTest(candidate=candidate), self.assertRaises(ValueError):
+                m.validate_lock(original, candidate)
+
+    def test_nonregistry_packages_cannot_change(self):
+        before = {"version": 4, "package": [{"name": "local", "version": "1.0.0"}]}
+        after = {"version": 4, "package": [{"name": "local", "version": "1.0.1"}]}
+        with self.assertRaises(ValueError):
+            m.validate_lock(before, after)
+
+    def test_version_references_follow_patch_updates(self):
+        before = self.lock()
+        before["package"].append(
+            {"name": "local", "version": "1.0.0", "dependencies": ["example 1.2.3"]}
+        )
+        after = self.lock("1.2.4", checksum="b" * 64)
+        after["package"].append(
+            {"name": "local", "version": "1.0.0", "dependencies": ["example 1.2.4"]}
+        )
+        m.validate_lock(before, after)
+        after["package"][1]["dependencies"] = []
+        with self.assertRaises(ValueError):
+            m.validate_lock(before, after)
 
 
 if __name__ == "__main__":
