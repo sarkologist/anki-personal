@@ -16,6 +16,17 @@ spec.loader.exec_module(m)
 
 
 class Gates(unittest.TestCase):
+    def test_repository_api_route_has_no_trailing_slash(self):
+        from unittest.mock import Mock, patch
+
+        with patch.object(m, "command", return_value=Mock(stdout="{}")) as call:
+            m.api("")
+            self.assertEqual(call.call_args.args[2], f"repos/{m.REPO}")
+            m.api("branches/main/protection")
+            self.assertEqual(
+                call.call_args.args[2], f"repos/{m.REPO}/branches/main/protection"
+            )
+
     def test_dependency_scope(self):
         m.validate_changes([("M", "100644", "Cargo.lock")])
         for path in [
