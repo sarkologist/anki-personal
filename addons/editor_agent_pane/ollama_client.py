@@ -37,7 +37,8 @@ OLLAMA_CLI_CANDIDATES = (
 OLLAMA_CONTEXT_INSTRUCTIONS = (
     "You are running as a local Ollama model. You do not have Codex tools, shell "
     "access, web access, or project folder access. Use only the current editor "
-    "context JSON, recent conversation, selected text, and user request. Do not "
+    "context JSON, Anki-mediated read-only card lookup results, recent "
+    "conversation, selected text, and user request. Do not "
     "claim to have inspected files, run commands, or checked external sources."
 )
 
@@ -65,6 +66,7 @@ class _OllamaParsedResponse:
     message_html: str
     proposals: tuple[AgentPatch, ...]
     empty_patch: bool = False
+    card_request: Any = None
 
 
 StopRequestedCallback = Callable[[], bool]
@@ -249,6 +251,7 @@ class OllamaCliAgent:
             html=parsed_response.message_html,
             proposals=parsed_response.proposals,
             event_count=0,
+            card_request=parsed_response.card_request,
         )
 
     def _command(self) -> list[str]:
@@ -456,6 +459,7 @@ def _parse_ollama_agent_response(
         message_html=message_html,
         proposals=proposals,
         empty_patch=empty_patch,
+        card_request=data.get("card_request"),
     )
 
 
