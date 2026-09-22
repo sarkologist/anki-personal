@@ -47,7 +47,13 @@ def git(*args, cwd=None):
 
 
 def api(path, method="GET", body=None):
-    args = ["gh", "api", f"repos/{REPO}/{path}", "--method", method]
+    args = [
+        "gh",
+        "api",
+        f"repos/{REPO}" + (f"/{path}" if path else ""),
+        "--method",
+        method,
+    ]
     if body is not None:
         args += ["--input", "-"]
     return json.loads(
