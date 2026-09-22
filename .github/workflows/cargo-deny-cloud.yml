@@ -5,6 +5,11 @@ on:
     workflows: [CI]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      auth_only:
+        description: Verify GitHub App access and renewal without starting a repair
+        type: boolean
+        default: false
 
 # Only one repair loop may operate on main at a time.
 concurrency:
@@ -43,8 +48,9 @@ jobs:
 
       - name: Repair, independently review, validate, and merge
         env:
-          # Use dedicated credentials; GITHUB_TOKEN pushes do not trigger PR CI.
-          GH_TOKEN: ${{ secrets.CODEX_REPAIR_GITHUB_TOKEN }}
+          CODEX_REPAIR_APP_ID: ${{ vars.CODEX_REPAIR_APP_ID }}
+          CODEX_REPAIR_APP_PRIVATE_KEY: ${{ secrets.CODEX_REPAIR_APP_PRIVATE_KEY }}
+          CODEX_AUTH_CHECK_ONLY: ${{ inputs.auth_only == true && 'true' || 'false' }}
           CODEX_AUTH_JSON: ${{ secrets.CODEX_CLOUD_AUTH_JSON }}
           CODEX_CLOUD_ENV_ID: 6aafb234eb488191ad79c7c7cf35b709
           CODEX_HOME: ${{ runner.temp }}/cargo-deny-codex-auth
@@ -53,7 +59,7 @@ jobs:
           import json
           import os
           from pathlib import Path
-          for name in ('GH_TOKEN', 'CODEX_AUTH_JSON'):
+          for name in ('CODEX_REPAIR_APP_ID', 'CODEX_REPAIR_APP_PRIVATE_KEY', 'CODEX_AUTH_JSON'):
               if not os.environ.get(name):
                   raise SystemExit(f'Missing required credential: {name}. See docs/cargo-deny-cloud.md.')
           auth = json.loads(os.environ['CODEX_AUTH_JSON'])
@@ -66,7 +72,6 @@ jobs:
           target.write_text(json.dumps(auth))
           PY
           unset CODEX_AUTH_JSON
-          gh auth setup-git --hostname github.com
           python3 .github/scripts/cargo_deny_cloud.py
 
       - name: Remove ephemeral Codex login

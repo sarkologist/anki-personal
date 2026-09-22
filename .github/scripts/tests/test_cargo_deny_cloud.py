@@ -2,8 +2,11 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
 
 spec = importlib.util.spec_from_file_location(
     "controller", Path(__file__).parents[1] / "cargo_deny_cloud.py"
@@ -220,6 +223,32 @@ class LockPolicy(unittest.TestCase):
         after["package"][1]["dependencies"] = []
         with self.assertRaises(ValueError):
             m.validate_lock(before, after)
+
+
+class CredentialBoundary(unittest.TestCase):
+    def test_only_github_commands_receive_installation_token(self):
+        from unittest.mock import Mock, patch
+
+        auth = Mock()
+        auth.token.return_value = "installation-token"
+        with patch.object(m, "AUTH", auth), patch.object(m.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            with patch.dict(
+                m.os.environ,
+                {"GH_TOKEN": "personal", "CODEX_REPAIR_APP_PRIVATE_KEY": "private"},
+            ):
+                m.command("codex", "cloud", "status", "task")
+                self.assertNotIn("GH_TOKEN", run.call_args.kwargs["env"])
+                self.assertNotIn(
+                    "CODEX_REPAIR_APP_PRIVATE_KEY", run.call_args.kwargs["env"]
+                )
+                auth.token.assert_not_called()
+                for executable in ("gh", "git"):
+                    m.command(executable, "--version")
+                    self.assertEqual(
+                        run.call_args.kwargs["env"]["GH_TOKEN"], "installation-token"
+                    )
+                self.assertEqual(auth.token.call_count, 2)
 
 
 if __name__ == "__main__":
