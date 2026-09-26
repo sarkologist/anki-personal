@@ -1,0 +1,7 @@
+{
+    "search": "deck:math is:suspended",
+    "batch_size": 12,
+    "reference_count": 8,
+    "codex_path": "",
+    "timeout_seconds": 300
+}
