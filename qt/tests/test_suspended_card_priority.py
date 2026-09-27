@@ -162,7 +162,12 @@ def test_browser_sort_preserves_search_and_other_addon_results(
         order=ns(key=b.KEY),
         reverse=True,
         addon_metadata={},
-        browser=ns(table=ns(is_notes_mode=lambda: False)),
+        browser=ns(
+            table=ns(
+                is_notes_mode=lambda: False,
+                _model=ns(_state=ns(is_notes_mode=lambda: False)),
+            )
+        ),
         search="deck:math is:suspended",
     )
     b._will_search(context)
@@ -177,6 +182,92 @@ def test_browser_sort_preserves_search_and_other_addon_results(
     other = ns(ids=[8], order=ns(key=b.KEY), addon_metadata={})
     b._will_search(other)
     assert other.ids == [8] and not other.addon_metadata
+
+
+def test_returning_from_notes_sorts_using_the_new_card_state(
+    browser_module, monkeypatch
+):
+    b = browser_module
+    ns = types.SimpleNamespace
+    context = ns(
+        ids=[1, 2],
+        addon_metadata={b.KEY: True},
+        browser=ns(
+            table=ns(
+                # Anki updates Table._state only after DataModel.toggle_state searches.
+                is_notes_mode=lambda: True,
+                _model=ns(_state=ns(is_notes_mode=lambda: False)),
+            )
+        ),
+    )
+    monkeypatch.setattr(b, "_current_score", lambda cid: {"score": {1: 9, 2: 91}[cid]})
+
+    b._did_search(context)
+
+    assert context.ids == [2, 1]
+
+
+def test_switching_to_notes_does_not_treat_note_ids_as_card_ids(
+    browser_module, monkeypatch
+):
+    b = browser_module
+    ns = types.SimpleNamespace
+    context = ns(
+        ids=[1, 2],
+        addon_metadata={b.KEY: True},
+        browser=ns(
+            table=ns(
+                is_notes_mode=lambda: False,
+                _model=ns(_state=ns(is_notes_mode=lambda: True)),
+            )
+        ),
+    )
+
+    def unexpected_score(cid):
+        pytest.fail("Note IDs must not be looked up as card IDs")
+
+    monkeypatch.setattr(b, "_current_score", unexpected_score)
+
+    b._did_search(context)
+
+    assert context.ids == [1, 2]
+
+
+def test_reversing_priority_sorts_keeps_unscored_cards_last(browser_module):
+    b = browser_module
+    ns = types.SimpleNamespace
+    ids = [2, 1, 3]
+    scores = {"1": {"score": 9}, "2": {"score": 91}, "3": {"score": None}}
+    state = ns(sort_column=b.KEY, sort_backwards=False)
+    table = ns(_state=state, is_notes_mode=lambda: False, _reverse=ids.reverse)
+    browser = ns(table=table)
+    browser.search = lambda: ids.__setitem__(
+        slice(None), sort_ids(ids, scores, state.sort_backwards)
+    )
+    b._install_sorting(browser)
+
+    table._reverse()
+
+    assert ids == [1, 2, 3]
+    state.sort_backwards = True
+    table._reverse()
+    assert ids == [2, 1, 3]
+
+
+def test_other_column_reversal_is_unchanged(browser_module):
+    b = browser_module
+    ns = types.SimpleNamespace
+    ids = [1, 2]
+    table = ns(
+        _state=ns(sort_column="noteFld"),
+        is_notes_mode=lambda: False,
+        _reverse=ids.reverse,
+    )
+    b._install_sorting(ns(table=table))
+
+    table._reverse()
+
+    assert ids == [2, 1]
 
 
 def test_edited_or_unsuspended_cards_do_not_keep_numeric_scores(browser_module):

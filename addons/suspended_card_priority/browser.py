@@ -60,7 +60,12 @@ def _will_search(context) -> None:
 
 
 def _did_search(context) -> None:
-    if KEY in context.addon_metadata and not context.browser.table.is_notes_mode():
+    # During a mode switch, the model already has the destination state while
+    # Table._state still describes the mode we are leaving.
+    if (
+        KEY in context.addon_metadata
+        and not context.browser.table._model._state.is_notes_mode()
+    ):
         valid = {}
         for cid in context.ids:
             value = _current_score(cid)
@@ -286,7 +291,23 @@ def _repair_browser_header(browser) -> None:
             repair_header(browser.form.tableView.horizontalHeader())
 
 
+def _install_sorting(browser) -> None:
+    table = browser.table
+    original_reverse = table._reverse
+
+    def reverse() -> None:
+        if table._state.sort_column == KEY and not table.is_notes_mode():
+            # Anki normally just reverses rows. Re-search so unscored/stale
+            # cards stay last and the order reflects current numeric scores.
+            browser.search()
+        else:
+            original_reverse()
+
+    table._reverse = reverse
+
+
 def _menus(browser) -> None:
+    _install_sorting(browser)
     _repair_browser_header(browser)
     # Mode switches restore another header after modelReset, so check once that
     # operation has finished. Searches and column toggles are safe no-ops here.

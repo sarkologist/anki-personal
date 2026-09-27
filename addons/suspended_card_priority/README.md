@@ -14,6 +14,8 @@ right-clicking the column headers.
 The add-on repairs a Qt 6.11 layout bug when an older saved Browser layout has
 fewer columns. This keeps Priority visible and clickable while preserving the
 existing column widths and order.
+Priority is sorted again when switching back to Cards mode or reversing the
+sort direction, with unscored, Review, and Stale cards last in both directions.
 
 - **Score next batch** assesses up to 12 suspended cards in the current search.
 - **Score all remaining in this search** continues in batches, saving each batch.
