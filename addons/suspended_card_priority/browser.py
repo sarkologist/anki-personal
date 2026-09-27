@@ -10,10 +10,11 @@ from anki.errors import NotFoundError
 from aqt import gui_hooks
 from aqt.browser.table import Column
 from aqt.operations import QueryOp
-from aqt.qt import QAction, Qt, sip
+from aqt.qt import QAction, Qt, QTimer, sip
 from aqt.utils import showInfo, showWarning, tooltip
 
 from .core import CardText, ReferenceIndex, load_scores, save_scores, sort_ids
+from .layout import repair_header
 from .scoring import score_batch
 
 KEY = "suspendedCardPriority"
@@ -107,6 +108,7 @@ def _show(browser) -> None:
         return
     if browser.table._model.active_column_index(KEY) is None:
         browser.table._on_column_toggled(True, KEY)
+    _repair_browser_header(browser)
     browser.search_for(_config().get("search", "deck:math is:suspended"))
     section = browser.table._model.active_column_index(KEY)
     browser.table._on_sort_column_changed(section, Qt.SortOrder.DescendingOrder)
@@ -278,7 +280,19 @@ def _start(browser, all_batches: bool = False, selected: bool = False) -> None:
     ).run_in_background()
 
 
+def _repair_browser_header(browser) -> None:
+    if not sip.isdeleted(browser):
+        if browser.table._model.active_column_index(KEY) is not None:
+            repair_header(browser.form.tableView.horizontalHeader())
+
+
 def _menus(browser) -> None:
+    _repair_browser_header(browser)
+    # Mode switches restore another header after modelReset, so check once that
+    # operation has finished. Searches and column toggles are safe no-ops here.
+    browser.table._model.modelReset.connect(
+        lambda: QTimer.singleShot(0, lambda: _repair_browser_header(browser))
+    )
     menu = browser.form.menubar.addMenu("Priority")
     for label, callback in [
         ("Show Math priority queue", lambda: _show(browser)),

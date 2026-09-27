@@ -133,7 +133,7 @@ def browser_module(monkeypatch):
     )
     module("aqt.browser.table", Column=ns)
     module("aqt.operations", QueryOp=ns)
-    module("aqt.qt", QAction=ns, Qt=ns(), sip=ns())
+    module("aqt.qt", QAction=ns, Qt=ns(), QTimer=ns, sip=ns())
     module(
         "aqt.utils",
         showInfo=lambda *a, **k: None,

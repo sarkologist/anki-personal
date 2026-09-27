@@ -11,6 +11,10 @@ switch to **Cards** mode and choose **Priority → Show Math priority queue**.
 The **Priority** column sorts highest first; it can also be enabled by
 right-clicking the column headers.
 
+The add-on repairs a Qt 6.11 layout bug when an older saved Browser layout has
+fewer columns. This keeps Priority visible and clickable while preserving the
+existing column widths and order.
+
 - **Score next batch** assesses up to 12 suspended cards in the current search.
 - **Score all remaining in this search** continues in batches, saving each batch.
 - **Re-score selected cards** assesses the selected suspended cards again.
