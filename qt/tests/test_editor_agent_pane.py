@@ -1649,7 +1649,9 @@ def test_effort_for_provider_drops_values_the_model_rejects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    # Only the gpt-5.6 models reason past xhigh.
+    # gpt-6 Sol supports max, but not ultra.
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "max", "gpt-6-sol") == "max"
+    assert runtime._effort_for_provider(PROVIDER_CODEX, "ultra", "gpt-6-sol") == ""
     assert runtime._effort_for_provider(PROVIDER_CODEX, "ultra", "gpt-5.6-sol") == (
         "ultra"
     )
@@ -2020,6 +2022,8 @@ def test_codex_effort_options_gate_max_and_ultra_by_model() -> None:
     # gpt-5.6 Sol/Terra are the only models that reason all the way to "ultra".
     assert codex_effort_options("gpt-5.6-sol") == EFFORT_OPTIONS
     assert codex_effort_options("gpt-5.6-terra") == EFFORT_OPTIONS
+    sol_6 = [value for _label, value in codex_effort_options("gpt-6-sol")]
+    assert sol_6 == ["", "none", "low", "medium", "high", "xhigh", "max"]
     # Luna stops at "max".
     luna = [value for _label, value in codex_effort_options("gpt-5.6-luna")]
     assert luna == ["", "none", "low", "medium", "high", "xhigh", "max"]
@@ -2065,6 +2069,7 @@ def test_agent_effort_options_reset_unsupported_minimal_effort() -> None:
 def test_agent_model_options_include_default_and_known_models() -> None:
     assert MODEL_OPTIONS == (
         ("Codex default", ""),
+        ("gpt-6-sol", "gpt-6-sol"),
         ("gpt-5.6-sol", "gpt-5.6-sol"),
         ("gpt-5.6-terra", "gpt-5.6-terra"),
         ("gpt-5.6-luna", "gpt-5.6-luna"),
