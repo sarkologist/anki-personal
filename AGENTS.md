@@ -58,6 +58,9 @@ input and setup needed to reproduce the bug, and verify that the minimized test
 fails without the fix and passes with it. Cover independent edge cases in
 separate focused tests.
 
+Prefer declaring static constraints in code where possible. Avoid tests that
+only restate those declarations; test behavior that can fail independently.
+
 ## Fixing errors
 
 When dealing with build errors or failing tests, invoke 'check' or one
