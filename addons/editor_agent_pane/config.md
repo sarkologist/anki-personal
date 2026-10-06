@@ -17,7 +17,8 @@ direct OpenAI API billing.
   `Claude default` stores an empty value and uses the CLI's normal effort
   setting. Codex does not offer `minimal` (it rejects it when default hosted
   tools are available). The rest of the levels are per-model: the pulldown only
-  lists what the selected model takes - `max` for gpt-6 Sol, `max` and `ultra`
+  lists what the selected model takes - `low` through `ultra` for gpt-6.1 Sol
+  (which does not support `none`), `max` for gpt-6 Sol, `max` and `ultra`
   for gpt-5.6 Sol and Terra, `max` for gpt-5.6 Luna, up to `xhigh` for the older
   Codex models, and up to `max` for every Claude alias except `haiku`, which
   stops at `high`. A
