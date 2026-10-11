@@ -22,7 +22,10 @@ from aqt.qt import (
     QFormLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
+    Qt,
     QTextEdit,
     QTimer,
     QVBoxLayout,
@@ -35,6 +38,7 @@ from .collection import (
     AdmissionResult,
     Snapshot,
     admit,
+    initial_scope_settings,
     request_repair,
     snapshot,
 )
@@ -83,27 +87,17 @@ class Controller:
         interval = max(30, int(self.config().get("poll_seconds", 300)))
         self.timer.start(interval * 1000)
         config = self.config()
-        initial_name = str(config.get("initial_deck_name", ""))
-        initial_path = str(config.get("initial_collection_path", ""))
-        if (
-            initial_name
-            and initial_path == mw.col.path
-            and not mw.col.get_config(SETTINGS_KEY, {})
-        ):
+        if initial_scope_settings(mw.col, config) is not None:
             stop = self.stop
 
             def configure(col: Any) -> Any:
-                if (
-                    stop.is_set()
-                    or col.path != initial_path
-                    or col.get_config(SETTINGS_KEY, {})
-                ):
+                if stop.is_set():
                     return OpChanges()
-                deck = col.decks.by_name(initial_name)
-                if not deck or deck.get("dyn"):
-                    raise ValueError("Configured Chinese source deck no longer exists")
-                return col.set_config(
-                    SETTINGS_KEY, {"deck_id": int(deck["id"]), "enabled": True}
+                settings = initial_scope_settings(col, config)
+                return (
+                    col.set_config(SETTINGS_KEY, settings)
+                    if settings is not None
+                    else OpChanges()
                 )
 
             epoch = self.epoch
@@ -422,6 +416,32 @@ class Controller:
         )
         form.addRow(enabled)
         form.addRow("Chinese source deck", deck)
+
+        def extra_decks(field: str) -> QListWidget:
+            choices = QListWidget()
+            choices.setMaximumHeight(110)
+            chosen = set(settings.get(field, []))
+            for item in mw.col.decks.all_names_and_ids(include_filtered=False):
+                entry = QListWidgetItem(item.name, choices)
+                entry.setData(Qt.ItemDataRole.UserRole, int(item.id))
+                entry.setFlags(entry.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                entry.setCheckState(
+                    Qt.CheckState.Checked
+                    if int(item.id) in chosen
+                    else Qt.CheckState.Unchecked
+                )
+            return choices
+
+        sources = extra_decks("source_deck_ids")
+        vocabulary = extra_decks("vocabulary_deck_ids")
+        sources.setToolTip(
+            "Suspended word targets from these decks become new cards in the chosen Chinese deck. Live cards also supply context vocabulary."
+        )
+        vocabulary.setToolTip(
+            "Only established live cards supply context; suspended cards here are not converted."
+        )
+        form.addRow("Extra sources → chosen deck", sources)
+        form.addRow("Extra context vocabulary", vocabulary)
         form.addRow("Sentence generator", provider)
         form.addRow("Model (optional)", model)
         layout.addLayout(form)
@@ -463,6 +483,17 @@ class Controller:
                 **settings,
                 "deck_id": int(deck.currentData()),
                 "enabled": enabled.isChecked(),
+                **{
+                    field: [
+                        choices.item(index).data(Qt.ItemDataRole.UserRole)
+                        for index in range(choices.count())
+                        if choices.item(index).checkState() == Qt.CheckState.Checked
+                    ]
+                    for field, choices in (
+                        ("source_deck_ids", sources),
+                        ("vocabulary_deck_ids", vocabulary),
+                    )
+                },
             }
             config["provider"] = provider.currentData()
             config[f"{provider.currentData()}_model"] = model.text().strip()

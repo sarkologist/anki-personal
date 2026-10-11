@@ -20,6 +20,7 @@ For an automatic, profile-specific installation:
 python tools/package_chinese_frontier.py \
   --install-to "/path/to/Anki2/addons21" \
   --deck chinese \
+  --source-deck "HSK6 - 1000" \
   --collection "/path/to/Anki2/User 1/collection.anki2"
 ```
 
@@ -55,8 +56,19 @@ words. Existing cloze text and Extra can provide meaning metadata only.
 
 Basic note sources need an all-Chinese single word in Front, a nonempty Back, and
 all sibling cards suspended. Leech and `chinese-frontier::exclude` notes are skipped.
-Other field names are configurable. The chosen deck includes subdecks. Optional
-`vocabulary_deck_ids` in collection settings can include other Chinese decks.
+Other field names are configurable. The chosen deck includes subdecks. The settings dialog also selects extra source
+decks and extra context-only decks. Suspended targets from extra sources receive
+replacements in the chosen Chinese deck, sharing its limits; originals remain in
+their source decks. Live cards from either selection can establish context words.
+Whole words already established by live cards are skipped as new targets.
+
+Quizlet-style HSK fronts such as `精心 6` are parsed as the word plus level metadata,
+only in HSK-labelled decks or note types. Lower HSK levels are tried first. A level
+in the note-type name is used as a coarse fallback (an HSK5 import includes lower
+levels too); unknown levels follow recognized levels. Ties retain old due/card
+order, and requested sentence repairs take priority. This is a curriculum proxy,
+not an individual difficulty estimate. Every proposed sentence still passes the
+same familiar-context checks; word length is not treated as difficulty.
 
 On first use, the add-on downloads and caches CC-CEDICT headwords from
 [MDBG](https://www.mdbg.net/chinese/dictionary?page=cc-cedict). CC-CEDICT is licensed

@@ -18,6 +18,7 @@ from chinese_frontier.collection import (  # noqa: E402
     SETTINGS_KEY,
     admit,
     ensure_model,
+    initial_scope_settings,
     request_repair,
     snapshot,
 )
@@ -505,3 +506,86 @@ def test_corrupt_dictionary_cache_does_not_fall_back_to_characters(
     (tmp_path / "cedict-headwords.txt").write_text("学\n生\n", encoding="utf-8")
     with pytest.raises(ValueError, match="dictionary"):
         Lexicon.load(tmp_path)
+
+
+def test_additional_hsk_sources_use_primary_deck_budget(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, _draft = setup_sentence(collection)
+    hsk = collection.decks.id("HSK6 - 1000")
+    note, card = add_word(collection, "百 1", suspended=True, deck=hsk)
+    settings["source_deck_ids"] = [hsk]
+    collection.set_config(SETTINGS_KEY, settings)
+    primary = collection.decks.get(1)
+    primary["newLimit"] = 1
+    collection.decks.update_dict(primary)
+    current = snapshot(collection, settings, {})
+    imported = next(source for source in current.sources if source.card_id == card.id)
+    assert imported.word == "百" and imported.deck_id == 1
+    assert imported.hsk_level == 1
+    result = admit(collection, settings, {}, [Draft(imported, candidate())], lexicon)
+    assert len(result.admitted) == 1
+    assert collection.get_note(result.admitted[0]).cards()[0].did == 1
+    assert collection.get_card(card.id).queue == -1
+    assert collection.get_note(note.id)["Front"] == "百 1"
+    assert snapshot(collection, settings, {}).slots(1) == 0
+
+
+def test_hsk_marker_is_metadata_not_known_vocabulary(collection: Collection) -> None:
+    hsk = collection.decks.id("HSK6 - 1000")
+    add_word(collection, "学生 1", established=True, deck=hsk)
+    add_word(collection, "书 1", suspended=True, deck=hsk)
+    current = snapshot(collection, {"deck_id": 1, "vocabulary_deck_ids": [hsk]}, {})
+    assert set(current.known) == {"学生"}
+    assert current.sources == []
+
+
+def test_hsk_level_orders_targets_before_old_due_position(
+    collection: Collection,
+) -> None:
+    hsk = collection.decks.id("HSK6 - 2000")
+    for word in ("精心 6", "书 1", "翻 6"):
+        add_word(collection, word, suspended=True, deck=hsk)
+    current = snapshot(collection, {"deck_id": 1, "source_deck_ids": [hsk]}, {})
+    assert [source.word for source in current.sources] == ["书", "精心", "翻"]
+
+
+def test_hsk_like_numbers_in_other_fronts_are_not_stripped(
+    collection: Collection,
+) -> None:
+    add_word(collection, "书 1", suspended=True)
+    assert snapshot(collection, {"deck_id": 1}, {}).sources == []
+
+
+def test_scope_bootstrap_preserves_pause_and_saved_choices(
+    collection: Collection,
+) -> None:
+    hsk = collection.decks.id("HSK6 - 1000")
+    settings = {"deck_id": 1, "enabled": False}
+    collection.set_config(SETTINGS_KEY, settings)
+    config = {
+        "initial_collection_path": collection.path,
+        "initial_source_deck_names": ["HSK6 - 1000"],
+    }
+    updated = initial_scope_settings(collection, config)
+    assert updated == {**settings, "source_deck_ids": [hsk]}
+    collection.set_config(SETTINGS_KEY, updated)
+    assert initial_scope_settings(collection, config) is None
+    collection.set_config(SETTINGS_KEY, {**settings, "source_deck_ids": []})
+    assert initial_scope_settings(collection, config) is None
+    assert (
+        initial_scope_settings(
+            collection, {**config, "initial_collection_path": "other.anki2"}
+        )
+        is None
+    )
+
+
+def test_known_whole_word_is_not_introduced_again_from_hsk(
+    collection: Collection,
+) -> None:
+    hsk = collection.decks.id("HSK6 - 1000")
+    add_word(collection, "书", established=True)
+    add_word(collection, "书 1", suspended=True, deck=hsk)
+    current = snapshot(collection, {"deck_id": 1, "source_deck_ids": [hsk]}, {})
+    assert "书" in current.known and current.sources == []

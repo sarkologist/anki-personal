@@ -13,5 +13,7 @@
     "max_batches_per_day": 8,
     "known_words": [],
     "front_field": "Front",
-    "back_field": "Back"
+    "back_field": "Back",
+    "initial_source_deck_names": [],
+    "initial_vocabulary_deck_names": []
 }

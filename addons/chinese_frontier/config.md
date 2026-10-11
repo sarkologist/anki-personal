@@ -20,7 +20,13 @@ editing the add-on's `meta.json` configuration, or the defaults before packaging
 - `front_field`, `back_field`: source Basic fields; defaults `Front` and `Back`.
 - `initial_deck_name`, `initial_collection_path`: optional first-install bootstrap.
   Both are required, and existing collection settings always take precedence.
+- `initial_source_deck_names`, `initial_vocabulary_deck_names`: one-time extra scope
+  bootstrap for the exact collection above. Existing selections (including empty
+  lists) and pause settings are preserved. The installer exposes repeatable
+  `--source-deck` and `--vocabulary-deck` options.
 
 Collection configuration key `chineseFrontier` contains `enabled`, `deck_id`, and
-optional `vocabulary_deck_ids`. These settings sync; CLI paths and the provider are
+optional `source_deck_ids` and `vocabulary_deck_ids`. Extra source replacements go
+to `deck_id` and share its daily limit. Both scopes include descendant decks and
+supply live context evidence. These settings sync; CLI paths and the provider are
 desktop-local. Pause before undoing a batch to prevent automatic regeneration.

@@ -88,6 +88,7 @@ class Source:
     definition: str
     fingerprint: str
     avoid_sentence: str = ""
+    hsk_level: int = 0
 
     @property
     def key(self) -> str:

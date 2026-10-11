@@ -48,7 +48,21 @@ def main() -> None:
         type=Path,
         help="Exact collection path for first-run configuration",
     )
+    parser.add_argument(
+        "--source-deck",
+        action="append",
+        default=[],
+        help="Additional suspended targets, routed to --deck; repeat for multiple decks",
+    )
+    parser.add_argument(
+        "--vocabulary-deck",
+        action="append",
+        default=[],
+        help="Additional familiar context only; repeat for multiple decks",
+    )
     args = parser.parse_args()
+    if (args.source_deck or args.vocabulary_deck) and not args.collection:
+        parser.error("Extra decks require --deck, --collection, and --install-to")
     if bool(args.deck) != bool(args.collection) or (args.deck and not args.install_to):
         parser.error(
             "--deck and --collection must be supplied together with --install-to"
@@ -76,6 +90,10 @@ def main() -> None:
                     "initial_collection_path": str(args.collection.resolve()),
                 }
             )
+            if args.source_deck:
+                config["initial_source_deck_names"] = args.source_deck
+            if args.vocabulary_deck:
+                config["initial_vocabulary_deck_names"] = args.vocabulary_deck
             metadata.write_text(json.dumps(data, indent=2), encoding="utf-8")
         print(f"Installed {target}; restart Anki to load it.")
 

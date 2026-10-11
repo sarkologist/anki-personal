@@ -99,6 +99,35 @@ def _template_tests_field(template: dict[str, Any], field_name: str) -> bool:
     )
 
 
+def initial_scope_settings(
+    col: Collection, config: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Apply installer scope once, to its exact profile, preserving saved choices."""
+    if config.get("initial_collection_path") != col.path:
+        return None
+    current = col.get_config(SETTINGS_KEY, {})
+    updated = dict(current)
+    if not updated:
+        deck = col.decks.by_name(str(config.get("initial_deck_name", "")))
+        if not deck or deck.get("dyn"):
+            raise ValueError("Configured Chinese source deck no longer exists")
+        updated = {"deck_id": int(deck["id"]), "enabled": True}
+    for field, option in (
+        ("source_deck_ids", "initial_source_deck_names"),
+        ("vocabulary_deck_ids", "initial_vocabulary_deck_names"),
+    ):
+        names = config.get(option, [])
+        if field not in updated and names:
+            ids = []
+            for name in names:
+                deck = col.decks.by_name(str(name))
+                if not deck or deck.get("dyn"):
+                    raise ValueError(f"Configured extra deck no longer exists: {name}")
+                ids.append(int(deck["id"]))
+            updated[field] = ids
+    return updated if updated != current else None
+
+
 def snapshot(
     col: Collection, settings: dict[str, Any], config: dict[str, Any]
 ) -> Snapshot:
@@ -110,6 +139,14 @@ def snapshot(
             "Select an existing normal Chinese deck in Chinese Frontier settings"
         )
     scope = _descendants(decks, deck_id)
+    primary_scope = set(scope)
+    for source_deck in settings.get("source_deck_ids", []):
+        extra_id = int(source_deck)
+        if extra_id not in decks or decks[extra_id].get("dyn"):
+            raise ValueError(
+                "An additional source deck no longer exists or is filtered"
+            )
+        scope.update(_descendants(decks, extra_id))
     vocabulary_scope = set(scope)
     for vocabulary_deck in settings.get("vocabulary_deck_ids", []):
         if int(vocabulary_deck) in decks:
@@ -204,6 +241,15 @@ def snapshot(
         else:
             template = model["tmpls"][ordinal] if ordinal < len(model["tmpls"]) else {}
             word = plain_text(fields.get(front_field, ""))
+            hsk_level = 0
+            # Quizlet imports annotate Front with a space and the HSK level.
+            # Restrict stripping to HSK-labelled decks/models, not arbitrary text.
+            hsk_context = decks[home]["name"] + " " + model["name"]
+            if re.search(r"HSK\s*[1-6]", hsk_context, re.IGNORECASE):
+                if marker := re.fullmatch(r"([\u3400-\u9fff]+)\s+([1-6])", word):
+                    word, hsk_level = marker[1], int(marker[2])
+                elif level := re.search(r"HSK\s*([1-6])", model["name"], re.IGNORECASE):
+                    hsk_level = int(level[1])
             words = (
                 (word,)
                 if is_word(word) and _template_tests_field(template, front_field)
@@ -243,7 +289,15 @@ def snapshot(
             continue
         seen_notes.add(nid)
         potential.append(
-            Source(cid, nid, home, words[0], meaning, fingerprint(fields, tags))
+            Source(
+                cid,
+                nid,
+                home if home in primary_scope else deck_id,
+                words[0],
+                meaning,
+                fingerprint(fields, tags),
+                hsk_level=hsk_level,
+            )
         )
     tagged_notes = col.db.all(
         "select id,tags from notes where tags like ?", "%" + KEY_PREFIX + "%"
@@ -263,9 +317,14 @@ def snapshot(
     }
     sources: list[Source] = []
     keys = set(existing_keys)
+    # Stable ties retain the old due/card ordering. Explicit HSK metadata is a
+    # coarse curriculum proxy; it does not claim to measure individual difficulty.
+    potential.sort(
+        key=lambda source: (source.key not in repairs, source.hsk_level or 7)
+    )
     for source in potential:
         if source.key not in repairs and (
-            source.key in keys or source.word in covered_words
+            source.key in keys or source.word in covered_words or source.word in known
         ):
             skip("already represented or duplicate")
             continue
