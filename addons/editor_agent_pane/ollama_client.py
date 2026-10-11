@@ -483,8 +483,7 @@ def _normalize_ollama_patch_data(
         updates = normalized.get("note_updates")
         if isinstance(updates, list):
             normalized["note_updates"] = [
-                _normalize_ollama_note_update(update, snapshot)
-                for update in updates
+                _normalize_ollama_note_update(update, snapshot) for update in updates
             ]
         return normalized
 
@@ -522,10 +521,7 @@ def _normalize_ollama_field_updates(raw_updates: Any) -> Any:
     if isinstance(raw_updates, dict):
         if "name" in raw_updates and "html" in raw_updates:
             return [raw_updates]
-        return [
-            {"name": str(name), "html": html}
-            for name, html in raw_updates.items()
-        ]
+        return [{"name": str(name), "html": html} for name, html in raw_updates.items()]
     return raw_updates
 
 
@@ -557,8 +553,7 @@ def discover_ollama_models(
             )
         except Exception as cli_exc:
             raise RuntimeError(
-                "Could not discover Ollama models. "
-                f"API: {api_exc}; CLI: {cli_exc}"
+                f"Could not discover Ollama models. API: {api_exc}; CLI: {cli_exc}"
             ) from cli_exc
 
 

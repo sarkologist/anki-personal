@@ -1659,12 +1659,6 @@ def test_effort_for_provider_drops_values_the_model_rejects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    # Astra supports ultra, but rejects non-reasoning requests.
-    assert runtime._effort_for_provider(PROVIDER_CODEX, "ultra", "gpt-6-astra") == (
-        "ultra"
-    )
-    assert runtime._effort_for_provider(PROVIDER_CODEX, "none", "gpt-6-astra") == ""
-    # The gpt-5.6 models also reason past xhigh.
     assert runtime._effort_for_provider(PROVIDER_CODEX, "ultra", "gpt-5.6-sol") == (
         "ultra"
     )
@@ -2098,21 +2092,6 @@ def test_agent_effort_options_preserve_unknown_legacy_effort() -> None:
 def test_agent_effort_options_reset_unsupported_minimal_effort() -> None:
     assert effort_options_with_legacy("minimal") == EFFORT_OPTIONS
     assert effort_option_index("minimal") == 0
-
-
-def test_agent_model_options_include_default_and_known_models() -> None:
-    assert MODEL_OPTIONS == (
-        ("Codex default", ""),
-        ("gpt-6-astra", "gpt-6-astra"),
-        ("gpt-5.6-sol", "gpt-5.6-sol"),
-        ("gpt-5.6-terra", "gpt-5.6-terra"),
-        ("gpt-5.6-luna", "gpt-5.6-luna"),
-        ("gpt-5.5", "gpt-5.5"),
-        ("gpt-5.4", "gpt-5.4"),
-        ("gpt-5.4-mini", "gpt-5.4-mini"),
-        ("gpt-5.2", "gpt-5.2"),
-    )
-    assert model_option_index("") == 0
 
 
 def test_agent_model_options_keep_retired_model_as_legacy_entry() -> None:

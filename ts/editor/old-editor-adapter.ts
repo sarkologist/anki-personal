@@ -6,6 +6,7 @@ import { elementIsBlock, nodeIsElement, nodeIsText } from "@tslib/dom";
 import { updateAllState } from "$lib/components/WithState.svelte";
 import { execCommand } from "$lib/domlib";
 
+import { Mathjax } from "../editable/mathjax-element.svelte";
 import { filterHTML } from "../html-filter";
 import { decoratedElements, decorateUndecoratedElements } from "./decorated-elements";
 
@@ -155,17 +156,14 @@ export function pasteHTML(
     internal: boolean,
     extendedMode: boolean,
 ): void {
+    // Read formula source before filtering can discard data-mathjax and the
+    // frame's block attribute. Clipboard tracking can miss an internal copy,
+    // so normalize MathJax even when this paste is classified as external.
+    // This also keeps rendered frames out of insertHTML, where they can split
+    // the surrounding block instead of inserting as inline math.
+    html = internal ? decoratedElements.toStored(html) : Mathjax.toStored(html);
     html = normalizeMarkdownMathElements(html);
     html = filterHTML(html, internal, extendedMode);
-    if (internal) {
-        // An internal paste carries fully decorated MathJax — the `<anki-frame>`
-        // wrapper, frame handles and rendered `<svg>`. Handing that to
-        // `execCommand("insertHTML")` can split the surrounding block, stranding
-        // the math (and the text after it) as a bare node on its own line.
-        // Collapse it back to plain `<anki-mathjax>` first so it inserts cleanly
-        // and re-decorates in context.
-        html = decoratedElements.toStored(html);
-    }
     html = decoratedElements.toUndecorated(html);
 
     if (html !== "") {
