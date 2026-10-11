@@ -435,7 +435,7 @@ class Controller:
         sources = extra_decks("source_deck_ids")
         vocabulary = extra_decks("vocabulary_deck_ids")
         sources.setToolTip(
-            "Suspended word targets from these decks become new cards in the chosen Chinese deck. Live cards also supply context vocabulary."
+            "Suspended word targets from these decks become new cards in the chosen Chinese deck. These extra sources do not establish context vocabulary."
         )
         vocabulary.setToolTip(
             "Only established live cards supply context; suspended cards here are not converted."

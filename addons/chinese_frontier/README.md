@@ -59,7 +59,9 @@ all sibling cards suspended. Leech and `chinese-frontier::exclude` notes are ski
 Other field names are configurable. The chosen deck includes subdecks. The settings dialog also selects extra source
 decks and extra context-only decks. Suspended targets from extra sources receive
 replacements in the chosen Chinese deck, sharing its limits; originals remain in
-their source decks. Live cards from either selection can establish context words.
+their source decks. Extra sources supply targets only, even if they contain live
+cards. Context evidence comes from the chosen Chinese deck and explicitly selected
+context-only decks. Generated replacements can establish context once learned.
 Whole words already established by live cards are skipped as new targets.
 
 Quizlet-style HSK fronts such as `精心 6` are parsed as the word plus level metadata,

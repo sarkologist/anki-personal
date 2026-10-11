@@ -589,3 +589,38 @@ def test_known_whole_word_is_not_introduced_again_from_hsk(
     add_word(collection, "书 1", suspended=True, deck=hsk)
     current = snapshot(collection, {"deck_id": 1, "source_deck_ids": [hsk]}, {})
     assert "书" in current.known and current.sources == []
+
+
+def test_extra_source_decks_supply_targets_but_not_context(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, _draft = setup_sentence(collection)
+    hsk = collection.decks.id("HSK6 - 1000")
+    add_word(collection, "学生 1", established=True, deck=hsk)
+    _note, target = add_word(collection, "半 1", suspended=True, deck=hsk)
+    settings["source_deck_ids"] = [hsk]
+    collection.set_config(SETTINGS_KEY, settings)
+    current = snapshot(collection, settings, {})
+    assert "学生" not in current.known
+    assert "学生" not in current.evidence
+    assert any(source.card_id == target.id for source in current.sources)
+    hundred = next(source for source in current.sources if source.word == "百")
+    rejected = admit(
+        collection, settings, {}, [Draft(hundred, candidate("学生有一百页。"))], lexicon
+    )
+    assert rejected.admitted == [] and "学生" in rejected.rejected[hundred.key]
+    explicit_context = {**settings, "vocabulary_deck_ids": [hsk]}
+    assert "学生" in snapshot(collection, explicit_context, {}).known
+
+
+def test_live_cloze_in_target_only_deck_does_not_cover_primary_target(
+    collection: Collection,
+) -> None:
+    hsk = collection.decks.id("HSK6 - 1000")
+    note = collection.new_note(collection.models.by_name("Cloze"))
+    note["Text"] = "这是{{c1::百}}页的书。"
+    collection.add_note(note, hsk)
+    add_word(collection, "百", suspended=True)
+    current = snapshot(collection, {"deck_id": 1, "source_deck_ids": [hsk]}, {})
+    assert "百" not in current.covered_words
+    assert [source.word for source in current.sources] == ["百"]

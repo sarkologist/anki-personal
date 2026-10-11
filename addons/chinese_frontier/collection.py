@@ -147,7 +147,7 @@ def snapshot(
                 "An additional source deck no longer exists or is filtered"
             )
         scope.update(_descendants(decks, extra_id))
-    vocabulary_scope = set(scope)
+    vocabulary_scope = set(primary_scope)
     for vocabulary_deck in settings.get("vocabulary_deck_ids", []):
         if int(vocabulary_deck) in decks:
             vocabulary_scope.update(_descendants(decks, int(vocabulary_deck)))
@@ -165,7 +165,8 @@ def snapshot(
     def skip(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
 
-    scope_sql = _ids(vocabulary_scope)
+    scope_sql = _ids(scope | vocabulary_scope)
+    vocabulary_sql = _ids(vocabulary_scope)
     rows = col.db.all(
         f"select c.id,c.nid,c.did,c.odid,c.ord,c.queue,c.type,c.reps,n.mid,n.flds,n.tags "
         f"from cards c join notes n on n.id=c.nid where c.did in {scope_sql} or c.odid in {scope_sql} "
@@ -175,7 +176,7 @@ def snapshot(
     # Imported/rescheduled/manual log entries do not demonstrate recall.
     for cid, timestamp, ease in col.db.all(
         "select r.cid,r.id,r.ease from revlog r join cards c on c.id=r.cid "
-        f"where (c.did in {scope_sql} or c.odid in {scope_sql}) and r.type in (0,1,2,3) and r.ease between 1 and 4 order by r.id"
+        f"where (c.did in {vocabulary_sql} or c.odid in {vocabulary_sql}) and r.type in (0,1,2,3) and r.ease between 1 and 4 order by r.id"
     ):
         review_logs.setdefault(cid, []).append((timestamp, ease))
     models = {}
@@ -230,7 +231,7 @@ def snapshot(
                 if "{{cloze:" + name + "}}" in template["qfmt"]
                 for word in cloze_words(value, ordinal)
             )
-            if queue != -1 and not repairing:
+            if home in vocabulary_scope and queue != -1 and not repairing:
                 # A clozed dictionary entry is not already a sentence card.
                 for name, value in fields.items():
                     if "{{cloze:" + name + "}}" not in template["qfmt"]:
@@ -265,7 +266,8 @@ def snapshot(
                 )
             )
         if (
-            queue != -1
+            home in vocabulary_scope
+            and queue != -1
             and not repairing
             and reps > 0
             and successful_days(review_logs.get(cid, []), timing.next_day_at)

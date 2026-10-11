@@ -27,6 +27,7 @@ editing the add-on's `meta.json` configuration, or the defaults before packaging
 
 Collection configuration key `chineseFrontier` contains `enabled`, `deck_id`, and
 optional `source_deck_ids` and `vocabulary_deck_ids`. Extra source replacements go
-to `deck_id` and share its daily limit. Both scopes include descendant decks and
-supply live context evidence. These settings sync; CLI paths and the provider are
+to `deck_id` and share its daily limit. Extra sources supply targets only. Context
+evidence comes from `deck_id` and the explicitly selected `vocabulary_deck_ids`.
+All scopes include descendant decks. These settings sync; CLI paths and the provider are
 desktop-local. Pause before undoing a batch to prevent automatic regeneration.
