@@ -1,0 +1,17 @@
+{
+    "provider": "codex",
+    "initial_deck_name": "",
+    "initial_collection_path": "",
+    "codex_path": "",
+    "claude_path": "",
+    "codex_model": "",
+    "claude_model": "",
+    "timeout_seconds": 240,
+    "batch_size": 4,
+    "minimum_success_days": 2,
+    "poll_seconds": 300,
+    "max_batches_per_day": 8,
+    "known_words": [],
+    "front_field": "Front",
+    "back_field": "Back"
+}

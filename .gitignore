@@ -21,6 +21,8 @@ ts/.svelte-kit
 .claude/settings.local.json
 .claude/user.md
 addons/editor_agent_pane/meta.json
+addons/chinese_frontier/meta.json
+addons/chinese_frontier/user_files/
 .venv
 docs/_build/
 docs/autoapi/
