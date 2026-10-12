@@ -191,15 +191,10 @@ class Controller:
             and eligible[draft.source.key].fingerprint == draft.source.fingerprint
         ]
         self.save_state()
-        if self.state.drafts:
-            if not any(
-                draft.source.key in current.repairs
-                or current.slots(draft.source.deck_id) > 0
-                for draft in self.state.drafts
-            ):
-                self.busy = False
-                self.status = "Prepared sentences are waiting for admission capacity."
-                return
+        if any(
+            draft.can_progress(current.slots(draft.source.deck_id))
+            for draft in self.state.drafts
+        ):
             self.status = "Rechecking prepared sentences…"
             folder = self.dictionary_folder
             QueryOp(
@@ -210,6 +205,7 @@ class Controller:
                 lambda exc: self.failed(exc, epoch)
             ).run_in_background()
             return
+        prepared_keys = {draft.source.key for draft in self.state.drafts}
         maximum = max(1, min(100, int(config.get("max_batches_per_day", 8))))
         if not current.known:
             self.busy = False
@@ -225,7 +221,11 @@ class Controller:
         reservations: dict[int, int] = {}
         words: set[str] = set()
         for source in current.sources:
-            if source.word in words or not self.state.can_try(source.key, version):
+            if (
+                source.key in prepared_keys
+                or source.word in words
+                or not self.state.can_try(source.key, version)
+            ):
                 continue
             budgets = current.budgets[source.deck_id]
             repairing = source.key in current.repairs
@@ -339,10 +339,10 @@ class Controller:
         self.state.retry_after = 0
         self.save_state()
         self.busy = False
-        self.status = f"Introduced {len(result.admitted)} sentence cards; {len(result.remaining)} prepared for later."
+        self.status = f"Introduced {len(result.admitted)} sentence notes; {len(result.remaining)} prepared for later."
         if result.updated:
             self.status += (
-                f" Replaced {len(result.updated)} sentences, keeping their schedules."
+                f" Updated {len(result.updated)} notes, keeping existing schedules."
             )
         if not result.remaining:
             self.schedule_next()

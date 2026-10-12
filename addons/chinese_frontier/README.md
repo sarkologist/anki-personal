@@ -94,7 +94,31 @@ targets are deferred with backoff and retried when vocabulary changes.
 
 ## Daily limits and recovery
 
-Each replacement produces exactly one new `c1` card, clozing the whole target.
+Generation independently checks plausible alternative answers for every blank.
+Ambiguous examples are rewritten with fuller context, then tried as contrast pairs
+before using character clozes as a fallback. Contrast pairs hide both whole words
+with `c1`, producing one card. Character fallback assigns a separate ordinal to each
+distinct character; repeated characters share an ordinal to prevent copying.
+Single-character and repeated-only words cannot use that fallback.
+
+Every disambiguation card shows **Disambiguation** on both review sides. Ordinary
+multiple-cloze cards are not labeled automatically. The editor-only `Disambiguation`
+field logs the provider, candidate examples, checked alternatives, whether each fits
+the situation and visible characters, reasons, and approval/defer status. The model's
+approval is rejected when its own report says an alternative fits. These checks are
+model judgments, not proof that every possible alternative was considered.
+
+Existing generated cards are audited automatically after this upgrade or a visible
+content edit. Approved examples keep their content; ambiguous examples are repaired
+in place. Failed audits are recorded without silently changing the card or claiming
+it is unambiguous. User edits made during generation are never overwritten.
+
+Each extra character sibling counts against all relevant new-card limits. Siblings
+can be introduced across days, including in a deck limited to one new card per day.
+An existing word card can receive a character cue immediately while additional
+siblings wait for capacity. The whole word becomes available as familiar context
+only after **all** its character siblings meet the learning threshold; individual
+characters do not become familiar words through this fallback.
 The full English translation appears alongside the Chinese on the front, without
 definition hints in the blank. Pronunciation and word explanations remain on the
 answer side. Existing generated hints and the original front template are upgraded
@@ -116,7 +140,7 @@ per collection; concurrent unsynced writers cannot share an admission reservatio
 
 During review, right-click a generated card and choose **Replace this sentence
 automatically**. The add-on regenerates that note in place, preserving its card ID,
-review history, and scheduling. This consumes no new-card slot. Pausing in Tools
+review history, and scheduling. Existing cards keep their schedules; additional character siblings consume new-card slots. Pausing in Tools
 also pauses requested repairs. Restoring the old source is as simple as suspending
 the replacement and unsuspending its original; the linked replacement is not
 automatically recreated. To undo a conversion permanently, pause automation first.

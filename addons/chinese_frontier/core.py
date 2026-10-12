@@ -89,6 +89,11 @@ class Source:
     fingerprint: str
     avoid_sentence: str = ""
     hsk_level: int = 0
+    existing_candidate: dict[str, Any] | None = None
+    existing_fingerprint: str = ""
+    existing_cards: int = 0
+    allowed_competitors: tuple[str, ...] = ()
+    force_repair: bool = False
 
     @property
     def key(self) -> str:
@@ -101,6 +106,8 @@ class Source:
             "word": self.word,
             "definition": self.definition,
             "avoid_sentence": self.avoid_sentence,
+            "existing_candidate": self.existing_candidate,
+            "allowed_competitors": self.allowed_competitors,
         }
 
 
@@ -111,11 +118,23 @@ def fingerprint(fields: dict[str, str], tags: list[str]) -> str:
 
 
 @dataclass(frozen=True)
+class Contrast:
+    word: str
+    sentence: str
+    translation: str
+    pinyin: str
+    definition: str
+
+
+@dataclass(frozen=True)
 class Candidate:
     sentence: str
     translation: str
     pinyin: str
     hint: str
+    mode: str = "word"
+    contrast: Contrast | None = None
+    explanation: str = ""
 
     @classmethod
     def from_dict(cls, value: Any) -> Candidate:
@@ -124,7 +143,28 @@ class Candidate:
         names = ("sentence", "translation", "pinyin", "hint")
         if any(not isinstance(value.get(name), str) for name in names):
             raise ValidationError("Candidate fields must be strings")
-        return cls(*(value[name].strip() for name in names))
+        mode = value.get("mode", "word")
+        explanation = value.get("explanation", "")
+        if mode not in ("word", "contrast", "characters") or not isinstance(
+            explanation, str
+        ):
+            raise ValidationError("Invalid disambiguation mode or explanation")
+        contrast = None
+        if item := value.get("contrast"):
+            if not isinstance(item, dict) or any(
+                not isinstance(item.get(name), str)
+                for name in Contrast.__dataclass_fields__
+            ):
+                raise ValidationError("Malformed contrast example")
+            contrast = Contrast(
+                **{name: item[name].strip() for name in Contrast.__dataclass_fields__}
+            )
+        return cls(
+            *(value[name].strip() for name in names),
+            mode,
+            contrast,
+            explanation.strip(),
+        )
 
 
 @dataclass(frozen=True)
@@ -132,13 +172,20 @@ class Validated:
     candidate: Candidate
     text: str
     dependencies: tuple[str, ...]
+    translation: str = ""
+    card_count: int = 1
 
 
 def validate_candidate(
     candidate: Candidate, source: Source, known: set[str], lexicon: Lexicon
 ) -> Validated:
     sentence = candidate.sentence
-    if source.avoid_sentence and sentence == source.avoid_sentence:
+    if (
+        source.force_repair
+        and candidate.mode == "word"
+        and source.avoid_sentence
+        and sentence == source.avoid_sentence
+    ):
         raise ValidationError("Replace the rejected sentence with a different example")
     if not 3 <= len(sentence) <= 60 or any(c in sentence for c in "<>{}\n\r"):
         raise ValidationError("Use a short plain Chinese sentence without markup")
@@ -159,8 +206,64 @@ def validate_candidate(
     unknown = [word for word in dependencies if word not in known]
     if unknown:
         raise ValidationError("Unlearned context: " + ", ".join(unknown))
-    text = html.escape(sentence).replace(source.word, "{{c1::" + source.word + "}}", 1)
-    return Validated(candidate, text, dependencies)
+    if candidate.mode not in ("word", "contrast", "characters"):
+        raise ValidationError("Invalid disambiguation mode")
+    if len(candidate.explanation) > 1500:
+        raise ValidationError("Disambiguation explanation is too long")
+    replacement = "{{c1::" + source.word + "}}"
+    count = 1
+    if candidate.mode == "characters":
+        characters = tuple(dict.fromkeys(source.word))
+        if len(characters) < 2:
+            raise ValidationError(
+                "Character fallback needs different characters; repeated characters reveal no useful cue"
+            )
+        ordinals = {char: i + 1 for i, char in enumerate(characters)}
+        replacement = "".join(
+            "{{c" + str(ordinals[char]) + "::" + char + "}}" for char in source.word
+        )
+        count = len(characters)
+    text = html.escape(sentence).replace(source.word, replacement, 1)
+    translation = html.escape(candidate.translation)
+    if candidate.mode == "contrast":
+        other = candidate.contrast
+        if other is None or other.word == source.word or not is_word(other.word):
+            raise ValidationError("A different whole-word contrast is required")
+        if other.word not in known and other.word not in source.allowed_competitors:
+            raise ValidationError("Contrast word has no familiar-card evidence")
+        other_source = Source(0, 0, 0, other.word, other.definition, "contrast")
+        other_valid = validate_candidate(
+            Candidate(other.sentence, other.translation, other.pinyin, ""),
+            other_source,
+            known,
+            lexicon,
+        )
+        text = "<div>" + text + "</div><br><div>" + other_valid.text + "</div>"
+        if source.word in other.sentence.replace(
+            other.word, "", 1
+        ) or other.word in sentence.replace(source.word, "", 1):
+            raise ValidationError("A contrast example reveals the other answer")
+        translation = (
+            "<div>"
+            + translation
+            + "</div><br><div>"
+            + other_valid.translation
+            + "</div>"
+        )
+        dependencies = tuple(dict.fromkeys((*dependencies, *other_valid.dependencies)))
+    elif candidate.contrast is not None:
+        raise ValidationError("Only contrast mode may contain a second example")
+    return Validated(candidate, text, dependencies, translation, count)
+
+
+def presentation_fingerprint(fields: dict[str, str]) -> str:
+    return fingerprint(
+        {
+            name: fields.get(name, "")
+            for name in ("Text", "Translation", "Target", "Pinyin", "Meaning")
+        },
+        [],
+    )
 
 
 @dataclass(frozen=True)

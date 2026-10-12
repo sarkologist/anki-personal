@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from threading import Event
@@ -25,6 +26,7 @@ from chinese_frontier.collection import (  # noqa: E402
 )
 from chinese_frontier.core import (  # noqa: E402
     Candidate,
+    Contrast,
     DeckBudget,
     Source,
     ValidationError,
@@ -35,7 +37,13 @@ from chinese_frontier.core import (  # noqa: E402
     successful_days,
     validate_candidate,
 )
-from chinese_frontier.generation import Draft, generate  # noqa: E402
+from chinese_frontier.generation import (
+    GENERATION_POLICY,
+    Draft,
+    generate,
+    review_units,
+    validate_review,
+)  # noqa: E402
 from chinese_frontier.lexicon import Lexicon  # noqa: E402
 from chinese_frontier.providers import (  # noqa: E402
     cli_command,
@@ -45,6 +53,52 @@ from chinese_frontier.providers import (  # noqa: E402
 from chinese_frontier.state import State  # noqa: E402
 
 from anki.collection import Collection  # noqa: E402
+
+
+def audit_report(
+    source: Source, candidate: Candidate, *, approved: bool = True
+) -> dict:
+    alternatives = []
+    for (example, ordinal), target in review_units(candidate, source).items():
+        word = "千" if target != "千" else "百"
+        fits = candidate.mode != "characters"
+        alternatives.append(
+            {
+                "example": example,
+                "ordinal": ordinal,
+                "word": word,
+                "fits_context": False,
+                "fits_cloze": fits,
+                "reason": "Does not match this situation and translation",
+            }
+        )
+    return {
+        "card_id": source.card_id,
+        "sentence": candidate.sentence,
+        "approved": approved,
+        "reason": "clear" if approved else "unnatural",
+        "search_summary": "Checked the following competing answers",
+        "alternatives": alternatives,
+    }
+
+
+def audited_draft(
+    source: Source, candidate: Candidate, *, audit_only: bool = False
+) -> Draft:
+    return Draft(
+        source,
+        candidate,
+        {
+            "version": GENERATION_POLICY,
+            "checks": [
+                {
+                    "candidate": asdict(candidate),
+                    "review": audit_report(source, candidate),
+                }
+            ],
+        },
+        audit_only,
+    )
 
 
 @pytest.fixture
@@ -99,7 +153,7 @@ def setup_sentence(col: Collection):
         add_word(col, word, established=True)
     note, card = add_word(col, "百", suspended=True)
     current = snapshot(col, settings, {})
-    return settings, note, card, Draft(current.sources[0], candidate())
+    return settings, note, card, audited_draft(current.sources[0], candidate())
 
 
 @pytest.fixture
@@ -346,7 +400,7 @@ def test_claude_cli_disables_tools_and_parses_structured_output(tmp_path: Path) 
 
 def test_journal_survives_restart_and_does_not_catch_up(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
-    state = State(drafts=[Draft(source(), candidate())], day=1, batches=8)
+    state = State(drafts=[audited_draft(source(), candidate())], day=1, batches=8)
     state.defer(source().key, "unknown word", "v1")
     state.save(path)
     restored = State.load(path)
@@ -373,9 +427,14 @@ def test_generation_requires_independent_language_approval(
                         "sentence": candidate().sentence,
                         "approved": False,
                         "reason": "unnatural",
+                        "search_summary": "Checked competitors",
+                        "alternatives": audit_report(source(), candidate())[
+                            "alternatives"
+                        ],
                     }
                 ]
             },
+            {"proposals": [{"card_id": 1, "candidates": []}]},
         ]
     )
     monkeypatch.setattr(
@@ -458,7 +517,7 @@ def test_bad_sentence_is_replaced_without_resetting_history_or_using_new_slots(
     collection.decks.update_dict(deck)
     current = snapshot(collection, settings, {})
     assert current.repairs[draft.source.key] == note_id
-    updated = Draft(current.sources[0], candidate("这本书有百页。"))
+    updated = audited_draft(current.sources[0], candidate("这本书有百页。"))
     result = admit(collection, settings, {}, [updated], lexicon)
     assert result.admitted == [] and result.updated == [note_id]
     new_card = collection.get_note(note_id).cards()[0]
@@ -479,7 +538,7 @@ def test_repair_cannot_clear_request_by_repeating_bad_sentence(
     first = admit(collection, settings, {}, [draft], lexicon)
     request_repair(collection, first.admitted[0])
     current = snapshot(collection, settings, {})
-    repeated = Draft(current.sources[0], draft.candidate)
+    repeated = audited_draft(current.sources[0], draft.candidate)
     result = admit(collection, settings, {}, [repeated], lexicon)
     assert result.updated == []
     assert result.rejected
@@ -525,7 +584,9 @@ def test_additional_hsk_sources_use_primary_deck_budget(
     imported = next(source for source in current.sources if source.card_id == card.id)
     assert imported.word == "百" and imported.deck_id == 1
     assert imported.hsk_level == 1
-    result = admit(collection, settings, {}, [Draft(imported, candidate())], lexicon)
+    result = admit(
+        collection, settings, {}, [audited_draft(imported, candidate())], lexicon
+    )
     assert len(result.admitted) == 1
     assert collection.get_note(result.admitted[0]).cards()[0].did == 1
     assert collection.get_card(card.id).queue == -1
@@ -608,7 +669,11 @@ def test_extra_source_decks_supply_targets_but_not_context(
     assert any(source.card_id == target.id for source in current.sources)
     hundred = next(source for source in current.sources if source.word == "百")
     rejected = admit(
-        collection, settings, {}, [Draft(hundred, candidate("学生有一百页。"))], lexicon
+        collection,
+        settings,
+        {},
+        [audited_draft(hundred, candidate("学生有一百页。"))],
+        lexicon,
     )
     assert rejected.admitted == [] and "学生" in rejected.rejected[hundred.key]
     explicit_context = {**settings, "vocabulary_deck_ids": [hsk]}
@@ -649,6 +714,8 @@ def test_generation_keeps_informative_order_not_shortest(
                         "sentence": c.sentence,
                         "approved": True,
                         "reason": "clear",
+                        "search_summary": "Checked competitors",
+                        "alternatives": audit_report(source(), c)["alternatives"],
                     }
                     for c in (longer, shorter)
                 ]
@@ -719,10 +786,339 @@ def test_old_generation_policy_drops_drafts_without_resetting_daily_budget(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "state.json"
-    State(drafts=[Draft(source(), candidate())], day=1, batches=8).save(path)
+    State(drafts=[audited_draft(source(), candidate())], day=1, batches=8).save(path)
     data = json.loads(path.read_text())
     data.pop("generation_policy", None)
     path.write_text(json.dumps(data))
     restored = State.load(path)
     assert restored.drafts == []
     assert (restored.day, restored.batches) == (1, 8)
+
+
+def test_character_fallback_keeps_other_character_visible(lexicon: Lexicon) -> None:
+    c = replace(candidate("学生有一页。"), mode="characters")
+    valid = validate_candidate(c, source("学生"), {"有", "一", "页"}, lexicon)
+    assert valid.text == "{{c1::学}}{{c2::生}}有一页。"
+    assert valid.card_count == 2
+
+
+def test_audit_field_is_editable_but_hidden_and_disambiguation_label_is_on_both_sides(
+    collection: Collection,
+) -> None:
+    model = ensure_model(collection)
+    note = collection.new_note(model)
+    note["Text"] = "{{c1::推}}辞。"
+    note["Translation"] = "Decline."
+    note["CardKind"] = "Disambiguation"
+    note["Disambiguation"] = "PRIVATE-AUDIT 拒绝 fits the whole-word blank"
+    collection.add_note(note, 1)
+    c = note.cards()[0]
+    assert "Disambiguation" in c.question() and "Disambiguation" in c.answer()
+    assert "PRIVATE-AUDIT" not in c.question() and "PRIVATE-AUDIT" not in c.answer()
+
+
+def test_model_approval_cannot_override_a_fitting_alternative() -> None:
+    c, target = candidate(), source()
+    report = audit_report(target, c)
+    report["alternatives"][0]["fits_context"] = True
+    assert not validate_review(report, c, target)
+
+
+def test_character_review_requires_both_sibling_checks() -> None:
+    c = replace(candidate("学生有一页。"), mode="characters")
+    report = audit_report(source("学生"), c)
+    report["alternatives"].pop()
+    with pytest.raises(ValidationError, match="omitted"):
+        validate_review(report, c, source("学生"))
+
+
+def student_target(col: Collection):
+    settings, _note, _card, _draft = setup_sentence(col)
+    add_word(col, "学生", suspended=True)
+    target = next(s for s in snapshot(col, settings, {}).sources if s.word == "学生")
+    return (
+        settings,
+        target,
+        Candidate("学生有一页。", "The student has one page.", "xué shēng", ""),
+    )
+
+
+def test_character_fallback_stages_siblings_under_one_card_daily_limit(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, target, c = student_target(collection)
+    deck = collection.decks.get(1)
+    deck["newLimit"] = 1
+    collection.decks.update_dict(deck)
+    draft = audited_draft(target, replace(c, mode="characters"))
+    result = admit(collection, settings, {}, [draft], lexicon)
+    assert len(result.admitted) == 1 and len(result.remaining) == 1
+    note = collection.get_note(result.admitted[0])
+    assert note["Text"] == "{{c1::学}}生有一页。"
+    assert len(note.cards()) == 1
+    assert "pending" in note["Disambiguation"]
+    assert snapshot(collection, settings, {}).slots(1) == 0
+    deck = collection.decks.get(1)
+    deck["newLimit"] = 2
+    collection.decks.update_dict(deck)
+    second = admit(collection, settings, {}, result.remaining, lexicon)
+    assert second.updated == [note.id]
+    assert len(collection.get_note(note.id).cards()) == 2
+    assert snapshot(collection, settings, {}).slots(1) == 0
+
+
+def test_existing_card_gets_character_cue_without_creating_unaffordable_sibling(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, target, c = student_target(collection)
+    first = admit(collection, settings, {}, [audited_draft(target, c)], lexicon)
+    note = collection.get_note(first.admitted[0])
+    old = note.cards()[0]
+    old.type = old.queue = 2
+    old.reps = 8
+    old.ivl = 30
+    collection.update_card(old)
+    request_repair(collection, note.id)
+    target = next(
+        s for s in snapshot(collection, settings, {}).sources if s.word == "学生"
+    )
+    deck = collection.decks.get(1)
+    deck["newLimit"] = 0
+    collection.decks.update_dict(deck)
+    result = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(target, replace(c, mode="characters"))],
+        lexicon,
+    )
+    after = collection.get_note(note.id)
+    assert after["Text"] == "{{c1::学}}生有一页。"
+    queued = next(
+        s for s in snapshot(collection, settings, {}).sources if s.word == "学生"
+    )
+    assert queued.allowed_competitors == ()
+    assert len(after.cards()) == 1 and result.remaining
+    assert (after.cards()[0].id, after.cards()[0].reps, after.cards()[0].ivl) == (
+        old.id,
+        8,
+        30,
+    )
+
+
+def test_generation_tries_contrast_before_character_fallback_and_logs_all_checks(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    from chinese_frontier import generation
+
+    target = source("学生")
+    word = Candidate("学生有一页。", "The student has one page.", "xué shēng", "")
+    char = replace(
+        word, mode="characters", explanation="The other character identifies the word."
+    )
+    ambiguous = audit_report(target, word)
+    ambiguous["alternatives"][0].update(word="学者", fits_context=True)
+    responses = iter(
+        [
+            {"proposals": [{"card_id": 1, "candidates": [asdict(word)]}]},
+            {"reviews": [ambiguous]},
+            {"proposals": [{"card_id": 1, "candidates": []}]},
+            {"proposals": [{"card_id": 1, "candidates": [asdict(char)]}]},
+            {"reviews": [audit_report(target, char)]},
+        ]
+    )
+    prompts = []
+
+    def request(self, prompt, schema):
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(generation.Lexicon, "load", lambda _folder: lexicon)
+    monkeypatch.setattr(
+        generation.CliGenerator, "__init__", lambda self, _config, _stop: None
+    )
+    monkeypatch.setattr(generation.CliGenerator, "check_login", lambda self: None)
+    monkeypatch.setattr(generation.CliGenerator, "request", request)
+    result = generate(
+        [target],
+        {word: "familiar" for word in ("有", "一", "页")},
+        {},
+        tmp_path,
+        Event(),
+    )
+    assert result.drafts[0].candidate.mode == "characters"
+    assert 'mode="contrast"' in prompts[2] and 'mode="characters"' in prompts[3]
+    checks = result.drafts[0].audit["checks"]
+    assert checks[0]["review"]["alternatives"][0]["word"] == "学者"
+    assert checks[-1]["candidate"]["mode"] == "characters"
+
+
+def test_existing_note_without_current_audit_is_queued_and_audit_only_preserves_text(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, draft = setup_sentence(collection)
+    result = admit(collection, settings, {}, [draft], lexicon)
+    note = collection.get_note(result.admitted[0])
+    original_text = note["Text"]
+    note["Disambiguation"] = ""
+    collection.update_note(note)
+    target = next(
+        s for s in snapshot(collection, settings, {}).sources if s.word == "百"
+    )
+    assert target.existing_candidate and target.existing_cards == 1
+    assert target.key in snapshot(collection, settings, {}).repairs
+    applied = admit(
+        collection,
+        settings,
+        {},
+        [
+            audited_draft(
+                target, Candidate.from_dict(target.existing_candidate), audit_only=True
+            )
+        ],
+        lexicon,
+    )
+    assert applied.updated == [note.id]
+    assert collection.get_note(note.id)["Text"] == original_text
+    assert not snapshot(collection, settings, {}).repairs
+
+
+def test_manual_sentence_edit_during_audit_is_not_overwritten(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, draft = setup_sentence(collection)
+    note = collection.get_note(
+        admit(collection, settings, {}, [draft], lexicon).admitted[0]
+    )
+    note["Disambiguation"] = ""
+    collection.update_note(note)
+    target = next(
+        s for s in snapshot(collection, settings, {}).sources if s.word == "百"
+    )
+    prepared = audited_draft(
+        target, Candidate.from_dict(target.existing_candidate), audit_only=True
+    )
+    note["Text"] = "这本书有{{c1::百}}页。"
+    collection.update_note(note)
+    result = admit(collection, settings, {}, [prepared], lexicon)
+    assert result.rejected and not result.updated
+    assert collection.get_note(note.id)["Text"] == note["Text"]
+
+
+def test_character_draft_can_progress_without_all_sibling_slots() -> None:
+    target = source("学生")
+    c = replace(candidate("学生有一页。"), mode="characters")
+    draft = audited_draft(target, c)
+    assert not draft.can_progress(0)
+    assert draft.can_progress(1)
+    old = replace(
+        target, existing_cards=1, existing_candidate=asdict(replace(c, mode="word"))
+    )
+    assert replace(draft, source=old).can_progress(0)
+    partial = replace(old, existing_candidate=asdict(c))
+    assert not replace(draft, source=partial).can_progress(0)
+    assert replace(draft, source=partial).can_progress(1)
+
+
+def test_character_fallback_counts_all_distinct_characters(lexicon: Lexicon) -> None:
+    c = Candidate(
+        "出租车有一页。", "The taxi has one page.", "chū zū chē", "", "characters"
+    )
+    result = validate_candidate(c, source("出租车"), {"有", "一", "页"}, lexicon)
+    assert result.card_count == 3
+    assert result.text == "{{c1::出}}{{c2::租}}{{c3::车}}有一页。"
+    assert len(review_units(c, source("出租车"))) == 3
+    repeated = replace(c, sentence="往往有一页。")
+    with pytest.raises(ValidationError):
+        validate_candidate(repeated, source("往往"), {"有", "一", "页"}, lexicon)
+
+
+def test_deferred_audit_is_logged_without_changing_existing_card(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _original, _card, initial = setup_sentence(collection)
+    note = collection.get_note(
+        admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    )
+    text, card_id = note["Text"], note.cards()[0].id
+    note["Disambiguation"] = ""
+    collection.update_note(note)
+    target = next(
+        s for s in snapshot(collection, settings, {}).sources if s.word == "百"
+    )
+    c = Candidate.from_dict(target.existing_candidate)
+    draft = audited_draft(target, c, audit_only=True)
+    draft.audit.update(status="deferred", reason="A competing answer still fits")
+    draft.audit["checks"][-1]["review"]["approved"] = False
+    result = admit(collection, settings, {}, [draft], lexicon)
+    after = collection.get_note(note.id)
+    assert result.updated == [note.id] and result.rejected
+    assert after["Text"] == text and after.cards()[0].id == card_id
+    assert "competing answer" in after["Disambiguation"]
+
+
+def test_contrast_pair_has_one_card_and_labels_both_review_sides(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    add_word(collection, "千", established=True)
+    c = replace(
+        initial.candidate,
+        mode="contrast",
+        contrast=Contrast(
+            "千",
+            "这本书有一千页。",
+            "This book has one thousand pages.",
+            "qiān",
+            "thousand",
+        ),
+    )
+    result = admit(
+        collection, settings, {}, [audited_draft(initial.source, c)], lexicon
+    )
+    note = collection.get_note(result.admitted[0])
+    assert len(note.cards()) == 1
+    card = note.cards()[0]
+    assert card.question().count('class="cloze"') == 2
+    assert "Disambiguation" in card.question() and "Disambiguation" in card.answer()
+    assert "Checked the following" not in card.answer()
+    assert (
+        c.translation in card.question() and c.contrast.translation in card.question()
+    )
+
+
+def test_character_word_needs_all_siblings_learned_for_context(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, target, c = student_target(collection)
+    result = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(target, replace(c, mode="characters"))],
+        lexicon,
+    )
+    note = collection.get_note(result.admitted[0])
+    cards = note.cards()
+    for index, card in enumerate(cards):
+        card.type = card.queue = 2
+        card.reps = 2
+        card.due = collection.sched.today + 100
+        collection.update_card(card)
+        for offset in (2, 3):
+            collection.db.execute(
+                "insert into revlog values (?,?,?,?,?,?,?,?,?)",
+                (collection.sched.day_cutoff - offset * 86400 + 3600) * 1000
+                + card.id % 1000,
+                card.id,
+                0,
+                3,
+                1,
+                1,
+                2500,
+                1000,
+                1,
+            )
+        known = snapshot(collection, settings, {}).known
+        assert ("学生" in known) == (index == 1)
+        assert "学" not in known and "生" not in known
