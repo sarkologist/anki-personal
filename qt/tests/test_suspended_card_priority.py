@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -175,8 +176,9 @@ def test_browser_sort_preserves_search_and_other_addon_results(
     assert context.search == "deck:math is:suspended"
     context.ids = [1, 2, 3]
     monkeypatch.setattr(
-        b, "_current_score", lambda cid: {"score": {1: 9, 2: 91, 3: None}[cid]}
+        b, "_scores_for_sort", lambda col, ids: {"1": {"score": 9}, "2": {"score": 91}}
     )
+    context.browser.col = object()
     b._did_search(context)
     assert context.ids == [2, 1, 3]
     other = ns(ids=[8], order=ns(key=b.KEY), addon_metadata={})
@@ -200,7 +202,10 @@ def test_returning_from_notes_sorts_using_the_new_card_state(
             )
         ),
     )
-    monkeypatch.setattr(b, "_current_score", lambda cid: {"score": {1: 9, 2: 91}[cid]})
+    monkeypatch.setattr(
+        b, "_scores_for_sort", lambda col, ids: {"1": {"score": 9}, "2": {"score": 91}}
+    )
+    context.browser.col = object()
 
     b._did_search(context)
 
@@ -223,10 +228,10 @@ def test_switching_to_notes_does_not_treat_note_ids_as_card_ids(
         ),
     )
 
-    def unexpected_score(cid):
+    def unexpected_score(col, ids):
         pytest.fail("Note IDs must not be looked up as card IDs")
 
-    monkeypatch.setattr(b, "_current_score", unexpected_score)
+    monkeypatch.setattr(b, "_scores_for_sort", unexpected_score)
 
     b._did_search(context)
 
@@ -282,6 +287,99 @@ def test_edited_or_unsuspended_cards_do_not_keep_numeric_scores(browser_module):
     assert b._current_score(1)["stale"]
     c.queue = 0
     assert b._current_score(1) is None
+
+
+def test_priority_search_does_not_render_cards(browser_module):
+    b = browser_module
+    queries = []
+
+    def suspended_ids(sql):
+        queries.append(sql)
+        return [1, 2]
+
+    def unexpected_card(cid):
+        pytest.fail("Sorting must not load or render individual cards")
+
+    col = types.SimpleNamespace(
+        db=types.SimpleNamespace(list=suspended_ids), get_card=unexpected_card
+    )
+    b.aqt.mw.col = col
+    b._scores = {"1": {"score": 9}, "2": {"score": 91}, "3": {"score": 100}}
+    context = types.SimpleNamespace(
+        ids=[3, 2, 4, 1],
+        addon_metadata={b.KEY: True},
+        browser=types.SimpleNamespace(
+            col=col,
+            table=types.SimpleNamespace(
+                _model=types.SimpleNamespace(
+                    _state=types.SimpleNamespace(is_notes_mode=lambda: False)
+                )
+            ),
+        ),
+    )
+
+    b._did_search(context)
+
+    assert context.ids == [2, 1, 3, 4]
+    assert len(queries) == 1
+
+
+def test_checked_stale_score_stays_last_on_both_sorts(browser_module):
+    b = browser_module
+    c = types.SimpleNamespace(
+        id=1, nid=1, queue=-1, question=lambda: "Q", answer=lambda: "edited"
+    )
+    col = types.SimpleNamespace(
+        get_card=lambda _: c, db=types.SimpleNamespace(list=lambda _: [1, 2])
+    )
+    b.aqt.mw.col = col
+    b._scores = {
+        "1": {"score": 91, "fingerprint": card(1, "Q", "A").fingerprint},
+        "2": {"score": 9},
+    }
+
+    assert b._current_score(1)["stale"]
+    scores = b._scores_for_sort(col, [1, 2])
+
+    assert sort_ids([1, 2], scores, True) == [2, 1]
+    assert sort_ids([1, 2], scores, False) == [2, 1]
+
+
+def test_sort_only_uses_existing_suspended_scores(browser_module):
+    b = browser_module
+    db = sqlite3.connect(":memory:")
+    db.execute("create table cards (id integer primary key, queue integer)")
+    db.executemany("insert into cards values (?, ?)", [(1, -1), (2, 0), (3, -1)])
+    col = types.SimpleNamespace(
+        db=types.SimpleNamespace(list=lambda sql: [row[0] for row in db.execute(sql)])
+    )
+    b._scores = {str(cid): {"score": cid} for cid in [1, 2, 3, 4]}
+
+    assert b._scores_for_sort(col, [1, 2, 4]) == {"1": {"score": 1}}
+    db.close()
+
+
+def test_collection_changes_invalidate_checked_scores(browser_module):
+    b = browser_module
+    value = {"score": 91}
+    b._scores = {"1": value}
+    b._checked_scores = {"1": (value, dict(value, score=None, stale=True))}
+    col = types.SimpleNamespace(db=types.SimpleNamespace(list=lambda _: [1]))
+
+    b._invalidate_checked_scores(types.SimpleNamespace(browser_table=False), None)
+    assert b._scores_for_sort(col, [1])["1"]["stale"]
+    b._invalidate_checked_scores(types.SimpleNamespace(browser_table=True), None)
+    assert b._scores_for_sort(col, [1]) == {"1": value}
+
+
+def test_new_scores_replace_cached_stale_values(browser_module):
+    b = browser_module
+    old = {"score": 91}
+    b._checked_scores = {"1": (old, dict(old, score=None, stale=True))}
+    b._scores = {"1": {"score": 81}}
+    col = types.SimpleNamespace(db=types.SimpleNamespace(list=lambda _: [1]))
+
+    assert b._scores_for_sort(col, [1]) == {"1": {"score": 81}}
 
 
 def test_cli_response_validation_without_network(monkeypatch):
