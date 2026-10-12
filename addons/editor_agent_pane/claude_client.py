@@ -74,7 +74,8 @@ CLAUDE_PROJECT_ACCESS_INSTRUCTIONS = {
 
 CLAUDE_CONTEXT_ONLY_INSTRUCTIONS = (
     "No project folder is selected and tools are disabled. Use only the current "
-    "editor context JSON, recent conversation, selected text, and user request. "
+    "editor context JSON, Anki-mediated read-only card lookup results, recent "
+    "conversation, selected text, and user request. "
     "Do not claim to have inspected files, run commands, or checked external "
     "sources."
 )
@@ -273,6 +274,7 @@ class ClaudeCliAgent:
                 html=message_html,
                 proposals=proposals,
                 event_count=completed.event_count,
+                card_request=data.get("card_request"),
             )
 
     def _working_directory(self, project_root: str, fallback: Path) -> Path:
