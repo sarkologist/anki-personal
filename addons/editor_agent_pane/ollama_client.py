@@ -477,6 +477,8 @@ def _normalize_ollama_patch_data(
         }
     if not isinstance(patch_data, dict):
         return patch_data
+    if "action" in patch_data:
+        return patch_data
     normalized = dict(patch_data)
     normalized.setdefault("summary", "Proposed note update")
     if isinstance(snapshot, MultiCardSnapshot):

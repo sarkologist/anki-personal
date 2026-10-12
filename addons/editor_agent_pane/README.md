@@ -28,6 +28,21 @@ fixed JSON response and patch safety rules in place. Press Enter to send and
 Shift+Enter for a newline. Proposed note edits are shown as a diff and require
 explicit approval.
 
+Agents can also propose new cards or deletion of the current saved card. Review
+the proposed fields, tags, note type, and deck, then click **Confirm card action**.
+Every creation or deletion requires a separate confirmation dialog, with **No**
+selected by default. Use **Preview cards** to open a separate Anki preview window
+before confirming. It renders the proposed content with the current note type's
+templates, CSS, and clozes, with front/back display, audio replay, and navigation
+through the proposed cards. Previewing creates no notes or cards, and also works
+for edits to the current note. Discarding, applying, or replacing a proposal
+closes its preview. New cards are generated from new notes using the current
+note type and home deck (or the selected target deck in Add Cards). Deletion
+removes only the current card; sibling cards remain. If it is the note's last
+card, the note is also removed. Both operations support Anki's Undo. Select a
+single card first when using the Browser; these actions are unavailable in
+multi-selection mode.
+
 Use **Card access** to choose **Current card only** (the default), **Other cards
 in deck**, or **All other cards**. Agents can search permitted cards using Anki
 search syntax and read their fields, tags, and card metadata on demand, with all

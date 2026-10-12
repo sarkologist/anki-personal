@@ -6,7 +6,7 @@ from __future__ import annotations
 import difflib
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 TAG_RE = re.compile(r"^[^\s]+$")
 DOCUMENT_HTML_RE = re.compile(
@@ -75,6 +75,8 @@ class EditorSnapshot:
     card_id: int | None = None
     images: tuple[NoteImageSnapshot, ...] = ()
     selected_text: SelectedTextSnapshot | None = None
+    deck_id: int | None = None
+    deck_name: str | None = None
 
     def field_names(self) -> tuple[str, ...]:
         return tuple(field.name for field in self.fields)
@@ -98,6 +100,8 @@ class EditorSnapshot:
             "tags": list(self.tags),
             "current_field": self.current_field,
             "card_id": self.card_id,
+            "deck_id": self.deck_id,
+            "deck_name": self.deck_name,
             "images": [
                 image_snapshot.as_tool_result() for image_snapshot in self.images
             ],
@@ -263,6 +267,67 @@ class NotePatch:
 
     def has_changes(self) -> bool:
         return bool(self.field_updates) or self.tag_patch.has_changes()
+
+
+@dataclass(frozen=True)
+class NewNote:
+    fields: dict[str, str]
+    tags: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CardActionPatch:
+    summary: str
+    action: Literal["create", "delete"]
+    notes: tuple[NewNote, ...] = ()
+    card_id: int | None = None
+
+
+def validate_card_action_patch(
+    raw: dict[str, Any], snapshot: EditorSnapshot | MultiCardSnapshot
+) -> CardActionPatch:
+    if not isinstance(snapshot, EditorSnapshot):
+        raise PatchValidationError("Select a single card to create or delete cards.")
+    action = raw.get("action")
+    summary = raw.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise PatchValidationError("Card action summary must be a non-empty string.")
+    if action == "delete":
+        if set(raw) != {"action", "summary", "card_id"}:
+            raise PatchValidationError("Deletion cannot include other changes.")
+        card_id = raw.get("card_id")
+        if (
+            snapshot.mode == "add"
+            or not snapshot.note_id
+            or type(card_id) is not int
+            or card_id != snapshot.card_id
+        ):
+            raise PatchValidationError("Only the current saved card can be deleted.")
+        return CardActionPatch(summary=summary.strip(), action=action, card_id=card_id)
+    if action != "create":
+        raise PatchValidationError("Unknown card action.")
+    if set(raw) != {"action", "summary", "notes"}:
+        raise PatchValidationError("Creation cannot include other changes.")
+    if snapshot.deck_id is None:
+        raise PatchValidationError("Select a target deck before creating cards.")
+    raw_notes = raw.get("notes")
+    if not isinstance(raw_notes, list) or not raw_notes:
+        raise PatchValidationError("Creation must include at least one new note.")
+    notes = []
+    for raw_note in raw_notes:
+        if not isinstance(raw_note, dict) or set(raw_note) != {"fields", "tags"}:
+            raise PatchValidationError("Each new note must contain fields and tags.")
+        fields = _validate_field_updates(
+            raw_note["fields"], set(snapshot.field_names())
+        )
+        if set(fields) != set(snapshot.field_names()):
+            raise PatchValidationError("Provide every field for each new note.")
+        if not any(value.strip() for value in fields.values()):
+            raise PatchValidationError("New note fields cannot all be blank.")
+        if not isinstance(raw_note["tags"], list):
+            raise PatchValidationError("New note tags must be a list.")
+        notes.append(NewNote(fields, _normalize_tags(raw_note["tags"], "tags")))
+    return CardActionPatch(summary=summary.strip(), action=action, notes=tuple(notes))
 
 
 @dataclass(frozen=True)
