@@ -41,6 +41,7 @@ from .collection import (
     initial_scope_settings,
     request_repair,
     snapshot,
+    upgrade_presentation,
 )
 from .core import GENERATED_TAG, admission_slots
 from .generation import GenerationResult, generate
@@ -87,18 +88,20 @@ class Controller:
         interval = max(30, int(self.config().get("poll_seconds", 300)))
         self.timer.start(interval * 1000)
         config = self.config()
-        if initial_scope_settings(mw.col, config) is not None:
+        if (
+            initial_scope_settings(mw.col, config) is not None
+            or mw.col.models.by_name("Chinese Frontier") is not None
+        ):
             stop = self.stop
 
             def configure(col: Any) -> Any:
                 if stop.is_set():
                     return OpChanges()
                 settings = initial_scope_settings(col, config)
-                return (
-                    col.set_config(SETTINGS_KEY, settings)
-                    if settings is not None
-                    else OpChanges()
-                )
+                changes = upgrade_presentation(col)
+                if settings is not None:
+                    changes.MergeFrom(col.set_config(SETTINGS_KEY, settings))
+                return changes
 
             epoch = self.epoch
             CollectionOp(parent=mw, op=configure).success(

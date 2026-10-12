@@ -10,12 +10,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .generation import Draft
+from .generation import GENERATION_POLICY, Draft
 
 
 def vocabulary_version(known: dict[str, str]) -> str:
     return hashlib.sha256(
-        json.dumps(known, sort_keys=True, ensure_ascii=False).encode()
+        json.dumps(
+            [GENERATION_POLICY, known], sort_keys=True, ensure_ascii=False
+        ).encode()
     ).hexdigest()
 
 
@@ -36,7 +38,9 @@ class State:
         if data.get("version") != 1:
             raise ValueError("Unsupported Chinese Frontier state version")
         return cls(
-            [Draft.from_dict(item) for item in data.get("drafts", [])],
+            [Draft.from_dict(item) for item in data.get("drafts", [])]
+            if data.get("generation_policy") == GENERATION_POLICY
+            else [],
             data.get("deferred", {}),
             int(data.get("day", -1)),
             int(data.get("batches", 0)),
@@ -51,6 +55,7 @@ class State:
             json.dumps(
                 {
                     "version": 1,
+                    "generation_policy": GENERATION_POLICY,
                     "drafts": [draft.as_dict() for draft in self.drafts],
                     "deferred": self.deferred,
                     "day": self.day,

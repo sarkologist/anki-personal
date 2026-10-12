@@ -84,13 +84,22 @@ not establish 学生. Ambiguous segmentation can reject a valid sentence. The
 generator tries alternatives instead of relaxing vocabulary checks. Both vocabulary
 and source contents are rechecked before admission. Context senses, naturalness,
 grammar, translation, and pinyin receive a separate model review, but remain model
-judgments rather than guarantees. Prefer simple everyday constructions. Unknown
+judgments rather than guarantees. Connector examples must make their logical
+relationship clear from the surrounding clauses, rather than relying only on an
+English hint. Examples are ordered by useful context, not shortest length, and can
+include a preceding clause or sentence. Review tries plausible competing words and
+rejects distinctions that require prior idiom knowledge or an unstated intention.
+Genuine synonym overlap is not a learner error. Prefer simple everyday constructions. Unknown
 targets are deferred with backoff and retried when vocabulary changes.
 
 ## Daily limits and recovery
 
 Each replacement produces exactly one new `c1` card, clozing the whole target.
-Pronunciation and full translation appear only on the answer side. Pending new
+The full English translation appears alongside the Chinese on the front, without
+definition hints in the blank. Pronunciation and word explanations remain on the
+answer side. Existing generated hints and the original front template are upgraded
+on profile opening without changing card IDs or scheduling; customized templates
+are preserved. Pending new
 cards (including buried siblings), today's introductions, and due reviews reserve
 admission capacity. The add-on reads preset, deck, and today-only limits, and
 honors the review-limit switch and Anki's study-day boundary. All ancestor budgets

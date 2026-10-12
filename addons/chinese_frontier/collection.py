@@ -32,6 +32,9 @@ from .generation import Draft
 from .lexicon import Lexicon, is_word
 
 SETTINGS_KEY = "chineseFrontier"
+LEGACY_FRONT = '<div class="sentence">{{cloze:Text}}</div>'
+TRANSLATED_FRONT = LEGACY_FRONT + '<div class="translation">{{Translation}}</div>'
+
 FIELDS = (
     "Text",
     "Target",
@@ -397,13 +400,16 @@ def ensure_model(col: Collection) -> dict[str, Any]:
             raise ValueError(
                 "Chinese Frontier note type was modified; restore its required fields and cloze template"
             )
+        if model["tmpls"][0]["qfmt"] == LEGACY_FRONT:
+            model["tmpls"][0]["qfmt"] = TRANSLATED_FRONT
+            col.models.update_dict(model)
         return model
     model = col.models.new(MODEL_NAME)
     model["type"] = 1
     for name in FIELDS:
         col.models.add_field(model, col.models.new_field(name))
     template = col.models.new_template("Sentence")
-    template["qfmt"] = '<div class="sentence">{{cloze:Text}}</div>'
+    template["qfmt"] = TRANSLATED_FRONT
     template["afmt"] = (
         '<div class="sentence">{{cloze:Text}}</div><hr id="answer">'
         "<div>{{Target}} · {{Pinyin}}</div><div>{{Meaning}}</div>"
@@ -419,6 +425,30 @@ def ensure_model(col: Collection) -> dict[str, Any]:
     stored = col.models.get(added.id)
     assert stored is not None
     return stored
+
+
+def upgrade_presentation(col: Collection) -> OpChanges:
+    """Upgrade generated notes without changing card IDs or scheduling."""
+    model = col.models.by_name(MODEL_NAME)
+    if model is None:
+        return OpChanges()
+    notes = []
+    for nid in col.find_notes(f'"note:{MODEL_NAME}" tag:{GENERATED_TAG}'):
+        note = col.get_note(nid)
+        text = CLOZE.sub(
+            lambda match: "{{c" + match[1] + "::" + match[2].split("::", 1)[0] + "}}",
+            note["Text"],
+        )
+        if text != note["Text"]:
+            note["Text"] = text
+            notes.append(note)
+    if not notes and model["tmpls"][0]["qfmt"] != LEGACY_FRONT:
+        return OpChanges()
+    undo = col.add_custom_undo_entry("Show translations on Chinese sentence cards")
+    ensure_model(col)
+    if notes:
+        col.update_notes(notes)
+    return col.merge_undo_entries(undo)
 
 
 @dataclass
@@ -579,7 +609,7 @@ def _admit(
         if (
             'class="cloze"' not in question
             or source.word not in answer
-            or valid.candidate.translation in question
+            or html.escape(valid.candidate.translation) not in question
         ):
             raise ValueError("Replacement card rendering failed verification")
         (updated if repair_id else admitted).append(int(note.id))

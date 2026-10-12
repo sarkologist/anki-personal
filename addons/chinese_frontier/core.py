@@ -159,10 +159,7 @@ def validate_candidate(
     unknown = [word for word in dependencies if word not in known]
     if unknown:
         raise ValidationError("Unlearned context: " + ", ".join(unknown))
-    hint = f"::{html.escape(candidate.hint)}" if candidate.hint else ""
-    text = html.escape(sentence).replace(
-        source.word, "{{c1::" + source.word + hint + "}}", 1
-    )
+    text = html.escape(sentence).replace(source.word, "{{c1::" + source.word + "}}", 1)
     return Validated(candidate, text, dependencies)
 
 

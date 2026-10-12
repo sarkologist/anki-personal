@@ -21,6 +21,7 @@ from chinese_frontier.collection import (  # noqa: E402
     initial_scope_settings,
     request_repair,
     snapshot,
+    upgrade_presentation,
 )
 from chinese_frontier.core import (  # noqa: E402
     Candidate,
@@ -30,6 +31,7 @@ from chinese_frontier.core import (  # noqa: E402
     admission_slots,
     cloze_words,
     effective_limit,
+    plain_text,
     successful_days,
     validate_candidate,
 )
@@ -113,11 +115,11 @@ def candidate(sentence: str = "这本书有一百页。") -> Candidate:
     return Candidate(sentence, "This book has one hundred pages.", "bǎi", "hundred")
 
 
-def test_whole_word_cloze_and_answer_only_translation(lexicon: Lexicon) -> None:
+def test_whole_word_cloze_has_no_definition_hint(lexicon: Lexicon) -> None:
     result = validate_candidate(
         candidate(), source(), {"这", "本", "书", "有", "一", "页"}, lexicon
     )
-    assert result.text == "这本书有一{{c1::百::hundred}}页。"
+    assert result.text == "这本书有一{{c1::百}}页。"
     assert result.dependencies == ("这", "本", "书", "有", "一", "页")
 
 
@@ -188,8 +190,8 @@ def test_native_admission_is_new_reversible_and_idempotent(
     result = admit(collection, settings, {}, [draft, draft], lexicon)
     assert len(result.admitted) == 1
     replacement = collection.get_note(result.admitted[0])
-    assert replacement["Text"] == "这本书有一{{c1::百::hundred}}页。"
-    assert "This book" not in replacement.cards()[0].question()
+    assert replacement["Text"] == "这本书有一{{c1::百}}页。"
+    assert "This book has one hundred pages." in replacement.cards()[0].question()
     assert len(replacement.cards()) == 1
     assert replacement.cards()[0].queue == 0
     assert collection.get_card(card.id).queue == -1
@@ -401,7 +403,7 @@ def test_failed_render_verification_rolls_back_admission(
 ) -> None:
     settings, _note, _card, draft = setup_sentence(collection)
     model = ensure_model(collection)
-    model["tmpls"][0]["qfmt"] += "{{Translation}}"
+    model["tmpls"][0]["qfmt"] = "<div>{{cloze:Text}}</div>"
     collection.models.update_dict(model)
     with pytest.raises(ValueError, match="rendering"):
         admit(collection, settings, {}, [draft], lexicon)
@@ -624,3 +626,103 @@ def test_live_cloze_in_target_only_deck_does_not_cover_primary_target(
     current = snapshot(collection, {"deck_id": 1, "source_deck_ids": [hsk]}, {})
     assert "百" not in current.covered_words
     assert [source.word for source in current.sources] == ["百"]
+
+
+def test_generation_keeps_informative_order_not_shortest(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    from chinese_frontier import generation
+
+    longer = candidate()
+    shorter = candidate("书有一百页。")
+    responses = iter(
+        [
+            {
+                "proposals": [
+                    {"card_id": 1, "candidates": [longer.__dict__, shorter.__dict__]}
+                ]
+            },
+            {
+                "reviews": [
+                    {
+                        "card_id": 1,
+                        "sentence": c.sentence,
+                        "approved": True,
+                        "reason": "clear",
+                    }
+                    for c in (longer, shorter)
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(generation.Lexicon, "load", lambda _folder: lexicon)
+    monkeypatch.setattr(
+        generation.CliGenerator, "__init__", lambda self, _config, _stop: None
+    )
+    monkeypatch.setattr(generation.CliGenerator, "check_login", lambda self: None)
+    monkeypatch.setattr(
+        generation.CliGenerator,
+        "request",
+        lambda self, _prompt, _schema: next(responses),
+    )
+    result = generate(
+        [source()],
+        {word: "familiar" for word in ("这", "本", "书", "有", "一", "页")},
+        {},
+        tmp_path,
+        Event(),
+    )
+    assert result.drafts[0].candidate == longer
+
+
+def test_existing_template_gets_front_translation_without_history_change(
+    collection: Collection,
+) -> None:
+    model = ensure_model(collection)
+    model["tmpls"][0]["qfmt"] = '<div class="sentence">{{cloze:Text}}</div>'
+    collection.models.update_dict(model)
+    note = collection.new_note(model)
+    note["Text"] = "这本书有一{{c1::百}}页。"
+    note["Translation"] = "This book has one hundred pages."
+    collection.add_note(note, 1)
+    before = note.cards()[0]
+    before.reps = 7
+    before.ivl = 15
+    collection.update_card(before)
+    ensure_model(collection)
+    after = collection.get_card(before.id)
+    assert "This book has one hundred pages." in after.question()
+    assert "百" not in plain_text(after.question())
+    assert (after.id, after.reps, after.ivl) == (before.id, 7, 15)
+
+
+def test_presentation_upgrade_strips_old_hints_only_from_generated_notes(
+    collection: Collection,
+) -> None:
+    model = ensure_model(collection)
+    generated = collection.new_note(model)
+    generated["Text"] = "请等候五{{c1::分钟::A unit of time lasting sixty seconds.}}。"
+    generated.tags = ["chinese-frontier::generated"]
+    collection.add_note(generated, 1)
+    manual = collection.new_note(model)
+    manual["Text"] = generated["Text"]
+    collection.add_note(manual, 1)
+    card = generated.cards()[0]
+    upgrade_presentation(collection)
+    assert collection.get_note(generated.id)["Text"] == "请等候五{{c1::分钟}}。"
+    assert collection.get_note(manual.id)["Text"] == manual["Text"]
+    assert collection.get_note(generated.id).cards()[0].id == card.id
+    assert not upgrade_presentation(collection).note
+
+
+def test_old_generation_policy_drops_drafts_without_resetting_daily_budget(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.json"
+    State(drafts=[Draft(source(), candidate())], day=1, batches=8).save(path)
+    data = json.loads(path.read_text())
+    data.pop("generation_policy", None)
+    path.write_text(json.dumps(data))
+    restored = State.load(path)
+    assert restored.drafts == []
+    assert (restored.day, restored.batches) == (1, 8)
