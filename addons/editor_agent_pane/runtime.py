@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import html
 import os
 import time
 import weakref
@@ -14,6 +15,7 @@ from typing import Any
 import aqt
 from aqt import gui_hooks
 from aqt.editor import Editor, EditorMode
+from aqt.operations import CollectionOp
 from aqt.operations.note import update_note, update_notes
 from aqt.qt import (
     QAction,
@@ -39,7 +41,7 @@ from aqt.qt import (
     QWidget,
     qconnect,
 )
-from aqt.utils import openFolder, showWarning, tooltip
+from aqt.utils import askUser, openFolder, showWarning, tooltip
 from aqt.webview import AnkiWebView
 
 from .activity import ClaudeActivityRenderer, CodexActivityRenderer
@@ -99,6 +101,7 @@ from .ollama_client import (
     resolve_ollama_path,
 )
 from .patches import (
+    CardActionPatch,
     EditorSnapshot,
     FieldSnapshot,
     MultiCardSnapshot,
@@ -128,6 +131,7 @@ from .surface import (
     render_activity_start,
     render_activity_summary,
     render_assistant_message,
+    render_card_action_proposal,
     render_error_message,
     render_multi_note_card_proposal_diff,
     render_proposal_diff,
@@ -741,7 +745,8 @@ class EditorAgentPane(QWidget):
         self.browser = browser
         self.embedded = embedded
         self.history: list[tuple[str, str]] = []
-        self.pending_patch: NotePatch | MultiNotePatch | None = None
+        self.pending_patch: NotePatch | MultiNotePatch | CardActionPatch | None = None
+        self._card_action_running = False
         self.pending_snapshot: EditorSnapshot | MultiCardSnapshot | None = None
         self._activity_id: str | None = None
         self._activity_counter = 0
@@ -1679,6 +1684,8 @@ class EditorAgentPane(QWidget):
 
     def _clear_proposal(self) -> None:
         self.surface.eval(js_clear_proposal())
+        if hasattr(self.apply_button, "setText"):
+            self.apply_button.setText("Apply proposal")
 
     def _set_proposal(
         self,
@@ -2074,7 +2081,21 @@ class EditorAgentPane(QWidget):
         if proposals:
             self.pending_patch = proposals[-1]
             self.pending_snapshot = snapshot
-            if isinstance(snapshot, MultiCardSnapshot) and isinstance(
+            if isinstance(proposals[-1], CardActionPatch):
+                assert isinstance(snapshot, EditorSnapshot)
+                assert self.editor is not None
+                renderer = LegacyLatexPreviewRenderer(
+                    col=self.editor.mw.col, notetype=notetype
+                )
+                self.surface.eval(
+                    js_set_proposal(
+                        render_card_action_proposal(
+                            snapshot, proposals[-1], renderer.render
+                        )
+                    )
+                )
+                self.apply_button.setText("Confirm card action")
+            elif isinstance(snapshot, MultiCardSnapshot) and isinstance(
                 proposals[-1], MultiNotePatch
             ):
                 self._set_multi_proposal(snapshot, proposals[-1])
@@ -2096,12 +2117,18 @@ class EditorAgentPane(QWidget):
         self.pending_snapshot = None
         self._clear_proposal()
         self.apply_button.setEnabled(False)
-        if hasattr(self.apply_button, "setText"):
-            self.apply_button.setText("Apply proposal")
 
     def _apply_pending_patch(self) -> None:
         patch = self.pending_patch
-        if patch is None:
+        if patch is None or getattr(self, "_card_action_running", False):
+            return
+        if isinstance(patch, CardActionPatch):
+            if self.editor is None:
+                return
+            generation = self._context_generation
+            self.editor.call_after_note_saved(
+                lambda: self._confirm_card_action(patch, generation), keepFocus=True
+            )
             return
         if isinstance(patch, MultiNotePatch):
             snapshot = self.pending_snapshot
@@ -2127,6 +2154,63 @@ class EditorAgentPane(QWidget):
             return
         self._discard_pending_patch()
         tooltip("Agent proposal applied.", parent=self)
+
+    def _confirm_card_action(self, patch: CardActionPatch, generation: int) -> None:
+        snapshot = self.pending_snapshot
+        if (
+            generation != self._context_generation
+            or self.pending_patch is not patch
+            or not isinstance(snapshot, EditorSnapshot)
+            or getattr(self, "_card_action_running", False)
+        ):
+            return
+        assert self.editor is not None
+        try:
+            current = editor_snapshot(self.editor)
+            ensure_card_action_context(snapshot, current, patch)
+        except (RuntimeError, PatchValidationError) as exc:
+            showWarning(str(exc), parent=self)
+            return
+        if patch.action == "create":
+            question = (
+                f"Create cards from {len(patch.notes)} new note(s) using "
+                f"{snapshot.notetype_name} in deck {snapshot.deck_name or snapshot.deck_id}? "
+                "Templates and clozes determine how many cards are created."
+            )
+        else:
+            question = (
+                f"Delete current card {patch.card_id}? Other cards of this note remain. "
+                "If this is its last card, the note will also be deleted."
+            )
+        if not askUser(f"<p>{html.escape(question)}</p>", parent=self, defaultno=True):
+            return
+        # The confirmation dialog runs a nested event loop. Recheck the context
+        # and proposal in case the user changed cards while it was open.
+        if generation != self._context_generation or self.pending_patch is not patch:
+            return
+        try:
+            ensure_card_action_context(snapshot, editor_snapshot(self.editor), patch)
+        except (RuntimeError, PatchValidationError) as exc:
+            showWarning(str(exc), parent=self)
+            return
+        self._card_action_running = True
+        self.apply_button.setEnabled(False)
+
+        def on_success(_changes: Any) -> None:
+            self._card_action_running = False
+            if generation == self._context_generation and self.pending_patch is patch:
+                self._discard_pending_patch()
+            tooltip("Agent card action applied.", parent=self)
+
+        def on_failure(exc: Exception) -> None:
+            self._card_action_running = False
+            if generation == self._context_generation and self.pending_patch is patch:
+                self.apply_button.setEnabled(True)
+            showWarning(str(exc), parent=self)
+
+        CollectionOp(self, lambda col: apply_card_action(col, snapshot, patch)).success(
+            on_success
+        ).failure(on_failure).run_in_background(initiator=self)
 
     def _set_multi_proposal(
         self,
@@ -2209,6 +2293,71 @@ class EditorAgentPane(QWidget):
         return True
 
 
+def ensure_card_action_context(
+    snapshot: EditorSnapshot, current: EditorSnapshot, patch: CardActionPatch
+) -> None:
+    if (
+        snapshot.mode != current.mode
+        or snapshot.note_id != current.note_id
+        or snapshot.card_id != current.card_id
+        or snapshot.notetype_id != current.notetype_id
+        or snapshot.field_names() != current.field_names()
+        or snapshot.deck_id != current.deck_id
+        or (
+            patch.action == "delete"
+            and (snapshot.fields != current.fields or snapshot.tags != current.tags)
+        )
+    ):
+        raise PatchValidationError(
+            "The current card or target deck changed. Request a new proposal."
+        )
+
+
+def apply_card_action(
+    col: Any, snapshot: EditorSnapshot, patch: CardActionPatch
+) -> Any:
+    """Run an already-confirmed action in the collection operation's thread."""
+    if patch.action == "delete":
+        assert patch.card_id is not None
+        card = col.get_card(patch.card_id)
+        note = card.note()
+        if (
+            int(note.id) != snapshot.note_id
+            or int(note.mid) != snapshot.notetype_id
+            or tuple(
+                FieldSnapshot(str(name), str(value)) for name, value in note.items()
+            )
+            != snapshot.fields
+            or tuple(note.tags) != snapshot.tags
+        ):
+            raise PatchValidationError(
+                "The proposed card changed. Request a new proposal."
+            )
+        return col.remove_cards_and_orphaned_notes([patch.card_id])
+
+    from anki.collection import AddNoteRequest
+
+    assert snapshot.deck_id is not None
+    notetype = col.models.get(snapshot.notetype_id)
+    if (
+        notetype is None
+        or tuple(field["name"] for field in notetype["flds"]) != snapshot.field_names()
+    ):
+        raise PatchValidationError("The note type changed. Request a new proposal.")
+    deck = col.decks.get(snapshot.deck_id, default=False)
+    if deck is None or deck.get("dyn"):
+        raise PatchValidationError("Select an existing, non-filtered target deck.")
+    requests = []
+    for proposed_note in patch.notes:
+        note = col.new_note(notetype)
+        for name, value in proposed_note.fields.items():
+            note[name] = value
+        note.tags = list(proposed_note.tags)
+        requests.append(AddNoteRequest(note=note, deck_id=snapshot.deck_id))
+    # A batch gives creation one atomic write and one undo entry.
+    return col.add_notes(requests)
+
+
 def editor_field_snapshots(editor: Editor) -> tuple[FieldSnapshot, ...]:
     note = editor.note
     if note is None:
@@ -2240,8 +2389,17 @@ def editor_snapshot(editor: Editor, selected_text: Any = None) -> EditorSnapshot
         current_field = fields[editor.currentField].name
 
     card_id = None
+    deck_id = None
     if editor.card is not None:
         card_id = int(editor.card.id)
+        deck_id = int(editor.card.current_deck_id())
+    elif editor.editorMode is EditorMode.ADD_CARDS:
+        chooser = getattr(getattr(editor, "parentWindow", None), "deck_chooser", None)
+        if chooser is not None:
+            deck_id = int(chooser.selected_deck_id)
+    deck_name = None
+    if deck_id is not None:
+        deck_name = str(editor.mw.col.decks.name(deck_id))
 
     images = collect_note_images(editor.mw.col.media, int(note.mid), fields)
 
@@ -2254,6 +2412,8 @@ def editor_snapshot(editor: Editor, selected_text: Any = None) -> EditorSnapshot
         tags=tuple(note.tags),
         current_field=current_field,
         card_id=card_id,
+        deck_id=deck_id,
+        deck_name=deck_name,
         images=images,
         selected_text=validate_selected_text_snapshot(selected_text, fields),
     )
