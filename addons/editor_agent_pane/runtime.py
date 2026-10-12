@@ -767,6 +767,7 @@ class EditorAgentPane(QWidget):
         self._setting_model_choice = False
         self._instructions_collapsed = False
         self._multi_proposal_dialog: MultiCardProposalDialog | None = None
+        self._proposal_previewer: Any = None
 
         self.dock: QDockWidget | None = None
         if not embedded:
@@ -877,11 +878,15 @@ class EditorAgentPane(QWidget):
         layout.addWidget(self.text_splitter, 1)
 
         action_row = QHBoxLayout()
+        self.preview_button = QPushButton("Preview cards")
+        self.preview_button.setEnabled(False)
+        qconnect(self.preview_button.clicked, self._preview_pending_patch)
         self.apply_button = QPushButton("Apply proposal")
         self.apply_button.setEnabled(False)
         qconnect(self.apply_button.clicked, self._apply_pending_patch)
         discard_button = QPushButton("Discard")
         qconnect(discard_button.clicked, self._discard_pending_patch)
+        action_row.addWidget(self.preview_button)
         action_row.addWidget(self.apply_button)
         action_row.addWidget(discard_button)
         layout.addLayout(action_row)
@@ -1683,6 +1688,10 @@ class EditorAgentPane(QWidget):
             self._append_activity_line(line)
 
     def _clear_proposal(self) -> None:
+        if previewer := getattr(self, "_proposal_previewer", None):
+            previewer.close()
+        if hasattr(self, "preview_button"):
+            self.preview_button.setEnabled(False)
         self.surface.eval(js_clear_proposal())
         if hasattr(self.apply_button, "setText"):
             self.apply_button.setText("Apply proposal")
@@ -2104,6 +2113,8 @@ class EditorAgentPane(QWidget):
                 assert isinstance(proposals[-1], NotePatch)
                 self._set_proposal(snapshot, proposals[-1], notetype)
             self.apply_button.setEnabled(True)
+            if hasattr(self, "preview_button"):
+                self.preview_button.setEnabled(isinstance(snapshot, EditorSnapshot))
 
     def _stop_running_agent(self) -> None:
         if self._agent_stop_event is None:
@@ -2117,6 +2128,34 @@ class EditorAgentPane(QWidget):
         self.pending_snapshot = None
         self._clear_proposal()
         self.apply_button.setEnabled(False)
+
+    def _preview_pending_patch(self) -> None:
+        snapshot = self.pending_snapshot
+        patch = self.pending_patch
+        if (
+            self.editor is None
+            or not isinstance(snapshot, EditorSnapshot)
+            or not isinstance(patch, (NotePatch, CardActionPatch))
+        ):
+            return
+        if previewer := getattr(self, "_proposal_previewer", None):
+            previewer.raise_()
+            previewer.activateWindow()
+            return
+        from .proposal_previewer import ProposalPreviewer
+
+        def on_close() -> None:
+            self._proposal_previewer = None
+
+        try:
+            previewer = ProposalPreviewer(
+                mw=self.editor.mw, snapshot=snapshot, patch=patch, on_close=on_close
+            )
+        except Exception as exc:
+            showWarning(str(exc), parent=self)
+            return
+        self._proposal_previewer = previewer
+        previewer.open()
 
     def _apply_pending_patch(self) -> None:
         patch = self.pending_patch

@@ -31,7 +31,12 @@ explicit approval.
 Agents can also propose new cards or deletion of the current saved card. Review
 the proposed fields, tags, note type, and deck, then click **Confirm card action**.
 Every creation or deletion requires a separate confirmation dialog, with **No**
-selected by default. New cards are generated from new notes using the current
+selected by default. Use **Preview cards** to open a separate Anki preview window
+before confirming. It renders the proposed content with the current note type's
+templates, CSS, and clozes, with front/back display, audio replay, and navigation
+through the proposed cards. Previewing creates no notes or cards, and also works
+for edits to the current note. Discarding, applying, or replacing a proposal
+closes its preview. New cards are generated from new notes using the current
 note type and home deck (or the selected target deck in Add Cards). Deletion
 removes only the current card; sibling cards remain. If it is the note's last
 card, the note is also removed. Both operations support Anki's Undo. Select a

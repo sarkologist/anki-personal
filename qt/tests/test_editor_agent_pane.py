@@ -859,6 +859,7 @@ def _pane_for_runtime(
     pane.send_button = FakeButton(False)
     pane.stop_button = FakeButton(True)
     pane.apply_button = FakeButton(True)
+    pane.preview_button = FakeButton(False)
     pane.prompt = FakePrompt("draft prompt")
     pane.selection_context_label = FakeLabel()
     pane.refresh_calls = 0
@@ -906,6 +907,7 @@ def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
     pane.send_button = FakeButton(True)
     pane.stop_button = FakeButton(False)
     pane.apply_button = FakeButton(True)
+    pane.preview_button = FakeButton(False)
     pane.selection_context_label = FakeLabel()
     pane.codex_path_edit = types.SimpleNamespace(text=lambda: "")
     pane.ollama_path_edit = types.SimpleNamespace(text=lambda: "")
@@ -7753,6 +7755,7 @@ def test_agent_completion_only_previews_card_action(
     )
     assert pane.pending_patch is patch
     assert pane.apply_button.enabled
+    assert pane.preview_button.enabled
     assert any("Proposed card action" in js for js in pane.surface.evals)
     assert confirmations == []
 
@@ -7825,3 +7828,220 @@ def test_card_actions_with_real_collection_and_undo(
         assert col.get_card(card.id).nid == note.id
     finally:
         col.close()
+
+
+@pytest.mark.parametrize("cloze", [False, True])
+def test_proposal_preview_renders_unsaved_cards_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cloze: bool,
+) -> None:
+    collection_module = pytest.importorskip("anki.collection")
+    from editor_agent_pane.codex_client import _validate_agent_patch
+    from editor_agent_pane.proposal_cards import proposal_preview_cards
+
+    col = collection_module.Collection(str(tmp_path / "preview.anki2"))
+    try:
+        model = col.models.by_name("Cloze" if cloze else "Basic (and reversed card)")
+        fields = (
+            (("Text", "existing {{c1::content}}"), ("Back Extra", ""))
+            if cloze
+            else (("Front", "existing"), ("Back", "answer"))
+        )
+        context = EditorSnapshot(
+            mode="browse",
+            note_id=123,
+            card_id=456,
+            notetype_id=model["id"],
+            notetype_name=model["name"],
+            deck_id=1,
+            fields=tuple(FieldSnapshot(name, value) for name, value in fields),
+            tags=(),
+        )
+        data = {
+            "action": "create",
+            "summary": "New card",
+            "notes": [
+                {
+                    "fields": [
+                        {
+                            "name": name,
+                            "html": (
+                                "{{c1::willing}} and {{c3::well}}"
+                                if cloze
+                                else "new question"
+                            )
+                            if index == 0
+                            else "new answer",
+                        }
+                        for index, (name, _) in enumerate(fields)
+                    ],
+                    "tags": ["new"],
+                }
+            ],
+        }
+        patch = _validate_agent_patch(data, context)
+        counts = col.card_count(), col.note_count()
+        undo = col.undo_status()
+        cards = proposal_preview_cards(col, context, patch)
+        assert [card.ord for card in cards] == ([0, 2] if cloze else [0, 1])
+        assert all(card.id == 0 and card.note(reload=True).id == 0 for card in cards)
+        assert all(card.note().tags == ["new"] for card in cards)
+        for card in cards:
+            question = card.question(reload=True)
+            answer = card.answer()
+            assert question and answer
+            assert "existing" not in question
+            assert "new answer" in answer
+            if cloze:
+                assert 'class="cloze"' in question
+        assert (col.card_count(), col.note_count()) == counts
+        assert col.undo_status() == undo
+    finally:
+        col.close()
+
+
+def test_preview_button_opens_and_reuses_window_without_applying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.BROWSER,
+        current_note_id=123,
+        last_browser_note_id=123,
+    )
+    pane.pending_snapshot = _card_action_context()
+    pane.pending_patch = _validate_agent_patch(
+        _create_cards_data(), pane.pending_snapshot
+    )
+    pane.editor.mw = object()
+    opened = []
+    closed = []
+    module = types.ModuleType("editor_agent_pane.proposal_previewer")
+
+    class Previewer:
+        def __init__(self, **kwargs: Any) -> None:
+            opened.append(kwargs)
+            self.on_close = kwargs["on_close"]
+            self.raised = 0
+
+        def open(self) -> None:
+            pass
+
+        def raise_(self) -> None:
+            self.raised += 1
+
+        def activateWindow(self) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append(self)
+            self.on_close()
+
+    module.ProposalPreviewer = Previewer
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    pane._preview_pending_patch()
+    pane._preview_pending_patch()
+    assert len(opened) == 1
+    assert pane._proposal_previewer.raised == 1
+    assert pane.pending_patch is not None
+    pane._discard_pending_patch()
+    assert len(closed) == 1
+    assert pane._proposal_previewer is None
+    assert not pane.preview_button.enabled
+
+
+def test_proposal_preview_shows_edits_without_changing_saved_note(
+    tmp_path: Path,
+) -> None:
+    collection_module = pytest.importorskip("anki.collection")
+    from editor_agent_pane.proposal_cards import proposal_preview_cards
+
+    col = collection_module.Collection(str(tmp_path / "preview-edits.anki2"))
+    try:
+        model = col.models.by_name("Basic")
+        note = col.new_note(model)
+        note["Front"] = "original question"
+        note["Back"] = "original answer"
+        col.add_note(note, 1)
+        card = note.cards()[0]
+        context = EditorSnapshot(
+            mode="browse",
+            note_id=int(note.id),
+            card_id=int(card.id),
+            notetype_id=model["id"],
+            notetype_name=model["name"],
+            deck_id=1,
+            fields=tuple(FieldSnapshot(name, value) for name, value in note.items()),
+            tags=(),
+        )
+        patch = validate_note_patch(
+            {
+                "summary": "Improve",
+                "field_updates": [{"name": "Front", "html": "proposed question"}],
+                "tags": {"add": ["proposed"]},
+            },
+            context,
+        )
+        undo = col.undo_status()
+        preview = proposal_preview_cards(col, context, patch)[0]
+        assert "proposed question" in preview.question(reload=True)
+        assert "original answer" in preview.answer()
+        assert preview.note(reload=True).tags == ["proposed"]
+        assert col.get_note(note.id)["Front"] == "original question"
+        assert col.get_note(note.id).tags == []
+        assert col.undo_status() == undo
+    finally:
+        col.close()
+
+
+def test_proposal_previewer_navigates_unsaved_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercise the preview's navigation without constructing Qt widgets.
+    browser_module = types.ModuleType("aqt.browser.previewer")
+
+    class BasePreviewer:
+        def render_card(self) -> None:
+            self.rendered_indexes.append(self._index)
+
+        def _should_enable_prev(self) -> bool:
+            return self._state == "answer" and not self._show_both_sides
+
+        def _should_enable_next(self) -> bool:
+            return self._state == "question"
+
+    browser_module.MultiCardPreviewer = BasePreviewer
+    monkeypatch.setitem(sys.modules, browser_module.__name__, browser_module)
+    pytest.importorskip("anki.collection")
+    sys.modules.pop("editor_agent_pane.proposal_previewer", None)
+    try:
+        from editor_agent_pane.proposal_previewer import ProposalPreviewer
+
+        previewer = ProposalPreviewer.__new__(ProposalPreviewer)
+        previewer._cards = (object(), object())
+        previewer._index = 0
+        previewer._last_index = -1
+        previewer._state = "question"
+        previewer._show_both_sides = False
+        previewer.rendered_indexes = []
+        assert previewer.card_changed()
+        assert not previewer.card_changed()
+        assert previewer._state_and_mod() == ("question", 0, 0)
+        assert not previewer._should_enable_prev()
+        previewer._on_next_card()
+        assert previewer.card() is previewer._cards[1]
+        assert previewer.card_changed()
+        assert previewer._should_enable_prev()
+        assert previewer._state_and_mod() == ("question", 1, 0)
+        previewer._state = "answer"
+        assert not previewer._should_enable_next()
+        previewer._on_next_card()
+        assert previewer.rendered_indexes == [1]
+        previewer._on_prev_card()
+        assert previewer.rendered_indexes == [1, 0]
+    finally:
+        sys.modules.pop("editor_agent_pane.proposal_previewer", None)
