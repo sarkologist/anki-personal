@@ -1,3 +1,6 @@
+# Copyright: Ankitects Pty Ltd and contributors
+# License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+
 """No Anki dependency: rendered card extraction, retrieval, and score validation."""
 
 from __future__ import annotations
