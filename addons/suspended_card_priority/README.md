@@ -16,6 +16,9 @@ fewer columns. This keeps Priority visible and clickable while preserving the
 existing column widths and order.
 Priority is sorted again when switching back to Cards mode or reversing the
 sort direction, with unscored, Review, and Stale cards last in both directions.
+Opening and searching use saved scores without rendering every result. Freshness
+is checked as rows are displayed or explained. A newly detected Stale card moves
+to the end on the next search or sort; unchecked cards retain their saved ranking.
 
 - **Score next batch** assesses up to 12 suspended cards in the current search.
 - **Score all remaining in this search** continues in batches, saving each batch.

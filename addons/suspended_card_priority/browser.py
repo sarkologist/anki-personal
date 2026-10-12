@@ -20,6 +20,8 @@ from .scoring import score_batch
 KEY = "suspendedCardPriority"
 FILE = "suspended-card-priority.json"
 _scores: dict[str, dict] = {}
+# Freshness is checked when a row is displayed, not for the entire search.
+_checked_scores: dict[str, tuple[dict, dict]] = {}
 _path: Path | None = None
 _stop = threading.Event()
 _running = False
@@ -32,6 +34,7 @@ def _config() -> dict:
 def _load() -> None:
     global _scores, _path
     _path = Path(aqt.mw.pm.profileFolder()) / FILE
+    _checked_scores.clear()
     try:
         _scores = load_scores(_path)
     except (ValueError, OSError) as exc:
@@ -66,12 +69,31 @@ def _did_search(context) -> None:
         KEY in context.addon_metadata
         and not context.browser.table._model._state.is_notes_mode()
     ):
-        valid = {}
-        for cid in context.ids:
-            value = _current_score(cid)
-            if value:
-                valid[str(cid)] = value
+        valid = _scores_for_sort(context.browser.col, context.ids)
         context.ids = sort_ids(context.ids, valid, context.addon_metadata[KEY])
+
+
+def _scores_for_sort(col, ids) -> dict[str, dict]:
+    # Only suspension/existence needs a DB lookup. Rendering every scored card
+    # here makes opening the Browser proportional to the full result set.
+    scored = [int(cid) for cid in ids if str(cid) in _scores]
+    if not scored:
+        return {}
+    suspended = col.db.list(
+        f"select id from cards where queue = -1 and id in ({','.join(map(str, scored))})"
+    )
+    valid = {}
+    for cid in suspended:
+        key = str(cid)
+        value = _scores[key]
+        checked = _checked_scores.get(key)
+        valid[key] = checked[1] if checked and checked[0] is value else value
+    return valid
+
+
+def _invalidate_checked_scores(changes, handler) -> None:
+    if changes.browser_table:
+        _checked_scores.clear()
 
 
 def _current_score(cid):
@@ -86,8 +108,11 @@ def _current_score(cid):
         return None
     current = CardText.from_html(cid, card.nid, card.question(), card.answer())
     if current.fingerprint != value["fingerprint"]:
-        return dict(value, score=None, stale=True)
-    return value
+        checked = dict(value, score=None, stale=True)
+    else:
+        checked = value
+    _checked_scores[str(cid)] = (value, checked)
+    return checked
 
 
 def _row(cid, is_note, row, columns) -> None:
@@ -340,6 +365,7 @@ def _close() -> None:
     _stop.set()
     _path = None
     _scores = {}
+    _checked_scores.clear()
 
 
 def install() -> None:
@@ -350,3 +376,4 @@ def install() -> None:
     gui_hooks.browser_did_search.append(_did_search)
     gui_hooks.browser_did_fetch_row.append(_row)
     gui_hooks.browser_menus_did_init.append(_menus)
+    gui_hooks.operation_did_execute.append(_invalidate_checked_scores)
