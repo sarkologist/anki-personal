@@ -1122,3 +1122,23 @@ def test_character_word_needs_all_siblings_learned_for_context(
         known = snapshot(collection, settings, {}).known
         assert ("学生" in known) == (index == 1)
         assert "学" not in known and "生" not in known
+
+
+@pytest.mark.parametrize(
+    "old_label", ["Disambiguation · contrast pair", "Disambiguation · character recall"]
+)
+def test_existing_disambiguation_labels_are_shortened(
+    collection: Collection, old_label: str
+) -> None:
+    note = collection.new_note(ensure_model(collection))
+    note["Text"] = "{{c1::推}}辞。"
+    note["CardKind"] = old_label
+    note.tags = ["chinese-frontier::generated"]
+    collection.add_note(note, 1)
+    cid = note.cards()[0].id
+    upgrade_presentation(collection)
+    updated = collection.get_note(note.id)
+    assert updated["CardKind"] == "Disambiguation"
+    assert updated.cards()[0].id == cid
+    assert old_label not in updated.cards()[0].question()
+    assert old_label not in updated.cards()[0].answer()

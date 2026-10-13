@@ -648,8 +648,11 @@ def upgrade_presentation(col: Collection) -> OpChanges:
             lambda m: "{{c" + m[1] + "::" + m[2].split("::", 1)[0] + "}}", note["Text"]
         )
         kind = note["CardKind"]
-        if not kind and "disambiguation" in note.tags:
-            kind = "Disambiguation · contrast pair"
+        if kind in (
+            "Disambiguation · contrast pair",
+            "Disambiguation · character recall",
+        ) or (not kind and "disambiguation" in note.tags):
+            kind = "Disambiguation"
         if text != note["Text"] or kind != note["CardKind"]:
             note["Text"] = text
             note["CardKind"] = kind
@@ -892,11 +895,7 @@ def _admit(
             _write_candidate_fields(
                 note, source, valid, rendered_text, current.evidence, bool(repair_id)
             )
-        kind = {
-            "word": "",
-            "contrast": "Disambiguation · contrast pair",
-            "characters": "Disambiguation · character recall",
-        }[valid.candidate.mode]
+        kind = "Disambiguation" if valid.candidate.mode != "word" else ""
         note["CardKind"] = kind
         audit.update(
             status="pending" if staged_character else "applied",
