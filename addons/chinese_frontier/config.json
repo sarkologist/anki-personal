@@ -15,5 +15,10 @@
     "front_field": "Front",
     "back_field": "Back",
     "initial_source_deck_names": [],
-    "initial_vocabulary_deck_names": []
+    "initial_vocabulary_deck_names": [],
+    "french": {
+        "provider": "codex",
+        "batch_size": 4,
+        "max_batches_per_day": 8
+    }
 }

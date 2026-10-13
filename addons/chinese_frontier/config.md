@@ -31,3 +31,11 @@ to `deck_id` and share its daily limit. Extra sources supply targets only. Conte
 evidence comes from `deck_id` and the explicitly selected `vocabulary_deck_ids`.
 All scopes include descendant decks. These settings sync; CLI paths and the provider are
 desktop-local. Pause before undoing a batch to prevent automatic regeneration.
+
+French settings live in the `french` object. `provider`, `codex_model`,
+`claude_model`, CLI paths, `batch_size`, `timeout_seconds`,
+`minimum_success_days`, `poll_seconds` and `max_batches_per_day` override their
+shared defaults for French only. Tools → French Frontier saves its own collection
+scope. Installer-only `initial_french_collection_path` and
+`initial_french_deck_name` initialize the exact authorized profile once.
+See [French Frontier](french/README.md) for evidence, morphology and source details.
