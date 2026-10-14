@@ -138,3 +138,12 @@ preserve card IDs/history/scheduling, reject concurrent edits, and consume no ne
 slot because this implementation keeps exactly one card per note. Originals never
 enter the repair queue. Native operations are grouped for undo. Use one desktop
 generator per collection; unsynced devices cannot share admission reservations.
+
+French context must carry the meaning with the entire target hidden, before the
+reviewer considers English or spelling cues. Describe behavior, causes, consequences
+or contrasts; generic frames such as “Il explique sa…” do not qualify. The hidden
+`Disambiguation` field records a French-only judgment and exact situational clues
+for each example, followed by the alternative-answer checks. A prefix can resolve
+remaining synonym ambiguity, but cannot compensate for missing semantic context.
+Existing generated notes are queued for repair when this policy changes; original
+notes remain untouched and repairs preserve card IDs and scheduling.

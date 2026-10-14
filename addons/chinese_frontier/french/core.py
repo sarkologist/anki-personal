@@ -15,7 +15,7 @@ from .lexicon import Form, Lexicon, normalize, tokens
 MODEL = "French Frontier"
 TAG = "french-frontier::generated"
 KEY_TAG = "french-frontier::key::"
-POLICY = 1
+POLICY = 2
 # Only these spelling-preserving -er patterns can be generalized. Dictionary
 # verification remains mandatory, including for orthographic stem changes.
 ER_ENDINGS = {

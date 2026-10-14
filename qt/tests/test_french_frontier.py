@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "addons"))
 from chinese_frontier.core import ValidationError  # noqa: E402
 from chinese_frontier.french.core import (  # noqa: E402
+    POLICY,
     Candidate,
     Knowledge,
     Target,
@@ -127,6 +128,7 @@ def test_fitting_alternative_overrides_model_approval():
     c = candidate()
     review = {
         "approved": True,
+        "context_checks": context_checks(),
         "reason": "fine",
         "search_summary": "checked verbs",
         "alternatives": [
@@ -149,6 +151,7 @@ def test_audit_requires_alternative_checks_for_every_example():
         validate_review(
             {
                 "approved": True,
+                "context_checks": context_checks(),
                 "reason": "fine",
                 "search_summary": "checked",
                 "alternatives": [],
@@ -232,6 +235,7 @@ def test_native_admission_leaves_all_existing_rows_and_history_intact(collection
     t = target()
     review = {
         "approved": True,
+        "context_checks": context_checks(),
         "reason": "Clear translation",
         "search_summary": "Checked alternatives",
         "alternatives": [
@@ -248,7 +252,7 @@ def test_native_admission_leaves_all_existing_rows_and_history_intact(collection
         t,
         c,
         {
-            "policy": 1,
+            "policy": POLICY,
             "target_key": t.key,
             "fingerprint": candidate_hash(c),
             "review": review,
@@ -362,7 +366,10 @@ def test_lefff_blocks_a_bogus_avoir_participle():
     assert ("emprunte", "emprunter", "sub:pre:1:s") in forms
 
 
-def test_generated_repair_preserves_card_ids_and_scheduling(collection):
+@pytest.mark.parametrize("outdated_policy", [False, True])
+def test_generated_repair_preserves_card_ids_and_scheduling(
+    collection, outdated_policy
+):
     from dataclasses import replace
 
     from chinese_frontier.french.collection import (
@@ -381,6 +388,7 @@ def test_generated_repair_preserves_card_ids_and_scheduling(collection):
     t = target()
     review = {
         "approved": True,
+        "context_checks": context_checks(),
         "reason": "clear",
         "search_summary": "Checked rent",
         "alternatives": [
@@ -397,7 +405,7 @@ def test_generated_repair_preserves_card_ids_and_scheduling(collection):
         t,
         c,
         {
-            "policy": 1,
+            "policy": POLICY,
             "target_key": t.key,
             "fingerprint": candidate_hash(c),
             "review": review,
@@ -405,7 +413,17 @@ def test_generated_repair_preserves_card_ids_and_scheduling(collection):
     )
     nid = admit(collection, settings, {}, [d], dictionary()).admitted[0]
     before = collection.db.all("select * from cards where nid=?", nid)
-    request_repair(collection, nid)
+    if outdated_policy:
+        import html
+        import json
+
+        note = collection.get_note(nid)
+        metadata = json.loads(html.unescape(note["Source"]))
+        metadata["policy"] = POLICY - 1
+        note["Source"] = html.escape(json.dumps(metadata))
+        collection.update_note(note)
+    else:
+        request_repair(collection, nid)
     current = snapshot(collection, settings, {}, dictionary())
     repair = current.repairs[t.key]
     assert admit(
@@ -438,6 +456,7 @@ def test_repair_does_not_overwrite_a_concurrent_edit(collection):
     t = target()
     r = {
         "approved": True,
+        "context_checks": context_checks(),
         "reason": "clear",
         "search_summary": "checked",
         "alternatives": [
@@ -454,7 +473,7 @@ def test_repair_does_not_overwrite_a_concurrent_edit(collection):
         t,
         c,
         {
-            "policy": 1,
+            "policy": POLICY,
             "target_key": t.key,
             "fingerprint": candidate_hash(c),
             "review": r,
@@ -554,13 +573,14 @@ def test_contrast_uses_one_card_and_labels_both_sides(collection):
         for i in (0, 1)
     ]
     audit = {
-        "policy": 1,
+        "policy": POLICY,
         "target_key": t.key,
         "fingerprint": candidate_hash(c),
         "review": {
             "approved": True,
             "reason": "clear",
             "search_summary": "checked counterparts",
+            "context_checks": context_checks("arrive", "arrive"),
             "alternatives": alternatives,
         },
     }
@@ -590,7 +610,7 @@ def test_review_requires_a_target_binding():
             t,
             c,
             {
-                "policy": 1,
+                "policy": POLICY,
                 "target_key": "different",
                 "fingerprint": candidate_hash(c),
                 "review": {},
@@ -697,6 +717,7 @@ def test_early_stem_is_saved_for_the_final_fallback():
                         "key": t.key,
                         "fingerprint": candidate_hash(c),
                         "approved": self.count == 4,
+                        "context_checks": context_checks(),
                         "reason": "checked",
                         "search_summary": "checked takes versus borrows",
                         "alternatives": [
@@ -872,6 +893,7 @@ def test_a_later_timeout_keeps_earlier_independent_approvals():
                             "key": t.key,
                             "fingerprint": candidate_hash(c),
                             "approved": True,
+                            "context_checks": context_checks(),
                             "reason": "checked",
                             "search_summary": "checked alternatives",
                             "alternatives": [
@@ -939,6 +961,7 @@ def test_independent_review_omits_irrelevant_vocabulary():
                         "key": t.key,
                         "fingerprint": candidate_hash(c),
                         "approved": True,
+                        "context_checks": context_checks(),
                         "reason": "checked",
                         "search_summary": "checked alternatives",
                         "alternatives": [
@@ -1371,6 +1394,7 @@ def test_review_alternatives_must_be_concrete_cloze_substitutions():
 
     review = {
         "approved": True,
+        "context_checks": context_checks(),
         "reason": "correct",
         "search_summary": "checked",
         "alternatives": [
@@ -1399,6 +1423,7 @@ def test_legacy_context_commentary_cannot_replace_checked_cloze_alternatives():
     }
     review = {
         "approved": True,
+        "context_checks": context_checks(),
         "reason": "correct",
         "search_summary": "checked",
         "alternatives": [comment],
@@ -1415,3 +1440,135 @@ def test_legacy_context_commentary_cannot_replace_checked_cloze_alternatives():
         }
     )
     assert validate_review(review, candidate())
+
+
+def context_checks(*clues):
+    return [
+        {
+            "example": i,
+            "sufficient": True,
+            "clues": [clue],
+            "reason": "French situational clue.",
+        }
+        for i, clue in enumerate(clues or ("le train",))
+    ]
+
+
+def test_translation_and_prefix_cannot_override_insufficient_french_context():
+    from chinese_frontier.french.generation import validate_review
+
+    c = Candidate(
+        "Il explique sa méfiance.",
+        "méfiance",
+        "He explains his distrust.",
+        "distrust",
+        "stem",
+        "",
+        (),
+        (),
+        (),
+        explanation="mé",
+    )
+    review = {
+        "approved": True,
+        "reason": "Translation and prefix identify the answer.",
+        "search_summary": "Checked défiance.",
+        "context_checks": [
+            {
+                "example": 0,
+                "sufficient": False,
+                "clues": [],
+                "reason": "Explains his could concern anything.",
+            }
+        ],
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "défiance",
+                "fits_context": True,
+                "fits_cloze": False,
+                "reason": "Different prefix.",
+            }
+        ],
+    }
+    assert not validate_review(review, c)
+
+
+def test_context_evidence_cannot_quote_the_hidden_answer_or_translation():
+    from chinese_frontier.french.generation import validate_review
+
+    review = {
+        "approved": True,
+        "reason": "clear",
+        "search_summary": "checked",
+        "context_checks": context_checks("borrow"),
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": True,
+                "reason": "Different meaning.",
+            }
+        ],
+    }
+    with pytest.raises(ValidationError, match="visible French"):
+        validate_review(review, candidate())
+    review["context_checks"] = context_checks("emprunte")
+    with pytest.raises(ValidationError, match="visible French"):
+        validate_review(review, candidate())
+
+
+def test_french_context_view_removes_the_whole_target_in_stem_and_contrast_modes():
+    from dataclasses import asdict, replace
+
+    from chinese_frontier.french.generation import french_contexts
+
+    stem = replace(candidate(), mode="stem", explanation="empr")
+    assert french_contexts(stem) == ["Je […] le train."]
+    contrast = replace(
+        candidate(),
+        mode="contrast",
+        contrast=asdict(candidate("loue")) | {"sentence": "Je loue le train."},
+    )
+    assert french_contexts(contrast) == ["Je […] le train.", "Je […] le train."]
+
+
+def test_every_contrast_example_requires_its_own_french_context_check():
+    from dataclasses import asdict, replace
+
+    from chinese_frontier.french.generation import validate_review
+
+    c = replace(candidate(), mode="contrast", contrast=asdict(candidate()))
+    review = {
+        "approved": True,
+        "reason": "clear",
+        "search_summary": "checked",
+        "context_checks": context_checks(),
+        "alternatives": [
+            {
+                "example": i,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": True,
+                "reason": "Different meaning.",
+            }
+            for i in (0, 1)
+        ],
+    }
+    with pytest.raises(ValidationError, match="Missing French-only"):
+        validate_review(review, c)
+    review["context_checks"] = context_checks("le train", "le train")
+    review["context_checks"][1]["sufficient"] = False
+    assert not validate_review(review, c)
+
+
+def test_french_context_view_hides_capitalized_answers_without_matching_inside_words():
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import french_contexts
+
+    c = replace(candidate(), sentence="Emprunte le train.")
+    assert french_contexts(c) == ["[…] le train."]
+    c = replace(candidate(), sentence="La contrainte du train.", answer="train")
+    assert french_contexts(c) == ["La contrainte du […]."]
