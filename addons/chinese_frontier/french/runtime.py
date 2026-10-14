@@ -32,7 +32,14 @@ from aqt.utils import tooltip
 from ..providers import GenerationStopped
 from .collection import SETTINGS, Admission, admit, request_repair, snapshot
 from .core import MODEL, POLICY, TAG
-from .generation import Draft, choose_targets, generate, rank_targets, vocabulary_floor
+from .generation import (
+    Draft,
+    choose_targets,
+    generate,
+    merge_drafts,
+    rank_targets,
+    vocabulary_floor,
+)
 from .lexicon import Lexicon, atomic_json
 from .refill import record_batch, refill_ready, reserve_batch, reset_day
 
@@ -246,7 +253,10 @@ class Controller:
         self.request_started_at = time.time()
         self.status = f"Selecting up to {count} French targets with {config.get('provider', 'codex')}…"
 
-        def with_repairs(drafts: list[Draft]) -> list[Draft]:
+        retained_drafts = drafts
+        retained_keys = {d.target.key for d in retained_drafts}
+
+        def with_repairs(generated_drafts: list[Draft]) -> list[Draft]:
             return [
                 replace(
                     d,
@@ -255,11 +265,11 @@ class Controller:
                 )
                 if d.target.key in current.repairs
                 else d
-                for d in drafts
+                for d in generated_drafts
             ]
 
         def checkpoint(drafts: list[Draft]) -> None:
-            prepared = with_repairs(drafts)
+            prepared = merge_drafts(retained_drafts, with_repairs(drafts))
 
             def save_approved() -> None:
                 if self.valid(epoch):
@@ -356,6 +366,7 @@ class Controller:
             try:
                 drafts, failures, attempted = future.result()
                 record_batch(self.state, attempted, len(drafts), config, time.time())
+                drafts = merge_drafts(retained_drafts, drafts)
                 if attempted:
                     self.state["timeout_count"] = 0
                     self.state["steady_batches"] = (
@@ -396,7 +407,7 @@ class Controller:
                     record_batch(
                         self.state,
                         request["target_count"],
-                        len(prepared),
+                        sum(d.target.key not in retained_keys for d in prepared),
                         config,
                         time.time(),
                     )

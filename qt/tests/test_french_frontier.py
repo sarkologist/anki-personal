@@ -1572,3 +1572,20 @@ def test_french_context_view_hides_capitalized_answers_without_matching_inside_w
     assert french_contexts(c) == ["[…] le train."]
     c = replace(candidate(), sentence="La contrainte du train.", answer="train")
     assert french_contexts(c) == ["La contrainte du […]."]
+
+
+def test_repair_checkpoints_retain_unadmitted_vocabulary_and_replace_stale_duplicates():
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import Draft, merge_drafts
+
+    queued = Draft(target(), candidate(), {})
+    repair = Draft(
+        Target("chaise", "NOM", "chair", "vocabulary", "chair", 1, 10),
+        candidate(),
+        {},
+        repair_note=42,
+    )
+    updated = replace(repair, old_fingerprint="new fingerprint")
+    assert merge_drafts([queued, repair], [updated]) == [queued, updated]
+    assert merge_drafts([queued], []) == [queued]

@@ -254,6 +254,11 @@ class Draft:
             raise ValidationError("Draft has no matching independent approval")
 
 
+def merge_drafts(retained: list[Draft], generated: list[Draft]) -> list[Draft]:
+    """Retain capacity-blocked approvals while checkpointing a repair batch."""
+    return list({d.target.key: d for d in retained + generated}.values())
+
+
 class GenerationTimeout(TimeoutError):
     def __init__(self, message: str, drafts: list[Draft]) -> None:
         super().__init__(message)
