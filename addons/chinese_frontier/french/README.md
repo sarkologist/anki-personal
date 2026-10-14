@@ -27,9 +27,23 @@ needed. No dictionary or corpus data is bundled in the add-on.
   extracted from Wiktionary. Preserve Wiktionary attribution and share-alike
   terms when reusing the cached data. Source sense URIs are saved on notes.
 
-These resources identify targets, not familiar vocabulary. Lower levels and
-higher everyday frequency are tried first. Each batch normally reserves one place
-for a frequent missing conjugation of an established verb. Deferred targets yield
+These resources identify targets, not familiar vocabulary. Target difficulty is
+calibrated to the 90th percentile of established content-word levels once at least
+30 such words are available, capped at B2 to resist rare advanced outliers. This
+is a vocabulary selection heuristic, not a CEFR proficiency assessment. Within
+that range, intermediate inventories select in the less frequent quarter of their
+reviewed content vocabulary, because source levels can also contain very common
+words. Candidate frequency then ranks words within that band. Explicitly obsolete
+dictionary senses are skipped. For intermediate inventories, the subscription model
+then selects suitable targets from a verified candidate pool using actual reviewed
+examples. It can omit elementary words, obvious cognates and unsuitable topics;
+selection cannot add targets outside the pool. A short selection defers omitted
+targets so subsequent batches can explore farther. Smaller inventories start
+at A1. `minimum_vocabulary_level` can override the automatic floor (1=A1 through
+6=C2; 0=automatic). Intermediate inventories reserve conjugation work for new
+conditional/subjunctive forms instead of elementary indicative drills. Smaller
+inventories normally reserve one place for a frequent missing conjugation of an
+established verb; calibrated selection can favor vocabulary instead. Deferred targets yield
 to other targets. The first dictionary sense is tried for a new lemma; legacy
 knowledge does not claim exhaustive sense coverage. Already-established headwords
 are skipped conservatively, rather than automatically introducing their other
@@ -50,6 +64,12 @@ can resolve legacy analyses. A following infinitive can distinguish a finite ver
 from a noun homograph without guessing its person or tense. Standalone present subjects can distinguish present indicative from a syncretic present subjunctive; genuine tense ambiguity remains unresolved. Reviewed negation and avoir-participle frames establish construction recognition without promoting their visible words. Unresolved person or tense readings stay ambiguous.
 This is conservative inference from sentence context, not a full linguistic parse.
 
+A separate coverage inventory records whole answers and the component words of
+phrase answers on all unsuspended cloze ordinals, including unseen, struggling and morphologically ambiguous cards. It
+prevents reintroducing an already tested headword or possible verb reading without
+granting any context knowledge. A pending card reserves its target but supplies no
+familiar context. Admission rechecks this coverage after generation as well.
+
 Regular spelling-preserving -er forms can transfer after the same form has been
 learned on two distinct verbs. Each transferred form must still exist in Lefff and
 Lexique. Irregular verbs and stem changes require specific evidence. Infinitives
@@ -63,12 +83,16 @@ intentionally conservative; unsupported constructions are deferred.
 Vocabulary cards introduce one meaning using established grammar. Conjugation
 cards introduce one dictionary-verified form of an established verb and supply its
 infinitive on the front. Complete English translations are visible beside the
-French blank. Context verb analyses are checked explicitly, including auxiliary
+French blank. Vocabulary translations must not reveal the French answer verbatim.
+Target verb morphology is resolved from its declared grammar rather than the
+ordering of dictionary readings. Context verb analyses are checked explicitly, including auxiliary
 and participle forms. Pronunciation metadata remains available in the cached
 lexicon; this version does not create pronunciation or listening cards.
 
 Independent subscription-model review checks sense, grammar, translation, known
-context, and competing words or tense readings. A fitting alternative overrides
+context, and competing substitutions for the actual clozed target. Context-verb
+analysis stays in the review rationale rather than being mislabeled as a competing
+noun completion. A fitting alternative overrides
 approval. Rewrites and known-word contrast pairs precede a stem cue fallback;
 fallbacks must leave at least two letters to recall. All modes create one card.
 Contrast and stem cards display only **Disambiguation** on both sides. The hidden

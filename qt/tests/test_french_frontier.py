@@ -1100,3 +1100,318 @@ def test_noun_homograph_without_verb_context_remains_unresolved(collection):
     add_cloze(collection, "Le {{c1::doit}}.", learned=True)
     known = snapshot(collection, {"deck_id": 1}, {}, lex).known
     assert not known.forms and not known.meanings
+
+
+def test_unseen_live_target_is_covered_without_becoming_known_context(collection):
+    from chinese_frontier.french.collection import snapshot
+
+    add_cloze(collection, "Je {{c1::prends}} le train.")
+    current = snapshot(collection, {"deck_id": 1}, {}, dictionary())
+    assert ("prendre", "VER") in current.covered
+    assert "prends|prendre|VER|ind:pre:1:s" in current.covered_forms
+    assert not current.known.surfaces and not current.known.forms
+
+
+def test_suspended_targets_do_not_establish_coverage(collection):
+    from chinese_frontier.french.collection import snapshot
+
+    add_cloze(collection, "Je {{c1::prends}} le train.", suspended=True)
+    current = snapshot(collection, {"deck_id": 1}, {}, dictionary())
+    assert not current.covered and not current.covered_forms
+
+
+def test_selection_skips_covered_lemma_even_when_morphology_is_unresolved(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon([], [Entry("homme", "NOM", 1, 100), Entry("enjeu", "NOM", 4, 10)])
+    lex.definitions = lambda entry, folder: [
+        {"sense": entry.lemma, "definition": "sense"}
+    ]
+    selected = choose_targets(
+        lex,
+        Knowledge(),
+        set(),
+        set(),
+        tmp_path,
+        1,
+        set(),
+        Event(),
+        covered={("homme", "NOM")},
+    )
+    assert [t.lemma for t in selected] == ["enjeu"]
+
+
+def test_selection_calibrates_to_upper_range_of_reviewed_content_words(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    entries = [Entry(f"known{i}", "NOM", 4, 10) for i in range(30)]
+    entries += [Entry("papa", "NOM", 1, 100), Entry("enjeu", "NOM", 4, 10)]
+    lex = Lexicon([], entries)
+    lex.definitions = lambda entry, folder: [
+        {"sense": entry.lemma, "definition": "sense"}
+    ]
+    known = Knowledge(meanings={(f"known{i}", "NOM") for i in range(30)})
+    selected = choose_targets(lex, known, set(), set(), tmp_path, 1, set(), Event())
+    assert [t.lemma for t in selected] == ["enjeu"]
+
+
+def test_covered_conjugation_is_not_reintroduced(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+
+    f = Form("doit", "devoir", "VER", "ind:pre:3:s", frequency=100)
+    lex = Lexicon([f], [])
+    known = Knowledge(meanings={("devoir", "VER")})
+    assert not choose_targets(
+        lex, known, set(), set(), tmp_path, 1, set(), Event(), covered_forms={f.key}
+    )
+
+
+def test_intermediate_selection_does_not_fall_back_to_elementary_conjugations(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+
+    lex = Lexicon(
+        [
+            Form("doit", "devoir", "VER", "ind:pre:3:s", frequency=100),
+            Form("devrait", "devoir", "VER", "cnd:pre:3:s", frequency=10),
+        ],
+        [],
+    )
+    known = Knowledge(meanings={("devoir", "VER")})
+    selected = choose_targets(
+        lex, known, set(), set(), tmp_path, 1, set(), Event(), minimum_level=4
+    )
+    assert [t.form_key for t in selected] == ["devrait|devoir|VER|cnd:pre:3:s"]
+
+
+def test_calibrated_selection_skips_very_common_words_in_high_source_levels(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    entries = [Entry(f"known{i}", "NOM", 4, 20) for i in range(30)]
+    entries += [Entry("parent", "NOM", 4, 100), Entry("contrainte", "NOM", 4, 15)]
+    lex = Lexicon([], entries)
+    lex.definitions = lambda entry, folder: [
+        {"sense": entry.lemma, "definition": "sense"}
+    ]
+    known = Knowledge(meanings={(f"known{i}", "NOM") for i in range(30)})
+    selected = choose_targets(lex, known, set(), set(), tmp_path, 1, set(), Event())
+    assert [t.lemma for t in selected] == ["contrainte"]
+
+
+def test_selection_uses_current_sense_instead_of_obsolete_first_result(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon([], [Entry("vaisseau", "NOM", 4, 10)])
+    lex.definitions = lambda entry, folder: [
+        {"sense": "obsolete", "definition": "(Vieilli) Vase."},
+        {"sense": "current", "definition": "Navire."},
+    ]
+    selected = choose_targets(
+        lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event()
+    )
+    assert [t.sense for t in selected] == ["current"]
+
+
+def test_target_ranker_cannot_introduce_a_target_outside_the_verified_pool():
+    from threading import Event
+
+    from chinese_frontier.french.generation import rank_targets
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            return {"selected": [{"key": "invented", "reason": "advanced"}]}
+
+    with pytest.raises(ValidationError, match="supplied targets"):
+        rank_targets([target()], 1, learned(), dictionary(), {}, Event(), Client())
+
+
+def test_target_ranker_uses_reviewed_examples_and_can_choose_fewer_targets():
+    from threading import Event
+
+    from chinese_frontier.french.generation import rank_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    t = target()
+    lex = Lexicon([Form("preuve", "preuve", "NOM")], [Entry("preuve", "NOM", 4, 10)])
+    known = Knowledge()
+    known.learn("preuve", lex, 123, "Le juge demande une preuve.")
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            assert "Le juge demande une preuve." in prompt
+            assert "longer example sentence" in prompt
+            return {"selected": [{"key": t.key, "reason": "Useful new meaning."}]}
+
+    assert rank_targets([t], 4, known, lex, {}, Event(), Client()) == [t]
+
+
+def test_vocabulary_uses_declared_form_instead_of_first_dictionary_reading():
+    from dataclasses import replace
+
+    lex = dictionary()
+    lex = Lexicon(
+        [f for forms in lex.forms.values() for f in forms]
+        + [
+            Form("cherche", "chercher", "VER", "imp:pre:2:s"),
+            Form("cherche", "chercher", "VER", "ind:pre:1:s"),
+        ],
+        [],
+    )
+    known = learned("je", "le", "train", "regarde", "parle")
+    c = replace(
+        candidate(),
+        sentence="Je cherche le train.",
+        answer="cherche",
+        translation="I'm looking for the train.",
+    )
+    t = Target("chercher", "VER", "look-for", "vocabulary", "look for", 1, 10)
+    valid = validate(c, t, known, lex)
+    assert valid.form_key == "cherche|chercher|VER|ind:pre:1:s"
+
+
+def test_vocabulary_target_form_is_separate_from_context_verb_form():
+    from dataclasses import replace
+
+    lex = Lexicon(
+        [f for forms in dictionary().forms.values() for f in forms]
+        + [
+            Form("cherche", "chercher", "VER", "ind:pre:1:s"),
+            Form("cherche", "chercher", "VER", "ind:pre:3:s"),
+            Form("regarde", "regarder", "VER", "ind:pre:3:s"),
+            Form("parle", "parler", "VER", "ind:pre:3:s"),
+            Form("pense", "penser", "VER", "ind:pre:1:s"),
+            Form("qu'", "que", "CON"),
+            Form("il", "il", "PRO"),
+        ],
+        [],
+    )
+    known = learned("je", "le", "train", "regarde", "parle")
+    for word in ("pense", "qu'", "il"):
+        known.learn(word, lex, 1, word)
+    for word, lemma in (("regarde", "regarder"), ("parle", "parler")):
+        known.learn(
+            word, lex, 2, "Il " + word, form_key=word + "|" + lemma + "|VER|ind:pre:3:s"
+        )
+    c = replace(
+        candidate(),
+        sentence="Je pense qu'il cherche le train.",
+        answer="cherche",
+        grammar=("ind:pre:1:s", "ind:pre:3:s"),
+        uses=(
+            {
+                "surface": "pense",
+                "lemma": "penser",
+                "pos": "VER",
+                "features": "ind:pre:1:s",
+            },
+        ),
+    )
+    t = Target("chercher", "VER", "look-for", "vocabulary", "look for", 1, 10)
+    assert validate(c, t, known, lex).form_key == "cherche|chercher|VER|ind:pre:3:s"
+
+
+def test_words_inside_a_live_phrase_cloze_are_covered_without_granting_context(
+    collection,
+):
+    from chinese_frontier.french.collection import snapshot
+
+    add_cloze(collection, "Je {{c1::prends le train}}.")
+    current = snapshot(collection, {"deck_id": 1}, {}, dictionary())
+    assert ("prendre", "VER") in current.covered and ("train", "NOM") in current.covered
+    assert not current.known.surfaces
+
+
+def test_vocabulary_answer_is_not_revealed_verbatim_by_english_translation():
+    c = Candidate(
+        "Je prends le train.",
+        "train",
+        "I take the train.",
+        "train",
+        "word",
+        "",
+        (
+            {
+                "surface": "prends",
+                "lemma": "prendre",
+                "pos": "VER",
+                "features": "ind:pre:1:s",
+            },
+        ),
+        ("ind:pre:1:s",),
+        (),
+    )
+    t = Target("train", "NOM", "train", "vocabulary", "train", 1, 10)
+    with pytest.raises(ValidationError, match="reveals the French answer"):
+        validate(c, t, learned("je", "le", "prends"), dictionary())
+
+
+def test_review_alternatives_must_be_concrete_cloze_substitutions():
+    from chinese_frontier.french.generation import validate_review
+
+    review = {
+        "approved": True,
+        "reason": "correct",
+        "search_summary": "checked",
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "explique: indicative / subjunctive",
+                "fits_context": True,
+                "fits_cloze": True,
+                "reason": "Context verb analysis.",
+            }
+        ],
+    }
+    with pytest.raises(ValidationError, match="concrete cloze substitution"):
+        validate_review(review, candidate())
+
+
+def test_legacy_context_commentary_cannot_replace_checked_cloze_alternatives():
+    from chinese_frontier.french.generation import validate_review
+
+    comment = {
+        "example": 0,
+        "answer": "context: indicative",
+        "fits_context": True,
+        "fits_cloze": False,
+        "reason": "Not a cloze completion.",
+    }
+    review = {
+        "approved": True,
+        "reason": "correct",
+        "search_summary": "checked",
+        "alternatives": [comment],
+    }
+    with pytest.raises(ValidationError, match="Missing alternatives"):
+        validate_review(review, candidate())
+    review["alternatives"].append(
+        {
+            "example": 0,
+            "answer": "loue",
+            "fits_context": False,
+            "fits_cloze": False,
+            "reason": "rent is not borrow",
+        }
+    )
+    assert validate_review(review, candidate())

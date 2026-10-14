@@ -259,16 +259,30 @@ def validate(
     ):
         raise ValidationError("Use plain French and a complete English translation")
     answer = normalize(c.answer)
-    form = next(
-        (
-            f
-            for f in lexicon.analyses(answer)
-            if f.lemma == target.lemma
-            and f.pos == target.pos
-            and (not target.form_key or f.key == target.form_key)
-        ),
-        None,
-    )
+    if target.kind == "vocabulary" and re.search(
+        r"(?<![\w'’])" + re.escape(answer) + r"(?![\w'’])", normalize(c.translation)
+    ):
+        raise ValidationError("English translation reveals the French answer")
+    forms = [
+        f
+        for f in lexicon.analyses(answer)
+        if f.lemma == target.lemma
+        and f.pos == target.pos
+        and (not target.form_key or f.key == target.form_key)
+    ]
+    if target.kind == "vocabulary" and target.pos == "VER" and forms:
+        context_features = {
+            use.get("features") for use in c.uses if use.get("pos") == "VER"
+        }
+        target_features = set(c.grammar) - context_features
+        declared = [
+            f for f in forms if f.features in (target_features or set(c.grammar))
+        ]
+        if len({f.key for f in declared}) > 1:
+            raise ValidationError("Declare the target's exact verb morphology")
+        if declared:
+            forms = declared
+    form = next(iter(forms), None)
     if not form:
         raise ValidationError("Answer is not a dictionary-verified target form")
     spans = list(

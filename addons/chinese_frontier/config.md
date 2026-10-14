@@ -45,3 +45,7 @@ refill cycle, with automatic same-day retries after `refill_retry_seconds` (1800
 The allowance adapts to remaining native slots and observed approval yield.
 `max_batches_per_day` (32) applies to French only when `auto_fill` is false; the
 Chinese daily ceiling remains unchanged. No retry changes quality requirements.
+
+- French `minimum_vocabulary_level`: 0 estimates target difficulty from reviewed
+  content words; 1–6 explicitly select an A1–C2 vocabulary floor. Already covered
+  targets remain excluded, and context evidence/quality checks are unchanged.

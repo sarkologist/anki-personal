@@ -32,7 +32,7 @@ from aqt.utils import tooltip
 from ..providers import GenerationStopped
 from .collection import SETTINGS, Admission, admit, request_repair, snapshot
 from .core import MODEL, POLICY, TAG
-from .generation import Draft, choose_targets, generate
+from .generation import Draft, choose_targets, generate, rank_targets, vocabulary_floor
 from .lexicon import Lexicon, atomic_json
 from .refill import record_batch, refill_ready, reserve_batch, reset_day
 
@@ -243,6 +243,7 @@ class Controller:
             if item.get("vocabulary") == version
             and time.time() < item.get("retry_after", 0)
         }
+        self.request_started_at = time.time()
         self.status = f"Selecting up to {count} French targets with {config.get('provider', 'codex')}…"
 
         def with_repairs(drafts: list[Draft]) -> list[Draft]:
@@ -286,6 +287,21 @@ class Controller:
             mw.taskman.run_on_main(update)
 
         def work() -> Any:
+            ranking_deferred = {}
+
+            def select(pool: list[Any], size: int) -> list[Any]:
+                selected = rank_targets(
+                    pool, size, current.known, lexicon, config, stop
+                )
+                if len(selected) < size:
+                    selected_keys = {t.key for t in selected}
+                    ranking_deferred.update(
+                        (t.key, "Target does not match demonstrated difficulty")
+                        for t in pool
+                        if t.key not in selected_keys
+                    )
+                return selected
+
             repairs = {
                 key: item
                 for key, item in current.repairs.items()
@@ -302,12 +318,23 @@ class Controller:
                     count - len(repair_targets),
                     deferred,
                     stop,
+                    covered=current.covered,
+                    covered_forms=current.covered_forms,
+                    minimum_level=int(config.get("minimum_vocabulary_level", 0)),
+                    ranker=select
+                    if vocabulary_floor(
+                        lexicon,
+                        current.known,
+                        int(config.get("minimum_vocabulary_level", 0)),
+                    )
+                    >= 3
+                    else None,
                 )
                 if current.slots and len(repair_targets) < count
                 else []
             )
             if not targets:
-                return [], {}, 0
+                return [], ranking_deferred, 1 if ranking_deferred else 0
             generated_drafts, failures = generate(
                 targets,
                 current.known,
@@ -319,7 +346,7 @@ class Controller:
             )
             return (
                 with_repairs(generated_drafts),
-                failures,
+                {**ranking_deferred, **failures},
                 len(targets),
             )
 

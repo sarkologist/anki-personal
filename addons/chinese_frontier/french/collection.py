@@ -171,6 +171,8 @@ class Snapshot:
     budgets: list[DeckBudget]
     ignore_review_limit: bool
     repairs: dict[str, tuple[int, str, Target]] = field(default_factory=dict)
+    covered: set[tuple[str, str]] = field(default_factory=set)
+    covered_forms: set[str] = field(default_factory=set)
 
     @property
     def slots(self) -> int:
@@ -192,6 +194,8 @@ def snapshot(
     keys = set()
     represented = set()
     repairs = {}
+    covered = set()
+    covered_forms = set()
     logs = {}
     for cid, stamp, ease in col.db.all(
         "select r.cid,r.id,r.ease from revlog r join cards c on c.id=r.cid "
@@ -234,21 +238,17 @@ def snapshot(
                         pass
         if metadata.get("key") in repairs:
             continue
-        if (
-            queue == -1
-            or not reps
-            or any(
+        if queue == -1 or model["type"] != 1:
+            continue
+        established = (
+            bool(reps)
+            and not any(
                 t.casefold() in ("leech", "french-frontier::exclude")
                 for t in tags.split()
             )
-        ):
-            continue
-        if successful_days(logs.get(cid, []), timing.next_day_at) < max(
-            1, int(config.get("minimum_success_days", 2))
-        ):
-            continue
-        if model["type"] != 1:
-            continue
+            and successful_days(logs.get(cid, []), timing.next_day_at)
+            >= max(1, int(config.get("minimum_success_days", 2)))
+        )
         qfmt = model["tmpls"][0]["qfmt"]
         for name, value in values.items():
             if not re.search(
@@ -288,6 +288,28 @@ def snapshot(
                         if normalize(answer) == normalize(metadata.get("answer", ""))
                         else ""
                     )
+                selected_keys = (
+                    (form_key,)
+                    if form_key
+                    else contextual_analyses(value, match, lexicon)
+                )
+                if not partial:
+                    analyses = lexicon.analyses(answer)
+                    if selected_keys:
+                        analyses = [f for f in analyses if f.key in selected_keys]
+                    # Coverage only prevents duplicate introductions. Ambiguous,
+                    # unseen or struggling cards still cannot establish context.
+                    covered.update((f.lemma, f.pos) for f in analyses)
+                    covered_forms.update(f.key for f in analyses if f.pos == "VER")
+                    # A phrase cloze also reserves its component words, without
+                    # treating visible words elsewhere as tested or as known.
+                    if len(tokens(answer)) > 1:
+                        for word in tokens(answer):
+                            parts = lexicon.analyses(word)
+                            covered.update((f.lemma, f.pos) for f in parts)
+                            covered_forms.update(f.key for f in parts if f.pos == "VER")
+                if not established:
+                    continue
                 context = plain_text(CLOZE.sub(lambda m: m[2].split("::", 1)[0], value))
                 known.learn(
                     answer,
@@ -344,6 +366,8 @@ def snapshot(
         budgets,
         bool(col.get_config("newCardsIgnoreReviewLimit", False)),
         repairs,
+        covered,
+        covered_forms,
     )
 
 
@@ -417,10 +441,15 @@ def admit(
                 ):
                     raise ValidationError("Context evidence changed during generation")
             valid = validate(draft.candidate, draft.target, current.known, lexicon)
-            if (
-                not draft.repair_note
-                and draft.target.kind == "vocabulary"
-                and (draft.target.lemma, draft.target.pos) in current.known.meanings
+            if not draft.repair_note and (
+                (
+                    draft.target.kind == "vocabulary"
+                    and (draft.target.lemma, draft.target.pos) in current.covered
+                )
+                or (
+                    draft.target.kind == "conjugation"
+                    and draft.target.form_key in current.covered_forms
+                )
             ):
                 continue
         except (ValidationError, KeyError, TypeError) as exc:
