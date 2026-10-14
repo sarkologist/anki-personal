@@ -23,7 +23,7 @@ from ..core import (
 )
 from .core import KEY_TAG, MODEL, POLICY, TAG, Knowledge, Target, validate
 from .generation import Draft
-from .lexicon import Lexicon, normalize
+from .lexicon import Lexicon, normalize, tokens
 
 SETTINGS = "frenchFrontier"
 FIELDS = (
@@ -139,6 +139,25 @@ def contextual_analyses(value: str, match: Any, lexicon: Lexicon) -> tuple[str, 
         ]
         if participles:
             return tuple(participles)
+    # A following infinitive identifies a finite verb, even when the subject
+    # is a noun phrase and the dictionary also lists a nominal homograph.
+    # This selects POS only: syncretic verb persons/tenses remain unresolved.
+    after = plain_text(
+        CLOZE.sub(lambda m: m[2].split("::", 1)[0], value[match.end() :])
+    )
+    following = tokens(after)
+    if following and after.lstrip().casefold().startswith(following[0]):
+        if any(
+            f.pos == "VER" and f.features == "inf"
+            for f in lexicon.analyses(following[0])
+        ):
+            finite = [
+                f.key
+                for f in forms
+                if f.pos == "VER" and f.features.startswith(("ind:", "sub:", "cnd:"))
+            ]
+            if finite:
+                return tuple(finite)
     return tuple(f.key for f in forms) if hint else ()
 
 

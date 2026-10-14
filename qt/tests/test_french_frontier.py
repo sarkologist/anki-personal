@@ -1048,3 +1048,55 @@ def test_settings_status_shows_active_phase_elapsed_time_and_saved_work(monkeypa
     text = controller.status_text()
     assert "Checking alternative answers" in text
     assert "15s elapsed" in text and "approved card" in text
+
+
+def test_infinitive_complement_recognizes_reviewed_verb_despite_noun_homograph(
+    collection,
+):
+    from chinese_frontier.french.collection import snapshot
+
+    lex = Lexicon(
+        [
+            Form("doit", "devoir", "VER", "ind:pre:3:s"),
+            Form("doit", "doit", "NOM", "m:s"),
+            Form("être", "être", "VER", "inf"),
+        ],
+        [],
+    )
+    add_cloze(collection, "Ce document {{c1::doit}} être signé.", learned=True)
+    known = snapshot(collection, {"deck_id": 1}, {}, lex).known
+    assert "doit|devoir|VER|ind:pre:3:s" in known.forms
+    assert ("devoir", "VER") in known.meanings
+    assert ("doit", "NOM") not in known.meanings
+
+
+def test_infinitive_complement_does_not_resolve_competing_verb_readings(collection):
+    from chinese_frontier.french.collection import snapshot
+
+    lex = Lexicon(
+        [
+            Form("vit", "vivre", "VER", "ind:pre:3:s"),
+            Form("vit", "voir", "VER", "ind:pas:3:s"),
+            Form("vit", "vit", "NOM", "m:s"),
+            Form("venir", "venir", "VER", "inf"),
+        ],
+        [],
+    )
+    add_cloze(collection, "Cet homme {{c1::vit}} venir le train.", learned=True)
+    known = snapshot(collection, {"deck_id": 1}, {}, lex).known
+    assert not known.forms and not known.meanings
+
+
+def test_noun_homograph_without_verb_context_remains_unresolved(collection):
+    from chinese_frontier.french.collection import snapshot
+
+    lex = Lexicon(
+        [
+            Form("doit", "devoir", "VER", "ind:pre:3:s"),
+            Form("doit", "doit", "NOM", "m:s"),
+        ],
+        [],
+    )
+    add_cloze(collection, "Le {{c1::doit}}.", learned=True)
+    known = snapshot(collection, {"deck_id": 1}, {}, lex).known
+    assert not known.forms and not known.meanings

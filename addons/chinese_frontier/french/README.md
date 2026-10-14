@@ -46,7 +46,8 @@ not used as evidence; this user's French deck consists of cloze notes.
 Accents, apostrophes, expressions and inflections are preserved. Each learned
 surface, lemma/POS and exact verb form is tracked separately. Explicit adjacent
 subjects, supplied infinitive hints and an immediately preceding avoir auxiliary
-can resolve legacy analyses. Standalone present subjects can distinguish present indicative from a syncretic present subjunctive; genuine tense ambiguity remains unresolved. Reviewed negation and avoir-participle frames establish construction recognition without promoting their visible words. Unresolved person or tense readings stay ambiguous.
+can resolve legacy analyses. A following infinitive can distinguish a finite verb
+from a noun homograph without guessing its person or tense. Standalone present subjects can distinguish present indicative from a syncretic present subjunctive; genuine tense ambiguity remains unresolved. Reviewed negation and avoir-participle frames establish construction recognition without promoting their visible words. Unresolved person or tense readings stay ambiguous.
 This is conservative inference from sentence context, not a full linguistic parse.
 
 Regular spelling-preserving -er forms can transfer after the same form has been
