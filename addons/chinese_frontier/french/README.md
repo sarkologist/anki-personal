@@ -77,7 +77,23 @@ never display that field. Model review is not an exhaustive ambiguity proof.
 
 Source and presentation hashes bind approved drafts to their actual content.
 Admission rechecks current evidence, settings, duplicates and native budgets.
-Prepared drafts persist through account errors, pauses and profile reopenings.
+Approved drafts are checkpointed immediately after each independent review and
+persist through later request failures, pauses and profile reopenings. A later
+timeout admits already approved work and automatically retries remaining slots
+with a smaller batch after two minutes; repeated timeouts back off up to fifteen
+minutes. Two completed batches restore the configured batch size. Account errors
+retain the thirty-minute backoff.
+
+Generation retains the complete established-word inventory but omits duplicate
+non-verb morphology/headword lists and inadmissible target forms. Audit prompts
+contain the actual sentence dependencies, tested contrast/verb-meaning examples
+and their exact relevant forms, rather than repeating the entire inventory. Every
+used evidence record remains bound to the draft and rechecked at admission.
+Independent review criteria and deterministic quality checks remain unchanged.
+Tools → French Frontier displays the writing/audit phase, attempt and elapsed
+seconds, disables duplicate checks while busy, and records the last thirty model
+call timings, input sizes and errors in profile state. Complete prompts and response bodies are not retained
+in this timing log.
 Automatic refill continues while native admission slots remain. Its cycle allowance
 adapts to the remaining slots and observed proposal approval rate, up to 32 batches
 per cycle. An exhausted cycle or no eligible targets pauses for 30 minutes, then

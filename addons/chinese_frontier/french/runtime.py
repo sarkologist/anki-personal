@@ -52,6 +52,7 @@ class Controller:
         self.state: dict[str, Any] = {}
         self.status = "Choose a French deck to start."
         self.last_version = ""
+        self.request_started_at = 0.0
 
     def config(self) -> dict[str, Any]:
         base = mw.addonManager.getConfig(MODULE) or {}
@@ -118,9 +119,23 @@ class Controller:
             return
         message = str(exc)[:2000]
         previous = self.state.get("last_error")
-        self.state.update(last_error=message, retry_after=time.time() + 1800)
-        self.status = message
+        delay = 1800
+        if isinstance(exc, TimeoutError):
+            attempts = self.state.get("timeout_count", 0) + 1
+            self.state.update(
+                timeout_count=attempts,
+                steady_batches=0,
+                retry_batch_size=max(1, self.state.get("active_batch_size", 1) // 2),
+            )
+            delay = min(900, 120 * 2 ** min(attempts - 1, 3))
+        self.request_started_at = 0
+        self.state.update(last_error=message, retry_after=time.time() + delay)
+        self.status = f"{message}. Automatic retry in {delay // 60} minutes."
         self.save()
+        if mw:
+            mw.progress.single_shot(
+                delay * 1000, lambda: self.tick() if self.valid(epoch) else None
+            )
         if previous != message:
             tooltip("French Frontier: " + message, period=10000)
 
@@ -136,6 +151,10 @@ class Controller:
         self.busy = True
         epoch = self.epoch
         config = self.config()
+        if self.state.get("retry_batch_size"):
+            config["batch_size"] = min(
+                int(config.get("batch_size", 4)), self.state["retry_batch_size"]
+            )
         stop = self.stop
         if self.lexicon is None:
             self.status = "Loading French vocabulary and morphology…"
@@ -209,11 +228,13 @@ class Controller:
             self.busy = False
             return
         reserve_batch(self.state)
-        self.save()
         count = min(
             max(current.slots, len(current.repairs)),
             max(1, min(8, int(config.get("batch_size", 4)))),
         )
+        self.state["active_batch_size"] = count
+        self.state["active_request"] = None
+        self.save()
         version = current.known.version
         self.last_version = version
         deferred = {
@@ -222,7 +243,47 @@ class Controller:
             if item.get("vocabulary") == version
             and time.time() < item.get("retry_after", 0)
         }
-        self.status = f"Generating up to {count} French cards with {config.get('provider', 'codex')}…"
+        self.status = f"Selecting up to {count} French targets with {config.get('provider', 'codex')}…"
+
+        def with_repairs(drafts: list[Draft]) -> list[Draft]:
+            return [
+                replace(
+                    d,
+                    repair_note=current.repairs[d.target.key][0],
+                    old_fingerprint=current.repairs[d.target.key][1],
+                )
+                if d.target.key in current.repairs
+                else d
+                for d in drafts
+            ]
+
+        def checkpoint(drafts: list[Draft]) -> None:
+            prepared = with_repairs(drafts)
+
+            def save_approved() -> None:
+                if self.valid(epoch):
+                    self.state["drafts"] = [d.as_dict() for d in prepared]
+                    self.save()
+
+            mw.taskman.run_on_main(save_approved)
+
+        def report(event: dict[str, Any]) -> None:
+            def update() -> None:
+                if not self.valid(epoch):
+                    return
+                self.state["active_request"] = event
+                self.request_started_at = (
+                    0 if event["finished"] else event["started_at"]
+                )
+                self.status = f"{event['phase']} (attempt {event['attempt']}/3)"
+                if event["finished"]:
+                    calls = self.state.setdefault("model_calls", [])
+                    calls.append(event)
+                    self.state["model_calls"] = calls[-30:]
+                    self.status += f" finished in {event['elapsed_seconds']}s."
+                self.save()
+
+            mw.taskman.run_on_main(update)
 
         def work() -> Any:
             repairs = {
@@ -248,19 +309,16 @@ class Controller:
             if not targets:
                 return [], {}, 0
             generated_drafts, failures = generate(
-                targets, current.known, lexicon, config, stop
+                targets,
+                current.known,
+                lexicon,
+                config,
+                stop,
+                on_approved=checkpoint,
+                progress=report,
             )
             return (
-                [
-                    replace(
-                        d,
-                        repair_note=repairs[d.target.key][0],
-                        old_fingerprint=repairs[d.target.key][1],
-                    )
-                    if d.target.key in repairs
-                    else d
-                    for d in generated_drafts
-                ],
+                with_repairs(generated_drafts),
                 failures,
                 len(targets),
             )
@@ -271,6 +329,13 @@ class Controller:
             try:
                 drafts, failures, attempted = future.result()
                 record_batch(self.state, attempted, len(drafts), config, time.time())
+                if attempted:
+                    self.state["timeout_count"] = 0
+                    self.state["steady_batches"] = (
+                        self.state.get("steady_batches", 0) + 1
+                    )
+                    if self.state["steady_batches"] >= 2:
+                        self.state.pop("retry_batch_size", None)
                 items = self.state.setdefault("deferred", {})
                 for key, reason in failures.items():
                     old = items.get(key, {})
@@ -298,7 +363,20 @@ class Controller:
                     if attempted:
                         mw.progress.single_shot(5000, self.tick)
             except Exception as exc:
+                prepared = [Draft.read(d) for d in self.state.get("drafts", [])]
+                request = self.state.get("active_request") or {}
+                if request.get("target_count"):
+                    record_batch(
+                        self.state,
+                        request["target_count"],
+                        len(prepared),
+                        config,
+                        time.time(),
+                    )
                 self.failed(exc, epoch)
+                if prepared:
+                    self.busy = True
+                    self.apply(prepared, settings, config, lexicon, stop, epoch)
 
         mw.taskman.run_in_background(work, generated, uses_collection=False)
 
@@ -355,6 +433,16 @@ class Controller:
             ),
         )
 
+    def status_text(self) -> str:
+        text = self.status
+        started = getattr(self, "request_started_at", 0)
+        if self.busy and started:
+            text += f" ({max(0, int(time.time() - started))}s elapsed)"
+        prepared = len(self.state.get("drafts", []))
+        if self.busy and prepared:
+            text += f"; {prepared} approved card(s) saved."
+        return text
+
     def settings_dialog(self) -> None:
         if not mw or not mw.col:
             return
@@ -396,13 +484,19 @@ class Controller:
         form.addRow("Generator", provider)
         form.addRow("Model", model)
         layout.addLayout(form)
-        status = QLabel(self.status)
+        status = QLabel(self.status_text())
         status.setWordWrap(True)
         layout.addWidget(status)
         refresh = QTimer(dialog)
-        qconnect(refresh.timeout, lambda: status.setText(self.status))
+
+        def refresh_status() -> None:
+            status.setText(self.status_text())
+            check.setEnabled(not self.busy)
+
+        qconnect(refresh.timeout, refresh_status)
         refresh.start(1000)
         check = QPushButton("Check now")
+        check.setEnabled(not self.busy)
         qconnect(check.clicked, lambda: self.tick(force=True))
         layout.addWidget(check)
         buttons = QDialogButtonBox(

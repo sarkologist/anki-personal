@@ -839,3 +839,212 @@ def test_explicit_daily_budget_is_respected_when_auto_fill_is_disabled():
     assert not refill_ready(
         state, 1, 3, 0, {"auto_fill": False, "max_batches_per_day": 8}, 100
     )
+
+
+def test_a_later_timeout_keeps_earlier_independent_approvals():
+    import json
+    from dataclasses import asdict
+    from threading import Event
+
+    from chinese_frontier.french.generation import candidate_hash, generate
+
+    c, t = candidate(), target()
+    other = Target("chaise", "NOM", "chair", "vocabulary", "chair", 1, 10)
+
+    class Client:
+        calls = 0
+
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            self.calls += 1
+            if self.calls == 1:
+                return json.loads(
+                    json.dumps(
+                        {"proposals": [{"key": t.key, "candidates": [asdict(c)]}]}
+                    )
+                )
+            if self.calls == 2:
+                return {
+                    "reviews": [
+                        {
+                            "key": t.key,
+                            "fingerprint": candidate_hash(c),
+                            "approved": True,
+                            "reason": "checked",
+                            "search_summary": "checked alternatives",
+                            "alternatives": [
+                                {
+                                    "example": 0,
+                                    "answer": "prends",
+                                    "fits_context": False,
+                                    "fits_cloze": False,
+                                    "reason": "different meaning",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            raise TimeoutError("codex generation timed out")
+
+    saved = []
+    events = []
+    with pytest.raises(TimeoutError) as error:
+        generate(
+            [t, other],
+            learned("je", "le", "train", "regarde", "parle"),
+            dictionary(),
+            {},
+            Event(),
+            Client(),
+            on_approved=saved.extend,
+            progress=events.append,
+        )
+    assert len(getattr(error.value, "drafts", [])) == 1
+    error.value.drafts[0].verify()
+    assert len(saved) == 1
+    assert events[-1]["finished"] and "timed out" in events[-1]["error"]
+    assert events[-1]["target_count"] == 2
+    assert events[-1]["elapsed_seconds"] >= 0
+
+
+def test_independent_review_omits_irrelevant_vocabulary():
+    import json
+    from dataclasses import asdict
+    from threading import Event
+
+    from chinese_frontier.french.generation import candidate_hash, generate
+
+    c, t = candidate(), target()
+    known = learned("je", "le", "train", "regarde", "parle")
+    known.surfaces["unrelatedword"] = [{"card": 999, "context": "An unrelated source."}]
+    prompts = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return json.loads(
+                    json.dumps(
+                        {"proposals": [{"key": t.key, "candidates": [asdict(c)]}]}
+                    )
+                )
+            return {
+                "reviews": [
+                    {
+                        "key": t.key,
+                        "fingerprint": candidate_hash(c),
+                        "approved": True,
+                        "reason": "checked",
+                        "search_summary": "checked alternatives",
+                        "alternatives": [
+                            {
+                                "example": 0,
+                                "answer": "prends",
+                                "fits_context": False,
+                                "fits_cloze": False,
+                                "reason": "different meaning",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+    drafts, failures = generate([t], known, dictionary(), {}, Event(), Client())
+    assert drafts and not failures
+    assert "unrelatedword" not in prompts[1]
+    assert '"train"' in prompts[1]
+
+
+def test_reviewed_source_selection_is_relevant_and_does_not_invent_evidence():
+    from chinese_frontier.french.generation import source_evidence
+
+    records = [
+        {"card": 1, "context": "Il est gentil."},
+        {"card": 2, "context": "Le déjeuner est délicieux."},
+    ]
+    known = Knowledge(surfaces={"est": records})
+    selected = source_evidence(
+        known, {"est", "unknown"}, "Le déjeuner était délicieux.", 1
+    )
+    assert selected == {"est": [records[1]]}
+
+
+def test_conjugation_review_receives_tested_meaning_evidence():
+    from chinese_frontier.french.generation import verb_evidence
+
+    lex = dictionary()
+    known = learned("prends")
+    t = Target(
+        "prendre",
+        "VER",
+        "established",
+        "conjugation",
+        "take",
+        1,
+        10,
+        "prenions|prendre|VER|ind:imp:1:p",
+    )
+    assert verb_evidence(t, known, lex) == {"prends": known.surfaces["prends"]}
+
+
+def test_timeout_automatically_retries_soon_with_a_smaller_batch(monkeypatch):
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import runtime
+
+    scheduled = []
+    monkeypatch.setattr(
+        runtime,
+        "mw",
+        SimpleNamespace(
+            progress=SimpleNamespace(
+                single_shot=lambda delay, callback: scheduled.append((delay, callback))
+            )
+        ),
+    )
+    monkeypatch.setattr(runtime, "tooltip", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtime.time, "time", lambda: 100)
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.valid = lambda epoch: True
+    controller.save = lambda: None
+    controller.state = {"active_batch_size": 3}
+    controller.busy = True
+    controller.failed(TimeoutError("codex generation timed out"), 0)
+    assert not controller.busy
+    assert controller.state["retry_after"] == 220
+    assert controller.state["retry_batch_size"] == 1
+    assert "Automatic retry" in controller.status
+    assert scheduled[0][0] == 120000
+
+
+def test_non_timeout_account_errors_keep_the_longer_backoff(monkeypatch):
+    from chinese_frontier.french import runtime
+
+    monkeypatch.setattr(runtime, "tooltip", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtime.time, "time", lambda: 100)
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.valid = lambda epoch: True
+    controller.save = lambda: None
+    controller.state = {"active_batch_size": 3}
+    controller.failed(RuntimeError("subscription unavailable"), 0)
+    assert controller.state["retry_after"] == 1900
+    assert "retry_batch_size" not in controller.state
+
+
+def test_settings_status_shows_active_phase_elapsed_time_and_saved_work(monkeypatch):
+    from chinese_frontier.french import runtime
+
+    monkeypatch.setattr(runtime.time, "time", lambda: 115)
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.status = "Checking alternative answers (attempt 2/3)"
+    controller.request_started_at = 100
+    controller.busy = True
+    controller.state = {"drafts": [{}]}
+    text = controller.status_text()
+    assert "Checking alternative answers" in text
+    assert "15s elapsed" in text and "approved card" in text
