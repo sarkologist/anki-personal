@@ -161,3 +161,9 @@ PYTHONPATH=pylib:out/pylib:out/qt out/pyenv/bin/python -m pytest \
 Tests use isolated native Anki collections and cover ordinal-specific vocabulary,
 word segmentation, new-card and review budgets, source changes during generation,
 idempotency, transaction rollback, undo, and schedule-preserving sentence repair.
+
+## French
+
+The same installed add-on now also exposes Tools → French Frontier. It adds
+French vocabulary and conjugation notes using independent settings and evidence,
+and preserves existing French cards. See [French Frontier](french/README.md).

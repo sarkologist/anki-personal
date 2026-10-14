@@ -31,3 +31,21 @@ to `deck_id` and share its daily limit. Extra sources supply targets only. Conte
 evidence comes from `deck_id` and the explicitly selected `vocabulary_deck_ids`.
 All scopes include descendant decks. These settings sync; CLI paths and the provider are
 desktop-local. Pause before undoing a batch to prevent automatic regeneration.
+
+French settings live in the `french` object. `provider`, `codex_model`,
+`claude_model`, CLI paths, `batch_size`, `timeout_seconds`,
+`minimum_success_days` and `poll_seconds` override their
+shared defaults for French only. Tools → French Frontier saves its own collection
+scope. Installer-only `initial_french_collection_path` and
+`initial_french_deck_name` initialize the exact authorized profile once.
+See [French Frontier](french/README.md) for evidence, morphology and source details.
+
+French `auto_fill` defaults to true. `max_batches_per_cycle` (32) bounds each
+refill cycle, with automatic same-day retries after `refill_retry_seconds` (1800).
+The allowance adapts to remaining native slots and observed approval yield.
+`max_batches_per_day` (32) applies to French only when `auto_fill` is false; the
+Chinese daily ceiling remains unchanged. No retry changes quality requirements.
+
+- French `minimum_vocabulary_level`: 0 estimates target difficulty from reviewed
+  content words; 1–6 explicitly select an A1–C2 vocabulary floor. Already covered
+  targets remain excluded, and context evidence/quality checks are unchanged.

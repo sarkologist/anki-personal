@@ -15,6 +15,9 @@ def _install() -> None:
         from .runtime import install
 
         install()
+        from .french.runtime import install as install_french
+
+        install_french()
 
 
 _install()
