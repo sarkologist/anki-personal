@@ -19,6 +19,9 @@
     "french": {
         "provider": "codex",
         "batch_size": 4,
-        "max_batches_per_day": 8
+        "max_batches_per_day": 32,
+        "auto_fill": true,
+        "max_batches_per_cycle": 32,
+        "refill_retry_seconds": 1800
     }
 }

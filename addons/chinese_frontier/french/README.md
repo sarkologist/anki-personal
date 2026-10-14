@@ -78,7 +78,14 @@ never display that field. Model review is not an exhaustive ambiguity proof.
 Source and presentation hashes bind approved drafts to their actual content.
 Admission rechecks current evidence, settings, duplicates and native budgets.
 Prepared drafts persist through account errors, pauses and profile reopenings.
-Retries back off, and generation has a daily batch ceiling. All existing new cards,
+Automatic refill continues while native admission slots remain. Its cycle allowance
+adapts to the remaining slots and observed proposal approval rate, up to 32 batches
+per cycle. An exhausted cycle or no eligible targets pauses for 30 minutes, then
+retries automatically on the same day. Deferred targets still back off, and account
+errors still pause generation. Statistics and cooldowns survive profile reopening;
+a new Anki day resets them. This bounds each burst of subscription work without
+making a low fixed daily cap prevent filling the deck. Ten remains an admission
+ceiling, not a guarantee that ten acceptable cards exist. All existing new cards,
 including buried cards, reserve capacity. Deck/ancestor limits, today overrides
 and the review-limit switch share the Chinese workflow's conservative accounting.
 Vocabulary and conjugation consume the same French new-card budget; missed days

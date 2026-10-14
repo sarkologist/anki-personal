@@ -34,6 +34,7 @@ from .collection import SETTINGS, Admission, admit, request_repair, snapshot
 from .core import MODEL, POLICY, TAG
 from .generation import Draft, choose_targets, generate
 from .lexicon import Lexicon, atomic_json
+from .refill import record_batch, refill_ready, reserve_batch, reset_day
 
 MODULE = __name__.split(".")[0]
 
@@ -173,8 +174,7 @@ class Controller:
     ) -> None:
         if not self.valid(epoch):
             return
-        if self.state.get("day") != current.day:
-            self.state.update(day=current.day, batches=0)
+        reset_day(self.state, current.day)
         self.last_version = current.known.version
         try:
             drafts = [Draft.read(d) for d in self.state.get("drafts", [])]
@@ -188,17 +188,27 @@ class Controller:
             self.status = "No French admission slots: pending new cards, reviews or daily limits reserve capacity."
             self.busy = False
             return
-        if self.state.get("batches", 0) >= max(
-            1, int(config.get("max_batches_per_day", 8))
+        if not refill_ready(
+            self.state,
+            current.day,
+            current.slots,
+            len(current.repairs),
+            config,
+            time.time(),
         ):
-            self.status = "French generation resumes next Anki day."
+            self.status = (
+                "French refill is cooling down; it will retry automatically."
+                if config.get("auto_fill", True)
+                else "French generation resumes next Anki day."
+            )
+            self.save()
             self.busy = False
             return
         if not current.known.surfaces:
             self.status = "Study existing French cards to establish context vocabulary."
             self.busy = False
             return
-        self.state["batches"] = self.state.get("batches", 0) + 1
+        reserve_batch(self.state)
         self.save()
         count = min(
             max(current.slots, len(current.repairs)),
@@ -236,26 +246,31 @@ class Controller:
                 else []
             )
             if not targets:
-                return [], {}
+                return [], {}, 0
             generated_drafts, failures = generate(
                 targets, current.known, lexicon, config, stop
             )
-            return [
-                replace(
-                    d,
-                    repair_note=repairs[d.target.key][0],
-                    old_fingerprint=repairs[d.target.key][1],
-                )
-                if d.target.key in repairs
-                else d
-                for d in generated_drafts
-            ], failures
+            return (
+                [
+                    replace(
+                        d,
+                        repair_note=repairs[d.target.key][0],
+                        old_fingerprint=repairs[d.target.key][1],
+                    )
+                    if d.target.key in repairs
+                    else d
+                    for d in generated_drafts
+                ],
+                failures,
+                len(targets),
+            )
 
         def generated(future: Any) -> None:
             if not self.valid(epoch):
                 return
             try:
-                drafts, failures = future.result()
+                drafts, failures, attempted = future.result()
+                record_batch(self.state, attempted, len(drafts), config, time.time())
                 items = self.state.setdefault("deferred", {})
                 for key, reason in failures.items():
                     old = items.get(key, {})
@@ -280,7 +295,8 @@ class Controller:
                 else:
                     self.busy = False
                     self.status = "French targets deferred; retries follow vocabulary growth or backoff."
-                    mw.progress.single_shot(5000, self.tick)
+                    if attempted:
+                        mw.progress.single_shot(5000, self.tick)
             except Exception as exc:
                 self.failed(exc, epoch)
 

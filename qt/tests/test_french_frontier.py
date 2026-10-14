@@ -722,3 +722,120 @@ def test_early_stem_is_saved_for_the_final_fallback():
     )
     assert not failures
     assert len(drafts) == 1 and drafts[0].candidate.mode == "stem"
+
+
+def test_automatic_refill_continues_after_the_old_daily_cap(monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import runtime
+
+    scheduled = []
+    monkeypatch.setattr(
+        runtime,
+        "mw",
+        SimpleNamespace(
+            taskman=SimpleNamespace(
+                run_in_background=lambda work, done, **kwargs: scheduled.append(
+                    (work, done)
+                )
+            )
+        ),
+    )
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.valid = lambda epoch: True
+    controller.save = lambda: None
+    controller.state = {"day": 1, "batches": 8}
+    controller.busy = True
+    current = SimpleNamespace(
+        day=1,
+        slots=3,
+        repairs={},
+        known=SimpleNamespace(version="known", surfaces={"je": []}),
+    )
+    controller.scanned(
+        current, {}, {"auto_fill": True, "max_batches_per_day": 8}, None, Event(), 0
+    )
+    assert len(scheduled) == 1
+    assert controller.state["batches"] == 9
+
+
+def test_refill_budget_adapts_to_approval_yield():
+    from chinese_frontier.french.refill import refill_ready
+
+    high = {"day": 1, "attempted": 100, "approved": 80}
+    low = {"day": 1, "attempted": 100, "approved": 5}
+    assert refill_ready(high, 1, 10, 0, {}, 100)
+    assert refill_ready(low, 1, 10, 0, {}, 100)
+    assert low["cycle_limit"] > high["cycle_limit"]
+    assert low["cycle_limit"] == 32
+
+
+def test_refill_retries_automatically_on_the_same_day_after_cooldown():
+    import json
+
+    from chinese_frontier.french.refill import refill_ready
+
+    state = {"day": 1, "batches": 32, "cycle_batches": 4, "cycle_limit": 4}
+    config = {"refill_retry_seconds": 60}
+    assert not refill_ready(state, 1, 3, 0, config, 100)
+    state = json.loads(json.dumps(state))  # Profile reopen keeps the cooldown.
+    assert not refill_ready(state, 1, 3, 0, config, 159)
+    assert refill_ready(state, 1, 3, 0, config, 160)
+    assert state["batches"] == 32
+    assert state["cycle_batches"] == 0 and state["refill_at"] == 0
+
+
+def test_refill_budget_shrinks_when_fewer_slots_need_filling():
+    from chinese_frontier.french.refill import refill_ready
+
+    one = {"day": 1, "attempted": 100, "approved": 80}
+    ten = dict(one)
+    assert refill_ready(one, 1, 1, 0, {}, 100)
+    assert refill_ready(ten, 1, 10, 0, {}, 100)
+    assert one["cycle_limit"] < ten["cycle_limit"]
+
+
+def test_no_slots_or_repairs_never_requests_a_refill():
+    from chinese_frontier.french.refill import refill_ready
+
+    state = {"day": 1, "batches": 8}
+    assert not refill_ready(state, 1, 0, 0, {}, 100)
+    assert "cycle_limit" not in state
+
+
+def test_new_anki_day_clears_refill_cooldown_and_yield_statistics():
+    from chinese_frontier.french.refill import refill_ready
+
+    state = {
+        "day": 1,
+        "batches": 32,
+        "attempted": 100,
+        "approved": 1,
+        "cycle_batches": 32,
+        "cycle_limit": 32,
+        "refill_at": 1000,
+    }
+    assert refill_ready(state, 2, 3, 0, {}, 100)
+    assert state["batches"] == state["attempted"] == state["approved"] == 0
+    assert state["refill_at"] == 0
+
+
+def test_no_eligible_targets_do_not_consume_model_batches_or_spin():
+    from chinese_frontier.french.refill import record_batch, refill_ready, reserve_batch
+
+    state = {"day": 1, "batches": 8}
+    assert refill_ready(state, 1, 3, 0, {}, 100)
+    reserve_batch(state)
+    record_batch(state, 0, 0, {}, 100)
+    assert state["batches"] == 8 and state["cycle_batches"] == 0
+    assert not refill_ready(state, 1, 3, 0, {}, 101)
+
+
+def test_explicit_daily_budget_is_respected_when_auto_fill_is_disabled():
+    from chinese_frontier.french.refill import refill_ready
+
+    state = {"day": 1, "batches": 8}
+    assert not refill_ready(
+        state, 1, 3, 0, {"auto_fill": False, "max_batches_per_day": 8}, 100
+    )
