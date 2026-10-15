@@ -41,6 +41,7 @@ class State:
     refill_at: float = 0
     model_calls: list[dict[str, Any]] = field(default_factory=list)
     active_request: dict[str, Any] | None = None
+    telemetry: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> State:
@@ -66,6 +67,7 @@ class State:
             refill_at=float(data.get("refill_at", 0)),
             model_calls=data.get("model_calls", [])[-30:],
             active_request=data.get("active_request"),
+            telemetry=data.get("telemetry", {}),
         )
 
     def save(self, path: Path) -> None:
@@ -85,6 +87,7 @@ class State:
                     **{name: getattr(self, name) for name in REFILL_COUNTERS},
                     "model_calls": self.model_calls,
                     "active_request": self.active_request,
+                    "telemetry": self.telemetry,
                 },
                 ensure_ascii=False,
                 indent=2,
