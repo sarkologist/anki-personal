@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import refill
 from .generation import GENERATION_POLICY, Draft
 
 
@@ -21,6 +22,9 @@ def vocabulary_version(known: dict[str, str]) -> str:
     ).hexdigest()
 
 
+REFILL_COUNTERS = ("attempted", "approved", "cycle_batches", "cycle_limit", "refill_at")
+
+
 @dataclass
 class State:
     drafts: list[Draft] = field(default_factory=list)
@@ -29,6 +33,11 @@ class State:
     batches: int = 0
     last_error: str = ""
     retry_after: float = 0
+    attempted: int = 0
+    approved: int = 0
+    cycle_batches: int = 0
+    cycle_limit: int = 0
+    refill_at: float = 0
 
     @classmethod
     def load(cls, path: Path) -> State:
@@ -46,6 +55,12 @@ class State:
             int(data.get("batches", 0)),
             str(data.get("last_error", "")),
             float(data.get("retry_after", 0)),
+            **{
+                name: int(data.get(name, 0))
+                for name in REFILL_COUNTERS
+                if name != "refill_at"
+            },
+            refill_at=float(data.get("refill_at", 0)),
         )
 
     def save(self, path: Path) -> None:
@@ -62,6 +77,7 @@ class State:
                     "batches": self.batches,
                     "last_error": self.last_error,
                     "retry_after": self.retry_after,
+                    **{name: getattr(self, name) for name in REFILL_COUNTERS},
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -71,9 +87,23 @@ class State:
         temporary.replace(path)
 
     def reset_day(self, day: int) -> None:
-        if day != self.day:
-            self.day = day
-            self.batches = 0
+        refill.reset_day(vars(self), day)
+
+    def can_refill(
+        self, slots: int, repairs: int, config: dict[str, Any], now: float
+    ) -> bool:
+        return refill.refill_ready(vars(self), self.day, slots, repairs, config, now)
+
+    def reserve_batch(self) -> None:
+        refill.reserve_batch(vars(self))
+
+    def record_batch(
+        self, attempted: int, approved: int, config: dict[str, Any], now: float
+    ) -> None:
+        refill.record_batch(vars(self), attempted, approved, config, now)
+
+    def pause_refill(self, config: dict[str, Any], now: float) -> None:
+        refill.pause_cycle(vars(self), config, now)
 
     def can_try(self, key: str, vocabulary: str) -> bool:
         item = self.deferred.get(key)

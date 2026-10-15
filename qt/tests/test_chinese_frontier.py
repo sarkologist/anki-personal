@@ -1142,3 +1142,170 @@ def test_existing_disambiguation_labels_are_shortened(
     assert updated.cards()[0].id == cid
     assert old_label not in updated.cards()[0].question()
     assert old_label not in updated.cards()[0].answer()
+
+
+@pytest.fixture
+def refill_controller(monkeypatch):
+    from types import SimpleNamespace
+
+    from chinese_frontier import runtime
+
+    scheduled = []
+    monkeypatch.setattr(
+        runtime,
+        "mw",
+        SimpleNamespace(
+            taskman=SimpleNamespace(
+                run_in_background=lambda work, done, **kwargs: scheduled.append(
+                    (work, done)
+                )
+            )
+        ),
+    )
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.valid = lambda epoch: True
+    controller.save_state = lambda: None
+    controller.schedule_next = lambda: None
+    controller.state = State(day=1, batches=8)
+    controller.busy = True
+    controller.stop = Event()
+    controller.dictionary_folder = Path("/tmp")
+    current = runtime.Snapshot(
+        1,
+        {"这": "this"},
+        {},
+        [source()],
+        {3: [DeckBudget(3, 10, 0, 8, 150, 0, 10)]},
+        False,
+        set(),
+        set(),
+    )
+    return controller, current, scheduled
+
+
+def test_chinese_automatically_refills_beyond_legacy_daily_cap(refill_controller):
+    controller, current, scheduled = refill_controller
+    controller.scanned(current, {}, {"max_batches_per_day": 8}, 0)
+    assert len(scheduled) == 1
+    assert controller.state.batches == 9
+
+
+def test_chinese_does_not_generate_when_native_slots_are_reserved(refill_controller):
+    controller, current, scheduled = refill_controller
+    current.budgets[3] = [DeckBudget(3, 10, 0, 10, 150, 0, 10)]
+    controller.scanned(current, {}, {}, 0)
+    assert not scheduled
+    assert controller.state.batches == 8
+    assert "No admission slots" in controller.status
+
+
+def test_chinese_manual_daily_cap_still_applies_when_auto_fill_is_disabled(
+    refill_controller,
+):
+    controller, current, scheduled = refill_controller
+    controller.scanned(current, {}, {"auto_fill": False, "max_batches_per_day": 8}, 0)
+    assert not scheduled and controller.state.batches == 8
+
+
+def test_deferred_chinese_targets_cool_down_without_spending_a_batch(refill_controller):
+    from chinese_frontier.state import vocabulary_version
+
+    controller, current, scheduled = refill_controller
+    controller.state.batches = 0
+    controller.state.defer(source().key, "ambiguous", vocabulary_version(current.known))
+    controller.scanned(current, {}, {}, 0)
+    assert not scheduled and controller.state.batches == 0
+    assert controller.state.refill_at > 0
+
+
+def test_chinese_refill_statistics_and_cooldown_survive_restart(tmp_path):
+    path = tmp_path / "state.json"
+    state = State(day=1, batches=8)
+    assert state.can_refill(2, 0, {}, 100)
+    state.reserve_batch()
+    state.record_batch(4, 1, {}, 100)
+    state.pause_refill({}, 100)
+    state.save(path)
+    restored = State.load(path)
+    assert not restored.can_refill(2, 0, {}, 101)
+    assert (restored.batches, restored.attempted, restored.approved) == (9, 4, 1)
+    assert restored.can_refill(2, 0, {}, 1900)
+    restored.reset_day(2)
+    assert restored.batches == restored.attempted == restored.approved == 0
+    assert restored.refill_at == 0
+
+
+def test_rejected_chinese_repair_audits_do_not_inflate_approval_yield(
+    refill_controller, lexicon
+):
+    from concurrent.futures import Future
+
+    from chinese_frontier.generation import GenerationResult
+
+    controller, current, scheduled = refill_controller
+    controller.apply = lambda *args: None
+    accepted = audited_draft(source(), candidate())
+    rejected = replace(accepted, audit_only=True)
+    future = Future()
+    future.set_result(GenerationResult([accepted, rejected], {}, lexicon))
+    controller.generated(future, {}, {}, "v1", 0, attempted=4)
+    assert controller.state.attempted == 4 and controller.state.approved == 1
+
+
+def test_chinese_runtime_resumes_on_the_same_day_after_cycle_cooldown(
+    refill_controller, monkeypatch
+):
+    from chinese_frontier import runtime
+
+    controller, current, scheduled = refill_controller
+    controller.state.cycle_limit = controller.state.cycle_batches = 1
+    monkeypatch.setattr(runtime.time, "time", lambda: 100)
+    controller.scanned(current, {}, {"refill_retry_seconds": 60}, 0)
+    assert not scheduled and controller.state.refill_at == 160
+    monkeypatch.setattr(runtime.time, "time", lambda: 160)
+    controller.scanned(current, {}, {}, 0)
+    assert len(scheduled) == 1 and controller.state.batches == 9
+
+
+def test_old_chinese_state_can_refill_without_losing_deferred_targets(tmp_path):
+    path = tmp_path / "state.json"
+    old = {
+        "version": 1,
+        "generation_policy": GENERATION_POLICY,
+        "day": 1,
+        "batches": 8,
+        "deferred": {
+            "key": {"reason": "ambiguous", "vocabulary": "v1", "retry_after": 9999}
+        },
+    }
+    path.write_text(json.dumps(old))
+    state = State.load(path)
+    assert state.can_refill(2, 0, {"max_batches_per_day": 8}, 100)
+    assert state.batches == 8 and state.attempted == state.approved == 0
+    assert state.deferred == old["deferred"]
+
+
+def test_chinese_refill_stages_character_siblings_to_fill_exactly_ten_cards(
+    collection, lexicon
+):
+    settings = {"enabled": True, "deck_id": 1}
+    collection.set_config(SETTINGS_KEY, settings)
+    deck = collection.decks.get(1)
+    deck["newLimit"] = 10
+    collection.decks.update_dict(deck)
+    for word in ("有", "一", "页"):
+        add_word(collection, word, established=True)
+    for _ in range(8):
+        add_word(collection, "保留")
+    add_word(collection, "出租车", suspended=True)
+    target = next(
+        s for s in snapshot(collection, settings, {}).sources if s.word == "出租车"
+    )
+    c = Candidate(
+        "出租车有一页。", "The taxi has one page.", "chū zū chē", "", "characters"
+    )
+    result = admit(collection, settings, {}, [audited_draft(target, c)], lexicon)
+    assert len(result.admitted) == 1 and len(result.remaining) == 1
+    assert len(collection.get_note(result.admitted[0]).cards()) == 2
+    assert collection.db.scalar("select count(*) from cards where queue=0") == 10
+    assert snapshot(collection, settings, {}).slots(1) == 0

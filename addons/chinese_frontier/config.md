@@ -14,7 +14,12 @@ editing the add-on's `meta.json` configuration, or the defaults before packaging
 - `minimum_success_days`: Good/Easy study days since the last Again required for
   a context word; default 2, minimum 1.
 - `poll_seconds`: periodic rescan; default 300, minimum 30.
-- `max_batches_per_day`: subscription-use ceiling; default 8. Failed attempts count.
+- `auto_fill`: true by default; refill unused native new-card slots automatically.
+- `max_batches_per_cycle`: maximum batches before cooldown; default 32, range 1–128.
+  The actual allowance adapts to remaining capacity and observed approval yield.
+- `refill_retry_seconds`: same-day cycle cooldown; default 1800, minimum 30.
+- `max_batches_per_day`: default 8, used only when `auto_fill` is false. Failed
+  attempts count. Auto-fill uses bounded cycles instead of a fixed daily cutoff.
 - `known_words`: optional whole Chinese words explicitly declared familiar. Empty
   by default. These are overrides, not automatically inferred common vocabulary.
 - `front_field`, `back_field`: source Basic fields; defaults `Front` and `Back`.
@@ -43,8 +48,9 @@ See [French Frontier](french/README.md) for evidence, morphology and source deta
 French `auto_fill` defaults to true. `max_batches_per_cycle` (32) bounds each
 refill cycle, with automatic same-day retries after `refill_retry_seconds` (1800).
 The allowance adapts to remaining native slots and observed approval yield.
-`max_batches_per_day` (32) applies to French only when `auto_fill` is false; the
-Chinese daily ceiling remains unchanged. No retry changes quality requirements.
+`max_batches_per_day` (32) applies to French only when `auto_fill` is false.
+Chinese uses the same adaptive refill policy with its own persisted counters.
+No retry changes quality requirements.
 
 - French `minimum_vocabulary_level`: 0 estimates target difficulty from reviewed
   content words; 1–6 explicitly select an A1–C2 vocabulary floor. Already covered
