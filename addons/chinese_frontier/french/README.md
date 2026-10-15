@@ -147,3 +147,15 @@ for each example, followed by the alternative-answer checks. A prefix can resolv
 remaining synonym ambiguity, but cannot compensate for missing semantic context.
 Existing generated notes are queued for repair when this policy changes; original
 notes remain untouched and repairs preserve card IDs and scheduling.
+
+## Preparation
+
+Both languages use the shared approved-note buffer (`buffer_notes`, default 4,
+0 disables it). Preparation may run when today's slots are full; native admission
+limits and all source, context, conjugation and ambiguity checks still apply.
+Writers receive a compact, relevant selection of proven vocabulary and reviewed
+usage, plus persistent rejection lessons. Examples do not establish additional words.
+French can fill a missing context analysis only when exactly one dictionary reading
+has direct learned-form evidence. Explicit model annotations are never overwritten;
+ambiguous or unproven forms still require valid annotations and independent review.
+No new paradigm or grammar permission is inferred by annotation completion.

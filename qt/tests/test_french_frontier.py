@@ -1589,3 +1589,264 @@ def test_repair_checkpoints_retain_unadmitted_vocabulary_and_replace_stale_dupli
     updated = replace(repair, old_fingerprint="new fingerprint")
     assert merge_drafts([queued, repair], [updated]) == [queued, updated]
     assert merge_drafts([queued], []) == [queued]
+
+
+def test_approved_french_draft_roundtrips_in_memory_without_a_disk_reload():
+    from dataclasses import asdict, replace
+
+    from chinese_frontier.french.generation import Draft, candidate_hash
+
+    c = replace(
+        candidate(),
+        uses=(
+            {
+                "surface": "emprunte",
+                "lemma": "emprunter",
+                "pos": "VER",
+                "features": "ind:pre:1:s",
+            },
+        ),
+    )
+    t = target()
+    review = {
+        "approved": True,
+        "reason": "clear",
+        "search_summary": "checked",
+        "context_checks": context_checks(),
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": True,
+                "reason": "Different meaning.",
+            }
+        ],
+    }
+    draft = Draft(
+        t,
+        c,
+        {
+            "policy": POLICY,
+            "target_key": t.key,
+            "fingerprint": candidate_hash(c),
+            "review": review,
+        },
+        repair_note=42,
+        old_fingerprint="unchanged",
+    )
+    draft.verify()
+    restored = Draft.read(draft.as_dict())
+    restored.verify()
+    assert restored == draft
+    assert restored.candidate.uses == c.uses
+    assert asdict(restored.target) == asdict(t)
+
+
+def test_cached_french_draft_does_not_abort_a_no_capacity_scan(monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import runtime
+    from chinese_frontier.french.generation import Draft
+
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.valid = lambda epoch: True
+    controller.state = {
+        "day": 1,
+        "drafts": [Draft(target(), candidate(), {}).as_dict()],
+    }
+    controller.busy = True
+    controller.save = lambda: None
+    controller.failed = lambda error, epoch: pytest.fail(str(error))
+    monkeypatch.setattr(runtime, "mw", SimpleNamespace())
+    current = SimpleNamespace(
+        day=1, slots=0, repairs={}, known=SimpleNamespace(version="v1")
+    )
+    controller.scanned(current, {}, {}, None, Event(), 0)
+    assert not controller.busy
+    assert "No French admission slots" in controller.status
+
+
+@pytest.mark.parametrize("field", ["uses", "grammar", "constructions"])
+def test_malformed_model_annotations_remain_rejected(field):
+    import json
+    from dataclasses import asdict
+
+    raw = json.loads(json.dumps(asdict(candidate())))
+    raw[field] = "not an annotation array"
+    with pytest.raises(ValidationError, match="invalid annotations"):
+        Candidate.read(raw)
+
+
+def test_context_annotation_reuses_only_proven_readings_and_leaves_claims_to_validation():
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import annotate_context
+
+    lex = dictionary()
+    lex = Lexicon(
+        [f for forms in lex.forms.values() for f in forms]
+        + [
+            Form("pages", "page", "NOM", "f:p"),
+            Form("pages", "pager", "VER", "ind:pre:2:s"),
+        ],
+        [],
+    )
+    known = learned("je", "regarde", "parle")
+    known.learn("pages", lex, 1, "Deux cents pages.", form_key="pages|page|NOM|f:p")
+    c = replace(candidate(), sentence="Je emprunte 200 pages.")
+    fixed = annotate_context(c, known, lex)
+    assert fixed.uses == (
+        {"surface": "pages", "lemma": "page", "pos": "NOM", "features": "f:p"},
+    )
+    validate(fixed, target(), known, lex)
+    wrong = replace(
+        c,
+        uses=(
+            {
+                "surface": "pages",
+                "lemma": "pager",
+                "pos": "VER",
+                "features": "ind:pre:2:s",
+            },
+        ),
+    )
+    with pytest.raises(ValidationError, match="Unlearned context verb"):
+        validate(annotate_context(wrong, known, lex), target(), known, lex)
+
+
+def test_french_writer_receives_proven_usage_and_previous_lessons():
+    import json
+    from threading import Event
+
+    from chinese_frontier.french.generation import generate
+
+    known = learned("je", "le", "train", "regarde", "parle")
+    known.surfaces["train"] = [
+        {"card": 99, "context": "Je prends le train. Railway travel."}
+    ]
+    for i in range(1000):
+        known.surfaces[f"irrelevant{i}"] = [
+            {"card": i, "context": "Unrelated example."}
+        ]
+    payloads = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            payloads.append(json.loads(prompt[prompt.index('{"targets"') :]))
+            return {"proposals": []}
+
+    drafts, failures = generate(
+        [target()],
+        known,
+        dictionary(),
+        {},
+        Event(),
+        Client(),
+        lessons={target().key: {"reason": "Use railway context."}},
+    )
+    assert not drafts
+    assert len(failures) == 1
+    assert max(len(p["knowledge"]["established_context"]) for p in payloads) <= 160
+    assert all(p["context_evidence"]["train"][0]["card"] == 99 for p in payloads)
+    assert all(
+        p["previous_lessons"][target().key]["reason"] == "Use railway context."
+        for p in payloads
+    )
+
+
+def test_french_buffer_prepares_at_zero_capacity_and_stops_when_full(
+    monkeypatch,
+):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import runtime
+    from chinese_frontier.french.generation import Draft
+
+    scheduled = []
+    monkeypatch.setattr(
+        runtime,
+        "mw",
+        SimpleNamespace(
+            taskman=SimpleNamespace(
+                run_in_background=lambda work, done, **kwargs: scheduled.append(work)
+            )
+        ),
+    )
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.valid = lambda epoch: True
+    controller.save = lambda: None
+    controller.state = {"day": 1, "drafts": []}
+    controller.folder = Path("/tmp")
+    controller.busy = True
+    known = learned("je")
+    current = SimpleNamespace(
+        day=1,
+        slots=0,
+        repairs={},
+        known=known,
+        represented=set(),
+        keys=set(),
+        covered=set(),
+        covered_forms=set(),
+    )
+    controller.scanned(current, {}, {"buffer_notes": 1}, dictionary(), Event(), 0)
+    assert len(scheduled) == 1 and current.slots == 0
+    controller.state["drafts"] = [Draft(target(), candidate(), {}).as_dict()]
+    scheduled.clear()
+    controller.scanned(current, {}, {"buffer_notes": 1}, dictionary(), Event(), 0)
+    assert not scheduled and not controller.busy
+
+
+def test_context_annotation_never_guesses_between_two_proven_readings():
+    from chinese_frontier.french.generation import annotate_context
+
+    lex = Lexicon(
+        [Form("est", "être", "VER", "ind:pre:3:s"), Form("est", "est", "NOM", "m:s")],
+        [],
+    )
+    known = Knowledge()
+    known.learn("est", lex, 1, "Il est ici.")
+    c = Candidate("Il est ici.", "ici", "He is here.", "here", "word", "", (), (), ())
+    assert annotate_context(c, known, lex).uses == ()
+
+
+def test_french_empty_proposal_reason_guides_next_retrieval_and_is_persisted():
+    import json
+    from threading import Event
+
+    from chinese_frontier.french.generation import generate
+
+    known = learned("je")
+    known.surfaces.update(
+        {f"a{i}": [{"card": i, "context": "ordinary"}] for i in range(400)}
+    )
+    known.surfaces["paiement"] = [{"card": 999, "context": "payment"}]
+    payloads = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            payloads.append(json.loads(prompt[prompt.index('{"targets"') :]))
+            return {
+                "proposals": [
+                    {
+                        "key": target().key,
+                        "candidates": [],
+                        "reason": "Need payment context.",
+                    }
+                ]
+            }
+
+    drafts, failures = generate([target()], known, dictionary(), {}, Event(), Client())
+    assert not drafts
+    assert "paiement" not in payloads[0]["knowledge"]["established_context"]
+    assert "paiement" in payloads[1]["knowledge"]["established_context"]
+    assert json.loads(failures[target().key])["reason"] == "Need payment context."

@@ -23,9 +23,11 @@
         "auto_fill": true,
         "max_batches_per_cycle": 32,
         "refill_retry_seconds": 1800,
-        "minimum_vocabulary_level": 0
+        "minimum_vocabulary_level": 0,
+        "buffer_notes": 4
     },
     "auto_fill": true,
     "max_batches_per_cycle": 32,
-    "refill_retry_seconds": 1800
+    "refill_retry_seconds": 1800,
+    "buffer_notes": 4
 }

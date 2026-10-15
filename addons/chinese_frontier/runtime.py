@@ -46,6 +46,7 @@ from .collection import (
 from .core import GENERATED_TAG, admission_slots
 from .generation import GenerationResult, generate
 from .lexicon import Lexicon
+from .preparation import buffer_size, preparation_needed, previous_lessons, read_lesson
 from .providers import GenerationStopped
 from .state import State, vocabulary_version
 
@@ -211,13 +212,15 @@ class Controller:
             self.status = "No established vocabulary yet. Study existing cards or mark familiar words in add-on configuration."
             return
         available = max((current.slots(did) for did in current.budgets), default=0)
-        if not available and not current.repairs:
+        queued = sum(
+            not d.audit_only and d.additional_cards > 0 for d in self.state.drafts
+        )
+        needed = preparation_needed(available, queued, config)
+        if not needed and not current.repairs:
             self.status = "No admission slots: today's limits, pending new cards, or reviews reserve the capacity."
             self.busy = False
             return
-        if not self.state.can_refill(
-            available, len(current.repairs), config, time.time()
-        ):
+        if not self.state.can_refill(needed, len(current.repairs), config, time.time()):
             self.status = (
                 "Chinese refill is cooling down; it will retry automatically."
                 if config.get("auto_fill", True)
@@ -231,6 +234,7 @@ class Controller:
         count = max(1, min(12, int(config.get("batch_size", 4))))
         sources = []
         reservations: dict[int, int] = {}
+        ahead = max(0, buffer_size(config) - queued)
         words: set[str] = set()
         for source in current.sources:
             if (
@@ -246,10 +250,11 @@ class Controller:
                 >= admission_slots(
                     [budget], ignore_review_limit=current.ignore_review_limit
                 )
+                + ahead
                 for budget in budgets
             ):
                 continue
-            if not repairing and current.slots(source.deck_id) <= 0:
+            if not repairing and current.slots(source.deck_id) + ahead <= 0:
                 continue
             sources.append(source)
             words.add(source.word)
@@ -280,12 +285,53 @@ class Controller:
         self.status = f"Generating sentences for {len(sources)} words with {config.get('provider', 'codex')}…"
         stop = self.stop
         folder = self.dictionary_folder
+        retained = list(self.state.drafts)
+
+        def checkpoint(approved: list[Any]) -> None:
+            prepared = {d.source.key: d for d in retained + approved}
+
+            def save_approved() -> None:
+                if self.valid(epoch):
+                    self.state.drafts = list(prepared.values())
+                    self.save_state()
+
+            mw.taskman.run_on_main(save_approved)
+
+        def report(event: dict[str, Any]) -> None:
+            def update() -> None:
+                if not self.valid(epoch):
+                    return
+                self.state.active_request = event
+                self.status = f"{event['phase']} (attempt {event['attempt']}/3)"
+                if event["finished"]:
+                    self.state.model_calls = (self.state.model_calls + [event])[-30:]
+                self.save_state()
+
+            mw.taskman.run_on_main(update)
+
+        lessons = previous_lessons(self.state.deferred, (s.key for s in sources))
         # Unlike a collection QueryOp, long CLI generation must not prevent
         # syncing, closing a profile, or studying cards.
         mw.taskman.run_in_background(
-            lambda: generate(sources, current.known, config, folder, stop),
+            lambda: generate(
+                sources,
+                current.known,
+                config,
+                folder,
+                stop,
+                lessons=lessons,
+                contexts=getattr(current, "contexts", {}),
+                on_approved=checkpoint,
+                progress=report,
+            ),
             lambda future: self.generated(
-                future, settings, config, version, epoch, attempted=len(sources)
+                future,
+                settings,
+                config,
+                version,
+                epoch,
+                attempted=len(sources),
+                retained_keys=prepared_keys,
             ),
             uses_collection=False,
         )
@@ -299,13 +345,18 @@ class Controller:
         epoch: int,
         *,
         attempted: int,
+        retained_keys: set[str] | None = None,
     ) -> None:
         if not self.valid(epoch):
             return
         try:
             result: GenerationResult = future.result()
         except Exception as exc:
-            self.state.record_batch(attempted, 0, config, time.time())
+            approved = sum(
+                not d.audit_only and d.source.key not in (retained_keys or set())
+                for d in self.state.drafts
+            )
+            self.state.record_batch(attempted, approved, config, time.time())
             self.failed(exc, epoch)
             return
         self.state.record_batch(
@@ -316,7 +367,9 @@ class Controller:
         )
         for key, reason in result.deferred.items():
             self.state.defer(key, reason, version)
-        self.state.drafts.extend(result.drafts)
+        self.state.drafts = list(
+            {d.source.key: d for d in self.state.drafts + result.drafts}.values()
+        )
         self.state.last_error = ""
         self.state.retry_after = 0
         self.save_state()
@@ -370,7 +423,7 @@ class Controller:
             self.status += (
                 f" Updated {len(result.updated)} notes, keeping existing schedules."
             )
-        if not result.remaining:
+        if result.admitted or result.updated or not result.remaining:
             self.schedule_next()
 
     def schedule_next(self) -> None:
@@ -490,7 +543,9 @@ class Controller:
             for draft in self.state.drafts[:4]:
                 text += f"\n\n{draft.source.word}: {draft.candidate.sentence}\n{draft.candidate.translation}"
             for item in list(self.state.deferred.values())[:4]:
-                text += "\nDeferred: " + str(item.get("reason", ""))
+                text += "\nDeferred: " + str(
+                    read_lesson(item.get("reason", "")).get("reason", "")
+                )
             status.setPlainText(text)
 
         update_status()

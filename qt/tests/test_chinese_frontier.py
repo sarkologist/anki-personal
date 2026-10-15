@@ -454,7 +454,8 @@ def test_generation_requires_independent_language_approval(
         Event(),
     )
     assert result.drafts == []
-    assert result.deferred[source().key] == "unnatural"
+    assert json.loads(result.deferred[source().key])["reason"] == "unnatural"
+    assert json.loads(result.deferred[source().key])["alternatives"]
 
 
 def test_failed_render_verification_rolls_back_admission(
@@ -1309,3 +1310,177 @@ def test_chinese_refill_stages_character_siblings_to_fill_exactly_ten_cards(
     assert len(collection.get_note(result.admitted[0]).cards()) == 2
     assert collection.db.scalar("select count(*) from cards where queue=0") == 10
     assert snapshot(collection, settings, {}).slots(1) == 0
+
+
+def test_chinese_buffer_prepares_at_zero_capacity_and_stops_when_full(
+    refill_controller,
+):
+    controller, current, scheduled = refill_controller
+    current.budgets[3] = [DeckBudget(3, 10, 0, 10, 150, 0, 10)]
+    controller.scanned(current, {}, {"buffer_notes": 1}, 0)
+    assert len(scheduled) == 1
+    assert current.slots(3) == 0
+    controller.state.drafts = [audited_draft(source(), candidate())]
+    scheduled.clear()
+    controller.scanned(current, {}, {"buffer_notes": 1}, 0)
+    assert not scheduled and not controller.busy
+
+
+def test_chinese_writer_receives_proven_usage_and_lessons_with_bounded_inventory(
+    tmp_path, lexicon, monkeypatch
+):
+    from chinese_frontier import generation
+
+    prompts = []
+    events = []
+    monkeypatch.setattr(generation.Lexicon, "load", lambda _folder: lexicon)
+    monkeypatch.setattr(generation.CliGenerator, "__init__", lambda *args: None)
+    monkeypatch.setattr(generation.CliGenerator, "check_login", lambda self: None)
+
+    def request(self, prompt, schema):
+        prompts.append(json.loads(prompt.split("Data:\n", 1)[1]))
+        return {"proposals": []}
+
+    monkeypatch.setattr(generation.CliGenerator, "request", request)
+    known = {chr(0x5000 + i): "familiar" for i in range(1000)} | {"书": "book"}
+    result = generate(
+        [source()],
+        known,
+        {},
+        tmp_path,
+        Event(),
+        lessons={source().key: {"reason": "Use a page count."}},
+        contexts={
+            "书": [{"card": 99, "context": "这本书有五百页。A book with pages."}]
+        },
+        progress=events.append,
+    )
+    assert not result.drafts
+    assert max(len(p["known_words"]) for p in prompts) <= 160
+    assert all(p["context_evidence"]["书"][0]["card"] == 99 for p in prompts)
+    assert all(
+        p["previous_lessons"][source().key]["reason"] == "Use a page count."
+        for p in prompts
+    )
+    assert len(events) == 2 * len(prompts)
+    assert all(
+        e["prompt_chars"] > 0 and e["elapsed_seconds"] >= 0
+        for e in events
+        if e["finished"]
+    )
+
+
+def test_chinese_approved_checkpoint_survives_later_model_failure(
+    tmp_path, lexicon, monkeypatch
+):
+    from chinese_frontier import generation
+
+    monkeypatch.setattr(generation.Lexicon, "load", lambda _folder: lexicon)
+    monkeypatch.setattr(generation.CliGenerator, "__init__", lambda *args: None)
+    monkeypatch.setattr(generation.CliGenerator, "check_login", lambda self: None)
+    second = replace(source(), card_id=2, note_id=2, word="千")
+    responses = iter(
+        [
+            {"proposals": [{"card_id": 1, "candidates": [candidate().__dict__]}]},
+            {
+                "reviews": [
+                    audit_report(source(), candidate())
+                    | {"card_id": 1, "sentence": candidate().sentence}
+                ]
+            },
+        ]
+    )
+
+    def request(self, prompt, schema):
+        try:
+            return next(responses)
+        except StopIteration:
+            raise TimeoutError("later request timed out")
+
+    monkeypatch.setattr(generation.CliGenerator, "request", request)
+    saved = []
+    with pytest.raises(TimeoutError):
+        generate(
+            [source(), second],
+            {w: "familiar" for w in ("这", "本", "书", "有", "一", "页")},
+            {},
+            tmp_path,
+            Event(),
+            on_approved=saved.extend,
+        )
+    assert len(saved) == 1 and saved[0].source.key == source().key
+    generation.validate_audit(saved[0])
+
+
+def test_chinese_usage_evidence_never_promotes_suspended_or_visible_words(collection):
+    add_word(collection, "书", established=True)
+    add_word(collection, "千", suspended=True)
+    current = snapshot(collection, {"enabled": True, "deck_id": 1}, {})
+    assert current.contexts["书"][0]["card"] in current.evidence["书"]
+    assert "千" not in current.contexts and "千" not in current.known
+
+
+def test_chinese_rejection_lessons_and_metrics_survive_restart(tmp_path):
+    from chinese_frontier.preparation import previous_lessons
+
+    state = State(day=1)
+    report = {
+        "reason": "ambiguous",
+        "alternatives": [{"word": "x", "reason": "y" * 2000}] * 8,
+    }
+    from chinese_frontier.preparation import pack_lesson
+
+    state.defer("target", pack_lesson(report), "v1")
+    state.model_calls = [{"prompt_chars": 1234, "elapsed_seconds": 2}]
+    state.save(tmp_path / "state.json")
+    restored = State.load(tmp_path / "state.json")
+    assert previous_lessons(restored.deferred, ["target"])["target"]["alternatives"]
+    assert restored.model_calls == state.model_calls
+
+
+def test_chinese_timeout_yield_includes_checkpoints_but_not_old_buffer(
+    refill_controller,
+):
+    from concurrent.futures import Future
+
+    controller, current, scheduled = refill_controller
+    old = audited_draft(source(), candidate())
+    new = replace(old, source=replace(source(), card_id=2, word="千"))
+    controller.state.drafts = [old, new]
+    controller.failed = lambda *args: None
+    future = Future()
+    future.set_exception(TimeoutError("later request"))
+    controller.generated(
+        future, {}, {}, "v1", 0, attempted=4, retained_keys={old.source.key}
+    )
+    assert controller.state.attempted == 4 and controller.state.approved == 1
+    assert controller.state.drafts == [old, new]
+
+
+def test_chinese_empty_proposal_reason_guides_next_retrieval_and_is_persisted(
+    tmp_path, lexicon, monkeypatch
+):
+    from chinese_frontier import generation
+
+    payloads = []
+    monkeypatch.setattr(generation.Lexicon, "load", lambda _folder: lexicon)
+    monkeypatch.setattr(generation.CliGenerator, "__init__", lambda *args: None)
+    monkeypatch.setattr(generation.CliGenerator, "check_login", lambda self: None)
+
+    def request(self, prompt, schema):
+        payloads.append(json.loads(prompt.split("Data:\n", 1)[1]))
+        return {
+            "proposals": [
+                {"card_id": 1, "candidates": [], "reason": "Need payment context."}
+            ]
+        }
+
+    monkeypatch.setattr(generation.CliGenerator, "request", request)
+    known = {chr(0x3400 + i): "ordinary" for i in range(400)} | {"付款": "payment"}
+    result = generate([source()], known, {}, tmp_path, Event())
+    assert "付款" not in {w["word"] for w in payloads[0]["known_words"]}
+    assert "付款" in {w["word"] for w in payloads[1]["known_words"]}
+    assert payloads[1]["feedback"][source().key] == "Need payment context."
+    assert (
+        json.loads(result.deferred[source().key])["reason"] == "Need payment context."
+    )
