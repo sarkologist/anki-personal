@@ -30,6 +30,7 @@ from aqt.qt import (
 from aqt.utils import tooltip
 
 from ..providers import GenerationStopped
+from ..refill import record_batch, refill_ready, reserve_batch, reset_day
 from .collection import SETTINGS, Admission, admit, request_repair, snapshot
 from .core import MODEL, POLICY, TAG
 from .generation import (
@@ -41,7 +42,6 @@ from .generation import (
     vocabulary_floor,
 )
 from .lexicon import Lexicon, atomic_json
-from .refill import record_batch, refill_ready, reserve_batch, reset_day
 
 MODULE = __name__.split(".")[0]
 

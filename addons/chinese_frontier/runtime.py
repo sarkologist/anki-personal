@@ -206,14 +206,26 @@ class Controller:
             ).run_in_background()
             return
         prepared_keys = {draft.source.key for draft in self.state.drafts}
-        maximum = max(1, min(100, int(config.get("max_batches_per_day", 8))))
         if not current.known:
             self.busy = False
             self.status = "No established vocabulary yet. Study existing cards or mark familiar words in add-on configuration."
             return
-        if self.state.batches >= maximum:
-            self.status = "Today's generation budget is used; resumes next Anki day."
+        available = max((current.slots(did) for did in current.budgets), default=0)
+        if not available and not current.repairs:
+            self.status = "No admission slots: today's limits, pending new cards, or reviews reserve the capacity."
             self.busy = False
+            return
+        if not self.state.can_refill(
+            available, len(current.repairs), config, time.time()
+        ):
+            self.status = (
+                "Chinese refill is cooling down; it will retry automatically."
+                if config.get("auto_fill", True)
+                else "Today's generation budget is used; resumes next Anki day."
+            )
+            self.save_state()
+            self.busy = False
+            self.schedule_next()
             return
         version = vocabulary_version(current.known)
         count = max(1, min(12, int(config.get("batch_size", 4))))
@@ -259,8 +271,11 @@ class Controller:
                 self.status = "Remaining targets are deferred; retries follow vocabulary growth or their backoff."
             else:
                 self.status = "All eligible suspended words are represented."
+            self.state.pause_refill(config, time.time())
+            self.save_state()
+            self.schedule_next()
             return
-        self.state.batches += 1
+        self.state.reserve_batch()
         self.save_state()  # Reserve the generation attempt before launching the CLI.
         self.status = f"Generating sentences for {len(sources)} words with {config.get('provider', 'codex')}…"
         stop = self.stop
@@ -269,7 +284,9 @@ class Controller:
         # syncing, closing a profile, or studying cards.
         mw.taskman.run_in_background(
             lambda: generate(sources, current.known, config, folder, stop),
-            lambda future: self.generated(future, settings, config, version, epoch),
+            lambda future: self.generated(
+                future, settings, config, version, epoch, attempted=len(sources)
+            ),
             uses_collection=False,
         )
 
@@ -280,14 +297,23 @@ class Controller:
         config: dict[str, Any],
         version: str,
         epoch: int,
+        *,
+        attempted: int,
     ) -> None:
         if not self.valid(epoch):
             return
         try:
             result: GenerationResult = future.result()
         except Exception as exc:
+            self.state.record_batch(attempted, 0, config, time.time())
             self.failed(exc, epoch)
             return
+        self.state.record_batch(
+            attempted,
+            sum(not draft.audit_only for draft in result.drafts),
+            config,
+            time.time(),
+        )
         for key, reason in result.deferred.items():
             self.state.defer(key, reason, version)
         self.state.drafts.extend(result.drafts)
@@ -349,7 +375,8 @@ class Controller:
 
     def schedule_next(self) -> None:
         if mw and self.path:
-            self.wake_timer.start(5000)
+            ready_at = max(self.state.refill_at, self.state.retry_after)
+            self.wake_timer.start(max(5000, int((ready_at - time.time()) * 1000)))
 
     def reviewer_menu(self, reviewer: Any, menu: Any) -> None:
         if (

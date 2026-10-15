@@ -145,9 +145,14 @@ also pauses requested repairs. Restoring the old source is as simple as suspendi
 the replacement and unsuspending its original; the linked replacement is not
 automatically recreated. To undo a conversion permanently, pause automation first.
 
-Generation is bounded to eight batches of up to four targets per Anki day by
-default, with up to three proposed sentences per target. It does not make CLI calls
-when daily capacity is unavailable. Repairs can run without new-card capacity.
+Automatic refill sizes its generation allowance from remaining native capacity
+and observed approval yield. Each cycle is bounded to at most 32 batches; if valid
+cards still leave slots unfilled, another cycle can run after a 30-minute cooldown
+on the same Anki day. Rejected targets retain their individual backoff and every
+sentence still passes the same context and ambiguity checks. Attempts use up to
+four targets per batch by default. No CLI calls are made when admission capacity
+is unavailable, except for repairs that can preserve existing card schedules.
+Setting `auto_fill` to false restores the explicit eight-batch daily ceiling.
 The add-on rescans on startup, after sync or review changes, and every five minutes.
 Routine runs stay quiet; persistent errors appear once and in the status dialog.
 

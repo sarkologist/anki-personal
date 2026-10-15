@@ -782,7 +782,7 @@ def test_automatic_refill_continues_after_the_old_daily_cap(monkeypatch):
 
 
 def test_refill_budget_adapts_to_approval_yield():
-    from chinese_frontier.french.refill import refill_ready
+    from chinese_frontier.refill import refill_ready
 
     high = {"day": 1, "attempted": 100, "approved": 80}
     low = {"day": 1, "attempted": 100, "approved": 5}
@@ -795,7 +795,7 @@ def test_refill_budget_adapts_to_approval_yield():
 def test_refill_retries_automatically_on_the_same_day_after_cooldown():
     import json
 
-    from chinese_frontier.french.refill import refill_ready
+    from chinese_frontier.refill import refill_ready
 
     state = {"day": 1, "batches": 32, "cycle_batches": 4, "cycle_limit": 4}
     config = {"refill_retry_seconds": 60}
@@ -808,7 +808,7 @@ def test_refill_retries_automatically_on_the_same_day_after_cooldown():
 
 
 def test_refill_budget_shrinks_when_fewer_slots_need_filling():
-    from chinese_frontier.french.refill import refill_ready
+    from chinese_frontier.refill import refill_ready
 
     one = {"day": 1, "attempted": 100, "approved": 80}
     ten = dict(one)
@@ -818,7 +818,7 @@ def test_refill_budget_shrinks_when_fewer_slots_need_filling():
 
 
 def test_no_slots_or_repairs_never_requests_a_refill():
-    from chinese_frontier.french.refill import refill_ready
+    from chinese_frontier.refill import refill_ready
 
     state = {"day": 1, "batches": 8}
     assert not refill_ready(state, 1, 0, 0, {}, 100)
@@ -826,7 +826,7 @@ def test_no_slots_or_repairs_never_requests_a_refill():
 
 
 def test_new_anki_day_clears_refill_cooldown_and_yield_statistics():
-    from chinese_frontier.french.refill import refill_ready
+    from chinese_frontier.refill import refill_ready
 
     state = {
         "day": 1,
@@ -843,7 +843,7 @@ def test_new_anki_day_clears_refill_cooldown_and_yield_statistics():
 
 
 def test_no_eligible_targets_do_not_consume_model_batches_or_spin():
-    from chinese_frontier.french.refill import record_batch, refill_ready, reserve_batch
+    from chinese_frontier.refill import record_batch, refill_ready, reserve_batch
 
     state = {"day": 1, "batches": 8}
     assert refill_ready(state, 1, 3, 0, {}, 100)
@@ -854,7 +854,7 @@ def test_no_eligible_targets_do_not_consume_model_batches_or_spin():
 
 
 def test_explicit_daily_budget_is_respected_when_auto_fill_is_disabled():
-    from chinese_frontier.french.refill import refill_ready
+    from chinese_frontier.refill import refill_ready
 
     state = {"day": 1, "batches": 8}
     assert not refill_ready(
