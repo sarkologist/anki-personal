@@ -74,6 +74,7 @@ class Snapshot:
     covered_words: set[str]
     skipped: dict[str, int] = field(default_factory=dict)
     repairs: dict[str, int] = field(default_factory=dict)
+    contexts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def slots(self, deck_id: int) -> int:
         return admission_slots(
@@ -312,6 +313,7 @@ def snapshot(
     timing = col.sched._timing_today()
     day = timing.days_elapsed
     known: dict[str, str] = {}
+    contexts: dict[str, list[dict[str, Any]]] = {}
     evidence: dict[str, list[int]] = {}
     for word in config.get("known_words", []):
         if not isinstance(word, str) or not is_word(word):
@@ -474,6 +476,16 @@ def snapshot(
                 elif meaning and meaning not in known[word]:
                     known[word] += "; " + meaning
                 evidence.setdefault(word, []).append(cid)
+                text = plain_text(
+                    " ".join(
+                        fields.get(name, "")
+                        for name in ("Text", "Front", "Translation", "Extra")
+                    )
+                )
+                text = CLOZE.sub(lambda m: m[2].split("::", 1)[0], text)
+                record = {"card": cid, "context": text[:800]}
+                if text and record not in contexts.setdefault(word, []):
+                    contexts[word].append(record)
         if home not in scope or queue != -1 or nid in seen_notes:
             continue
         if model["type"] != 0 or not words or not meaning:
@@ -545,6 +557,7 @@ def snapshot(
         covered_words,
         skipped,
         repairs,
+        contexts,
     )
 
 

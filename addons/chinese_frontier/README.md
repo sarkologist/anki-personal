@@ -37,8 +37,8 @@ Codex is the default. Run `codex login` and choose ChatGPT sign-in. Generation u
 subscription allowances. There is no automatic fallback to a paid API or to the
 other provider. API-key environment variables are removed from child processes.
 
-The CLI receives target definitions and an index of established Chinese words and
-their meanings. Generation and an independent language-review pass happen in
+The CLI receives target definitions and a relevant selection of established Chinese
+words, their meanings, and actual reviewed usage. Generation and an independent language-review pass happen in
 temporary directories with no collection access. Claude tools and MCP servers are
 disabled. Codex ignores user configuration, disables shell, apps, multi-agent and
 web-search features, and uses a read-only sandbox. Optional model settings select
@@ -150,8 +150,23 @@ and observed approval yield. Each cycle is bounded to at most 32 batches; if val
 cards still leave slots unfilled, another cycle can run after a 30-minute cooldown
 on the same Anki day. Rejected targets retain their individual backoff and every
 sentence still passes the same context and ambiguity checks. Attempts use up to
-four targets per batch by default. No CLI calls are made when admission capacity
-is unavailable, except for repairs that can preserve existing card schedules.
+four targets per batch by default. A buffer of four approved notes is prepared ahead
+of admission (`buffer_notes`, clamped to 0–16; set 0 to disable). Buffer generation
+can run when today's slots are full. Every card still waits for native admission
+capacity, including character siblings. Cached target identities are excluded from
+new selection. Context and source evidence are rechecked at admission.
+
+Writers receive a small target-relevant vocabulary bundle with actual established
+usage, expanding on subsequent attempts. Retrieval never promotes words merely
+visible in examples. The independent auditor checks the proposed sentence against
+live evidence and the full validation rules. Compact rejection lessons persist
+across batches; they guide rewrites without licensing vocabulary or approving cards.
+Empty proposals must explain the obstacle; those reasons and validation failures
+refocus the next vocabulary retrieval instead of repeating the same inputs.
+Approvals are checkpointed individually so a later timeout retains finished work.
+Both languages record the last 30 writer/auditor calls with prompt characters, elapsed time,
+phase, target count, and errors, alongside attempted/approved yield counters in
+profile state. These are diagnostics, not evidence of linguistic approval.
 Setting `auto_fill` to false restores the explicit eight-batch daily ceiling.
 The add-on rescans on startup, after sync or review changes, and every five minutes.
 Routine runs stay quiet; persistent errors appear once and in the status dialog.

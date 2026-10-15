@@ -29,6 +29,7 @@ from aqt.qt import (
 )
 from aqt.utils import tooltip
 
+from ..preparation import preparation_needed, previous_lessons
 from ..providers import GenerationStopped
 from ..refill import record_batch, refill_ready, reserve_batch, reset_day
 from .collection import SETTINGS, Admission, admit, request_repair, snapshot
@@ -210,14 +211,16 @@ class Controller:
         if drafts and (current.slots or any(d.repair_note for d in drafts)):
             self.apply(drafts, settings, config, lexicon, stop, epoch)
             return
-        if not current.slots and not current.repairs:
+        queued = sum(not d.repair_note for d in drafts)
+        needed = preparation_needed(current.slots, queued, config)
+        if not needed and not current.repairs:
             self.status = "No French admission slots: pending new cards, reviews or daily limits reserve capacity."
             self.busy = False
             return
         if not refill_ready(
             self.state,
             current.day,
-            current.slots,
+            needed,
             len(current.repairs),
             config,
             time.time(),
@@ -236,7 +239,7 @@ class Controller:
             return
         reserve_batch(self.state)
         count = min(
-            max(current.slots, len(current.repairs)),
+            max(needed, len(current.repairs)),
             max(1, min(8, int(config.get("batch_size", 4)))),
         )
         self.state["active_batch_size"] = count
@@ -322,8 +325,9 @@ class Controller:
                 choose_targets(
                     lexicon,
                     current.known,
-                    current.represented,
-                    current.keys,
+                    current.represented
+                    | {(d.target.lemma, d.target.pos) for d in retained_drafts},
+                    current.keys | retained_keys,
                     self.folder,
                     count - len(repair_targets),
                     deferred,
@@ -340,7 +344,7 @@ class Controller:
                     >= 3
                     else None,
                 )
-                if current.slots and len(repair_targets) < count
+                if needed and len(repair_targets) < count
                 else []
             )
             if not targets:
@@ -353,6 +357,9 @@ class Controller:
                 stop,
                 on_approved=checkpoint,
                 progress=report,
+                lessons=previous_lessons(
+                    self.state.get("deferred", {}), (t.key for t in targets)
+                ),
             )
             return (
                 with_repairs(generated_drafts),
@@ -440,7 +447,7 @@ class Controller:
             self.save()
             self.busy = False
             self.status = f"Added {len(result.admitted)} French notes; {len(result.remaining)} prepared for later."
-            if result.admitted and not result.remaining:
+            if result.admitted:
                 mw.progress.single_shot(5000, self.tick)
 
         CollectionOp(

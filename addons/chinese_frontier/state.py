@@ -12,6 +12,7 @@ from typing import Any
 
 from . import refill
 from .generation import GENERATION_POLICY, Draft
+from .preparation import pack_lesson
 
 
 def vocabulary_version(known: dict[str, str]) -> str:
@@ -38,6 +39,8 @@ class State:
     cycle_batches: int = 0
     cycle_limit: int = 0
     refill_at: float = 0
+    model_calls: list[dict[str, Any]] = field(default_factory=list)
+    active_request: dict[str, Any] | None = None
 
     @classmethod
     def load(cls, path: Path) -> State:
@@ -61,6 +64,8 @@ class State:
                 if name != "refill_at"
             },
             refill_at=float(data.get("refill_at", 0)),
+            model_calls=data.get("model_calls", [])[-30:],
+            active_request=data.get("active_request"),
         )
 
     def save(self, path: Path) -> None:
@@ -78,6 +83,8 @@ class State:
                     "last_error": self.last_error,
                     "retry_after": self.retry_after,
                     **{name: getattr(self, name) for name in REFILL_COUNTERS},
+                    "model_calls": self.model_calls,
+                    "active_request": self.active_request,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -121,7 +128,7 @@ class State:
             else 1
         )
         self.deferred[key] = {
-            "reason": reason[:500],
+            "reason": pack_lesson(reason),
             "vocabulary": vocabulary,
             "attempts": attempts,
             "retry_after": time.time() + min(7 * 86400, 1800 * 2 ** min(attempts, 9)),
