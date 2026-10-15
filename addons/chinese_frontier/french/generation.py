@@ -226,13 +226,9 @@ class Draft:
     old_fingerprint: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return {
-            "target": asdict(self.target),
-            "candidate": asdict(self.candidate),
-            "audit": self.audit,
-            "repair_note": self.repair_note,
-            "old_fingerprint": self.old_fingerprint,
-        }
+        # Checkpoints are reread in memory before a JSON save/reload. Emit the
+        # same JSON types in both paths: asdict() alone leaves annotation tuples.
+        return json.loads(json.dumps(asdict(self), ensure_ascii=False))
 
     @classmethod
     def read(cls, data: dict[str, Any]) -> Draft:

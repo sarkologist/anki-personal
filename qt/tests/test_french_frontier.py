@@ -1589,3 +1589,91 @@ def test_repair_checkpoints_retain_unadmitted_vocabulary_and_replace_stale_dupli
     updated = replace(repair, old_fingerprint="new fingerprint")
     assert merge_drafts([queued, repair], [updated]) == [queued, updated]
     assert merge_drafts([queued], []) == [queued]
+
+
+def test_approved_french_draft_roundtrips_in_memory_without_a_disk_reload():
+    from dataclasses import asdict, replace
+
+    from chinese_frontier.french.generation import Draft, candidate_hash
+
+    c = replace(
+        candidate(),
+        uses=(
+            {
+                "surface": "emprunte",
+                "lemma": "emprunter",
+                "pos": "VER",
+                "features": "ind:pre:1:s",
+            },
+        ),
+    )
+    t = target()
+    review = {
+        "approved": True,
+        "reason": "clear",
+        "search_summary": "checked",
+        "context_checks": context_checks(),
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": True,
+                "reason": "Different meaning.",
+            }
+        ],
+    }
+    draft = Draft(
+        t,
+        c,
+        {
+            "policy": POLICY,
+            "target_key": t.key,
+            "fingerprint": candidate_hash(c),
+            "review": review,
+        },
+        repair_note=42,
+        old_fingerprint="unchanged",
+    )
+    draft.verify()
+    restored = Draft.read(draft.as_dict())
+    restored.verify()
+    assert restored == draft
+    assert restored.candidate.uses == c.uses
+    assert asdict(restored.target) == asdict(t)
+
+
+def test_cached_french_draft_does_not_abort_a_no_capacity_scan(monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import runtime
+    from chinese_frontier.french.generation import Draft
+
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.valid = lambda epoch: True
+    controller.state = {
+        "day": 1,
+        "drafts": [Draft(target(), candidate(), {}).as_dict()],
+    }
+    controller.busy = True
+    controller.save = lambda: None
+    controller.failed = lambda error, epoch: pytest.fail(str(error))
+    monkeypatch.setattr(runtime, "mw", SimpleNamespace())
+    current = SimpleNamespace(
+        day=1, slots=0, repairs={}, known=SimpleNamespace(version="v1")
+    )
+    controller.scanned(current, {}, {}, None, Event(), 0)
+    assert not controller.busy
+    assert "No French admission slots" in controller.status
+
+
+@pytest.mark.parametrize("field", ["uses", "grammar", "constructions"])
+def test_malformed_model_annotations_remain_rejected(field):
+    import json
+    from dataclasses import asdict
+
+    raw = json.loads(json.dumps(asdict(candidate())))
+    raw[field] = "not an annotation array"
+    with pytest.raises(ValidationError, match="invalid annotations"):
+        Candidate.read(raw)
