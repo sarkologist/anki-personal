@@ -402,6 +402,8 @@ class Admission:
     admitted: list[int]
     remaining: list[Draft]
     rejected: dict[str, str]
+    added_cards: int = 0
+    repaired_notes: int = 0
 
 
 def admit(
@@ -416,6 +418,7 @@ def admit(
     current = snapshot(col, settings, config, lexicon)
     capacity = current.slots
     admitted = []
+    added_cards = repaired_notes = 0
     remaining = []
     rejected = {}
     undo = None
@@ -522,8 +525,12 @@ def admit(
             col.add_note(note, DeckId(current.deck_id))
         if len(note.cards()) != 1:
             raise ValueError("French proposal unexpectedly created extra cards")
+        added_cards += 0 if draft.repair_note else 1
+        repaired_notes += 1 if draft.repair_note else 0
         admitted.append(int(note.id))
         current.keys.add(draft.target.key)
         capacity -= 0 if draft.repair_note else 1
     changes = col.merge_undo_entries(undo) if undo is not None else OpChanges()
-    return Admission(changes, admitted, remaining, rejected)
+    return Admission(
+        changes, admitted, remaining, rejected, added_cards, repaired_notes
+    )

@@ -927,7 +927,8 @@ def test_a_later_timeout_keeps_earlier_independent_approvals():
     error.value.drafts[0].verify()
     assert len(saved) == 1
     assert events[-1]["finished"] and "timed out" in events[-1]["error"]
-    assert events[-1]["target_count"] == 2
+    assert events[-1]["target_count"] == 1
+    assert events[-1]["targets"][0]["key"] == other.key
     assert events[-1]["elapsed_seconds"] >= 0
 
 

@@ -682,6 +682,7 @@ class AdmissionResult:
     remaining: list[Draft]
     rejected: dict[str, str]
     updated: list[int] = field(default_factory=list)
+    added_cards: int = 0
 
 
 def request_repair(col: Collection, note_id: int) -> OpChanges:
@@ -774,6 +775,7 @@ def _admit(
     rejected: dict[str, str] = {}
     admitted: list[int] = []
     updated: list[int] = []
+    added_cards = 0
     changes = OpChanges()
     model = None
     undo = None
@@ -976,6 +978,7 @@ def _admit(
                 raise ValueError(
                     "Disambiguation audit must remain hidden during reviews"
                 )
+        added_cards += extra_cards
         (updated if repair_id else admitted).append(int(note.id))
         if staged_character:
             remaining.append(
@@ -1004,4 +1007,4 @@ def _admit(
             reserved[budget.deck_id] = reserved.get(budget.deck_id, 0) + extra_cards
     if undo is not None:
         changes = col.merge_undo_entries(undo)
-    return AdmissionResult(changes, admitted, remaining, rejected, updated)
+    return AdmissionResult(changes, admitted, remaining, rejected, updated, added_cards)

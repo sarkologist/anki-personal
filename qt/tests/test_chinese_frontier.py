@@ -1308,6 +1308,7 @@ def test_chinese_refill_stages_character_siblings_to_fill_exactly_ten_cards(
     result = admit(collection, settings, {}, [audited_draft(target, c)], lexicon)
     assert len(result.admitted) == 1 and len(result.remaining) == 1
     assert len(collection.get_note(result.admitted[0]).cards()) == 2
+    assert result.added_cards == 2
     assert collection.db.scalar("select count(*) from cards where queue=0") == 10
     assert snapshot(collection, settings, {}).slots(1) == 0
 

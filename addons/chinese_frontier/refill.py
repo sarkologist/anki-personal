@@ -70,11 +70,14 @@ def record_batch(
     approved: int,
     config: dict[str, Any],
     now: float,
+    *,
+    spent_model_calls: bool = False,
 ) -> None:
     if not attempted:
-        # Looking for eligible targets spent no model calls and must not spin.
-        state["batches"] = max(0, state.get("batches", 0) - 1)
-        state["cycle_batches"] = max(0, state.get("cycle_batches", 0) - 1)
+        # A ranking call spends budget without pretending a target was attempted.
+        if not spent_model_calls:
+            state["batches"] = max(0, state.get("batches", 0) - 1)
+            state["cycle_batches"] = max(0, state.get("cycle_batches", 0) - 1)
         pause_cycle(state, config, now)
         return
     state["attempted"] = state.get("attempted", 0) + attempted

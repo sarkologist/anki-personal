@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import time
 from concurrent.futures import Future
+from dataclasses import asdict
 from pathlib import Path
 from threading import Event
 from typing import Any
@@ -44,11 +45,13 @@ from .collection import (
     upgrade_presentation,
 )
 from .core import GENERATED_TAG, admission_slots
+from .diagnostics import Diagnostics
 from .generation import GenerationResult, generate
 from .lexicon import Lexicon
 from .preparation import buffer_size, preparation_needed, previous_lessons, read_lesson
 from .providers import GenerationStopped
 from .state import State, vocabulary_version
+from .telemetry import import_calls, observe, recover
 
 MODULE = __name__.split(".")[0]
 
@@ -70,6 +73,38 @@ class Controller:
         self.wake_timer.setSingleShot(True)
         qconnect(self.wake_timer.timeout, self.tick)
 
+    def observe(self, event: dict[str, Any]) -> None:
+        observe(self.state.telemetry, event, vars(self.state).get("day", -1))
+        self.save_state()
+
+    def diagnostics_data(self) -> dict[str, Any]:
+        return {
+            "store": self.state.telemetry,
+            "state": {
+                k: vars(self.state).get(k, 0)
+                for k in (
+                    "day",
+                    "retry_after",
+                    "refill_at",
+                    "cycle_batches",
+                    "cycle_limit",
+                )
+            },
+            "status": self.status,
+            "busy": self.busy,
+            "prepared": sum(
+                not d.audit_only and d.additional_cards > 0 for d in self.state.drafts
+            ),
+            "buffer": buffer_size(self.config()),
+            "deferred": dict(
+                sorted(
+                    self.state.deferred.items(),
+                    key=lambda item: item[1].get("retry_after", 0),
+                    reverse=True,
+                )[:20]
+            ),
+        }
+
     def config(self) -> dict[str, Any]:
         assert mw
         return mw.addonManager.getConfig(MODULE) or {}
@@ -86,6 +121,13 @@ class Controller:
             self.status = f"Could not read saved frontier state: {exc}"
             tooltip(self.status)
             return
+        import_calls(
+            self.state.telemetry,
+            vars(self.state).get("model_calls", []),
+            vars(self.state).get("day", -1),
+        )
+        recover(self.state.telemetry, vars(self.state).get("day", -1))
+        self.save_state()
         interval = max(30, int(self.config().get("poll_seconds", 300)))
         self.timer.start(interval * 1000)
         config = self.config()
@@ -114,6 +156,8 @@ class Controller:
         mw.progress.single_shot(1500, self.tick)
 
     def closed(self) -> None:
+        recover(self.state.telemetry, vars(self.state).get("day", -1))
+        self.save_state()
         self.epoch += 1
         self.stop.set()
         self.timer.stop()
@@ -141,6 +185,14 @@ class Controller:
         self.busy = False
         if isinstance(exc, GenerationStopped):
             return
+        self.observe(
+            {
+                "type": "decision",
+                "stage": "runtime",
+                "outcome": "error",
+                "reason": str(exc),
+            }
+        )
         self.state.last_error = str(exc)[:2000]
         self.state.retry_after = time.time() + 1800
         self.status = self.state.last_error
@@ -184,6 +236,19 @@ class Controller:
         assert mw
         self.last_snapshot = current
         self.state.reset_day(current.day)
+        self.state.telemetry["snapshot"] = {
+            "at": time.time(),
+            "slots": max((current.slots(did) for did in current.budgets), default=0),
+            "known": len(current.known),
+            "budgets": list(
+                {
+                    b.deck_id: asdict(b)
+                    for b in [
+                        b for budgets in current.budgets.values() for b in budgets
+                    ]
+                }.values()
+            ),
+        }
         eligible = {source.key: source for source in current.sources}
         self.state.drafts = [
             draft
@@ -301,6 +366,9 @@ class Controller:
             def update() -> None:
                 if not self.valid(epoch):
                     return
+                self.observe(event)
+                if event.get("type") != "call":
+                    return
                 self.state.active_request = event
                 self.status = f"{event['phase']} (attempt {event['attempt']}/3)"
                 if event["finished"]:
@@ -323,6 +391,7 @@ class Controller:
                 contexts=getattr(current, "contexts", {}),
                 on_approved=checkpoint,
                 progress=report,
+                observe=report,
             ),
             lambda future: self.generated(
                 future,
@@ -357,6 +426,14 @@ class Controller:
                 for d in self.state.drafts
             )
             self.state.record_batch(attempted, approved, config, time.time())
+            self.observe(
+                {
+                    "type": "batch",
+                    "attempted": attempted,
+                    "approved": approved,
+                    "outcome": "error",
+                }
+            )
             self.failed(exc, epoch)
             return
         self.state.record_batch(
@@ -364,6 +441,13 @@ class Controller:
             sum(not draft.audit_only for draft in result.drafts),
             config,
             time.time(),
+        )
+        self.observe(
+            {
+                "type": "batch",
+                "attempted": attempted,
+                "approved": sum(not d.audit_only for d in result.drafts),
+            }
         )
         for key, reason in result.deferred.items():
             self.state.defer(key, reason, version)
@@ -408,6 +492,24 @@ class Controller:
     def applied(self, result: AdmissionResult, epoch: int) -> None:
         if not self.valid(epoch):
             return
+        self.observe(
+            {
+                "type": "admission",
+                "notes": len(result.admitted),
+                "cards": result.added_cards,
+                "updates": len(result.updated),
+            }
+        )
+        for key, reason in result.rejected.items():
+            self.observe(
+                {
+                    "type": "decision",
+                    "stage": "admission",
+                    "outcome": "rejected",
+                    "key": key,
+                    "reason": reason,
+                }
+            )
         self.state.drafts = result.remaining
         version = (
             vocabulary_version(self.last_snapshot.known) if self.last_snapshot else ""
@@ -459,7 +561,7 @@ class Controller:
         config = self.config()
         dialog = QDialog(mw)
         dialog.setWindowTitle("Chinese Frontier")
-        dialog.resize(650, 470)
+        dialog.resize(850, 780)
         layout = QVBoxLayout(dialog)
         introduction = QLabel(
             "Replace suspended single-word cards with one-word sentence clozes.<br>Original notes stay suspended; your daily limits control introductions."
@@ -530,6 +632,8 @@ class Controller:
         layout.addLayout(form)
         status = QTextEdit()
         status.setReadOnly(True)
+        status.setMaximumHeight(160)
+        diagnostics = Diagnostics(dialog, self.diagnostics_data)
 
         def update_status() -> None:
             text = self.status
@@ -547,9 +651,11 @@ class Controller:
                     read_lesson(item.get("reason", "")).get("reason", "")
                 )
             status.setPlainText(text)
+            diagnostics.refresh()
 
         update_status()
         layout.addWidget(status)
+        layout.addWidget(diagnostics)
         refresh_timer = QTimer(dialog)
         qconnect(refresh_timer.timeout, update_status)
         refresh_timer.start(1000)
