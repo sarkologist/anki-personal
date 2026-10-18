@@ -33,7 +33,7 @@ from ..diagnostics import Diagnostics
 from ..preparation import buffer_size, preparation_needed, previous_lessons
 from ..providers import GenerationStopped
 from ..refill import record_batch, refill_ready, reserve_batch, reset_day
-from ..telemetry import import_calls, observe, recover
+from ..telemetry import error_location, import_calls, observe, recover
 from .collection import SETTINGS, Admission, admit, request_repair, snapshot
 from .core import MODEL, POLICY, TAG
 from .generation import (
@@ -176,6 +176,7 @@ class Controller:
                 "stage": "runtime",
                 "outcome": "error",
                 "reason": str(exc),
+                "where": error_location(exc),
             }
         )
         message = str(exc)[:2000]

@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import json
 import time
+import traceback
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from .providers import GenerationStopped
@@ -69,6 +71,14 @@ def request_model(
             progress(event.copy())
 
 
+def error_location(exc: BaseException) -> str:
+    """Innermost frames of an unexpected error; str(exc) alone hides the source."""
+    frames = traceback.extract_tb(exc.__traceback__)[-4:]
+    return " <- ".join(
+        f"{Path(f.filename).name}:{f.lineno} {f.name}" for f in reversed(frames)
+    )
+
+
 def decision(
     observer: Observer | None,
     stage: str,
@@ -103,7 +113,7 @@ def observe(
     store.setdefault("events", [])
     store.setdefault("calls", [])
     row = dict(event)
-    for name in ("reason", "error"):
+    for name in ("reason", "error", "where"):
         if name in row:
             row[name] = str(row[name])[:1200]
     row.setdefault("at", row.get("finished_at", now))
@@ -262,6 +272,7 @@ def decisions_text(store: dict[str, Any]) -> str:
     return (
         "\n\n".join(
             f"{clock(e.get('at'))} · {e.get('stage', e.get('type'))} · {e.get('outcome', '')}\n{e.get('target', '')} {e.get('mode', '')}\n{e.get('reason', '')}"
+            + (f"\nat {e['where']}" if e.get("where") else "")
             if e.get("type") == "decision"
             else f"{clock(e.get('at'))} · {e['type']}\n"
             + json.dumps(

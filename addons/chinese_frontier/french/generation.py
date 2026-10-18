@@ -171,12 +171,12 @@ def validate_review(review: Any, candidate: Candidate) -> bool:
             raise ValidationError(
                 "Report a concrete cloze substitution, not grammar commentary"
             )
-        if (
-            not isinstance(alternative.get("answer"), str)
-            or not alternative["answer"].strip()
-            or normalize(alternative["answer"]) == normalize(answers[index])
-        ):
+        if not isinstance(answer, str) or not answer.strip():
             raise ValidationError("Alternative must be a competing answer")
+        if normalize(answer) == normalize(answers[index]):
+            # Claude often lists the intended answer among checked words. It
+            # is not a competitor, so it neither counts nor voids the review.
+            continue
         if any(
             type(alternative.get(k)) is not bool for k in ("fits_context", "fits_cloze")
         ) or not alternative.get("reason"):

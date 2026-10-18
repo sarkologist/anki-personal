@@ -1851,3 +1851,55 @@ def test_french_empty_proposal_reason_guides_next_retrieval_and_is_persisted():
     assert "paiement" not in payloads[0]["knowledge"]["established_context"]
     assert "paiement" in payloads[1]["knowledge"]["established_context"]
     assert json.loads(failures[target().key])["reason"] == "Need payment context."
+
+
+def test_review_listing_the_answer_itself_is_not_a_failed_review():
+    # Claude often reports the intended answer among checked alternatives.
+    from chinese_frontier.french.generation import validate_review
+
+    def alternative(answer, reason):
+        return {
+            "example": 0,
+            "answer": answer,
+            "fits_context": answer == "emprunte",
+            "fits_cloze": answer == "emprunte",
+            "reason": reason,
+        }
+
+    review = {
+        "approved": True,
+        "context_checks": context_checks(),
+        "reason": "correct",
+        "search_summary": "checked",
+        "alternatives": [
+            alternative("emprunte", "The intended answer."),
+            alternative("loue", "rent is not borrow"),
+        ],
+    }
+    assert validate_review(review, candidate())
+    review["alternatives"] = review["alternatives"][:1]
+    with pytest.raises(ValidationError, match="Missing alternatives"):
+        validate_review(review, candidate())
+
+
+def test_runtime_errors_record_where_they_were_raised(monkeypatch):
+    from chinese_frontier.french import runtime
+
+    monkeypatch.setattr(runtime, "tooltip", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtime, "mw", None)
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.valid = lambda epoch: True
+    controller.save = lambda: None
+    controller.state = {"day": 1}
+
+    def explode():
+        return [].items()
+
+    try:
+        explode()
+    except AttributeError as exc:
+        controller.failed(exc, 0)
+    event = controller.state["telemetry"]["events"][-1]
+    assert event["stage"] == "runtime"
+    assert "explode" in event["where"]
+    assert "test_french_frontier.py" in event["where"]
