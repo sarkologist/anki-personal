@@ -107,6 +107,8 @@ field logs the provider, candidate examples, checked alternatives, whether each 
 the situation and visible characters, reasons, and approval/defer status. The model's
 approval is rejected when its own report says an alternative fits. These checks are
 model judgments, not proof that every possible alternative was considered.
+The `Source`, `Dependencies` and `Disambiguation` metadata fields are collapsed
+in the editor and excluded from unqualified searches.
 
 Existing generated cards are audited automatically after this upgrade or a visible
 content edit. Approved examples keep their content; ambiguous examples are repaired

@@ -12,7 +12,7 @@ from typing import Any
 from anki.collection import Collection, OpChanges
 from anki.decks import DeckId
 
-from ..collection import _descendants, _ids, _read_budgets
+from ..collection import _descendants, _hide_metadata, _ids, _read_budgets
 from ..core import (
     CLOZE,
     DeckBudget,
@@ -392,11 +392,14 @@ def ensure_model(col: Collection) -> dict[str, Any]:
             or len(model["tmpls"]) != 1
         ):
             raise ValueError("French Frontier note type has incompatible fields")
+        if _hide_metadata(model):
+            col.models.update_dict(model)
         return model
     model = col.models.new(MODEL)
     model["type"] = 1
     for name in FIELDS:
         col.models.add_field(model, col.models.new_field(name))
+    _hide_metadata(model)
     template = col.models.new_template("Sentence")
     template["qfmt"] = FRONT
     template["afmt"] = BACK
