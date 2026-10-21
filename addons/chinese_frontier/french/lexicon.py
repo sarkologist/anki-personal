@@ -70,6 +70,9 @@ def lefff_readings(text: str) -> dict[tuple[str, str], list[str]]:
             features = ["inf"]
         elif code == "G":
             features = ["par:pre"]
+        elif code == "K":
+            # Invariable participles (été, pu, fallu) carry no agreement.
+            features = ["par:pas:m:s"]
         elif code.startswith("K"):
             features = [
                 "par:pas:" + g + ":" + n

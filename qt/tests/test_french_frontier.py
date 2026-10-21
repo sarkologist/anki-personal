@@ -366,6 +366,16 @@ def test_lefff_blocks_a_bogus_avoir_participle():
     assert ("emprunte", "emprunter", "sub:pre:1:s") in forms
 
 
+def test_lefff_invariable_participle_reads_as_masculine_singular():
+    from chinese_frontier.french.lexicon import lefff_verbs
+
+    # Lefff writes invariable participles (été, pu, fallu) as a bare "K".
+    assert lefff_verbs("été\tv\têtre\tK\npu\tv\tpouvoir\tK") == {
+        ("été", "être", "par:pas:m:s"),
+        ("pu", "pouvoir", "par:pas:m:s"),
+    }
+
+
 def test_lefff_supplies_verb_readings_lexique_leaves_incomplete():
     # Lexique 4.1 leaves 8_Nombre empty for many common forms, lists bogus
     # readings (vais as "inf") and misses syncretism (allions as sub:pre).
