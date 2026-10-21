@@ -366,6 +366,68 @@ def test_lefff_blocks_a_bogus_avoir_participle():
     assert ("emprunte", "emprunter", "sub:pre:1:s") in forms
 
 
+def test_lefff_invariable_participle_reads_as_masculine_singular():
+    from chinese_frontier.french.lexicon import lefff_verbs
+
+    # Lefff writes invariable participles (été, pu, fallu) as a bare "K".
+    assert lefff_verbs("été\tv\têtre\tK\npu\tv\tpouvoir\tK") == {
+        ("été", "être", "par:pas:m:s"),
+        ("pu", "pouvoir", "par:pas:m:s"),
+    }
+
+
+def test_lefff_supplies_verb_readings_lexique_leaves_incomplete():
+    # Lexique 4.1 leaves 8_Nombre empty for many common forms, lists bogus
+    # readings (vais as "inf") and misses syncretism (allions as sub:pre).
+    header = "1_Mot\t3_Phono_IPA\t4_Lemme\t5_Cgram\t7_Genre\t8_Nombre\t9_InfoVER\t10_FreqMot\t12_FreqLemme"
+    rows = [
+        "vais\tvɛ\taller\tVER\t\t\tind:pre:1,inf\t300\t900",
+        "allons\talɔ̃\taller\tVER\t\t\tind:pre:1,imp:pre:1,inf\t200\t900",
+        "ira\tiʁa\taller\tVER\t\t\tind:fut:3\t50\t900",
+        "allions\taljɔ̃\taller\tVER\t\tp\tind:imp:1\t5\t900",
+        "allé\tale\taller\tVER\tm\ts\tpar:pas\t40\t900",
+        "allé\tale\taller\tVER\tm\ts\tpar:pas\t1\t900",
+    ] + [f"mot{i}\t\tmot{i}\tNOM\tm\ts\t\t1\t1" for i in range(10000)]
+    lefff = "\n".join(
+        [
+            "vais\tv\taller\tP1s",
+            "allons\tv\taller\tP1p",
+            "allons\tv\taller\tY1p",
+            "ira\tv\taller\tF3s",
+            "allions\tv\taller\tI1p",
+            "allions\tv\taller\tS1p",
+            "allé\tv\taller\tKms",
+        ]
+        + [f"pad{i}\tv\tpad\tW" for i in range(10000)]
+    )
+    graded = "word\ttag\n" + "\n".join(f"mot{i}\tN" for i in range(1000))
+    lex = Lexicon.parse("\n".join([header] + rows), graded, "", lefff)
+
+    def readings(surface):
+        return sorted(f.features for f in lex.analyses(surface))
+
+    assert readings("vais") == ["ind:pre:1:s"]
+    assert readings("allons") == ["imp:pre:1:p", "ind:pre:1:p"]
+    assert readings("ira") == ["ind:fut:3:s"]
+    assert readings("allions") == ["ind:imp:1:p", "sub:pre:1:p"]
+    # Duplicate Lexique rows collapse into one form, keeping the larger frequency.
+    assert [(f.features, f.frequency, f.ipa) for f in lex.analyses("allé")] == [
+        ("par:pas:m:s", 40, "ale")
+    ]
+    assert lex.analyses("vais")[0].frequency == 300
+
+
+def test_verb_features_without_lefff_infer_a_missing_number():
+    from chinese_frontier.french.lexicon import verb_features
+
+    assert verb_features("ind:pre:1,imp:pre:1", "", "") == [
+        "ind:pre:1:s",
+        "ind:pre:1:p",
+        "imp:pre:1:s",
+        "imp:pre:1:p",
+    ]
+
+
 @pytest.mark.parametrize("outdated_policy", [False, True])
 def test_generated_repair_preserves_card_ids_and_scheduling(
     collection, outdated_policy
@@ -509,6 +571,50 @@ def test_standalone_subject_establishes_present_not_subjunctive(collection):
     known = snapshot(collection, {"deck_id": 1}, {}, lex).known
     assert "parle|parler|VER|ind:pre:1:s" in known.forms
     assert "parle|parler|VER|sub:pre:1:s" not in known.forms
+
+
+@pytest.mark.parametrize(
+    "text,indicative",
+    [
+        ("Le soir, je {{c1::parle}} français.", True),
+        ("Est-ce que je {{c1::parle}} trop ?", True),
+        ("Qu'est-ce qu'il {{c1::parle}} bien !", True),
+        ("Il faut que je {{c1::parle}}.", False),
+        ("Il faut qu'il {{c1::parle}}.", False),
+        ("Bien qu'elle {{c1::parle}} vite, on comprend.", False),
+        ("Quoiqu'il {{c1::parle}} peu, il écoute.", False),
+        ("Il faut quʼil {{c1::parle}}.", False),
+        ("La raison pour laquelle je {{c1::parle}} est simple.", False),
+        # Relative clauses after an indefinite or superlative antecedent can
+        # be subjunctive without que.
+        ("Je cherche un endroit où je {{c1::parle}} librement.", False),
+        ("C'est le seul sujet dont il {{c1::parle}}.", False),
+        ("C'est la seule personne à qui je {{c1::parle}}.", False),
+        ("C'est le meilleur outil avec lequel je {{c1::parle}}.", False),
+    ],
+)
+def test_subject_without_preceding_que_rules_out_subjunctive(
+    collection, text, indicative
+):
+    from chinese_frontier.french.collection import snapshot
+
+    lex = Lexicon(
+        [
+            Form("parle", "parler", "VER", feature)
+            for feature in (
+                "ind:pre:1:s",
+                "sub:pre:1:s",
+                "ind:pre:3:s",
+                "sub:pre:3:s",
+            )
+        ],
+        [],
+    )
+    add_cloze(collection, text, learned=True)
+    known = snapshot(collection, {"deck_id": 1}, {}, lex).known
+    person = "1:s" if " je " in f" {text.lower()} " else "3:s"
+    assert (f"parle|parler|VER|ind:pre:{person}" in known.forms) == indicative
+    assert f"parle|parler|VER|sub:pre:{person}" not in known.forms
 
 
 def test_contrast_uses_one_card_and_labels_both_sides(collection):
@@ -1851,3 +1957,151 @@ def test_french_empty_proposal_reason_guides_next_retrieval_and_is_persisted():
     assert "paiement" not in payloads[0]["knowledge"]["established_context"]
     assert "paiement" in payloads[1]["knowledge"]["established_context"]
     assert json.loads(failures[target().key])["reason"] == "Need payment context."
+
+
+def test_review_listing_the_answer_itself_is_not_a_failed_review():
+    # Claude often reports the intended answer among checked alternatives.
+    from chinese_frontier.french.generation import validate_review
+
+    def alternative(answer, reason):
+        return {
+            "example": 0,
+            "answer": answer,
+            "fits_context": answer == "emprunte",
+            "fits_cloze": answer == "emprunte",
+            "reason": reason,
+        }
+
+    review = {
+        "approved": True,
+        "context_checks": context_checks(),
+        "reason": "correct",
+        "search_summary": "checked",
+        "alternatives": [
+            alternative("emprunte", "The intended answer."),
+            alternative("loue", "rent is not borrow"),
+        ],
+    }
+    assert validate_review(review, candidate())
+    review["alternatives"] = review["alternatives"][:1]
+    with pytest.raises(ValidationError, match="Missing alternatives"):
+        validate_review(review, candidate())
+
+
+def test_runtime_errors_record_where_they_were_raised(monkeypatch):
+    from chinese_frontier.french import runtime
+
+    monkeypatch.setattr(runtime, "tooltip", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runtime, "mw", None)
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.valid = lambda epoch: True
+    controller.save = lambda: None
+    controller.state = {"day": 1}
+
+    def explode():
+        return [].items()
+
+    try:
+        explode()
+    except AttributeError as exc:
+        controller.failed(exc, 0)
+    event = controller.state["telemetry"]["events"][-1]
+    assert event["stage"] == "runtime"
+    assert "explode" in event["where"]
+    assert "test_french_frontier.py" in event["where"]
+
+
+METADATA = {"Source", "Dependencies", "Disambiguation"}
+
+
+def field_flags(model):
+    return {f["name"]: (f["excludeFromSearch"], f["collapsed"]) for f in model["flds"]}
+
+
+def test_new_model_hides_metadata_fields(collection):
+    from chinese_frontier.french.collection import ensure_model
+
+    flags = field_flags(ensure_model(collection))
+    assert flags == {name: (name in METADATA, name in METADATA) for name in flags}
+
+
+def test_existing_model_gets_metadata_flags_once(collection):
+    from chinese_frontier.french.collection import ensure_model
+
+    model = ensure_model(collection)
+    for f in model["flds"]:
+        f["excludeFromSearch"] = f["collapsed"] = False
+    collection.models.update_dict(model)
+    upgraded = ensure_model(collection)
+    flags = field_flags(upgraded)
+    assert flags == {name: (name in METADATA, name in METADATA) for name in flags}
+    stored = collection.models.get(upgraded["id"])
+    assert field_flags(stored) == flags
+    before = (stored["mod"], stored["flds"])
+    again = ensure_model(collection)
+    assert (again["mod"], again["flds"]) == before
+
+
+def test_self_listed_answer_is_not_a_fitting_alternative_on_retry():
+    import json
+    from dataclasses import asdict
+    from threading import Event
+
+    from chinese_frontier.french.generation import candidate_hash, generate
+
+    c, t = candidate(), target()
+    decisions = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            if "proposals" in json.dumps(schema):
+                return json.loads(
+                    json.dumps(
+                        {"proposals": [{"key": t.key, "candidates": [asdict(c)]}]}
+                    )
+                )
+            checks = context_checks()
+            checks[0]["sufficient"] = False
+            return {
+                "reviews": [
+                    {
+                        "key": t.key,
+                        "fingerprint": candidate_hash(c),
+                        "approved": False,
+                        "context_checks": checks,
+                        "reason": "context too thin",
+                        "search_summary": "checked",
+                        "alternatives": [
+                            {
+                                "example": 0,
+                                "answer": c.answer,
+                                "fits_context": True,
+                                "fits_cloze": True,
+                                "reason": "The intended answer.",
+                            },
+                            {
+                                "example": 0,
+                                "answer": "loue",
+                                "fits_context": False,
+                                "fits_cloze": False,
+                                "reason": "rent is not borrow",
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    generate(
+        [t],
+        learned("je", "le", "train", "regarde", "parle"),
+        dictionary(),
+        {},
+        Event(),
+        Client(),
+        observe=decisions.append,
+    )
+    assert not any("fitting alternative" in d.get("reason", "") for d in decisions)
+    assert [d["stage"] for d in decisions].count("audit") == 3

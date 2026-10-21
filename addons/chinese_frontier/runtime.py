@@ -51,7 +51,7 @@ from .lexicon import Lexicon
 from .preparation import buffer_size, preparation_needed, previous_lessons, read_lesson
 from .providers import GenerationStopped
 from .state import State, vocabulary_version
-from .telemetry import import_calls, observe, recover
+from .telemetry import error_location, import_calls, observe, recover
 
 MODULE = __name__.split(".")[0]
 
@@ -191,6 +191,7 @@ class Controller:
                 "stage": "runtime",
                 "outcome": "error",
                 "reason": str(exc),
+                "where": error_location(exc),
             }
         )
         self.state.last_error = str(exc)[:2000]
