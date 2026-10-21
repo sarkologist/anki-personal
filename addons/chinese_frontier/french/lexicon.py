@@ -35,12 +35,22 @@ def verb_features(info: str, gender: str, number: str) -> list[str]:
             for n in [number] if number in ("s", "p") else ["s", "p"]:
                 result.append(":".join(filter(None, (base, gender, n))))
         else:
-            result.append(base + ":" + number)
+            # Lexique often leaves the number empty; without Lefff, keep both.
+            for n in [number] if number in ("s", "p") else ["s", "p"]:
+                result.append(base + ":" + n)
     return result
 
 
 def lefff_verbs(text: str) -> set[tuple[str, str, str]]:
-    allowed = set()
+    return {
+        (surface, lemma, f)
+        for (surface, lemma), features in lefff_readings(text).items()
+        for f in features
+    }
+
+
+def lefff_readings(text: str) -> dict[tuple[str, str], list[str]]:
+    readings: dict[tuple[str, str], list[str]] = {}
     moods = {
         "P": "ind:pre",
         "I": "ind:imp",
@@ -60,6 +70,9 @@ def lefff_verbs(text: str) -> set[tuple[str, str, str]]:
             features = ["inf"]
         elif code == "G":
             features = ["par:pre"]
+        elif code == "K":
+            # Invariable participles (été, pu, fallu) carry no agreement.
+            features = ["par:pas:m:s"]
         elif code.startswith("K"):
             features = [
                 "par:pas:" + g + ":" + n
@@ -78,8 +91,9 @@ def lefff_verbs(text: str) -> set[tuple[str, str, str]]:
                 for number in "sp"
                 if number in code
             ]
-        allowed.update((normalize(surface), normalize(lemma), f) for f in features)
-    return allowed
+        known = readings.setdefault((normalize(surface), normalize(lemma)), [])
+        known.extend(f for f in features if f not in known)
+    return readings
 
 
 def normalize(value: str) -> str:
@@ -152,6 +166,12 @@ class Lexicon:
     ) -> Lexicon:
         forms = []
         freq: dict[tuple[str, str], float] = {}
+        readings = lefff_readings(morphological) if morphological else None
+        if readings is not None and sum(map(len, readings.values())) < 10000:
+            raise ValueError("Incomplete Lefff morphology resource")
+        # Lexique's verb readings are incomplete (empty numbers, missing
+        # syncretism), so with Lefff it only supplies IPA and frequency.
+        verbs: dict[tuple[str, str], tuple[str, float]] = {}
         for row in csv.DictReader(io.StringIO(lexical), delimiter="\t"):
             surface, lemma, pos = (
                 normalize(row.get(k, "")) for k in ("1_Mot", "4_Lemme", "5_Cgram")
@@ -167,6 +187,13 @@ class Lexicon:
             frequency = float(row.get("12_FreqLemme") or 0)
             freq[lemma, pos] = max(frequency, freq.get((lemma, pos), 0))
             info = row.get("9_InfoVER", "").strip(";")
+            if pos == "VER" and readings is not None:
+                ipa, frequency = verbs.get((surface, lemma), ("", 0))
+                verbs[surface, lemma] = (
+                    ipa or row.get("3_Phono_IPA", ""),
+                    max(frequency, float(row.get("10_FreqMot") or 0)),
+                )
+                continue
             if pos == "VER":
                 features = verb_features(
                     info, row.get("7_Genre", ""), row.get("8_Nombre", "")
@@ -188,15 +215,9 @@ class Lexicon:
                         float(row.get("10_FreqMot") or 0),
                     )
                 )
-        if morphological:
-            allowed = lefff_verbs(morphological)
-            if len(allowed) < 10000:
-                raise ValueError("Incomplete Lefff morphology resource")
-            forms = [
-                f
-                for f in forms
-                if f.pos != "VER" or (f.surface, f.lemma, f.features) in allowed
-            ]
+        for (surface, lemma), (ipa, frequency) in verbs.items():
+            for feature in (readings or {}).get((surface, lemma), []):
+                forms.append(Form(surface, lemma, "VER", feature, ipa, frequency))
         mapped = {
             "N": "NOM",
             "V": "VER",
@@ -246,10 +267,10 @@ class Lexicon:
 
     @classmethod
     def load(cls, folder: Path) -> Lexicon:
-        path = folder / "lexicon-v2.json"
+        path = folder / "lexicon-v3.json"
         if path.exists():
             data = json.loads(path.read_text(encoding="utf8"))
-            if data.get("version") != 2 or len(data.get("forms", [])) < 10000:
+            if data.get("version") != 3 or len(data.get("forms", [])) < 10000:
                 raise ValueError("Invalid French dictionary cache")
             return cls(
                 [Form(**f) for f in data["forms"]],
@@ -272,7 +293,7 @@ class Lexicon:
         atomic_json(
             path,
             {
-                "version": 2,
+                "version": 3,
                 "forms": [asdict(f) for items in lexicon.forms.values() for f in items],
                 "entries": [asdict(e) for e in lexicon.entries],
                 "sources": [LEXIQUE, FLELEX, LEVELS, LEFFF],

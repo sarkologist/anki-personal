@@ -366,6 +366,68 @@ def test_lefff_blocks_a_bogus_avoir_participle():
     assert ("emprunte", "emprunter", "sub:pre:1:s") in forms
 
 
+def test_lefff_invariable_participle_reads_as_masculine_singular():
+    from chinese_frontier.french.lexicon import lefff_verbs
+
+    # Lefff writes invariable participles (été, pu, fallu) as a bare "K".
+    assert lefff_verbs("été\tv\têtre\tK\npu\tv\tpouvoir\tK") == {
+        ("été", "être", "par:pas:m:s"),
+        ("pu", "pouvoir", "par:pas:m:s"),
+    }
+
+
+def test_lefff_supplies_verb_readings_lexique_leaves_incomplete():
+    # Lexique 4.1 leaves 8_Nombre empty for many common forms, lists bogus
+    # readings (vais as "inf") and misses syncretism (allions as sub:pre).
+    header = "1_Mot\t3_Phono_IPA\t4_Lemme\t5_Cgram\t7_Genre\t8_Nombre\t9_InfoVER\t10_FreqMot\t12_FreqLemme"
+    rows = [
+        "vais\tvɛ\taller\tVER\t\t\tind:pre:1,inf\t300\t900",
+        "allons\talɔ̃\taller\tVER\t\t\tind:pre:1,imp:pre:1,inf\t200\t900",
+        "ira\tiʁa\taller\tVER\t\t\tind:fut:3\t50\t900",
+        "allions\taljɔ̃\taller\tVER\t\tp\tind:imp:1\t5\t900",
+        "allé\tale\taller\tVER\tm\ts\tpar:pas\t40\t900",
+        "allé\tale\taller\tVER\tm\ts\tpar:pas\t1\t900",
+    ] + [f"mot{i}\t\tmot{i}\tNOM\tm\ts\t\t1\t1" for i in range(10000)]
+    lefff = "\n".join(
+        [
+            "vais\tv\taller\tP1s",
+            "allons\tv\taller\tP1p",
+            "allons\tv\taller\tY1p",
+            "ira\tv\taller\tF3s",
+            "allions\tv\taller\tI1p",
+            "allions\tv\taller\tS1p",
+            "allé\tv\taller\tKms",
+        ]
+        + [f"pad{i}\tv\tpad\tW" for i in range(10000)]
+    )
+    graded = "word\ttag\n" + "\n".join(f"mot{i}\tN" for i in range(1000))
+    lex = Lexicon.parse("\n".join([header] + rows), graded, "", lefff)
+
+    def readings(surface):
+        return sorted(f.features for f in lex.analyses(surface))
+
+    assert readings("vais") == ["ind:pre:1:s"]
+    assert readings("allons") == ["imp:pre:1:p", "ind:pre:1:p"]
+    assert readings("ira") == ["ind:fut:3:s"]
+    assert readings("allions") == ["ind:imp:1:p", "sub:pre:1:p"]
+    # Duplicate Lexique rows collapse into one form, keeping the larger frequency.
+    assert [(f.features, f.frequency, f.ipa) for f in lex.analyses("allé")] == [
+        ("par:pas:m:s", 40, "ale")
+    ]
+    assert lex.analyses("vais")[0].frequency == 300
+
+
+def test_verb_features_without_lefff_infer_a_missing_number():
+    from chinese_frontier.french.lexicon import verb_features
+
+    assert verb_features("ind:pre:1,imp:pre:1", "", "") == [
+        "ind:pre:1:s",
+        "ind:pre:1:p",
+        "imp:pre:1:s",
+        "imp:pre:1:p",
+    ]
+
+
 @pytest.mark.parametrize("outdated_policy", [False, True])
 def test_generated_repair_preserves_card_ids_and_scheduling(
     collection, outdated_policy
