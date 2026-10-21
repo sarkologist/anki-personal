@@ -2040,3 +2040,68 @@ def test_existing_model_gets_metadata_flags_once(collection):
     before = (stored["mod"], stored["flds"])
     again = ensure_model(collection)
     assert (again["mod"], again["flds"]) == before
+
+
+def test_self_listed_answer_is_not_a_fitting_alternative_on_retry():
+    import json
+    from dataclasses import asdict
+    from threading import Event
+
+    from chinese_frontier.french.generation import candidate_hash, generate
+
+    c, t = candidate(), target()
+    decisions = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            if "proposals" in json.dumps(schema):
+                return json.loads(
+                    json.dumps(
+                        {"proposals": [{"key": t.key, "candidates": [asdict(c)]}]}
+                    )
+                )
+            checks = context_checks()
+            checks[0]["sufficient"] = False
+            return {
+                "reviews": [
+                    {
+                        "key": t.key,
+                        "fingerprint": candidate_hash(c),
+                        "approved": False,
+                        "context_checks": checks,
+                        "reason": "context too thin",
+                        "search_summary": "checked",
+                        "alternatives": [
+                            {
+                                "example": 0,
+                                "answer": c.answer,
+                                "fits_context": True,
+                                "fits_cloze": True,
+                                "reason": "The intended answer.",
+                            },
+                            {
+                                "example": 0,
+                                "answer": "loue",
+                                "fits_context": False,
+                                "fits_cloze": False,
+                                "reason": "rent is not borrow",
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    generate(
+        [t],
+        learned("je", "le", "train", "regarde", "parle"),
+        dictionary(),
+        {},
+        Event(),
+        Client(),
+        observe=decisions.append,
+    )
+    assert not any("fitting alternative" in d.get("reason", "") for d in decisions)
+    assert [d["stage"] for d in decisions].count("audit") == 3

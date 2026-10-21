@@ -138,6 +138,23 @@ def french_contexts(candidate: Candidate) -> list[str]:
     ]
 
 
+def competing_alternatives(review: dict[str, Any], candidate: Candidate) -> list[Any]:
+    """Drop self-listed answers so retries never treat them as fitting rivals."""
+    answers = [candidate.answer] + (
+        [candidate.contrast["answer"]] if candidate.contrast else []
+    )
+    return [
+        a
+        for a in review.get("alternatives", [])
+        if not (
+            isinstance(a, dict)
+            and isinstance(a.get("answer"), str)
+            and a.get("example") in range(len(answers))
+            and normalize(a["answer"]) == normalize(answers[a["example"]])
+        )
+    ]
+
+
 def validate_review(review: Any, candidate: Candidate) -> bool:
     if not isinstance(review, dict) or type(review.get("approved")) is not bool:
         raise ValidationError("Invalid independent review")
@@ -862,7 +879,11 @@ When supplying a contrast object, the TOP-LEVEL mode MUST be contrast. The neste
                     c.mode,
                     review["reason"],
                 )
-                feedback[key] = {**review, "rejected_candidate": asdict(c)}
+                feedback[key] = {
+                    **review,
+                    "alternatives": competing_alternatives(review, c),
+                    "rejected_candidate": asdict(c),
+                }
                 if approved:
                     audit = {
                         "policy": POLICY,
