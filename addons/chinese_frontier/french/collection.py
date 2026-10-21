@@ -163,10 +163,10 @@ def extra_field(
     explanation: str, kind: str, form_key: str, mode: str, lexicon: Lexicon
 ) -> str:
     if mode == "stem":
-        return html.escape("Recall the missing part using the visible stem.")
+        explanation = "Recall the missing part using the visible stem."
     tables = (
         conjugation_tables(lexicon, form_key)
-        if kind == "conjugation" and mode == "word"
+        if kind == "conjugation" and mode in ("word", "stem")
         else ""
     )
     return html.escape(explanation) + tables
@@ -187,7 +187,6 @@ def refresh_conjugation_tables(col: Collection, lexicon: Lexicon) -> OpChanges:
         if (
             TAG not in note.tags
             or REPAIR_TAG in note.tags
-            or data.get("policy") != POLICY
             or not isinstance(target, dict)
             or not isinstance(candidate, dict)
             or target.get("kind") != "conjugation"

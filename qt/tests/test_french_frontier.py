@@ -1964,7 +1964,7 @@ def test_conjugation_tables_show_tested_tense_and_present_indicative():
     )
 
 
-def test_existing_conjugation_notes_gain_tables_without_repair(collection):
+def test_existing_conjugation_notes_gain_tables_without_regeneration(collection):
     import html
     import json
 
@@ -2013,6 +2013,7 @@ def test_existing_conjugation_notes_gain_tables_without_repair(collection):
     metadata = json.loads(html.unescape(note["Source"]))
     metadata["target"]["kind"] = "conjugation"
     metadata["form_key"] = "aille|aller|VER|sub:pre:3:s"
+    metadata["policy"] = POLICY - 1  # outdated notes still get tables
     note["CardKind"] = "Conjugation"
     metadata["presentation_hash"] = presentation_hash(
         {name: note[name] for name in note.keys()}
@@ -2026,7 +2027,22 @@ def test_existing_conjugation_notes_gain_tables_without_repair(collection):
     assert note["Extra"].startswith(html.escape(c.explanation))
     assert '<font color="#ff0000">aille</font>' in note["Extra"]
     assert collection.db.all("select * from cards where nid=?", nid) == cards
-    assert not snapshot(collection, settings, {}, dictionary()).repairs
+    # Still queued for regeneration because of its policy, not because of tables.
+    assert json.loads(html.unescape(note["Source"]))["policy"] == POLICY - 1
+    assert len(snapshot(collection, settings, {}, dictionary()).repairs) == 1
     mod = note.mod
     refresh_conjugation_tables(collection, aller())
     assert collection.get_note(nid).mod == mod
+
+
+def test_partial_word_conjugation_cards_also_get_tables():
+    from chinese_frontier.french.collection import extra_field
+
+    extra = extra_field(
+        "x", "conjugation", "aille|aller|VER|sub:pre:3:s", "stem", aller()
+    )
+    assert extra.startswith("Recall the missing part")
+    assert '<font color="#ff0000">aille</font>' in extra
+    assert "SUBJONCTIF" not in extra_field(
+        "x", "vocabulary", "aille|aller|VER|sub:pre:3:s", "stem", aller()
+    )
