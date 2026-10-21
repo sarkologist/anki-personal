@@ -88,6 +88,10 @@ def request_repair(col: Collection, note_id: int) -> OpChanges:
     return col.update_note(note)
 
 
+QUESTION_QUE = re.compile(r"(?:\bqu['’]\s*)?\best-ce\s+(?:que\b|qu['’])", re.I)
+SUBJUNCTIVE_QUE = re.compile(r"\b(?:quoi)?(?:que\b|qu['’])", re.I)
+
+
 def contextual_analyses(value: str, match: Any, lexicon: Lexicon) -> tuple[str, ...]:
     answer = plain_text(match[2].split("::", 1)[0])
     forms = lexicon.analyses(answer)
@@ -124,12 +128,14 @@ def contextual_analyses(value: str, match: Any, lexicon: Lexicon) -> tuple[str, 
             and f.features.startswith(("ind:", "sub:", "cnd:"))
         ]
         if finite:
-            if normalize(before) == pronoun:
-                indicative = [f for f in finite if f.features.startswith("ind:pre:")]
-                if indicative and all(
-                    f.features.startswith(("ind:pre:", "sub:pre:")) for f in finite
-                ):
-                    finite = indicative
+            # The subjunctive needs a governing que; a subject with none
+            # before it (est-ce que only marks a question) is not subjunctive.
+            if not SUBJUNCTIVE_QUE.search(
+                QUESTION_QUE.sub(" ", before[: subject.start()])
+            ):
+                finite = [
+                    f for f in finite if not f.features.startswith("sub:")
+                ] or finite
             return tuple(f.key for f in finite)
     if re.search(
         r"\b(ai|as|a|avons|avez|ont|avais|avait|avaient|aviez|avions)\s*$", before, re.I

@@ -563,6 +563,42 @@ def test_standalone_subject_establishes_present_not_subjunctive(collection):
     assert "parle|parler|VER|sub:pre:1:s" not in known.forms
 
 
+@pytest.mark.parametrize(
+    "text,indicative",
+    [
+        ("Le soir, je {{c1::parle}} français.", True),
+        ("Est-ce que je {{c1::parle}} trop ?", True),
+        ("Qu'est-ce qu'il {{c1::parle}} bien !", True),
+        ("Il faut que je {{c1::parle}}.", False),
+        ("Il faut qu'il {{c1::parle}}.", False),
+        ("Bien qu'elle {{c1::parle}} vite, on comprend.", False),
+        ("Quoiqu'il {{c1::parle}} peu, il écoute.", False),
+    ],
+)
+def test_subject_without_preceding_que_rules_out_subjunctive(
+    collection, text, indicative
+):
+    from chinese_frontier.french.collection import snapshot
+
+    lex = Lexicon(
+        [
+            Form("parle", "parler", "VER", feature)
+            for feature in (
+                "ind:pre:1:s",
+                "sub:pre:1:s",
+                "ind:pre:3:s",
+                "sub:pre:3:s",
+            )
+        ],
+        [],
+    )
+    add_cloze(collection, text, learned=True)
+    known = snapshot(collection, {"deck_id": 1}, {}, lex).known
+    person = "1:s" if " je " in f" {text.lower()} " else "3:s"
+    assert (f"parle|parler|VER|ind:pre:{person}" in known.forms) == indicative
+    assert f"parle|parler|VER|sub:pre:{person}" not in known.forms
+
+
 def test_contrast_uses_one_card_and_labels_both_sides(collection):
     from chinese_frontier.french.collection import SETTINGS, admit
     from chinese_frontier.french.generation import Draft, candidate_hash
