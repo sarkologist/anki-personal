@@ -2009,3 +2009,34 @@ def test_runtime_errors_record_where_they_were_raised(monkeypatch):
     assert event["stage"] == "runtime"
     assert "explode" in event["where"]
     assert "test_french_frontier.py" in event["where"]
+
+
+METADATA = {"Source", "Dependencies", "Disambiguation"}
+
+
+def field_flags(model):
+    return {f["name"]: (f["excludeFromSearch"], f["collapsed"]) for f in model["flds"]}
+
+
+def test_new_model_hides_metadata_fields(collection):
+    from chinese_frontier.french.collection import ensure_model
+
+    flags = field_flags(ensure_model(collection))
+    assert flags == {name: (name in METADATA, name in METADATA) for name in flags}
+
+
+def test_existing_model_gets_metadata_flags_once(collection):
+    from chinese_frontier.french.collection import ensure_model
+
+    model = ensure_model(collection)
+    for f in model["flds"]:
+        f["excludeFromSearch"] = f["collapsed"] = False
+    collection.models.update_dict(model)
+    upgraded = ensure_model(collection)
+    flags = field_flags(upgraded)
+    assert flags == {name: (name in METADATA, name in METADATA) for name in flags}
+    stored = collection.models.get(upgraded["id"])
+    assert field_flags(stored) == flags
+    before = (stored["mod"], stored["flds"])
+    again = ensure_model(collection)
+    assert (again["mod"], again["flds"]) == before
