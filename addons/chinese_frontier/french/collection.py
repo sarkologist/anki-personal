@@ -88,11 +88,11 @@ def request_repair(col: Collection, note_id: int) -> OpChanges:
     return col.update_note(note)
 
 
-QUESTION_QUE = re.compile(r"(?:\bqu['’]\s*)?\best-ce\s+(?:que\b|qu['’])", re.I)
+QUESTION_QUE = re.compile(r"(?:\bqu['’ʼ‘]\s*)?\best-ce\s+(?:que\b|qu['’ʼ‘])", re.I)
 # que governs most subjunctives; a relative (où, dont, qui, lequel) after an
 # indefinite or superlative antecedent can be subjunctive without one.
 SUBJUNCTIVE_TRIGGER = re.compile(
-    r"\b(?:(?:quoi)?(?:que\b|qu['’])|où\b|dont\b|qui\b"
+    r"\b(?:(?:quoi)?(?:que\b|qu['’ʼ‘])|où\b|dont\b|qui\b"
     r"|(?:le|la|les|au|aux|du|des)quel(?:le)?s?\b)",
     re.I,
 )
