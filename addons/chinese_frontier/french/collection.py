@@ -88,6 +88,16 @@ def request_repair(col: Collection, note_id: int) -> OpChanges:
     return col.update_note(note)
 
 
+QUESTION_QUE = re.compile(r"(?:\bqu['’ʼ‘]\s*)?\best-ce\s+(?:que\b|qu['’ʼ‘])", re.I)
+# que governs most subjunctives; a relative (où, dont, qui, lequel) after an
+# indefinite or superlative antecedent can be subjunctive without one.
+SUBJUNCTIVE_TRIGGER = re.compile(
+    r"\b(?:(?:quoi)?(?:que\b|qu['’ʼ‘])|où\b|dont\b|qui\b"
+    r"|(?:le|la|les|au|aux|du|des)quel(?:le)?s?\b)",
+    re.I,
+)
+
+
 def contextual_analyses(value: str, match: Any, lexicon: Lexicon) -> tuple[str, ...]:
     answer = plain_text(match[2].split("::", 1)[0])
     forms = lexicon.analyses(answer)
@@ -124,12 +134,14 @@ def contextual_analyses(value: str, match: Any, lexicon: Lexicon) -> tuple[str, 
             and f.features.startswith(("ind:", "sub:", "cnd:"))
         ]
         if finite:
-            if normalize(before) == pronoun:
-                indicative = [f for f in finite if f.features.startswith("ind:pre:")]
-                if indicative and all(
-                    f.features.startswith(("ind:pre:", "sub:pre:")) for f in finite
-                ):
-                    finite = indicative
+            # A subject with no que or relative before it (est-ce que only
+            # marks a question) is not subjunctive.
+            if not SUBJUNCTIVE_TRIGGER.search(
+                QUESTION_QUE.sub(" ", before[: subject.start()])
+            ):
+                finite = [
+                    f for f in finite if not f.features.startswith("sub:")
+                ] or finite
             return tuple(f.key for f in finite)
     if re.search(
         r"\b(ai|as|a|avons|avez|ont|avais|avait|avaient|aviez|avions)\s*$", before, re.I
