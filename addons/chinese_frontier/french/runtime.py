@@ -34,7 +34,14 @@ from ..preparation import buffer_size, preparation_needed, previous_lessons
 from ..providers import GenerationStopped
 from ..refill import record_batch, refill_ready, reserve_batch, reset_day
 from ..telemetry import error_location, import_calls, observe, recover
-from .collection import SETTINGS, Admission, admit, request_repair, snapshot
+from .collection import (
+    SETTINGS,
+    Admission,
+    admit,
+    refresh_conjugation_tables,
+    request_repair,
+    snapshot,
+)
 from .core import MODEL, POLICY, TAG
 from .generation import (
     Draft,
@@ -57,6 +64,7 @@ class Controller:
         self.epoch = 0
         self.busy = False
         self.lexicon = None
+        self.tables_refreshed = False
         self.path: Path | None = None
         self.folder = Path(__file__).parent.parent / "user_files" / "french-dictionary"
         self.state: dict[str, Any] = {}
@@ -122,6 +130,7 @@ class Controller:
         self.epoch += 1
         self.timer.stop()
         self.busy = False
+        self.tables_refreshed = False
         self.path = None
 
     def opened(self) -> None:
@@ -236,6 +245,24 @@ class Controller:
             )
             return
         lexicon = self.lexicon
+        if not self.tables_refreshed:
+
+            def refreshed(_changes: OpChanges) -> None:
+                if not self.valid(epoch):
+                    return
+                self.tables_refreshed = True
+                self.busy = False
+                self.tick(force=force)
+
+            def unrefreshed(exc: Exception) -> None:
+                # Missing tables are cosmetic; never let them block generation.
+                self.tables_refreshed = True
+                self.failed(exc, epoch)
+
+            CollectionOp(
+                parent=mw, op=lambda col: refresh_conjugation_tables(col, lexicon)
+            ).success(refreshed).failure(unrefreshed).run_in_background(initiator=self)
+            return
         QueryOp(
             parent=mw,
             op=lambda col: snapshot(col, settings, config, lexicon),

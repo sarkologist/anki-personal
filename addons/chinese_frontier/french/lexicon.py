@@ -134,8 +134,43 @@ def atomic_json(path: Path, data: object) -> None:
     temporary.replace(path)
 
 
+def load_paradigms(
+    folder: Path, lexicon: Lexicon, morphology: str = ""
+) -> dict[str, dict[str, list[str]]]:
+    path = folder / "paradigms-v1.json"
+    if path.exists() and not morphology:
+        data = json.loads(path.read_text(encoding="utf8"))
+        if data.get("version") == 1:
+            return data["paradigms"]
+    verbs = {lemma for lemma, pos in lexicon.lemmas if pos == "VER"}
+    paradigms: dict[str, dict[str, list[str]]] = {}
+    for surface, lemma, features in sorted(
+        lefff_verbs(morphology or fetch(LEFFF).decode("utf8"))
+    ):
+        if lemma in verbs:
+            paradigms.setdefault(lemma, {}).setdefault(features, []).append(surface)
+    # Lefff lists rare variants (e.g. "st" for "sont"); prefer attested spellings.
+    attested = {(f.lemma, f.surface) for forms in lexicon.forms.values() for f in forms}
+    for lemma, slots in paradigms.items():
+        for features, surfaces in slots.items():
+            if len(surfaces) > 1:
+                slots[features] = [
+                    s for s in surfaces if (lemma, s) in attested
+                ] or surfaces
+    atomic_json(path, {"version": 1, "paradigms": paradigms, "sources": [LEFFF]})
+    return paradigms
+
+
 class Lexicon:
-    def __init__(self, forms: list[Form], entries: list[Entry]) -> None:
+    def __init__(
+        self,
+        forms: list[Form],
+        entries: list[Entry],
+        paradigms: dict[str, dict[str, list[str]]] | None = None,
+    ) -> None:
+        # Complete Lefff verb paradigms (lemma -> features -> surfaces), used for
+        # display only; Lexique omits or mislabels many inflections.
+        self.paradigms = paradigms or {}
         self.forms: dict[str, list[Form]] = {}
         self.lemmas: dict[tuple[str, str], list[Form]] = {}
         for form in forms:
@@ -251,10 +286,12 @@ class Lexicon:
             data = json.loads(path.read_text(encoding="utf8"))
             if data.get("version") != 2 or len(data.get("forms", [])) < 10000:
                 raise ValueError("Invalid French dictionary cache")
-            return cls(
+            lexicon = cls(
                 [Form(**f) for f in data["forms"]],
                 [Entry(**e) for e in data["entries"]],
             )
+            lexicon.paradigms = load_paradigms(folder, lexicon)
+            return lexicon
         archive = zipfile.ZipFile(io.BytesIO(fetch(LEXIQUE)))
         name = next(
             n
@@ -263,12 +300,14 @@ class Lexicon:
         )
         if archive.getinfo(name).file_size > 100 * 1024 * 1024:
             raise ValueError("French lexical resource is too large")
+        morphology = fetch(LEFFF).decode("utf8")
         lexicon = cls.parse(
             archive.read(name).decode("utf8"),
             fetch(FLELEX).decode("utf8"),
             fetch(LEVELS).decode("utf8"),
-            fetch(LEFFF).decode("utf8"),
+            morphology,
         )
+        lexicon.paradigms = load_paradigms(folder, lexicon, morphology)
         atomic_json(
             path,
             {

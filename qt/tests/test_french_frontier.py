@@ -1903,3 +1903,130 @@ def test_runtime_errors_record_where_they_were_raised(monkeypatch):
     assert event["stage"] == "runtime"
     assert "explode" in event["where"]
     assert "test_french_frontier.py" in event["where"]
+
+
+def aller():
+    persons = ["1:s", "2:s", "3:s", "1:p", "2:p", "3:p"]
+    sub = ["aille", "ailles", "aille", "allions", "alliez", "aillent"]
+    ind = ["vais", "vas", "va", "allons", "allez", "vont"]
+    paradigm = {"par:pas:m:s": ["allé"]}
+    for tense, forms in (("sub:pre", sub), ("ind:pre", ind)):
+        for person, surface in zip(persons, forms, strict=True):
+            paradigm[tense + ":" + person] = [surface]
+    return Lexicon([], [], {"aller": paradigm})
+
+
+def test_paradigms_come_from_lefff_and_are_cached(tmp_path, monkeypatch):
+    from chinese_frontier.french import lexicon as module
+
+    lex = Lexicon(
+        [
+            Form("aille", "aller", "VER", "sub:pre:3:s"),
+            Form("sont", "être", "VER", "ind:pre:3:p"),
+        ],
+        [],
+    )
+    mlex = (
+        "aille\tv\taller\tS13s\nallions\tv\taller\tS1p\n"
+        "sont\tv\têtre\tP3p\nst\tv\têtre\tP3p\nfoo\tv\tfaux\tS3s\n"
+    )
+    paradigms = module.load_paradigms(tmp_path, lex, mlex)
+    assert paradigms == {
+        "aller": {
+            "sub:pre:1:s": ["aille"],
+            "sub:pre:3:s": ["aille"],
+            "sub:pre:1:p": ["allions"],
+        },
+        "être": {"ind:pre:3:p": ["sont"]},
+    }
+    monkeypatch.setattr(module, "fetch", lambda url: pytest.fail("refetched"))
+    assert module.load_paradigms(tmp_path, lex) == paradigms
+
+
+def test_conjugation_tables_show_tested_tense_and_present_indicative():
+    from chinese_frontier.french.collection import conjugation_tables
+
+    tables = conjugation_tables(aller(), "aille|aller|VER|sub:pre:3:s")
+    assert tables.index("SUBJONCTIF") < tables.index("INDICATIF")
+    assert "<i>que&nbsp;j&#x27;</i><i>aille</i>" in tables
+    assert (
+        '<i>qu&#x27;il/elle&nbsp;</i><i><font color="#ff0000">aille</font></i>'
+        in tables
+    )
+    assert "<i>qu&#x27;ils/elles&nbsp;</i><i>aillent</i>" in tables
+    assert "<i>je&nbsp;</i><i>vais</i>" in tables
+    assert tables.count("#ff0000") == 1
+    present = conjugation_tables(aller(), "vont|aller|VER|ind:pre:3:p")
+    assert present.count("INDICATIF") == 1 and "SUBJONCTIF" not in present
+    assert (
+        conjugation_tables(aller(), "allé|aller|VER|par:pas:m:s").count("INDICATIF")
+        == 1
+    )
+
+
+def test_existing_conjugation_notes_gain_tables_without_repair(collection):
+    import html
+    import json
+
+    from chinese_frontier.french.collection import (
+        SETTINGS,
+        admit,
+        presentation_hash,
+        refresh_conjugation_tables,
+        snapshot,
+    )
+    from chinese_frontier.french.generation import Draft, candidate_hash
+
+    settings = {"enabled": True, "deck_id": 1}
+    collection.set_config(SETTINGS, settings)
+    for word in ("je", "le", "train", "regarde", "parle"):
+        add_cloze(collection, "{{c1::" + word + "}}", learned=True)
+    c, t = candidate(), target()
+    review = {
+        "approved": True,
+        "context_checks": context_checks(),
+        "reason": "clear",
+        "search_summary": "Checked rent",
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": True,
+                "reason": "rent differs",
+            }
+        ],
+    }
+    d = Draft(
+        t,
+        c,
+        {
+            "policy": POLICY,
+            "target_key": t.key,
+            "fingerprint": candidate_hash(c),
+            "review": review,
+        },
+    )
+    nid = admit(collection, settings, {}, [d], dictionary()).admitted[0]
+    # Reshape the note into a legacy conjugation note with a consistent hash.
+    note = collection.get_note(nid)
+    metadata = json.loads(html.unescape(note["Source"]))
+    metadata["target"]["kind"] = "conjugation"
+    metadata["form_key"] = "aille|aller|VER|sub:pre:3:s"
+    note["CardKind"] = "Conjugation"
+    metadata["presentation_hash"] = presentation_hash(
+        {name: note[name] for name in note.keys()}
+    )
+    note["Source"] = html.escape(json.dumps(metadata, ensure_ascii=False))
+    collection.update_note(note)
+    cards = collection.db.all("select * from cards where nid=?", nid)
+
+    refresh_conjugation_tables(collection, aller())
+    note = collection.get_note(nid)
+    assert note["Extra"].startswith(html.escape(c.explanation))
+    assert '<font color="#ff0000">aille</font>' in note["Extra"]
+    assert collection.db.all("select * from cards where nid=?", nid) == cards
+    assert not snapshot(collection, settings, {}, dictionary()).repairs
+    mod = note.mod
+    refresh_conjugation_tables(collection, aller())
+    assert collection.get_note(nid).mod == mod
