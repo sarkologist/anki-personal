@@ -107,6 +107,8 @@ field logs the provider, candidate examples, checked alternatives, whether each 
 the situation and visible characters, reasons, and approval/defer status. The model's
 approval is rejected when its own report says an alternative fits. These checks are
 model judgments, not proof that every possible alternative was considered.
+The `Source`, `Dependencies` and `Disambiguation` metadata fields are collapsed
+in the editor and excluded from unqualified searches.
 
 Existing generated cards are audited automatically after this upgrade or a visible
 content edit. Approved examples keep their content; ambiguous examples are repaired
@@ -187,3 +189,22 @@ idempotency, transaction rollback, undo, and schedule-preserving sentence repair
 The same installed add-on now also exposes Tools → French Frontier. It adds
 French vocabulary and conjugation notes using independent settings and evidence,
 and preserves existing French cards. See [French Frontier](french/README.md).
+
+## Diagnostics
+
+Both Tools dialogs contain Overview, Model calls and Decisions tabs, refreshed each
+second. Overview shows the last native budget snapshot, approved buffer, active
+request age, cooldown and cycle budget, observed target approval yield, admitted
+notes and physical cards, and existing-note updates (including audit metadata).
+Model calls include French target ranking as well as writing and independent review.
+Select a call for model setting, schema/input/output character counts, targets and
+errors. Decisions show validation, language-audit, empty-output and admission
+rejections, plus stored deferred reasons. Export diagnostics saves a local JSON report.
+
+Telemetry is profile-local inside the existing state JSON files. It keeps the last
+100 completed calls, 300 events and 14 Anki-day summaries, with persistent aggregate
+counters. Recent legacy call records are imported once; missing batch history is
+not reconstructed. Restarted in-flight calls are marked interrupted with unknown
+latency. Character counts are not tokens, billing or subscription quota. A call
+returning JSON does not imply a card passed review, and gate acceptance does not
+measure learning outcomes. No telemetry is uploaded automatically.

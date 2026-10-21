@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from threading import Event
@@ -14,6 +13,7 @@ from .core import Candidate, Source, Validated, ValidationError, validate_candid
 from .lexicon import Lexicon, is_word
 from .preparation import context_bundle, pack_lesson
 from .providers import CliGenerator
+from .telemetry import decision, request_model
 
 GENERATION_POLICY = 3
 
@@ -249,6 +249,7 @@ def generate(
     contexts: dict[str, list[dict[str, Any]]] | None = None,
     on_approved: Callable[[list[Draft]], None] | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
+    observe: Callable[[dict[str, Any]], None] | None = None,
 ) -> GenerationResult:
     generator = CliGenerator(config, stop)
     generator.check_login()
@@ -293,29 +294,22 @@ def generate(
     query += " " + json.dumps(lessons, ensure_ascii=False)
     attempt_index = 0
 
-    def request(prompt: str, schema: dict[str, Any], phase: str) -> Any:
-        event = {
-            "phase": phase,
-            "attempt": attempt_index,
-            "started_at": time.time(),
-            "prompt_chars": len(prompt),
-            "target_count": len(sources),
-            "finished": False,
-        }
-        if progress:
-            progress(event.copy())
-        started = time.monotonic()
-        try:
-            return generator.request(prompt, schema)
-        except Exception as exc:
-            event["error"] = str(exc)[:2000]
-            raise
-        finally:
-            event.update(
-                finished=True, elapsed_seconds=round(time.monotonic() - started, 2)
-            )
-            if progress:
-                progress(event.copy())
+    def request(
+        prompt: str, schema: dict[str, Any], phase: str, call_sources: list[Source]
+    ) -> Any:
+        return request_model(
+            generator,
+            prompt,
+            schema,
+            config,
+            phase,
+            attempt_index,
+            [
+                {"key": s.key, "target": s.word}
+                for s in {s.key: s for s in call_sources}.values()
+            ],
+            progress,
+        )
 
     by_id = {source.card_id: source for source in sources}
     history: dict[int, list[dict[str, Any]]] = {
@@ -384,7 +378,12 @@ Data:\n""" + json.dumps(
             },
             ensure_ascii=False,
         )
-        response = request(prompt, REVIEW_SCHEMA, "Checking alternative answers")
+        response = request(
+            prompt,
+            REVIEW_SCHEMA,
+            "Checking alternative answers",
+            [s for s, _valid in items],
+        )
         reports = response.get("reviews")
         if not isinstance(reports, list):
             raise ValidationError("Missing language reviews")
@@ -406,6 +405,15 @@ Data:\n""" + json.dumps(
         for key, (source, valid) in expected.items():
             report = indexed[key]
             approved = validate_review(report, valid.candidate, source)
+            decision(
+                observe,
+                "audit",
+                "accepted" if approved else "rejected",
+                source.word,
+                source.key,
+                valid.candidate.mode,
+                report["reason"],
+            )
             history[source.card_id].append(
                 {"candidate": asdict(valid.candidate), "review": report}
             )
@@ -514,6 +522,7 @@ not become trivial copy-the-visible-character drills; defer if no useful recall 
             + json.dumps(data, ensure_ascii=False),
             GENERATION_SCHEMA,
             "Writing sentences",
+            pending,
         )
         proposals = response.get("proposals")
         if not isinstance(proposals, list):
@@ -540,8 +549,27 @@ not become trivial copy-the-visible-character drills; defer if no useful recall 
                 and isinstance(proposal.get("reason"), str)
                 and proposal["reason"].strip()
             ):
+                decision(
+                    observe,
+                    "writer",
+                    "empty",
+                    by_id[cid].word,
+                    by_id[cid].key,
+                    mode,
+                    proposal["reason"],
+                )
                 if not history[cid]:
                     deferred[by_id[cid].key] = proposal["reason"][:1200]
+            if not candidates and not str(proposal.get("reason", "")).strip():
+                decision(
+                    observe,
+                    "writer",
+                    "empty",
+                    by_id[cid].word,
+                    by_id[cid].key,
+                    mode,
+                    "Writer returned no candidates.",
+                )
             used = set()
             for value in candidates:
                 try:
@@ -553,9 +581,28 @@ not become trivial copy-the-visible-character drills; defer if no useful recall 
                         candidate, by_id[cid], set(known), lexicon
                     )
                 except ValidationError as exc:
+                    decision(
+                        observe,
+                        "validation",
+                        "rejected",
+                        by_id[cid].word,
+                        by_id[cid].key,
+                        mode,
+                        str(exc),
+                    )
                     deferred[by_id[cid].key] = str(exc)
                     continue
                 items.append((by_id[cid], valid))
+        for cid in ids - seen:
+            decision(
+                observe,
+                "writer",
+                "empty",
+                by_id[cid].word,
+                by_id[cid].key,
+                mode,
+                "Writer omitted the target.",
+            )
         review(items)
     for draft in drafts.values():
         deferred.pop(draft.source.key, None)

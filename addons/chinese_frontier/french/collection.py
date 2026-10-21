@@ -12,7 +12,7 @@ from typing import Any
 from anki.collection import Collection, OpChanges
 from anki.decks import DeckId
 
-from ..collection import _descendants, _ids, _read_budgets
+from ..collection import _descendants, _hide_metadata, _ids, _read_budgets
 from ..core import (
     CLOZE,
     DeckBudget,
@@ -88,6 +88,16 @@ def request_repair(col: Collection, note_id: int) -> OpChanges:
     return col.update_note(note)
 
 
+QUESTION_QUE = re.compile(r"(?:\bqu['’ʼ‘]\s*)?\best-ce\s+(?:que\b|qu['’ʼ‘])", re.I)
+# que governs most subjunctives; a relative (où, dont, qui, lequel) after an
+# indefinite or superlative antecedent can be subjunctive without one.
+SUBJUNCTIVE_TRIGGER = re.compile(
+    r"\b(?:(?:quoi)?(?:que\b|qu['’ʼ‘])|où\b|dont\b|qui\b"
+    r"|(?:le|la|les|au|aux|du|des)quel(?:le)?s?\b)",
+    re.I,
+)
+
+
 def contextual_analyses(value: str, match: Any, lexicon: Lexicon) -> tuple[str, ...]:
     answer = plain_text(match[2].split("::", 1)[0])
     forms = lexicon.analyses(answer)
@@ -124,12 +134,14 @@ def contextual_analyses(value: str, match: Any, lexicon: Lexicon) -> tuple[str, 
             and f.features.startswith(("ind:", "sub:", "cnd:"))
         ]
         if finite:
-            if normalize(before) == pronoun:
-                indicative = [f for f in finite if f.features.startswith("ind:pre:")]
-                if indicative and all(
-                    f.features.startswith(("ind:pre:", "sub:pre:")) for f in finite
-                ):
-                    finite = indicative
+            # A subject with no que or relative before it (est-ce que only
+            # marks a question) is not subjunctive.
+            if not SUBJUNCTIVE_TRIGGER.search(
+                QUESTION_QUE.sub(" ", before[: subject.start()])
+            ):
+                finite = [
+                    f for f in finite if not f.features.startswith("sub:")
+                ] or finite
             return tuple(f.key for f in finite)
     if re.search(
         r"\b(ai|as|a|avons|avez|ont|avais|avait|avaient|aviez|avions)\s*$", before, re.I
@@ -380,11 +392,14 @@ def ensure_model(col: Collection) -> dict[str, Any]:
             or len(model["tmpls"]) != 1
         ):
             raise ValueError("French Frontier note type has incompatible fields")
+        if _hide_metadata(model):
+            col.models.update_dict(model)
         return model
     model = col.models.new(MODEL)
     model["type"] = 1
     for name in FIELDS:
         col.models.add_field(model, col.models.new_field(name))
+    _hide_metadata(model)
     template = col.models.new_template("Sentence")
     template["qfmt"] = FRONT
     template["afmt"] = BACK
@@ -402,6 +417,8 @@ class Admission:
     admitted: list[int]
     remaining: list[Draft]
     rejected: dict[str, str]
+    added_cards: int = 0
+    repaired_notes: int = 0
 
 
 def admit(
@@ -416,6 +433,7 @@ def admit(
     current = snapshot(col, settings, config, lexicon)
     capacity = current.slots
     admitted = []
+    added_cards = repaired_notes = 0
     remaining = []
     rejected = {}
     undo = None
@@ -522,8 +540,12 @@ def admit(
             col.add_note(note, DeckId(current.deck_id))
         if len(note.cards()) != 1:
             raise ValueError("French proposal unexpectedly created extra cards")
+        added_cards += 0 if draft.repair_note else 1
+        repaired_notes += 1 if draft.repair_note else 0
         admitted.append(int(note.id))
         current.keys.add(draft.target.key)
         capacity -= 0 if draft.repair_note else 1
     changes = col.merge_undo_entries(undo) if undo is not None else OpChanges()
-    return Admission(changes, admitted, remaining, rejected)
+    return Admission(
+        changes, admitted, remaining, rejected, added_cards, repaired_notes
+    )

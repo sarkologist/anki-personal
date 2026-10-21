@@ -99,6 +99,8 @@ Contrast and stem cards display only **Disambiguation** on both sides. The hidde
 editor field `Disambiguation` records the checked alternatives, judgments,
 provider, content fingerprint and referenced context evidence. Review templates
 never display that field. Model review is not an exhaustive ambiguity proof.
+The `Source`, `Dependencies` and `Disambiguation` metadata fields are collapsed
+in the editor and excluded from unqualified searches.
 
 Source and presentation hashes bind approved drafts to their actual content.
 Admission rechecks current evidence, settings, duplicates and native budgets.

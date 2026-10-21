@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from threading import Event
 from typing import Any
@@ -29,9 +29,11 @@ from aqt.qt import (
 )
 from aqt.utils import tooltip
 
-from ..preparation import preparation_needed, previous_lessons
+from ..diagnostics import Diagnostics
+from ..preparation import buffer_size, preparation_needed, previous_lessons
 from ..providers import GenerationStopped
 from ..refill import record_batch, refill_ready, reserve_batch, reset_day
+from ..telemetry import error_location, import_calls, observe, recover
 from .collection import SETTINGS, Admission, admit, request_repair, snapshot
 from .core import MODEL, POLICY, TAG
 from .generation import (
@@ -62,6 +64,40 @@ class Controller:
         self.last_version = ""
         self.request_started_at = 0.0
 
+    def observe(self, event: dict[str, Any]) -> None:
+        observe(
+            self.state.setdefault("telemetry", {}), event, self.state.get("day", -1)
+        )
+        self.save()
+
+    def diagnostics_data(self) -> dict[str, Any]:
+        return {
+            "store": self.state.setdefault("telemetry", {}),
+            "state": {
+                k: self.state.get(k, 0)
+                for k in (
+                    "day",
+                    "retry_after",
+                    "refill_at",
+                    "cycle_batches",
+                    "cycle_limit",
+                )
+            },
+            "status": self.status,
+            "busy": self.busy,
+            "prepared": sum(
+                not d.get("repair_note") for d in self.state.get("drafts", [])
+            ),
+            "buffer": buffer_size(self.config()),
+            "deferred": dict(
+                sorted(
+                    self.state.get("deferred", {}).items(),
+                    key=lambda item: item[1].get("retry_after", 0),
+                    reverse=True,
+                )[:20]
+            ),
+        }
+
     def config(self) -> dict[str, Any]:
         base = mw.addonManager.getConfig(MODULE) or {}
         return {**base, **base.get("french", {})}
@@ -80,6 +116,8 @@ class Controller:
         )
 
     def closed(self) -> None:
+        recover(self.state.setdefault("telemetry", {}), self.state.get("day", -1))
+        self.save()
         self.stop.set()
         self.epoch += 1
         self.timer.stop()
@@ -102,6 +140,13 @@ class Controller:
             self.status = "Could not read French state: " + str(exc)
             tooltip(self.status)
             return
+        import_calls(
+            self.state.setdefault("telemetry", {}),
+            self.state.get("model_calls", []),
+            self.state.get("day", -1),
+        )
+        recover(self.state.setdefault("telemetry", {}), self.state.get("day", -1))
+        self.save()
         config = self.config()
         if (
             not mw.col.get_config(SETTINGS, {})
@@ -125,6 +170,15 @@ class Controller:
         self.busy = False
         if isinstance(exc, GenerationStopped):
             return
+        self.observe(
+            {
+                "type": "decision",
+                "stage": "runtime",
+                "outcome": "error",
+                "reason": str(exc),
+                "where": error_location(exc),
+            }
+        )
         message = str(exc)[:2000]
         previous = self.state.get("last_error")
         delay = 1800
@@ -202,6 +256,14 @@ class Controller:
         if not self.valid(epoch):
             return
         reset_day(self.state, current.day)
+        self.state.setdefault("telemetry", {})["snapshot"] = {
+            "at": time.time(),
+            "slots": current.slots,
+            "known": len(getattr(current.known, "surfaces", {})),
+            "budgets": list(
+                {b.deck_id: asdict(b) for b in getattr(current, "budgets", [])}.values()
+            ),
+        }
         self.last_version = current.known.version
         try:
             drafts = [Draft.read(d) for d in self.state.get("drafts", [])]
@@ -285,6 +347,9 @@ class Controller:
             def update() -> None:
                 if not self.valid(epoch):
                     return
+                self.observe(event)
+                if event.get("type") != "call":
+                    return
                 self.state["active_request"] = event
                 self.request_started_at = (
                     0 if event["finished"] else event["started_at"]
@@ -299,12 +364,16 @@ class Controller:
 
             mw.taskman.run_on_main(update)
 
+        attempted_targets: list[Any] = []
+        ranked_any = [False]
+
         def work() -> Any:
             ranking_deferred = {}
 
             def select(pool: list[Any], size: int) -> list[Any]:
+                ranked_any[0] = True
                 selected = rank_targets(
-                    pool, size, current.known, lexicon, config, stop
+                    pool, size, current.known, lexicon, config, stop, progress=report
                 )
                 if len(selected) < size:
                     selected_keys = {t.key for t in selected}
@@ -347,8 +416,9 @@ class Controller:
                 if needed and len(repair_targets) < count
                 else []
             )
+            attempted_targets[:] = targets
             if not targets:
-                return [], ranking_deferred, 1 if ranking_deferred else 0
+                return [], ranking_deferred, 0
             generated_drafts, failures = generate(
                 targets,
                 current.known,
@@ -357,6 +427,7 @@ class Controller:
                 stop,
                 on_approved=checkpoint,
                 progress=report,
+                observe=report,
                 lessons=previous_lessons(
                     self.state.get("deferred", {}), (t.key for t in targets)
                 ),
@@ -372,7 +443,17 @@ class Controller:
                 return
             try:
                 drafts, failures, attempted = future.result()
-                record_batch(self.state, attempted, len(drafts), config, time.time())
+                record_batch(
+                    self.state,
+                    attempted,
+                    len(drafts),
+                    config,
+                    time.time(),
+                    spent_model_calls=ranked_any[0],
+                )
+                self.observe(
+                    {"type": "batch", "attempted": attempted, "approved": len(drafts)}
+                )
                 drafts = merge_drafts(retained_drafts, drafts)
                 if attempted:
                     self.state["timeout_count"] = 0
@@ -409,11 +490,20 @@ class Controller:
                         mw.progress.single_shot(5000, self.tick)
             except Exception as exc:
                 prepared = [Draft.read(d) for d in self.state.get("drafts", [])]
-                request = self.state.get("active_request") or {}
-                if request.get("target_count"):
+                if attempted_targets:
+                    self.observe(
+                        {
+                            "type": "batch",
+                            "attempted": len(attempted_targets),
+                            "approved": sum(
+                                d.target.key not in retained_keys for d in prepared
+                            ),
+                            "outcome": "error",
+                        }
+                    )
                     record_batch(
                         self.state,
-                        request["target_count"],
+                        len(attempted_targets),
                         sum(d.target.key not in retained_keys for d in prepared),
                         config,
                         time.time(),
@@ -437,6 +527,24 @@ class Controller:
         def applied(result: Admission) -> None:
             if not self.valid(epoch):
                 return
+            self.observe(
+                {
+                    "type": "admission",
+                    "notes": len(result.admitted) - result.repaired_notes,
+                    "cards": result.added_cards,
+                    "updates": result.repaired_notes,
+                }
+            )
+            for key, reason in result.rejected.items():
+                self.observe(
+                    {
+                        "type": "decision",
+                        "stage": "admission",
+                        "outcome": "rejected",
+                        "key": key,
+                        "reason": reason,
+                    }
+                )
             self.state["drafts"] = [d.as_dict() for d in result.remaining]
             for key, reason in result.rejected.items():
                 self.state.setdefault("deferred", {})[key] = {
@@ -495,7 +603,7 @@ class Controller:
         config = self.config()
         dialog = QDialog(mw)
         dialog.setWindowTitle("French Frontier")
-        dialog.resize(620, 300)
+        dialog.resize(850, 650)
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
         enabled = QCheckBox(
@@ -532,10 +640,13 @@ class Controller:
         status = QLabel(self.status_text())
         status.setWordWrap(True)
         layout.addWidget(status)
+        diagnostics = Diagnostics(dialog, self.diagnostics_data)
+        layout.addWidget(diagnostics)
         refresh = QTimer(dialog)
 
         def refresh_status() -> None:
             status.setText(self.status_text())
+            diagnostics.refresh()
             check.setEnabled(not self.busy)
 
         qconnect(refresh.timeout, refresh_status)
