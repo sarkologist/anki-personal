@@ -573,6 +573,12 @@ def test_standalone_subject_establishes_present_not_subjunctive(collection):
         ("Il faut qu'il {{c1::parle}}.", False),
         ("Bien qu'elle {{c1::parle}} vite, on comprend.", False),
         ("Quoiqu'il {{c1::parle}} peu, il écoute.", False),
+        # Relative clauses after an indefinite or superlative antecedent can
+        # be subjunctive without que.
+        ("Je cherche un endroit où je {{c1::parle}} librement.", False),
+        ("C'est le seul sujet dont il {{c1::parle}}.", False),
+        ("C'est la seule personne à qui je {{c1::parle}}.", False),
+        ("C'est le meilleur outil avec lequel je {{c1::parle}}.", False),
     ],
 )
 def test_subject_without_preceding_que_rules_out_subjunctive(
