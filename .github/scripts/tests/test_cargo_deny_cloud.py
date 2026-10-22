@@ -247,12 +247,12 @@ class CredentialBoundary(unittest.TestCase):
             run.return_value.returncode = 0
             with patch.dict(
                 m.os.environ,
-                {"GH_TOKEN": "personal", "CODEX_REPAIR_APP_PRIVATE_KEY": "private"},
+                {"GH_TOKEN": "personal", "CARGO_DENY_APP_PRIVATE_KEY": "private"},
             ):
                 m.command("python3", "--version")
                 self.assertNotIn("GH_TOKEN", run.call_args.kwargs["env"])
                 self.assertNotIn(
-                    "CODEX_REPAIR_APP_PRIVATE_KEY", run.call_args.kwargs["env"]
+                    "CARGO_DENY_APP_PRIVATE_KEY", run.call_args.kwargs["env"]
                 )
                 auth.token.assert_not_called()
                 for executable in ("gh", "git"):

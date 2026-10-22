@@ -70,13 +70,12 @@ Create these encrypted Actions secrets in **sarkologist/anki-personal**:
   Enterprise plan) and store the printed token. It lasts one year and bills runs to
   that subscription, sharing its usage limits. Regenerate it before expiry or after
   revoking it. Do not paste it into issues, prompts, logs, or repository files.
-- `CODEX_REPAIR_APP_PRIVATE_KEY`: a PEM private key for a private GitHub App
+- `CARGO_DENY_APP_PRIVATE_KEY`: a PEM private key for a private GitHub App
   installed only on `sarkologist/anki-personal`. Set the App ID or client ID in
-  repository variable `CODEX_REPAIR_APP_ID`. Grant Contents, Pull requests, and
+  repository variable `CARGO_DENY_APP_ID`. Grant Contents, Pull requests, and
   Issues read/write; Actions and Administration read-only. Metadata read is
   implicit. No workflow-write permission, organization permissions, webhook,
-  user authorization, or branch-protection bypass is needed. (The names predate the
-  move from Codex Web; the App itself is provider-independent.)
+  user authorization, or branch-protection bypass is needed.
 
 The controller signs a short-lived RS256 JWT with OpenSSL and requests installation
 tokens restricted to this repository and those exact permissions. It renews tokens

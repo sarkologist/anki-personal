@@ -43,12 +43,12 @@ jobs:
 
       - name: Repair, independently review, validate, and merge
         env:
-          CODEX_REPAIR_APP_ID: ${{ vars.CODEX_REPAIR_APP_ID }}
-          CODEX_REPAIR_APP_PRIVATE_KEY: ${{ secrets.CODEX_REPAIR_APP_PRIVATE_KEY }}
+          CARGO_DENY_APP_ID: ${{ vars.CARGO_DENY_APP_ID }}
+          CARGO_DENY_APP_PRIVATE_KEY: ${{ secrets.CARGO_DENY_APP_PRIVATE_KEY }}
           AGENT_DISPATCH_TOKEN: ${{ github.token }}
           AUTH_CHECK_ONLY: ${{ inputs.auth_only == true && 'true' || 'false' }}
         run: |
-          for name in CODEX_REPAIR_APP_ID CODEX_REPAIR_APP_PRIVATE_KEY; do
+          for name in CARGO_DENY_APP_ID CARGO_DENY_APP_PRIVATE_KEY; do
             if [ -z "${!name}" ]; then
               echo "Missing required credential: $name. See docs/cargo-deny-cloud.md."
               exit 1

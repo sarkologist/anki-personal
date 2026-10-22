@@ -61,7 +61,7 @@ class Authentication(unittest.TestCase):
             "PATH": "/bin",
             "GH_TOKEN": "old",
             "GITHUB_TOKEN": "other",
-            "CODEX_REPAIR_APP_PRIVATE_KEY": "private",
+            "CARGO_DENY_APP_PRIVATE_KEY": "private",
             "CLAUDE_CODE_OAUTH_TOKEN": "login",
             "AGENT_DISPATCH_TOKEN": "dispatch",
         }

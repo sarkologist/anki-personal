@@ -532,8 +532,8 @@ if __name__ == "__main__":
     if not DISPATCH_TOKEN:
         raise SystemExit("Missing AGENT_DISPATCH_TOKEN")
     with GitHubApp(
-        os.environ.get("CODEX_REPAIR_APP_ID"),
-        os.environ.pop("CODEX_REPAIR_APP_PRIVATE_KEY", ""),
+        os.environ.get("CARGO_DENY_APP_ID"),
+        os.environ.pop("CARGO_DENY_APP_PRIVATE_KEY", ""),
         REPO,
     ) as AUTH:
         command("gh", "auth", "setup-git", "--hostname", "github.com")

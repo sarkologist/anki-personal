@@ -32,7 +32,7 @@ def clean_environment():
             "GITHUB_TOKEN",
             "GH_ENTERPRISE_TOKEN",
             "GITHUB_ENTERPRISE_TOKEN",
-            "CODEX_REPAIR_APP_PRIVATE_KEY",
+            "CARGO_DENY_APP_PRIVATE_KEY",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "AGENT_DISPATCH_TOKEN",
         }
