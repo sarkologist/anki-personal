@@ -2658,3 +2658,52 @@ def test_conjugation_audit_judges_the_form_not_the_given_verb():
     )
     assert "infinitive cue as given" in rule
     assert "mood, tense and person" in rule
+
+
+@pytest.mark.parametrize(
+    "surface,noun,verb",
+    [
+        (
+            "été",
+            Form("été", "été", "NOM", "m:s"),
+            Form("été", "être", "VER", "par:pas:m:s"),
+        ),
+        (
+            "bois",
+            Form("bois", "bois", "NOM", "m"),
+            Form("bois", "boire", "VER", "ind:pre:1:s"),
+        ),
+    ],
+)
+def test_noun_answer_is_not_recognised_as_its_verb_homograph(surface, noun, verb):
+    from dataclasses import replace
+
+    lex = homograph_lexicon(noun, verb, Form("est", "être", "VER", "ind:pre:3:s"))
+    known = learned("je", "le", "train", "regarde", "parle")
+    known.learn(surface, lex, 1, "L'été.", form_key=noun.key)
+    known.meanings.add((verb.lemma, "VER"))
+    assert not known.recognizes(verb, lex)
+    c = replace(
+        candidate(),
+        sentence=f"Je emprunte le train {surface}.",
+        uses=(
+            {
+                "surface": surface,
+                "lemma": verb.lemma,
+                "pos": "VER",
+                "features": verb.features,
+            },
+        ),
+    )
+    with pytest.raises(ValidationError, match="Unlearned context verb form"):
+        validate(c, target(), known, lex)
+
+
+def test_syncretic_verb_answers_are_recognised():
+    lex = homograph_lexicon(
+        Form("dit", "dire", "VER", "ind:pre:3:s"),
+        Form("dit", "dire", "VER", "par:pas:m:s"),
+    )
+    known = Knowledge()
+    known.learn("dit", lex, 1, "Il dit non.")
+    assert all(known.recognizes(f, lex) for f in lex.analyses("dit"))

@@ -62,6 +62,8 @@ class Knowledge:
     forms: set[str] = field(default_factory=set)
     meanings: set[tuple[str, str]] = field(default_factory=set)
     constructions: set[str] = field(default_factory=set)
+    # Lemma/POS readings each answered surface could have had.
+    identities: dict[str, set[tuple[str, str]]] = field(default_factory=dict)
     _rules: set[str] | None = field(default=None, repr=False)
 
     def learn(
@@ -88,6 +90,7 @@ class Knowledge:
         elif allowed_keys:
             analyses = [f for f in analyses if f.key in allowed_keys]
         identities = {(f.lemma, f.pos) for f in analyses}
+        self.identities.setdefault(answer, set()).update(identities)
         if len(identities) == 1:
             self.meanings.update(identities)
         # A syncretic answer does not establish all its tense/person readings.
@@ -107,9 +110,13 @@ class Knowledge:
 
     def recognizes(self, form: Form, lexicon: Lexicon) -> bool:
         """Context may use a reading of an answered syncretic surface (fais,
-        dit) whose verb meaning is established: recognition, not production."""
+        dit) whose verb meaning is established: recognition, not production.
+        Only person/tense syncretism qualifies: a surface answered as a noun
+        (été, bois) is never recognised as its verb homograph."""
+        identity = (form.lemma, "VER")
         return self.licenses(form, lexicon) or (
-            form.surface in self.surfaces and (form.lemma, "VER") in self.meanings
+            self.identities.get(form.surface) == {identity}
+            and identity in self.meanings
         )
 
     def non_verb_reading(self, surface: str, lexicon: Lexicon) -> bool:

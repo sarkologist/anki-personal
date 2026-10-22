@@ -94,8 +94,9 @@ French blank. Vocabulary translations must not reveal the French answer verbatim
 Target verb morphology is resolved from its declared grammar rather than the
 ordering of dictionary readings. Context verb analyses are checked explicitly, including auxiliary
 and participle forms. A context reading of an answered syncretic surface (fais,
-dit) is accepted when its verb meaning is established: recognising a form is not
-producing it. A verb homograph needs no verb analysis when its established
+dit) is accepted when its answers could only be that verb and its verb meaning
+is established: recognising a form is not producing it. A surface answered as a
+noun (été, bois) is never recognised as its verb homograph. A verb homograph needs no verb analysis when its established
 meaning is a unique non-verb or its non-verb reading is more frequent (plus,
 affaire). Pronunciation metadata remains available in the cached
 lexicon; this version does not create pronunciation or listening cards.
