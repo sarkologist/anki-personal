@@ -284,7 +284,11 @@ class GenerationTimeout(TimeoutError):
 
 
 def prompt_knowledge(
-    known: Knowledge, lexicon: Lexicon, surfaces: set[str] | None = None
+    known: Knowledge,
+    lexicon: Lexicon,
+    surfaces: set[str] | None = None,
+    *,
+    every_surface: bool = False,
 ) -> dict[str, Any]:
     data = known.prompt()
     if surfaces is None:
@@ -300,7 +304,8 @@ def prompt_knowledge(
         identities = {
             (f.lemma, f.pos) for word in surfaces for f in lexicon.analyses(word)
         }
-        data["established_context"] = sorted(surfaces & known.surfaces.keys())
+        if not every_surface:
+            data["established_context"] = sorted(surfaces & known.surfaces.keys())
         data["directly_tested_forms"] = [
             key
             for key in data["directly_tested_forms"]
@@ -694,7 +699,10 @@ When supplying a contrast object, the TOP-LEVEL mode MUST be contrast. The neste
                 for t in pending.values()
                 if attempt != 2 or t.key not in fallbacks
             ],
-            "knowledge": prompt_knowledge(known, lexicon, selected),
+            # Writers need every word they may use, including function words
+            # and collocates the relevance query cannot predict; only the
+            # examples, forms and analyses stay limited to the relevant subset.
+            "knowledge": prompt_knowledge(known, lexicon, selected, every_surface=True),
             "context_evidence": generation_evidence,
             "previous_lessons": lessons,
             "verb_meaning_evidence": {

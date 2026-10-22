@@ -159,8 +159,8 @@ notes remain untouched and repairs preserve card IDs and scheduling.
 Both languages use the shared approved-note buffer (`buffer_notes`, default 4,
 0 disables it). Preparation may run when today's slots are full; native admission
 limits and all source, context, conjugation and ambiguity checks still apply.
-Writers receive a compact, relevant selection of proven vocabulary and reviewed
-usage, plus persistent rejection lessons. Examples do not establish additional words.
+Writers receive every established surface, a compact, relevant selection of
+reviewed usage, plus persistent rejection lessons. Examples do not establish additional words.
 French can fill a missing context analysis only when exactly one dictionary reading
 has direct learned-form evidence. Explicit model annotations are never overwritten;
 ambiguous or unproven forms still require valid annotations and independent review.

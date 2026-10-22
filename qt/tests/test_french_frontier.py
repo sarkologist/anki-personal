@@ -1858,7 +1858,7 @@ def test_french_writer_receives_proven_usage_and_previous_lessons():
     )
     assert not drafts
     assert len(failures) == 1
-    assert max(len(p["knowledge"]["established_context"]) for p in payloads) <= 160
+    assert max(len(p["context_evidence"]) for p in payloads) <= 160
     assert all(p["context_evidence"]["train"][0]["card"] == 99 for p in payloads)
     assert all(
         p["previous_lessons"][target().key]["reason"] == "Use railway context."
@@ -1954,8 +1954,8 @@ def test_french_empty_proposal_reason_guides_next_retrieval_and_is_persisted():
 
     drafts, failures = generate([target()], known, dictionary(), {}, Event(), Client())
     assert not drafts
-    assert "paiement" not in payloads[0]["knowledge"]["established_context"]
-    assert "paiement" in payloads[1]["knowledge"]["established_context"]
+    assert "paiement" not in payloads[0]["context_evidence"]
+    assert "paiement" in payloads[1]["context_evidence"]
     assert json.loads(failures[target().key])["reason"] == "Need payment context."
 
 
@@ -2347,3 +2347,30 @@ def test_lexicon_cache_without_closed_class_words_is_rebuilt(tmp_path, monkeypat
         json.dumps({"version": 4, "forms": forms, "entries": []})
     )
     assert Lexicon.load(tmp_path).analyses("m1")
+
+
+def test_french_writer_sees_every_established_surface():
+    import json
+    from threading import Event
+
+    from chinese_frontier.french.generation import generate
+
+    known = learned("je", "le", "train", "regarde", "parle")
+    for i in range(1000):
+        known.surfaces[f"irrelevant{i}"] = [
+            {"card": i, "context": "Unrelated example."}
+        ]
+    payloads = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            payloads.append(json.loads(prompt[prompt.index('{"targets"') :]))
+            return {"proposals": []}
+
+    generate([target()], known, dictionary(), {}, Event(), Client())
+    for payload in payloads:
+        assert payload["knowledge"]["established_context"] == sorted(known.surfaces)
+        assert "irrelevant999" not in payload["context_evidence"]
