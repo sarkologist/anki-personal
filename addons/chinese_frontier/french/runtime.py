@@ -272,9 +272,9 @@ class Controller:
                 self.tick(force=force)
 
             queued = {
-                int(d["repair_note"])
-                for d in self.state.get("drafts", [])
-                if isinstance(d, dict) and d.get("repair_note")
+                d["repair_note"]
+                for d in self.state.get("drafts") or []
+                if isinstance(d, dict) and isinstance(d.get("repair_note"), int)
             }
 
             CollectionOp(
