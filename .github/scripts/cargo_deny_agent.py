@@ -69,7 +69,10 @@ def structured(result):
 
 
 def upgrades(result, lock):
-    requested = structured(result).get("upgrades")
+    answer = structured(result)
+    # Not secret; shown first so a human sees why when no upgrade is proposed.
+    print(f"Claude's explanation: {answer.get('explanation')}", flush=True)
+    requested = answer.get("upgrades")
     if not isinstance(requested, list) or not 0 < len(requested) <= MAX_UPGRADES:
         raise ValueError("Claude proposed no upgrades, or too many")
     registry = {
@@ -99,7 +102,14 @@ def review_report(result, head, base):
     findings = answer.get("findings")
     if not isinstance(findings, list) or not all(isinstance(f, str) for f in findings):
         raise ValueError("Invalid review findings")
-    findings = [f[:MAX_FINDING_CHARS] for f in findings[:MAX_FINDINGS]]
+    findings = [f.strip()[:MAX_FINDING_CHARS] for f in findings if f.strip()]
+    findings = findings[:MAX_FINDINGS]
+    # The controller rejects a report whose verdict and findings disagree.
+    if (answer["verdict"] == "approve") != (not findings):
+        raise ValueError(
+            "Review verdict and findings disagree: approve needs no findings, "
+            f"request_changes needs some ({findings})"
+        )
     return {
         "head": head,
         "base": base,

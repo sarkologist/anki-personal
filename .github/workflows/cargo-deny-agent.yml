@@ -46,8 +46,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify commit
-        run: test "$(git rev-parse HEAD)" = "$COMMIT"
+      - name: Verify commits
+        run: |
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && "$BASE" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          git merge-base --is-ancestor "$BASE" "$COMMIT"
+          git merge-base --is-ancestor "$BASE" origin/main
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
@@ -64,6 +68,7 @@ jobs:
           echo .agent-evidence >> .git/info/exclude
           cargo deny check advisories > .agent-evidence/deny.txt 2>&1 || true
           git diff "$BASE" HEAD > .agent-evidence/review.diff
+          python3 .github/scripts/cargo_deny_agent.py schema "$MODE" > "$RUNNER_TEMP/schema.json"
 
       # --restricted: no command-running tools, file tools confined to the checkout,
       # repository settings ignored. --safe-mode: CLAUDE.md and other customizations
@@ -81,8 +86,8 @@ jobs:
             --max-turns 40 \
             --no-session-persistence \
             --output-format json \
-            --json-schema "$(python3 .github/scripts/cargo_deny_agent.py schema "$MODE")" \
-            > "$RUNNER_TEMP/claude.json"
+            --json-schema "$(cat "$RUNNER_TEMP/schema.json")" \
+            < /dev/null > "$RUNNER_TEMP/claude.json"
 
       - name: Apply answer
         run: >-

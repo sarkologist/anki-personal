@@ -88,6 +88,31 @@ class Review(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.review_report(output({"verdict": "merge", "findings": []}), "a", "b")
 
+    def test_verdict_must_agree_with_findings(self):
+        for answer in [
+            {"verdict": "approve", "findings": ["nit"]},
+            {"verdict": "request_changes", "findings": []},
+            {"verdict": "request_changes", "findings": ["  "]},
+        ]:
+            with self.subTest(answer=answer), self.assertRaises(ValueError):
+                m.review_report(output(answer), "a", "b")
+        report = m.review_report(
+            output({"verdict": "request_changes", "findings": [" bad ", ""]}), "a", "b"
+        )
+        self.assertEqual(report["findings"], ["bad"])
+
+
+class Explanation(unittest.TestCase):
+    def test_explanation_shown_even_when_no_upgrades(self):
+        import io
+        from contextlib import redirect_stdout
+
+        result = output({"upgrades": [], "explanation": "needs a minor bump"})
+        stream = io.StringIO()
+        with redirect_stdout(stream), self.assertRaises(ValueError):
+            m.upgrades(result, LOCK)
+        self.assertIn("needs a minor bump", stream.getvalue())
+
 
 class Schemas(unittest.TestCase):
     def test_schemas_are_json(self):

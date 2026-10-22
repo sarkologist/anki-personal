@@ -286,7 +286,12 @@ def agent(mode, commit, base, prompt):
             else:
                 run = api(f"actions/runs/{run['id']}")
             failures = 0
-        except RuntimeError as error:
+        except (
+            RuntimeError,
+            ValueError,
+            KeyError,
+            subprocess.TimeoutExpired,
+        ) as error:
             if "Several agent runs" in str(error):
                 raise
             # Tolerate brief API outages during a long wait.
