@@ -77,7 +77,7 @@ def test_yield_per_day_labels_relative_days_and_rates():
     assert "-2 · attempted: 100</title>" in html
     assert ">20% approved</text>" in html and ">1% approved</text>" in html
     assert "Cumulative approval yield: 3/110 (3%)" in html
-    assert "share of that day's attempts that passed the audit" in html
+    assert "share of that day&#x27;s attempts that passed the audit" in html
 
 
 def test_daily_charts_share_days_even_without_attempts():
