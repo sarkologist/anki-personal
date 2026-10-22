@@ -2450,7 +2450,16 @@ def test_audit_clues_are_matched_as_visible_french_text(clues):
 
 
 @pytest.mark.parametrize(
-    "clues", [["je […] pas"], ["a hallucinated clue"], ["ne … hallucinated"], ["« »"]]
+    "clues",
+    [
+        ["je […] pas"],
+        ["a hallucinated clue"],
+        ["ne … hallucinated"],
+        ["« »"],
+        ["ne [ … ] pas"],
+        ["sprit"],
+        ["n esprit"],
+    ],
 )
 def test_sufficient_check_still_needs_a_genuinely_visible_clue(clues):
     from dataclasses import replace

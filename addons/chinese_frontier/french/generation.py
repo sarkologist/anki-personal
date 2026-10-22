@@ -159,14 +159,21 @@ def competing_alternatives(review: dict[str, Any], candidate: Candidate) -> list
 def visible_clue(clue: Any, context: str) -> bool:
     """Whether a clue quotes the French context, ignoring case, apostrophe
     style, spacing and quote marks. "…" or "..." joins discontinuous parts,
-    each of which must be visible; the hidden answer never counts."""
+    each of which must be visible as whole words; the hidden answer never
+    counts."""
     if not isinstance(clue, str) or "[…]" in clue or "[...]" in clue:
         return False
     fragments = [
         normalize(part).strip(" «»“”\"'.,;:!?") for part in re.split(r"…|\.\.\.", clue)
     ]
     fragments = [part for part in fragments if part]
-    return bool(fragments) and all(part in normalize(context) for part in fragments)
+    # An apostrophe still separates words here: "autre" is visible in "l'autre".
+    return bool(fragments) and all(
+        "[" not in part
+        and "]" not in part
+        and re.search(r"(?<!\w)" + re.escape(part) + r"(?!\w)", normalize(context))
+        for part in fragments
+    )
 
 
 def validate_review(review: Any, candidate: Candidate) -> bool:
