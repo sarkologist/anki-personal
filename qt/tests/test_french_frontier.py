@@ -2723,3 +2723,16 @@ def test_syncretic_verb_answers_are_recognised():
     known = Knowledge()
     known.learn("dit", lex, 1, "Il dit non.")
     assert all(known.recognizes(f, lex) for f in lex.analyses("dit"))
+
+
+def test_elided_s_reads_as_si_only_before_il():
+    from dataclasses import replace
+
+    known = learned("je", "le", "train", "regarde", "parle", "si", "il", "pleut")
+    known.learn("ouvre", dictionary(), 1, "ouvre")
+    c = replace(candidate(), sentence="Je emprunte le train s'il pleut.")
+    assert "si" in validate(c, target(), known, dictionary()).dependencies
+    c = replace(candidate(), sentence="Je emprunte le train qui s'ouvre.")
+    known.learn("qui", dictionary(), 1, "qui")
+    with pytest.raises(ValidationError, match="Unlearned context: s'"):
+        validate(c, target(), known, dictionary())

@@ -42,7 +42,7 @@ ELISIONS = {
     "qu'": ("que",),
     "n'": ("ne",),
     "j'": ("je",),
-    "s'": ("se", "si"),
+    "s'": ("se",),
     "c'": ("ce",),
     "m'": ("me",),
     "t'": ("te",),
@@ -50,10 +50,12 @@ ELISIONS = {
 }
 
 
-def full_form(unit: str, surfaces: Any) -> str:
+def full_form(unit: str, surfaces: Any, following: str = "") -> str:
     if unit in surfaces:
         return unit
-    return next((f for f in ELISIONS.get(unit, ()) if f in surfaces), unit)
+    # s'il and s'ils elide si; elsewhere s' is the pronoun se.
+    full = ("si",) if unit == "s'" and following in ("il", "ils") else ()
+    return next((f for f in full or ELISIONS.get(unit, ()) if f in surfaces), unit)
 
 
 @dataclass
@@ -340,11 +342,14 @@ def validate(
     )
     if len(spans) != 1:
         raise ValidationError("Cloze a complete target exactly once")
+    units = _units(c.sentence, set(known.surfaces), answer)
+    resolved = {
+        unit: full_form(unit, known.surfaces, next(iter(tokens(following)), ""))
+        for unit, following in zip(units, units[1:] + [""])
+    }
     dependencies = tuple(
         dict.fromkeys(
-            full_form(unit, known.surfaces)
-            for unit in _units(c.sentence, set(known.surfaces), answer)
-            if unit != answer and not unit.isdecimal()
+            resolved[unit] for unit in units if unit != answer and not unit.isdecimal()
         )
     )
     unknown = [unit for unit in dependencies if unit not in known.surfaces]
@@ -392,7 +397,8 @@ def validate(
             normalize(use[k]) if k in ("surface", "lemma") else use[k]
             for k in ("surface", "lemma", "pos", "features")
         )
-        surface = full_form(normalize(use["surface"]), known.surfaces)
+        surface = normalize(use["surface"])
+        surface = resolved.get(surface, full_form(surface, known.surfaces))
         matching = [
             f
             for f in lexicon.analyses(use["surface"]) or lexicon.analyses(surface)
