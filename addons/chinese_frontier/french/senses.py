@@ -181,7 +181,7 @@ def clean_wikitext(text: str) -> str:
         previous, text = text, TEMPLATE.sub(_template, text)
     text = LINK.sub(r"\1", text).replace("'''", "").replace("''", "")
     text = re.sub(r"\s+", " ", text).strip()
-    return re.sub(r"\s+([.,;:])", r"\1", text)
+    return re.sub(r"\s+([.,])", r"\1", text)
 
 
 def wiktionary_senses(lemma: str, pos: str, wikitext: str) -> list[Sense]:
@@ -205,7 +205,7 @@ def wiktionary_senses(lemma: str, pos: str, wikitext: str) -> list[Sense]:
                 and "flexion" not in parts
             )
             continue
-        if section and (bullet := re.match(r"^#+(?![*:])", line)):
+        if section and (bullet := re.match(r"^#+(?![#*:])", line)):
             definition = clean_wikitext(line[bullet.end() :])
             if _accept(definition):
                 results.append(

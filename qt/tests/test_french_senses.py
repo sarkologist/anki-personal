@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "addons"))
 from chinese_frontier.french.lexicon import Entry, Lexicon  # noqa: E402
 from chinese_frontier.french.senses import (  # noqa: E402
     SenseSource,
+    clean_wikitext,
     kaikki_senses,
     wiktionary_senses,
 )
@@ -131,6 +132,8 @@ def test_wiktionary_markup_and_placeholders_never_become_definitions():
 # {{variante de|clé|fr}}.
 # Texte<!-- note --> utile<ref>[https://example.org Source]</ref>.
 ## {{familier|fr}} Sous-sens{{refnec|fr}}.
+##* {{exemple|lang=fr|Un exemple du mot.}} ''Exemple brut''.
+##: Une note quelconque.
 === {{S|adjectif démonstratif|fr}} ===
 # Désigne une chose.
 === {{S|déterminant possessif|fr}} ===
@@ -140,6 +143,7 @@ def test_wiktionary_markup_and_placeholders_never_become_definitions():
         "Texte utile.",
         "(Familier) Sous-sens.",
     ]
+    assert clean_wikitext("Se dit de : chose ; autre .") == "Se dit de : chose ; autre."
     assert [s["definition"] for s in wiktionary_senses("x", "ART", text)] == [
         "Désigne une chose.",
         "Qui est à moi.",
