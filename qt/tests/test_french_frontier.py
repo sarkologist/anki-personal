@@ -2543,3 +2543,108 @@ def test_target_ranker_selects_at_most_one_sense_per_lemma():
     assert rank_targets(
         [first, second], 2, learned(), dictionary(), {}, Event(), Client()
     ) == [second]
+
+
+def homograph_lexicon(*forms):
+    return Lexicon(
+        [f for forms in dictionary().forms.values() for f in forms] + list(forms), []
+    )
+
+
+def test_dominant_non_verb_reading_needs_no_verb_analysis():
+    from dataclasses import replace
+
+    lex = homograph_lexicon(
+        Form("plus", "plus", "ADV", frequency=3746),
+        Form("plus", "plaire", "VER", "par:pas:m:p", frequency=3.6),
+    )
+    known = learned("je", "le", "train", "regarde", "parle")
+    known.learn("plus", lex, 1, "Je ne regarde plus.")
+    c = replace(candidate(), sentence="Je emprunte plus le train.")
+    assert "plus" in validate(c, target(), known, lex).dependencies
+
+
+def test_established_non_verb_meaning_needs_no_verb_analysis():
+    from dataclasses import replace
+
+    lex = homograph_lexicon(
+        Form("pages", "page", "NOM", "f:p"),
+        Form("pages", "pager", "VER", "ind:pre:2:s"),
+    )
+    known = learned("je", "regarde", "parle")
+    known.learn("pages", lex, 1, "Deux cents pages.", form_key="pages|page|NOM|f:p")
+    c = replace(candidate(), sentence="Je emprunte 200 pages.")
+    assert "pages" in validate(c, target(), known, lex).dependencies
+
+
+def test_dominant_verb_reading_still_needs_a_verb_analysis():
+    from dataclasses import replace
+
+    lex = homograph_lexicon(
+        Form("est", "être", "VER", "ind:pre:3:s", frequency=1000),
+        Form("est", "est", "NOM", "m:s", frequency=10),
+    )
+    known = learned("je", "le", "train", "regarde", "parle")
+    known.learn("est", lex, 1, "Il est ici.")
+    c = replace(candidate(), sentence="Je emprunte le train est.")
+    with pytest.raises(ValidationError, match="Missing context verb analysis: est"):
+        validate(c, target(), known, lex)
+
+
+def test_context_annotation_keeps_an_established_noun_out_of_a_verb_reading():
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import annotate_context
+
+    noun = Form("bois", "bois", "NOM", "m", frequency=75)
+    verb = Form("bois", "boire", "VER", "ind:pre:1:s", frequency=10)
+    lex = homograph_lexicon(noun, verb)
+    known = learned("je", "le", "train", "en", "regarde", "parle")
+    known.surfaces["bois"] = [{"card": 1, "context": "Je bois du thé."}]
+    known.forms.add(verb.key)
+    c = replace(candidate(), sentence="Je emprunte le train en bois.")
+    assert annotate_context(c, known, lex).uses == (
+        {"surface": "bois", "lemma": "boire", "pos": "VER", "features": "ind:pre:1:s"},
+    )
+    known.meanings.add(("bois", "NOM"))
+    assert annotate_context(c, known, lex).uses == ()
+    validate(annotate_context(c, known, lex), target(), known, lex)
+
+
+def test_established_syncretic_surface_is_recognised_in_context():
+    import json
+    from dataclasses import replace
+    from threading import Event
+
+    from chinese_frontier.french.generation import generate
+
+    first = Form("fais", "faire", "VER", "ind:pre:1:s")
+    lex = homograph_lexicon(first, Form("fais", "faire", "VER", "ind:pre:2:s"))
+    known = learned("je", "le", "train", "et", "regarde", "parle")
+    known.learn("fais", lex, 1, "Je fais mes devoirs.")
+    assert ("faire", "VER") in known.meanings and not known.licenses(first, lex)
+    c = replace(
+        candidate(),
+        sentence="Je fais et je emprunte le train.",
+        uses=(
+            {
+                "surface": "fais",
+                "lemma": "faire",
+                "pos": "VER",
+                "features": "ind:pre:1:s",
+            },
+        ),
+    )
+    assert "fais" in validate(c, target(), known, lex).dependencies
+    payloads = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            payloads.append(json.loads(prompt[prompt.index('{"targets"') :]))
+            return {"proposals": []}
+
+    generate([target()], known, lex, {}, Event(), Client())
+    assert first.key in payloads[0]["context_analyses"]["fais"]

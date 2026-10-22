@@ -613,7 +613,14 @@ def annotate_context(c: Candidate, known: Knowledge, lexicon: Lexicon) -> Candid
         if not any(f.pos == "VER" for f in analyses):
             continue
         proven = [f for f in analyses if f.key in known.forms]
-        if len(proven) == 1:
+        if len(proven) == 1 and not (
+            # Never read an established noun (bois) as its proven verb (boire).
+            proven[0].pos == "VER"
+            and any(
+                (f.lemma, f.pos) in known.meanings for f in analyses if f.pos != "VER"
+            )
+            and known.non_verb_reading(word, lexicon)
+        ):
             f = proven[0]
             uses.append(
                 {
@@ -736,7 +743,7 @@ When supplying a contrast object, the TOP-LEVEL mode MUST be contrast. The neste
                 surface: [
                     f.key
                     for f in lexicon.analyses(surface)
-                    if f.pos != "VER" or known.licenses(f, lexicon)
+                    if f.pos != "VER" or known.recognizes(f, lexicon)
                 ]
                 for surface in selected
                 if any(f.pos == "VER" for f in lexicon.analyses(surface))

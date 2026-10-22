@@ -105,6 +105,26 @@ class Knowledge:
             return False
         return form.features in self.regular_rules
 
+    def recognizes(self, form: Form, lexicon: Lexicon) -> bool:
+        """Context may use a reading of an answered syncretic surface (fais,
+        dit) whose verb meaning is established: recognition, not production."""
+        return self.licenses(form, lexicon) or (
+            form.surface in self.surfaces and (form.lemma, "VER") in self.meanings
+        )
+
+    def non_verb_reading(self, surface: str, lexicon: Lexicon) -> bool:
+        """Whether a verb homograph reads as a non-verb: its established
+        meaning is a unique non-verb, or a non-verb reading dominates."""
+        analyses = lexicon.analyses(surface)
+        established = {
+            (f.lemma, f.pos) for f in analyses if (f.lemma, f.pos) in self.meanings
+        }
+        if len(established) == 1 and next(iter(established))[1] != "VER":
+            return True
+        return max((f.frequency for f in analyses if f.pos != "VER"), default=0) > max(
+            (f.frequency for f in analyses if f.pos == "VER"), default=0
+        )
+
     @property
     def regular_rules(self) -> set[str]:
         if self._rules is None:
@@ -390,10 +410,14 @@ def validate(
         if not selected or surface not in dependencies:
             raise ValidationError("Incorrect context morphology annotation")
         uses[surface] = selected
-        if selected.pos == "VER" and not known.licenses(selected, lexicon):
+        if selected.pos == "VER" and not known.recognizes(selected, lexicon):
             raise ValidationError("Unlearned context verb form: " + selected.surface)
     for unit in dependencies:
-        if any(f.pos == "VER" for f in lexicon.analyses(unit)) and unit not in uses:
+        if (
+            any(f.pos == "VER" for f in lexicon.analyses(unit))
+            and unit not in uses
+            and not known.non_verb_reading(unit, lexicon)
+        ):
             raise ValidationError("Missing context verb analysis: " + unit)
     span = spans[0]
     replacement = "{{c1::" + c.sentence[span.start() : span.end()] + "}}"

@@ -93,7 +93,11 @@ infinitive on the front. Complete English translations are visible beside the
 French blank. Vocabulary translations must not reveal the French answer verbatim.
 Target verb morphology is resolved from its declared grammar rather than the
 ordering of dictionary readings. Context verb analyses are checked explicitly, including auxiliary
-and participle forms. Pronunciation metadata remains available in the cached
+and participle forms. A context reading of an answered syncretic surface (fais,
+dit) is accepted when its verb meaning is established: recognising a form is not
+producing it. A verb homograph needs no verb analysis when its established
+meaning is a unique non-verb or its non-verb reading is more frequent (plus,
+affaire). Pronunciation metadata remains available in the cached
 lexicon; this version does not create pronunciation or listening cards.
 
 Independent subscription-model review checks sense, grammar, translation, known
@@ -165,6 +169,7 @@ limits and all source, context, conjugation and ambiguity checks still apply.
 Writers receive every established surface, a compact, relevant selection of
 reviewed usage, plus persistent rejection lessons. Examples do not establish additional words.
 French can fill a missing context analysis only when exactly one dictionary reading
-has direct learned-form evidence. Explicit model annotations are never overwritten;
+has direct learned-form evidence, and never reads an established noun or adjective
+(bois) as its proven verb homograph. Explicit model annotations are never overwritten;
 ambiguous or unproven forms still require valid annotations and independent review.
 No new paradigm or grammar permission is inferred by annotation completion.
