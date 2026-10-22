@@ -88,6 +88,9 @@ class Diagnostics(QTabWidget):
                 # Reloading resets scrolling; restore it once the page is ready.
                 y = self.chart_view.page().scrollPosition().y()
                 self.chart_view.setHtml(html)
+                # setHtml shows the view; a hidden tab page must stay hidden.
+                if self.currentWidget() is not self.chart_view:
+                    self.chart_view.hide()
                 self.chart_view.eval(f"window.scrollTo(0, {y})")
         decisions = decisions_text(data["store"])
         if deferred := data.get("deferred"):
