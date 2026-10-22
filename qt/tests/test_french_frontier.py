@@ -2463,3 +2463,83 @@ def test_sufficient_check_still_needs_a_genuinely_visible_clue(clues):
     )
     with pytest.raises(ValidationError, match="visible French"):
         validate_review(clue_review(*clues), c)
+
+
+def sense_lexicon(*lemmas):
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon([], [Entry(lemma, "ADJ", 1, 10) for lemma in lemmas])
+    lex.definitions = lambda entry, folder: [
+        {"sense": f"{entry.lemma}-{i}", "definition": f"Sense {i}."}
+        for i in range(1, 7)
+    ]
+    return lex
+
+
+def test_ranker_chooses_among_the_senses_of_each_lemma(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+
+    pools = []
+
+    def ranker(pool, count):
+        pools.append(pool)
+        return [t for t in pool if t.sense == "crucial-2"]
+
+    lex = sense_lexicon("crucial")
+    args = (lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event())
+    assert [t.sense for t in choose_targets(*args, ranker=ranker)] == ["crucial-2"]
+    # Bounded to four senses per lemma.
+    assert [t.sense for t in pools[0]] == [f"crucial-{i}" for i in range(1, 5)]
+    assert [t.sense for t in choose_targets(*args)] == ["crucial-1"]
+
+
+def test_sense_pool_is_bounded_by_lemmas_not_senses(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+
+    pools = []
+    lex = sense_lexicon(*(f"mot{i}" for i in range(10)))
+    choose_targets(
+        lex,
+        Knowledge(),
+        set(),
+        set(),
+        tmp_path,
+        1,
+        {Target("mot0", "ADJ", "mot0-1", "vocabulary", "Sense 1.", 1, 10).key},
+        Event(),
+        ranker=lambda pool, count: pools.append(pool) or pool[:1],
+    )
+    assert {t.lemma for t in pools[0]} == {"mot0", "mot1", "mot2"}
+    assert "mot0-1" not in {t.sense for t in pools[0]}
+
+
+def test_target_ranker_selects_at_most_one_sense_per_lemma():
+    from threading import Event
+
+    from chinese_frontier.french.generation import rank_targets
+
+    first, second = (
+        Target("crucial", "ADJ", f"crucial-{i}", "vocabulary", "sense", 4, 10)
+        for i in (1, 2)
+    )
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            assert "at most one sense per lemma" in prompt
+            return {
+                "selected": [
+                    {"key": second.key, "reason": "Current sense."},
+                    {"key": first.key, "reason": "Also useful."},
+                ]
+            }
+
+    assert rank_targets(
+        [first, second], 2, learned(), dictionary(), {}, Event(), Client()
+    ) == [second]

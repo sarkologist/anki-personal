@@ -48,7 +48,9 @@ at A1. `minimum_vocabulary_level` can override the automatic floor (1=A1 through
 conditional/subjunctive forms instead of elementary indicative drills. Smaller
 inventories normally reserve one place for a frequent missing conjugation of an
 established verb; calibrated selection can favor vocabulary instead. Deferred targets yield
-to other targets. The first dictionary sense is tried for a new lemma; legacy
+to other targets. The model selection receives up to four senses of each new lemma and
+picks at most one, preferring the current, common sense; without it the first
+dictionary sense is tried. Legacy
 knowledge does not claim exhaustive sense coverage. Already-established headwords
 are skipped conservatively, rather than automatically introducing their other
 senses.
