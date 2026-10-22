@@ -65,7 +65,8 @@ IDLE_POLL_SECONDS = 1.0
 RunOnMain = Callable[[Callable[[], Any]], Any]
 ReadCards = Callable[[CardReadScope, Any], dict[str, Any]]
 # note_id -> {"mod": int, "fields": [html, ...], "tags": [str, ...]}, or None
-# when the note no longer exists.
+# when the note no longer exists. Raises CollectionUnavailable (as ReadCards
+# may) when the collection is closed; the run is then re-queued.
 ReadNoteState = Callable[[list[int]], dict[int, dict[str, Any] | None]]
 MakeAgent = Callable[[dict[str, Any]], Any]
 Notify = Callable[[str], None]
@@ -73,6 +74,13 @@ LoggerFactory = Callable[[Thread], tuple[AgentRunLogger | None, str | None]]
 # (thread_id, activity line), called on the worker thread while a run streams.
 StreamEvent = Callable[[str, str], None]
 CARD_READ_ACTIVITY_LINE = "[cards] Reading permitted cards"
+NO_PENDING_REQUEST = (
+    "Nothing to run: the thread has no new request since the agent's last answer."
+)
+
+
+class CollectionUnavailable(RuntimeError):
+    """The collection is closed for now (sync, profile switch); retry later."""
 
 
 def _bool(value: Any, default: bool) -> bool:
@@ -277,8 +285,8 @@ def replay_history(
 def proposal_prompt_section(version: int, patch: dict[str, Any]) -> str:
     return (
         f"Current proposal (version {version}) as JSON. The user has not applied "
-        "it. Amend it to address the request and return the complete amended "
-        "patch, or null if it should be dropped:\n"
+        "it. Return the complete amended patch (repeat it unchanged to keep it "
+        "as is). A null patch drops the proposal:\n"
         + json.dumps(patch, ensure_ascii=False)
     )
 
@@ -349,6 +357,9 @@ class QueueRunner:
         self._wake = threading.Event()
         self._stopping = threading.Event()
         self._workers: list[threading.Thread] = []
+        # Set when the last run_once put its thread back in the queue, so the
+        # worker waits before claiming it again.
+        self._requeued = False
 
     # lifecycle
 
@@ -371,11 +382,22 @@ class QueueRunner:
 
     def stop(self, timeout: float = 10.0) -> None:
         """Stop the workers; interrupted runs go back to queued."""
+        self.request_stop()
+        self.join(timeout)
+
+    def request_stop(self) -> None:
+        """Tell running threads to stop; they will be re-queued, not failed.
+
+        Call this before anything that makes a run raise ``AgentStopped`` on
+        shutdown, so the run is recognised as interrupted rather than cancelled.
+        """
         self._stopping.set()
         with self._lock:
             for event in self._stops.values():
                 event.set()
         self._wake.set()
+
+    def join(self, timeout: float = 10.0) -> None:
         for worker in self._workers:
             worker.join(timeout)
         self._workers = []
@@ -405,7 +427,7 @@ class QueueRunner:
                 ran = self.run_once()
             except Exception:
                 ran = None
-            if ran is None:
+            if ran is None or self._requeued:
                 self._wake.wait(IDLE_POLL_SECONDS)
 
     # one run
@@ -420,24 +442,21 @@ class QueueRunner:
                 return None
             stop_event = threading.Event()
             self._stops[thread.id] = stop_event
+        self._requeued = False
         self._safe_notify(thread.id)
         try:
             self._run(thread, stop_event)
-        except _ShuttingDown:
-            self._finish(thread.id, QUEUED, error=None)
+        except (_ShuttingDown, CollectionUnavailable):
+            self._requeue(thread.id)
         except AgentStopped:
             if self._stopping.is_set():
                 # Interrupted by shutdown (e.g. while waiting on the main thread).
-                self._finish(thread.id, QUEUED, error=None)
+                self._requeue(thread.id)
             else:
-                self._safe(
-                    lambda: self.store.add_message(thread.id, "system", "Cancelled.")
-                )
-                self._finish(thread.id, FAILED, error=CANCELLED)
+                self._fail(thread.id, "Cancelled.", CANCELLED)
         except Exception as exc:
             message = str(exc) or type(exc).__name__
-            self._safe(lambda: self.store.add_message(thread.id, "system", message))
-            self._finish(thread.id, FAILED, error=message)
+            self._fail(thread.id, message, message)
         finally:
             with self._lock:
                 self._stops.pop(thread.id, None)
@@ -447,6 +466,9 @@ class QueueRunner:
     def _run(self, thread: Thread, stop_event: threading.Event) -> None:
         settings = normalize_settings(thread.settings)
         snapshot = snapshot_from_dict(thread.context["snapshot"])
+        history, prompt = replay_history(self.store.messages(thread.id))
+        if not prompt.strip():
+            raise RuntimeError(NO_PENDING_REQUEST)
         note_ids = snapshot_note_ids(snapshot)
         states: dict[int, dict[str, Any] | None] = (
             self._run_on_main(lambda: self._read_note_state(note_ids))
@@ -455,7 +477,6 @@ class QueueRunner:
         )
         snapshot = refresh_snapshot(snapshot, states)
 
-        history, prompt = replay_history(self.store.messages(thread.id))
         current = self.store.current_proposal(thread.id)
         reviewer = thread.context.get("reviewer")
         if isinstance(reviewer, dict) and reviewer:
@@ -536,22 +557,40 @@ class QueueRunner:
         if patch is not None:
             check_patch_matches_snapshot(patch, snapshot)
 
-        self.store.add_message(thread.id, "system", summary)
-        self.store.add_message(thread.id, "agent", result.text, result.html)
-        if patch is not None:
-            self.store.add_proposal(
-                thread.id,
-                patch_to_dict(patch),
-                base_for(patch_note_ids(patch, snapshot), states),
+        # One transaction: if it fails (e.g. the store closed during shutdown)
+        # the thread stays running with its user turn pending, and is re-run.
+        # A run without a patch drops the proposal it was shown (see
+        # proposal_prompt_section).
+        self.store.complete_run(
+            thread.id,
+            to_status=READY if patch is not None else ANSWERED,
+            messages=[
+                ("system", summary, ""),
+                ("agent", result.text, result.html),
+            ],
+            proposal=patch_to_dict(patch) if patch is not None else None,
+            base=(
+                base_for(patch_note_ids(patch, snapshot), states)
+                if patch is not None
+                else None
+            ),
+            drop_proposal=patch is None,
+        )
+
+    def _requeue(self, thread_id: str) -> None:
+        self._requeued = True
+        self._safe(lambda: self.store.complete_run(thread_id, to_status=QUEUED))
+
+    def _fail(self, thread_id: str, message: str, error: str) -> None:
+        """Fail the run; a proposal from an earlier turn stays current."""
+        self._safe(
+            lambda: self.store.complete_run(
+                thread_id,
+                to_status=FAILED,
+                messages=[("system", message, "")],
+                error=error,
             )
-        self._finish(thread.id, READY if patch is not None else ANSWERED, error=None)
-
-    def _finish(self, thread_id: str, status: str, *, error: str | None) -> None:
-        def write() -> None:
-            self.store.set_error(thread_id, error)
-            self.store.transition(thread_id, RUNNING, status)
-
-        self._safe(write)
+        )
 
     def _safe(self, fn: Callable[[], Any]) -> None:
         try:

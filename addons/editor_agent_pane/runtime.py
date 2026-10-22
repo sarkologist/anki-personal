@@ -134,6 +134,7 @@ from .surface import (
 )
 from .thread_view import (
     ACTIVE_STATUSES,
+    APPLICABLE_STATUSES,
     DISCARDABLE_STATUSES,
     LIVE_ACTIVITY_ID,
     REPLYABLE_STATUSES,
@@ -151,6 +152,7 @@ from .thread_view import (
     thread_context,
     thread_label,
     transcript_fragments,
+    unsaved_note_stale_reason,
 )
 from .ui_text import AGENT_BUTTON_LABEL, AGENT_BUTTON_TIP, AGENT_PANE_SHORTCUT
 
@@ -159,6 +161,7 @@ TOGGLE_COMMAND = "editorAgentPane"
 DEFAULT_SPLITTER_SIZES = [570, 80]
 PROMPT_HISTORY_LIMIT = 10
 SELECTION_CONTEXT_REFRESH_MS = 500
+PROMPT_NOT_SENT = "The note changed before the request was sent, so it was not sent."
 SELECTION_CONTEXT_JS = (
     "typeof getAgentSelectedTextContext === 'function' "
     "? getAgentSelectedTextContext() : null"
@@ -214,6 +217,7 @@ def install() -> None:
     gui_hooks.editor_did_load_note.append(_on_editor_did_load_note)
     gui_hooks.browser_will_show.append(_on_browser_will_show)
     gui_hooks.browser_did_change_row.append(_on_browser_did_change_row)
+    gui_hooks.add_cards_did_add_note.append(_on_add_cards_did_add_note)
     queue_runtime.install(addon=ADDON, config=_config, panes=_all_panes)
 
 
@@ -438,6 +442,14 @@ def _add_editor_menu_action(editor: Editor) -> None:
 def _on_editor_did_load_note(editor: Editor) -> None:
     if pane := _panes.get(editor):
         pane.on_editor_context_changed()
+
+
+def _on_add_cards_did_add_note(_note: Any) -> None:
+    # Add Cards keeps its note id at None across adds, so the pane would not
+    # notice the switch to the next note.
+    for editor, pane in list(_panes.items()):
+        if editor.editorMode is EditorMode.ADD_CARDS:
+            pane.on_note_added()
 
 
 def _on_browser_did_change_row(browser: Any) -> None:
@@ -1515,6 +1527,12 @@ class EditorAgentPane(QWidget):
         self._set_selected_text_snapshot(None)
         self._on_context_changed()
 
+    def on_note_added(self) -> None:
+        """Add Cards added the note and loaded a blank one: start afresh."""
+        self._context_generation += 1
+        self._set_selected_text_snapshot(None)
+        self._start_new_request()
+
     def on_browser_context_changed(self) -> None:
         self.refresh_context_label()
         self._on_context_changed()
@@ -1715,7 +1733,7 @@ class EditorAgentPane(QWidget):
         if service is None or thread_id is None:
             return None
         thread = service.store.get_thread(thread_id)
-        if thread is None or thread.status != READY:
+        if thread is None or thread.status not in APPLICABLE_STATUSES:
             return None
         proposal = service.store.current_proposal(thread_id)
         snapshot = self._thread_snapshot(thread)
@@ -1902,6 +1920,8 @@ class EditorAgentPane(QWidget):
         if self._service() is None:
             showWarning("The agent queue is not open yet.", parent=self)
             return
+        # Cleared now so a second Send cannot repeat it; restored if the
+        # request is abandoned before it reaches the store.
         self.prompt.clear()
         self._save_settings()
         generation = self._context_generation
@@ -1918,6 +1938,14 @@ class EditorAgentPane(QWidget):
                 selected_text,
             ),
         )
+
+    def _restore_prompt(self, prompt: str, reason: str | None = None) -> None:
+        """Put back a prompt whose request was not stored, unless the user has
+        typed something new since."""
+        if not self.prompt.toPlainText().strip():
+            self.prompt.setPlainText(prompt)
+        if reason:
+            tooltip(reason, parent=self)
 
     def _reply_target(self) -> str | None:
         """The selected thread, when Send should reply to it."""
@@ -1941,6 +1969,7 @@ class EditorAgentPane(QWidget):
         selected_text: Any,
     ) -> None:
         if generation != self._context_generation:
+            self._restore_prompt(prompt, PROMPT_NOT_SENT)
             return
         self._query_reviewer_context(
             lambda reviewer: self._send_after_reviewer_context(
@@ -1956,6 +1985,7 @@ class EditorAgentPane(QWidget):
         reviewer: dict[str, Any] | None,
     ) -> None:
         if generation != self._context_generation:
+            self._restore_prompt(prompt, PROMPT_NOT_SENT)
             return
         self._after_note_saved(
             lambda: self._create_thread(prompt, generation, selected_text, reviewer)
@@ -2005,9 +2035,11 @@ class EditorAgentPane(QWidget):
         reviewer: dict[str, Any] | None = None,
     ) -> None:
         if generation != self._context_generation:
+            self._restore_prompt(prompt, PROMPT_NOT_SENT)
             return
         service = self._service()
         if service is None:
+            self._restore_prompt(prompt)
             showWarning("The agent queue is not open yet.", parent=self)
             return
         snapshot: Snapshot
@@ -2022,10 +2054,12 @@ class EditorAgentPane(QWidget):
                 source = _editor_source(self.editor)
             card_scope = self._card_read_scope(snapshot)
         except RuntimeError as exc:
+            self._restore_prompt(prompt)
             showWarning(str(exc), parent=self)
             return
         settings = self._thread_settings(card_scope)
         if settings is None:
+            self._restore_prompt(prompt)
             return
         note_id = snapshot.note_id if isinstance(snapshot, EditorSnapshot) else None
         note = self.editor.note if self.editor is not None else None
@@ -2048,13 +2082,17 @@ class EditorAgentPane(QWidget):
 
     def _reply_to_thread(self, thread_id: str, prompt: str, generation: int) -> None:
         if generation != self._context_generation:
+            self._restore_prompt(prompt, PROMPT_NOT_SENT)
             return
         service = self._service()
         if service is None:
+            self._restore_prompt(prompt)
+            showWarning("The agent queue is not open yet.", parent=self)
             return
         try:
             service.store.reply(thread_id, prompt)
         except QueueTransitionError as exc:
+            self._restore_prompt(prompt)
             showWarning(str(exc), parent=self)
             return
         thread = service.store.get_thread(thread_id)
@@ -2173,7 +2211,7 @@ class EditorAgentPane(QWidget):
         found = self._current_proposal(thread_id)
         if found is None or self.editor is None:
             return
-        thread, proposal, _snapshot, patch = found
+        thread, proposal, snapshot, patch = found
         if proposal.version != version or not isinstance(patch, NotePatch):
             return
         if thread.note_id is not None:
@@ -2185,15 +2223,27 @@ class EditorAgentPane(QWidget):
                 )
                 return
             reason = stale_reason(proposal.base, self._note_states([thread.note_id]))
-            if reason is not None:
-                showWarning(reason, parent=self)
+        else:
+            # Add Cards: no note id, so check the editor still holds the note
+            # the proposal was made for, not the next one after Add.
+            note = self.editor.note
+            if note is None:
                 return
+            reason = unsaved_note_stale_reason(
+                snapshot,
+                int(note.mid),
+                [str(html) for _name, html in note.items()],
+                list(note.tags),
+            )
+        if reason is not None:
+            showWarning(reason, parent=self)
+            return
         try:
             apply_patch_to_editor(self.editor, patch)
         except PatchValidationError as exc:
             showWarning(str(exc), parent=self)
             return
-        if self._finish_thread(thread_id, READY, APPLIED):
+        if self._finish_thread(thread_id, thread.status, APPLIED):
             tooltip("Agent proposal applied.", parent=self)
 
     def _show_multi_proposal_dialog(
@@ -2230,7 +2280,7 @@ class EditorAgentPane(QWidget):
         browser = self.browser
         if found is None or browser is None:
             return False
-        _thread, proposal, snapshot, patch = found
+        thread, proposal, snapshot, patch = found
         if not isinstance(snapshot, MultiCardSnapshot) or not isinstance(
             patch, MultiNotePatch
         ):
@@ -2256,13 +2306,22 @@ class EditorAgentPane(QWidget):
             showWarning("No checked cards have proposed changes.", parent=self)
             return False
 
-        def on_success(_changes: Any) -> None:
-            if self._finish_thread(thread_id, READY, APPLIED):
-                tooltip("Agent proposal applied.", parent=self)
+        # Mark applied before the write starts, so Apply, Reply and Discard are
+        # unavailable while it runs; a failed write reverts it.
+        from_status = thread.status
+        if not self._finish_thread(thread_id, from_status, APPLIED):
+            return False
 
-        update_notes(parent=self, notes=notes).success(on_success).run_in_background(
-            initiator=self
-        )
+        def on_success(_changes: Any) -> None:
+            tooltip("Agent proposal applied.", parent=self)
+
+        def on_failure(exc: Exception) -> None:
+            self._finish_thread(thread_id, APPLIED, from_status)
+            showWarning(str(exc) or type(exc).__name__, parent=self)
+
+        update_notes(parent=self, notes=notes).success(on_success).failure(
+            on_failure
+        ).run_in_background(initiator=self)
         return True
 
 

@@ -99,7 +99,7 @@ from editor_agent_pane.patches import (  # noqa: E402
     validate_selected_text_snapshot,
 )
 from editor_agent_pane.queue_runner import base_for  # noqa: E402
-from editor_agent_pane.queue_store import QueueStore  # noqa: E402
+from editor_agent_pane.queue_store import QueueStore, QueueTransitionError  # noqa: E402
 from editor_agent_pane.recent_folders import (  # noqa: E402
     MAX_RECENT_PROJECT_FOLDERS,
     NO_PROJECT_FOLDER_LABEL,
@@ -377,6 +377,9 @@ class FakePrompt:
     def clear(self) -> None:
         self.cleared = True
         self.text = ""
+
+    def setPlainText(self, text: str) -> None:
+        self.text = text
 
     def toPlainText(self) -> str:
         return self.text
@@ -7247,6 +7250,114 @@ def test_apply_refuses_when_the_note_is_gone(
     assert _status(store, thread.id) == "ready"
 
 
+def _add_cards_ready_thread(runtime: Any, store: QueueStore, pane: Any) -> Any:
+    from editor_agent_pane.patches import NotePatch
+
+    pane._create_thread("Write the back", 0)
+    [thread] = store.list_threads()
+    store.transition(thread.id, "queued", "running")
+    patch = NotePatch(
+        summary="Back", note_id=None, notetype_id=7, field_updates={"Back": "B!"}
+    )
+    store.add_proposal(thread.id, patch_to_dict(patch), {"notes": []})
+    store.transition(thread.id, "running", "ready")
+    pane._load_threads(select=thread.id)
+    return thread
+
+
+def _add_cards_pane(runtime: Any, tmp_path: Path) -> Any:
+    pane = _pane_for_agent_request(runtime, tmp_path, mode=runtime.EditorMode.ADD_CARDS)
+    pane.editor.note = _editor_note(0)
+    pane.editor.web = types.SimpleNamespace(eval=lambda _js: None)
+    pane._shown_context = pane._context_key()
+    return pane
+
+
+def test_add_cards_apply_refuses_after_the_editor_moved_to_another_note(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    from editor_agent_pane.thread_view import STALE_WARNING
+
+    store, _runner = queue
+    pane = _add_cards_pane(pane_runtime, tmp_path)
+    thread = _add_cards_ready_thread(pane_runtime, store, pane)
+    # Add was pressed; the editor now holds the next note, still without an id.
+    next_note = _editor_note(0)
+    next_note.fields[0] = "<p>another word</p>"
+    pane.editor.note = next_note
+    pane.on_editor_context_changed()
+    pane._load_threads(select=thread.id)
+
+    pane._apply_pending_patch()
+
+    assert pane_runtime.warnings == [STALE_WARNING]
+    assert next_note.fields[1] == "<p>back</p>"
+    assert _status(store, thread.id) == "ready"
+
+
+def test_add_cards_apply_fills_the_unchanged_note(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _add_cards_pane(pane_runtime, tmp_path)
+    thread = _add_cards_ready_thread(pane_runtime, store, pane)
+
+    pane._apply_pending_patch()
+
+    assert pane_runtime.warnings == []
+    assert pane.editor.note.fields[1] == "B!"
+    assert _status(store, thread.id) == "applied"
+
+
+def test_add_cards_did_add_note_starts_a_new_request(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _add_cards_pane(pane_runtime, tmp_path)
+    thread = _add_cards_ready_thread(pane_runtime, store, pane)
+    other = _pane_for_agent_request(pane_runtime, tmp_path)
+    other._load_threads()
+    panes = [(pane.editor, pane), (other.editor, other)]
+    monkeypatch.setattr(
+        pane_runtime, "_panes", types.SimpleNamespace(items=lambda: panes)
+    )
+    generation = pane._context_generation
+
+    pane_runtime._on_add_cards_did_add_note(pane.editor.note)
+
+    assert pane._thread_id is None
+    assert pane._context_generation == generation + 1
+    assert pane.apply_button.enabled is False
+    assert other._context_generation == 0
+    assert store.get_thread(thread.id) is not None
+
+
+def test_failed_reply_keeps_the_previous_proposal_applicable(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.editor.web = types.SimpleNamespace(eval=lambda _js: None)
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_note",
+        lambda **kwargs: types.SimpleNamespace(run_in_background=lambda **_kw: None),
+    )
+    thread = _ready_thread(pane_runtime, store, pane)
+    store.reply(thread.id, "Shorter")
+    store.transition(thread.id, "queued", "running")
+    store.complete_run(
+        thread.id, to_status="failed", messages=[("system", "cli died", "")]
+    )
+    pane._load_threads(select=thread.id)
+    assert pane.apply_button.enabled is True
+
+    pane._apply_pending_patch()
+
+    assert pane.editor.note.fields[1] == "<p>new back</p>"
+    assert _status(store, thread.id) == "applied"
+
+
 def _reviewer(card_id: int = 42, state: str = "answer") -> Any:
     return types.SimpleNamespace(
         card=types.SimpleNamespace(
@@ -7379,7 +7490,9 @@ def test_queue_read_note_state_and_card_lookup_errors(pane_runtime: Any) -> None
 
     def get_note(note_id: int) -> Any:
         if note_id != 123:
-            raise KeyError(note_id)
+            from anki.errors import NotFoundError
+
+            raise NotFoundError("missing", None, None, None)
         return note
 
     def find_cards(*_args: Any, **_kwargs: Any) -> Any:
@@ -7398,6 +7511,71 @@ def test_queue_read_note_state_and_card_lookup_errors(pane_runtime: Any) -> None
     assert queue_runtime._read_cards(
         CardReadScope("all"), {"query": "(", "offset": 0, "limit": 1}
     ) == {"error": queue_runtime.CARD_LOOKUP_FAILED}
+
+
+def test_queue_read_note_state_reraises_other_backend_errors(
+    pane_runtime: Any,
+) -> None:
+    queue_runtime = pane_runtime.queue_runtime
+
+    def get_note(_note_id: int) -> Any:
+        raise RuntimeError("backend hiccup")
+
+    queue_runtime.aqt.mw = types.SimpleNamespace(
+        col=types.SimpleNamespace(get_note=get_note)
+    )
+    with pytest.raises(RuntimeError, match="backend hiccup"):
+        queue_runtime.read_note_state([123])
+
+
+def test_queue_closed_collection_raises_collection_unavailable(
+    pane_runtime: Any,
+) -> None:
+    from editor_agent_pane.card_access import CardReadScope
+    from editor_agent_pane.queue_runner import CollectionUnavailable
+
+    queue_runtime = pane_runtime.queue_runtime
+    queue_runtime.aqt.mw = types.SimpleNamespace(col=None)
+    with pytest.raises(CollectionUnavailable):
+        queue_runtime.read_note_state([123])
+    with pytest.raises(CollectionUnavailable):
+        queue_runtime._read_cards(CardReadScope("all"), {"query": ""})
+
+
+def test_close_service_stops_runner_before_unblocking_main_thread_waits(
+    pane_runtime: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_runtime = pane_runtime.queue_runtime
+    events: list[tuple[str, bool]] = []
+
+    class Runner:
+        def request_stop(self) -> None:
+            events.append(("request_stop", queue_runtime._closing.is_set()))
+
+        def join(self, timeout: float = 10.0) -> None:
+            events.append(("join", queue_runtime._closing.is_set()))
+
+        def stop(self, timeout: float = 10.0) -> None:
+            events.append(("stop", queue_runtime._closing.is_set()))
+
+    class Store:
+        def close(self) -> None:
+            events.append(("close", queue_runtime._closing.is_set()))
+
+    monkeypatch.setattr(
+        queue_runtime,
+        "_service",
+        queue_runtime.QueueService(store=Store(), runner=Runner()),  # type: ignore[arg-type]
+    )
+    try:
+        queue_runtime.close_service()
+    finally:
+        queue_runtime._closing.clear()
+    assert events == [
+        ("request_stop", False),
+        ("join", True),
+        ("close", True),
+    ]
 
 
 def test_queue_thread_changed_fans_out_and_tooltips_finished_runs(
@@ -7518,7 +7696,12 @@ def test_browser_multi_send_and_apply_through_the_store(
             self.callback = callback
             return self
 
+        def failure(self, callback: Callable[[Exception], None]) -> Op:
+            self.on_failure = callback
+            return self
+
         def run_in_background(self, **_kwargs: Any) -> None:
+            assert _status(store, thread.id) == "applied"  # marked before the write
             self.callback(None)
 
     updated: list[Any] = []
@@ -7539,3 +7722,141 @@ def test_browser_multi_send_and_apply_through_the_store(
     pane.selection[:] = [11, 12, 21]
     pane.on_browser_context_changed()
     assert pane._threads_shown[0].id == thread.id
+
+
+def _browser_ready_thread(runtime: Any, store: QueueStore, pane: Any) -> Any:
+    from editor_agent_pane.patches import MultiNoteUpdate
+
+    pane._create_thread("Tighten these", 0)
+    [thread] = store.list_threads()
+    patch = MultiNotePatch(
+        summary="s",
+        note_updates=(
+            MultiNoteUpdate(note_id=101, notetype_id=7, field_updates={"Back": "B"}),
+        ),
+    )
+    store.transition(thread.id, "queued", "running")
+    store.add_proposal(
+        thread.id, patch_to_dict(patch), base_for([101], pane._read_note_state([101]))
+    )
+    store.transition(thread.id, "running", "ready")
+    pane._show_multi_proposal_dialog = lambda *_args: None
+    pane._load_threads(select=thread.id)
+    return thread
+
+
+class _PendingOp:
+    def __init__(self, notes: list[Any]) -> None:
+        self.notes = notes
+        self.on_success: Callable[[Any], None] | None = None
+        self.on_failure: Callable[[Exception], None] | None = None
+        self.started = False
+
+    def success(self, callback: Callable[[Any], None]) -> _PendingOp:
+        self.on_success = callback
+        return self
+
+    def failure(self, callback: Callable[[Exception], None]) -> _PendingOp:
+        self.on_failure = callback
+        return self
+
+    def run_in_background(self, **_kwargs: Any) -> None:
+        self.started = True
+
+
+def test_multi_apply_marks_applied_before_the_write_and_blocks_a_second_apply(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+    thread = _browser_ready_thread(pane_runtime, store, pane)
+    ops: list[_PendingOp] = []
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_notes",
+        lambda parent, notes: ops.append(_PendingOp(notes)) or ops[-1],
+    )
+
+    assert pane._apply_checked_multi_patch(thread.id, {101}) is True
+    assert ops[0].started
+    assert _status(store, thread.id) == "applied"
+    assert pane.apply_button.enabled is False
+    assert pane.discard_button.enabled is False
+
+    assert pane._apply_checked_multi_patch(thread.id, {101}) is False
+    assert len(ops) == 1
+    with pytest.raises(QueueTransitionError):
+        store.reply(thread.id, "more")
+
+
+def test_multi_apply_failure_reverts_to_ready(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+    thread = _browser_ready_thread(pane_runtime, store, pane)
+    ops: list[_PendingOp] = []
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_notes",
+        lambda parent, notes: ops.append(_PendingOp(notes)) or ops[-1],
+    )
+    assert pane._apply_checked_multi_patch(thread.id, {101}) is True
+
+    assert ops[0].on_failure is not None
+    ops[0].on_failure(RuntimeError("disk full"))
+
+    assert _status(store, thread.id) == "ready"
+    assert store.current_proposal(thread.id) is not None
+    assert pane_runtime.warnings == ["disk full"]
+    assert pane.apply_button.enabled is True
+
+
+def test_send_restores_the_prompt_when_the_note_changes_before_it_is_stored(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pending: list[Callable[[Any], None]] = []
+    pane.editor.web = types.SimpleNamespace(
+        evalWithCallback=lambda _js, callback: pending.append(callback)
+    )
+    tips: list[str] = []
+    monkeypatch.setattr(pane_runtime, "tooltip", lambda text, **_kw: tips.append(text))
+    pane.prompt = FakePrompt("Improve this")
+
+    pane._send()
+    assert pane.prompt.text == ""
+    pane.editor.note = _editor_note(456)
+    pane.on_editor_context_changed()
+    pending.pop()(None)
+
+    assert store.list_threads() == []
+    assert pane.prompt.text == "Improve this"
+    assert tips == [pane_runtime.PROMPT_NOT_SENT]
+
+
+def test_reply_restores_the_prompt_when_the_note_changes_before_it_is_stored(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    saved: list[Callable[[], None]] = []
+    pane.editor.call_after_note_saved = lambda callback, keepFocus=False: saved.append(
+        callback
+    )
+    tips: list[str] = []
+    monkeypatch.setattr(pane_runtime, "tooltip", lambda text, **_kw: tips.append(text))
+    pane.prompt = FakePrompt("Shorter")
+
+    pane._send()
+    pane.editor.note = _editor_note(456)
+    pane.on_editor_context_changed()
+    pane.prompt.text = "typed meanwhile"
+    saved.pop()()
+
+    assert _status(store, thread.id) == "ready"
+    assert pane.prompt.text == "typed meanwhile"  # not clobbered
+    assert tips == [pane_runtime.PROMPT_NOT_SENT]

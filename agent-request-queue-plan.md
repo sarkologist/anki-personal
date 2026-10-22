@@ -167,7 +167,14 @@ queued ──► running ──► ready        (patch present)
 ready ────► applied | discarded | stale
 stale ────► queued (re-run) | discarded | applied (forced)
 ready / answered / failed ──reply──► queued
+failed ───► applied   (a failed run keeps the previous proposal current)
+applied ──► ready | failed   (revert when the apply's collection write fails)
 ```
+
+A run that ends without a patch supersedes the thread's current proposal (a
+null patch drops it); a failed run leaves it current. A run whose collection
+is closed, or that is interrupted by shutdown, goes running → queued with no
+error.
 
 Anything in `queued`/`running` at Anki startup is reset to `queued` and the
 worker resumes it (a run that died with Anki is simply re-run; the thread

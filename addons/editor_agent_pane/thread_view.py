@@ -41,6 +41,9 @@ from .surface import (
 
 ACTIVE_STATUSES = (QUEUED, RUNNING)
 REPLYABLE_STATUSES = (READY, ANSWERED, FAILED)
+# A failed run leaves the previous turn's proposal current, so it can still be
+# applied.
+APPLICABLE_STATUSES = (READY, FAILED)
 DISCARDABLE_STATUSES = (QUEUED, READY, ANSWERED, FAILED, STALE)
 LIVE_ACTIVITY_ID = "agent-thread-live"
 STATUS_ID = "agent-thread-status"
@@ -222,4 +225,22 @@ def stale_reason(
         )
         if state.get("mod") != entry.get("mod") or current_hash != entry.get("hash"):
             return STALE_WARNING
+    return None
+
+
+def unsaved_note_stale_reason(
+    snapshot: Snapshot,
+    notetype_id: int,
+    fields: list[str],
+    tags: list[str],
+) -> str | None:
+    """For a note with no id yet (Add Cards): has the editor moved on from the
+    captured snapshot? There is no mod to compare, so compare content."""
+    if not isinstance(snapshot, EditorSnapshot):
+        return None
+    captured = note_state_hash(
+        [field.html for field in snapshot.fields], list(snapshot.tags)
+    )
+    if notetype_id != snapshot.notetype_id or note_state_hash(fields, tags) != captured:
+        return STALE_WARNING
     return None

@@ -33,6 +33,8 @@ from editor_agent_pane.patches import (  # noqa: E402
     TagPatch,
 )
 from editor_agent_pane.queue_runner import (  # noqa: E402
+    NO_PENDING_REQUEST,
+    CollectionUnavailable,
     QueueRunner,
     normalize_settings,
     note_state_hash,
@@ -367,6 +369,114 @@ def test_apply_and_discard_close_current_proposal(store: QueueStore) -> None:
     assert store.current_proposal(applied.id) is None
     assert [p.status for p in store.proposals(applied.id)] == ["applied"]
     assert [p.status for p in store.proposals(discarded.id)] == ["discarded"]
+
+
+def test_failed_thread_with_current_proposal_can_be_applied(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "a")
+    store.transition(thread.id, "queued", "running")
+    store.add_proposal(thread.id, {"summary": "s"}, {"notes": []})
+    store.transition(thread.id, "running", "ready")
+    store.reply(thread.id, "more")
+    store.transition(thread.id, "queued", "running")
+    store.transition(thread.id, "running", "failed")
+    assert store.current_proposal(thread.id) is not None
+    store.transition(thread.id, "failed", "applied")
+    assert [p.status for p in store.proposals(thread.id)] == ["applied"]
+
+
+@pytest.mark.parametrize("back_to", ["ready", "failed"])
+def test_reverting_an_apply_makes_the_proposal_current_again(
+    store: QueueStore, back_to: str
+) -> None:
+    thread = store.create_thread(context(), settings(), "a")
+    store.transition(thread.id, "queued", "running")
+    store.add_proposal(thread.id, {"summary": "one"}, {"notes": []})
+    store.add_proposal(thread.id, {"summary": "two"}, {"notes": []})
+    store.transition(thread.id, "running", "ready")
+    store.transition(thread.id, "ready", "applied")
+    store.transition(thread.id, "applied", back_to)
+    current = store.current_proposal(thread.id)
+    assert current is not None and current.version == 2
+    assert [p.status for p in store.proposals(thread.id)] == [
+        "superseded",
+        "current",
+    ]
+
+
+def test_complete_run_writes_messages_proposal_and_status_together(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "a")
+    store.transition(thread.id, "queued", "running")
+    store.set_error(thread.id, "old")
+    store.complete_run(
+        thread.id,
+        to_status="ready",
+        messages=[("system", "[summary]", ""), ("agent", "ok", "<p>ok</p>")],
+        proposal={"summary": "s"},
+        base={"notes": [{"note_id": 11}]},
+    )
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "ready" and loaded.error is None
+    assert [(m.role, m.text) for m in store.messages(thread.id)] == [
+        ("user", "a"),
+        ("system", "[summary]"),
+        ("agent", "ok"),
+    ]
+    proposal = store.current_proposal(thread.id)
+    assert proposal is not None
+    assert proposal.patch == {"summary": "s"}
+    assert proposal.base == {"notes": [{"note_id": 11}]}
+
+
+def test_complete_run_drop_proposal_supersedes_current(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "a")
+    store.transition(thread.id, "queued", "running")
+    store.add_proposal(thread.id, {"summary": "s"}, {"notes": []})
+    store.complete_run(
+        thread.id,
+        to_status="answered",
+        messages=[("agent", "no", "")],
+        drop_proposal=True,
+    )
+    assert store.current_proposal(thread.id) is None
+    assert [p.status for p in store.proposals(thread.id)] == ["superseded"]
+
+
+def test_complete_run_writes_nothing_unless_running(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "a")
+    with pytest.raises(QueueTransitionError):
+        store.complete_run(
+            thread.id,
+            to_status="ready",
+            messages=[("agent", "ok", "")],
+            proposal={"summary": "s"},
+            base={},
+        )
+    assert [m.role for m in store.messages(thread.id)] == ["user"]
+    assert store.proposals(thread.id) == []
+    assert store.get_thread(thread.id).status == "queued"  # type: ignore[union-attr]
+
+
+def test_complete_run_on_a_closed_store_leaves_thread_running(
+    tmp_path: Path,
+) -> None:
+    store = QueueStore.open(tmp_path / "q.sqlite")
+    thread = store.create_thread(context(), settings(), "a")
+    store.transition(thread.id, "queued", "running")
+    store.close()
+    with pytest.raises(Exception):
+        store.complete_run(
+            thread.id, to_status="answered", messages=[("agent", "ok", "")]
+        )
+    reopened = QueueStore.open(tmp_path / "q.sqlite")
+    try:
+        assert reopened.get_thread(thread.id).status == "running"  # type: ignore[union-attr]
+        assert [m.role for m in reopened.messages(thread.id)] == ["user"]
+    finally:
+        reopened.close()
 
 
 def test_next_runnable_is_oldest_queued(store: QueueStore) -> None:
@@ -898,3 +1008,148 @@ def test_shutdown_while_waiting_for_main_thread_requeues(store: QueueStore) -> N
     harness.runner._run_on_main = stopped_main
     harness.runner.run_once()
     assert store.get_thread(thread.id).status == "queued"  # type: ignore[union-attr]
+
+
+def ready_thread_with_proposal(store: QueueStore, harness: Harness) -> str:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    harness.runner.run_once()
+    assert store.current_proposal(thread.id) is not None
+    return thread.id
+
+
+def test_reply_without_patch_drops_the_current_proposal(store: QueueStore) -> None:
+    agent = FakeAgent([result("first", (note_patch(),)), result("never mind")])
+    harness = Harness(store, agent)
+    thread_id = ready_thread_with_proposal(store, harness)
+    store.reply(thread_id, "Actually, leave it")
+    harness.runner.run_once()
+
+    assert store.get_thread(thread_id).status == "answered"  # type: ignore[union-attr]
+    assert store.current_proposal(thread_id) is None
+    assert [p.status for p in store.proposals(thread_id)] == ["superseded"]
+    assert "null patch drops the proposal" in agent.calls[1]["prompt"]
+
+
+def test_failed_reply_keeps_the_current_proposal(store: QueueStore) -> None:
+    agent = FakeAgent([result("first", (note_patch(),)), RuntimeError("cli died")])
+    harness = Harness(store, agent)
+    thread_id = ready_thread_with_proposal(store, harness)
+    store.reply(thread_id, "Shorter")
+    harness.runner.run_once()
+
+    loaded = store.get_thread(thread_id)
+    assert loaded is not None
+    assert loaded.status == "failed" and loaded.error == "cli died"
+    proposal = store.current_proposal(thread_id)
+    assert proposal is not None and proposal.version == 1
+    assert store.messages(thread_id)[-1].text == "cli died"
+
+
+@pytest.mark.parametrize("where", ["note_state", "card_read"])
+def test_closed_collection_requeues_without_error(
+    store: QueueStore, where: str
+) -> None:
+    thread = store.create_thread(context(), settings(card_access="all"), "Fix back", 11)
+
+    def lookup(**kwargs: Any) -> AgentResult:
+        return result("looking", card_request={"query": "", "offset": 0, "limit": 5})
+
+    harness = Harness(store, FakeAgent([lookup]))
+
+    def closed(*_args: Any) -> Any:
+        raise CollectionUnavailable("The collection is closed.")
+
+    if where == "note_state":
+        harness.runner._read_note_state = closed
+    else:
+        harness.runner._read_cards = closed
+
+    harness.runner.run_once()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None
+    assert loaded.status == "queued" and loaded.error is None
+    assert [m.role for m in store.messages(thread.id)] == ["user"]
+    assert harness.runner._requeued is True
+
+
+def test_note_state_errors_fail_the_run(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    harness = Harness(store, FakeAgent([]))
+
+    def broken(_ids: Any) -> Any:
+        raise RuntimeError("backend hiccup")
+
+    harness.runner._read_note_state = broken
+    harness.runner.run_once()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None
+    assert loaded.status == "failed" and loaded.error == "backend hiccup"
+
+
+def test_shutdown_race_requeues_instead_of_cancelling(store: QueueStore) -> None:
+    """A worker blocked on the main thread when Anki closes is re-queued."""
+    entered = threading.Event()
+    closing = threading.Event()
+
+    def main(fn: Any) -> Any:
+        entered.set()
+        while not closing.is_set():
+            time.sleep(0.01)
+        raise AgentStopped("Anki is closing.")
+
+    thread = store.create_thread(context(), settings(), "x", 11)
+    harness = Harness(store, FakeAgent([]))
+    harness.runner._run_on_main = main
+    harness.runner.start()
+    assert entered.wait(5)
+    # close_service: request_stop() first, then unblock the main-thread bridge.
+    harness.runner.request_stop()
+    closing.set()
+    harness.runner.join()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None
+    assert loaded.status == "queued" and loaded.error is None
+
+
+def test_claimed_thread_without_a_pending_request_fails_clearly(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.transition(thread.id, "queued", "running")
+    store.add_message(thread.id, "agent", "done")  # a run whose status was lost
+    store.reset_interrupted()
+    agent = FakeAgent([])
+    Harness(store, agent).runner.run_once()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None
+    assert loaded.status == "failed" and loaded.error == NO_PENDING_REQUEST
+    assert agent.calls == []
+
+
+def test_run_results_are_not_written_when_the_store_rejects_them(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    harness = Harness(store, FakeAgent([result("ok", (note_patch(),))]))
+    calls: list[str] = []
+    original = store.complete_run
+
+    def flaky(thread_id: str, **kwargs: Any) -> None:
+        calls.append(kwargs["to_status"])
+        raise RuntimeError("store closed")
+
+    store.complete_run = flaky  # type: ignore[method-assign]
+    harness.runner.run_once()
+    store.complete_run = original  # type: ignore[method-assign]
+
+    assert calls == ["ready", "failed"]
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "running"
+    assert [m.role for m in store.messages(thread.id)] == ["user"]
+    assert store.proposals(thread.id) == []
+    store.reset_interrupted()
+    agent = FakeAgent([result("again")])
+    Harness(store, agent).runner.run_once()
+    assert agent.calls[0]["prompt"].startswith("Fix back")

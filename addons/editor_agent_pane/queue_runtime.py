@@ -19,13 +19,19 @@ from pathlib import Path
 from typing import Any
 
 import aqt
+from anki.errors import NotFoundError
 from aqt import gui_hooks
 from aqt.utils import showWarning, tooltip
 
 from .agent_log import AgentRunLogger, JsonLineAgentRunLogger, ensure_agent_log_folder
 from .card_access import CardReadScope, read_cards
 from .codex_client import AgentStopped
-from .queue_runner import CANCELLED, QueueRunner, default_make_agent
+from .queue_runner import (
+    CANCELLED,
+    CollectionUnavailable,
+    QueueRunner,
+    default_make_agent,
+)
 from .queue_store import ANSWERED, FAILED, READY, QueueStore, Thread
 
 QUEUE_FILENAME = "agent_queue.sqlite"
@@ -108,9 +114,11 @@ def close_service() -> None:
     if current is None:
         return
     _service = None
-    # Unblock a worker waiting on the main thread before joining it.
+    # Mark runs as interrupted (re-queued) before unblocking a worker waiting
+    # on the main thread; the other order records them as cancelled.
+    current.runner.request_stop()
     _closing.set()
-    current.runner.stop()
+    current.runner.join()
     current.store.close()
 
 
@@ -153,7 +161,7 @@ def run_on_main(fn: Callable[[], Any]) -> Any:
 def _read_cards(scope: CardReadScope, request: Any) -> dict[str, Any]:
     mw = aqt.mw
     if mw is None or mw.col is None:
-        raise AgentStopped("The collection is closed.")
+        raise CollectionUnavailable("The collection is closed.")
     try:
         return read_cards(mw.col, scope, request)
     except Exception:
@@ -163,13 +171,13 @@ def _read_cards(scope: CardReadScope, request: Any) -> dict[str, Any]:
 def read_note_state(note_ids: list[int]) -> dict[int, dict[str, Any] | None]:
     mw = aqt.mw
     if mw is None or mw.col is None:
-        raise AgentStopped("The collection is closed.")
+        raise CollectionUnavailable("The collection is closed.")
     col: Any = mw.col
     states: dict[int, dict[str, Any] | None] = {}
     for note_id in note_ids:
         try:
             note = col.get_note(note_id)
-        except Exception:
+        except NotFoundError:
             states[note_id] = None
             continue
         states[note_id] = {

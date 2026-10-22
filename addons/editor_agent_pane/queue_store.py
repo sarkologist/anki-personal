@@ -37,15 +37,17 @@ TERMINAL_STATUSES = (APPLIED, DISCARDED)
 # The plan's state machine, plus a few closing edges it leaves implicit:
 # answered/failed threads can be discarded, a queued thread can be cancelled
 # (-> failed) or discarded before it runs, and running -> queued is the
-# startup/shutdown reset.
+# startup/shutdown reset. A failed run keeps the previous proposal current, so
+# failed -> applied applies it; applied -> ready/failed reverts an apply whose
+# collection write failed.
 TRANSITIONS: dict[str, frozenset[str]] = {
     QUEUED: frozenset({RUNNING, FAILED, DISCARDED}),
     RUNNING: frozenset({READY, ANSWERED, FAILED, QUEUED}),
     READY: frozenset({APPLIED, DISCARDED, STALE, QUEUED}),
     ANSWERED: frozenset({QUEUED, DISCARDED}),
-    FAILED: frozenset({QUEUED, DISCARDED}),
+    FAILED: frozenset({QUEUED, DISCARDED, APPLIED}),
     STALE: frozenset({QUEUED, DISCARDED, APPLIED}),
-    APPLIED: frozenset(),
+    APPLIED: frozenset({READY, FAILED}),
     DISCARDED: frozenset(),
 }
 REPLY_FROM = (READY, ANSWERED, FAILED)
@@ -336,6 +338,14 @@ class QueueStore:
                 "update proposals set status = ? where thread_id = ? and status = ?",
                 (closing[to_status], thread_id, PROPOSAL_CURRENT),
             )
+        elif from_status == APPLIED:
+            # Reverting a failed apply: the applied proposal is current again.
+            conn.execute(
+                "update proposals set status = ? where thread_id = ? and version ="
+                " (select max(version) from proposals where thread_id = ?"
+                " and status = ?)",
+                (PROPOSAL_CURRENT, thread_id, thread_id, PROPOSAL_APPLIED),
+            )
 
     def reply(self, thread_id: str, text: str, html: str = "") -> None:
         """Append a user message and send the thread back to the worker."""
@@ -349,6 +359,39 @@ class QueueStore:
             self._insert_message(conn, thread_id, "user", text, html)
             self._transition(conn, thread_id, status, QUEUED)
             conn.execute("update threads set error = null where id = ?", (thread_id,))
+
+    def complete_run(
+        self,
+        thread_id: str,
+        *,
+        to_status: str,
+        messages: Iterable[tuple[str, str, str]] = (),
+        proposal: dict[str, Any] | None = None,
+        base: dict[str, Any] | None = None,
+        drop_proposal: bool = False,
+        error: str | None = None,
+    ) -> None:
+        """Record a run's outcome in one transaction: running -> ``to_status``.
+
+        ``messages`` are (role, text, html). ``proposal`` (with its ``base``)
+        becomes the current proposal; ``drop_proposal`` instead supersedes the
+        current one. Nothing is written if the thread is not running.
+        """
+        if to_status not in TRANSITIONS[RUNNING]:
+            raise QueueTransitionError(
+                f"Illegal thread transition: {RUNNING} -> {to_status}."
+            )
+        with self._tx() as conn:
+            self._transition(conn, thread_id, RUNNING, to_status)
+            for role, text, html in messages:
+                self._insert_message(conn, thread_id, role, text, html)
+            if proposal is not None:
+                self._insert_proposal(conn, thread_id, proposal, base or {})
+            elif drop_proposal:
+                self._supersede_current(conn, thread_id)
+            conn.execute(
+                "update threads set error = ? where id = ?", (error, thread_id)
+            )
 
     def next_runnable(self) -> Thread | None:
         with self._lock:
@@ -445,37 +488,47 @@ class QueueStore:
         patch: dict[str, Any],
         base: dict[str, Any],
     ) -> Proposal:
-        now = time.time()
         with self._tx() as conn:
-            version = conn.execute(
-                "select coalesce(max(version), 0) + 1 from proposals"
-                " where thread_id = ?",
-                (thread_id,),
-            ).fetchone()[0]
-            conn.execute(
-                "update proposals set status = ? where thread_id = ? and status = ?",
-                (PROPOSAL_SUPERSEDED, thread_id, PROPOSAL_CURRENT),
-            )
-            conn.execute(
-                "insert into proposals (thread_id, version, created_at, patch_json,"
-                " base_json, status) values (?,?,?,?,?,?)",
-                (
-                    thread_id,
-                    version,
-                    now,
-                    _dumps(patch),
-                    _dumps(base),
-                    PROPOSAL_CURRENT,
-                ),
-            )
-            conn.execute(
-                "update threads set updated_at = ? where id = ?", (now, thread_id)
-            )
+            version = self._insert_proposal(conn, thread_id, patch, base)
             row = conn.execute(
                 "select * from proposals where thread_id = ? and version = ?",
                 (thread_id, version),
             ).fetchone()
         return _proposal(row)
+
+    def _supersede_current(self, conn: sqlite3.Connection, thread_id: str) -> None:
+        conn.execute(
+            "update proposals set status = ? where thread_id = ? and status = ?",
+            (PROPOSAL_SUPERSEDED, thread_id, PROPOSAL_CURRENT),
+        )
+
+    def _insert_proposal(
+        self,
+        conn: sqlite3.Connection,
+        thread_id: str,
+        patch: dict[str, Any],
+        base: dict[str, Any],
+    ) -> int:
+        now = time.time()
+        version = conn.execute(
+            "select coalesce(max(version), 0) + 1 from proposals where thread_id = ?",
+            (thread_id,),
+        ).fetchone()[0]
+        self._supersede_current(conn, thread_id)
+        conn.execute(
+            "insert into proposals (thread_id, version, created_at, patch_json,"
+            " base_json, status) values (?,?,?,?,?,?)",
+            (
+                thread_id,
+                version,
+                now,
+                _dumps(patch),
+                _dumps(base),
+                PROPOSAL_CURRENT,
+            ),
+        )
+        conn.execute("update threads set updated_at = ? where id = ?", (now, thread_id))
+        return int(version)
 
     def current_proposal(self, thread_id: str) -> Proposal | None:
         with self._lock:
