@@ -7,19 +7,23 @@ import hashlib
 import io
 import json
 import re
+import time
 import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Callable
+
+from . import senses
 
 FLELEX = "https://cental.uclouvain.be/cefrlex/static/resources/fr/FleLex_CRF.csv"
 LEVELS = "https://cental.uclouvain.be/cefrlex/static/resources/fr/FleLex_TT_Beacco.tsv"
 LEXIQUE = "https://www.lexique.org/databases/Lexique410/Lexique4.1.zip"
-DICTIONARY = "https://kaiko.getalp.org/sparql"
 LETTERS = r"[a-zàâäçéèêëîïôöùûüÿœæ]"
 TOKEN = re.compile(LETTERS + r"+(?:-" + LETTERS + r"+)*\'?|\d+", re.I)
 
+SOURCE_RETRY_SECONDS = 1800
 LEFFF = "https://raw.githubusercontent.com/ClaudeCoulombe/FrenchLefffLemmatizer/bc0ebd0135a6cc78f48ddf184069b4c0b9c017d8/french_lefff_lemmatizer/data/lefff-3.4.mlex"
 
 
@@ -156,6 +160,17 @@ class Lexicon:
             self.forms.setdefault(form.surface, []).append(form)
             self.lemmas.setdefault((form.lemma, form.pos), []).append(form)
         self.entries = sorted(entries, key=lambda e: (e.level, -e.frequency, e.lemma))
+        self.sources_down: dict[str, float] = {}
+        self.sense_sources: list[
+            tuple[str, Callable[[Entry], list[dict[str, str]]]]
+        ] = [
+            (name, lambda e, source=source: source(e.lemma, e.pos, fetch))
+            for name, source in (
+                ("dbnary", senses.dbnary),
+                ("wiktionary", senses.wiktionary),
+                ("kaikki", senses.kaikki),
+            )
+        ]
 
     def analyses(self, surface: str) -> list[Form]:
         return self.forms.get(normalize(surface), [])
@@ -312,49 +327,28 @@ class Lexicon:
         path = self._senses_path(entry, folder)
         if path.exists():
             return json.loads(path.read_text(encoding="utf8"))
-        literal = json.dumps(entry.lemma, ensure_ascii=False)
-        query = (
-            """PREFIX ontolex: <http://www.w3.org/ns/lemon/ontolex#>
-PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
-PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-SELECT ?sense ?definition ?pos WHERE {
-?entry ontolex:canonicalForm/ontolex:writtenRep """
-            + literal
-            + """@fr ; ontolex:sense ?sense .
-FILTER(STRSTARTS(STR(?entry), "http://kaiko.getalp.org/dbnary/fra/"))
-?sense skos:definition/rdf:value ?definition .
-OPTIONAL { ?entry <http://www.lexinfo.net/ontology/2.0/lexinfo#partOfSpeech> ?pos }
-} LIMIT 24"""
-        )
-        data = json.loads(
-            fetch(
-                DICTIONARY
-                + "?"
-                + urllib.parse.urlencode(
-                    {"query": query, "format": "application/sparql-results+json"}
-                ),
-                1024 * 1024,
-            )
-        )
-        expected = {
-            "VER": "verb",
-            "NOM": "noun",
-            "ADJ": "adjective",
-            "ADV": "adverb",
-            "PRE": "preposition",
-            "CON": "conjunction",
-            "PRO": "pronoun",
-            "ART": "determiner",
-        }[entry.pos]
-        results = []
-        for row in data["results"]["bindings"]:
-            pos = row.get("pos", {}).get("value", "").rsplit("#", 1)[-1]
-            if pos and pos != expected:
+        failure: Exception | None = None
+        answered = False
+        now = time.monotonic()
+        for name, source in self.sense_sources:
+            if now < self.sources_down.get(name, 0):
+                failure = failure or OSError(f"{name} dictionary recently failed")
                 continue
-            definition = row["definition"]["value"].strip()
-            if definition and len(definition) <= 1000:
-                results.append(
-                    {"sense": row["sense"]["value"], "definition": definition}
-                )
-        atomic_json(path, results)
-        return results
+            try:
+                results = source(entry)
+            except (OSError, ValueError, KeyError) as exc:
+                # Outages often answer with HTML or truncated JSON, not only
+                # connection errors. Skip this source for a while.
+                self.sources_down[name] = now + SOURCE_RETRY_SECONDS
+                failure = exc
+                continue
+            if results:
+                atomic_json(path, results)
+                return results
+            answered = True
+        if not failure:
+            atomic_json(path, [])
+        elif not answered:
+            raise OSError(f"No sense dictionary answered: {failure}") from failure
+        # Otherwise not cached: a source that was down may still know the word.
+        return []

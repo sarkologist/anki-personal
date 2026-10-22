@@ -26,6 +26,10 @@ needed. No dictionary or corpus data is bundled in the add-on.
 - [DBnary](https://kaiko.getalp.org/about-dbnary/download/): dictionary senses
   extracted from Wiktionary. Preserve Wiktionary attribution and share-alike
   terms when reusing the cached data. Source sense URIs are saved on notes.
+- [French Wiktionary](https://fr.wiktionary.org/) and
+  [kaikki.org](https://kaikki.org/dictionary/French/) (English glosses):
+  fallback senses when DBnary is unreachable, under the same Wiktionary
+  terms. A source that fails is skipped for 30 minutes.
 
 These resources identify targets, not familiar vocabulary. Target difficulty is
 calibrated to the 90th percentile of established content-word levels once at least
