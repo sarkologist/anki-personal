@@ -532,6 +532,7 @@ class Harness:
         self.main_calls = 0
         self.card_reads: list[tuple[CardReadScope, Any]] = []
         self.made_with: list[dict[str, Any]] = []
+        self.streamed: list[tuple[str, str]] = []
         self.note_state: dict[int, Any] = state.get(
             "note_state",
             {11: {"mod": 100, "fields": ["唉声", "sigh"], "tags": ["chinese"]}},
@@ -544,6 +545,9 @@ class Harness:
             make_agent=self.make_agent,
             notify=self.notified.append,
             logger_factory=lambda thread: (None, f"/logs/{thread.id}.jsonl"),
+            on_stream_event=lambda thread_id, line: self.streamed.append(
+                (thread_id, line)
+            ),
         )
 
     def run_on_main(self, fn: Any) -> Any:
@@ -824,3 +828,73 @@ def test_start_resets_interrupted_threads(store: QueueStore) -> None:
         )
     finally:
         harness.runner.stop()
+
+
+def test_stream_events_are_forwarded_as_activity_lines(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "x", 11)
+
+    def streaming(**kwargs: Any) -> AgentResult:
+        kwargs["event_callback"]({"type": "exec_command_begin", "cmd": "rg x"})
+        return result("ok")
+
+    harness = Harness(store, FakeAgent([streaming]))
+    harness.runner.run_once()
+    assert harness.streamed == [(thread.id, "[tool] rg x")]
+
+
+def test_card_reads_are_announced_as_activity_lines(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "x", 11)
+
+    def lookup(**kwargs: Any) -> AgentResult:
+        return result("looking", card_request={"query": "", "offset": 0, "limit": 5})
+
+    harness = Harness(store, FakeAgent([lookup, result("found")]))
+    harness.runner.run_once()
+    assert (thread.id, "[cards] Reading permitted cards") in harness.streamed
+
+
+def test_reviewer_context_is_included_in_every_prompt(store: QueueStore) -> None:
+    reviewer = {
+        "side": "answer",
+        "question_html": "<p>唉声</p>",
+        "answer_html": "<p>sigh <span style='color:blue'>example</span></p>",
+        "selection": "example",
+    }
+    thread = store.create_thread(
+        {**context(), "reviewer": reviewer}, settings(), "Fix the blue one", 11
+    )
+    agent = FakeAgent([result("first", (note_patch(),)), result("second")])
+    harness = Harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "and the tags")
+    harness.runner.run_once()
+
+    for call in agent.calls:
+        assert "Reviewer context" in call["prompt"]
+        assert json.dumps(reviewer, ensure_ascii=False) in call["prompt"]
+    first = agent.calls[0]["prompt"]
+    assert first.startswith("Fix the blue one")
+    second = agent.calls[1]["prompt"]
+    assert second.index("Reviewer context") < second.index("Current proposal")
+
+
+def test_prompt_has_no_reviewer_section_without_reviewer_context(
+    store: QueueStore,
+) -> None:
+    store.create_thread({**context(), "reviewer": None}, settings(), "x", 11)
+    agent = FakeAgent([result()])
+    Harness(store, agent).runner.run_once()
+    assert "Reviewer context" not in agent.calls[0]["prompt"]
+
+
+def test_shutdown_while_waiting_for_main_thread_requeues(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "x", 11)
+    harness = Harness(store, FakeAgent([]))
+
+    def stopped_main(_fn: Any) -> Any:
+        harness.runner._stopping.set()
+        raise AgentStopped("Anki is closing.")
+
+    harness.runner._run_on_main = stopped_main
+    harness.runner.run_once()
+    assert store.get_thread(thread.id).status == "queued"  # type: ignore[union-attr]

@@ -14,10 +14,13 @@
     "prompt_history_by_model": {},
     "project_folder": "",
     "project_folder_access": "workspace-write",
-    "card_access": "current",
+    "card_access": "all",
     "recent_project_folders": [],
     "fast_mode": false,
     "stream_reasoning_summaries": true,
     "timeout_seconds": 300,
-    "splitter_sizes": [570, 80]
+    "splitter_sizes": [570, 80],
+    "queue_concurrency": 1,
+    "queue_notify": true,
+    "queue_retention_days": 30
 }

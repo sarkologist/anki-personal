@@ -70,6 +70,9 @@ ReadNoteState = Callable[[list[int]], dict[int, dict[str, Any] | None]]
 MakeAgent = Callable[[dict[str, Any]], Any]
 Notify = Callable[[str], None]
 LoggerFactory = Callable[[Thread], tuple[AgentRunLogger | None, str | None]]
+# (thread_id, activity line), called on the worker thread while a run streams.
+StreamEvent = Callable[[str, str], None]
+CARD_READ_ACTIVITY_LINE = "[cards] Reading permitted cards"
 
 
 def _bool(value: Any, default: bool) -> bool:
@@ -280,6 +283,16 @@ def proposal_prompt_section(version: int, patch: dict[str, Any]) -> str:
     )
 
 
+def reviewer_prompt_section(reviewer: dict[str, Any]) -> str:
+    return (
+        "Reviewer context as JSON: what the user saw in the reviewer when making "
+        "this request (the side shown, the rendered question and answer HTML, and "
+        "the text they had selected). Use it to resolve references such as "
+        '"the sentence in blue" or "the example":\n'
+        + json.dumps(reviewer, ensure_ascii=False)
+    )
+
+
 def check_patch_matches_snapshot(patch: Patch, snapshot: Snapshot) -> None:
     if isinstance(snapshot, MultiCardSnapshot):
         if not isinstance(patch, MultiNotePatch):
@@ -320,6 +333,7 @@ class QueueRunner:
         notify: Notify = lambda _thread_id: None,
         logger_factory: LoggerFactory | None = None,
         concurrency: int = 1,
+        on_stream_event: StreamEvent | None = None,
     ) -> None:
         self.store = store
         self._run_on_main = run_on_main
@@ -329,6 +343,7 @@ class QueueRunner:
         self._notify = notify
         self._logger_factory = logger_factory
         self._concurrency = max(1, int(concurrency))
+        self._on_stream_event = on_stream_event
         self._lock = threading.Lock()
         self._stops: dict[str, threading.Event] = {}
         self._wake = threading.Event()
@@ -411,10 +426,14 @@ class QueueRunner:
         except _ShuttingDown:
             self._finish(thread.id, QUEUED, error=None)
         except AgentStopped:
-            self._safe(
-                lambda: self.store.add_message(thread.id, "system", "Cancelled.")
-            )
-            self._finish(thread.id, FAILED, error=CANCELLED)
+            if self._stopping.is_set():
+                # Interrupted by shutdown (e.g. while waiting on the main thread).
+                self._finish(thread.id, QUEUED, error=None)
+            else:
+                self._safe(
+                    lambda: self.store.add_message(thread.id, "system", "Cancelled.")
+                )
+                self._finish(thread.id, FAILED, error=CANCELLED)
         except Exception as exc:
             message = str(exc) or type(exc).__name__
             self._safe(lambda: self.store.add_message(thread.id, "system", message))
@@ -438,6 +457,9 @@ class QueueRunner:
 
         history, prompt = replay_history(self.store.messages(thread.id))
         current = self.store.current_proposal(thread.id)
+        reviewer = thread.context.get("reviewer")
+        if isinstance(reviewer, dict) and reviewer:
+            prompt = prompt + "\n\n" + reviewer_prompt_section(reviewer)
         if current is not None:
             prompt = (
                 prompt
@@ -463,9 +485,21 @@ class QueueRunner:
             activity = None
         scope = CardReadScope(settings["card_access"], tuple(settings["deck_ids"]))
 
+        def stream(line: str) -> None:
+            if self._on_stream_event is not None:
+                on_stream_event = self._on_stream_event
+                self._safe(lambda: on_stream_event(thread.id, line))
+
+        def record(event: dict[str, Any]) -> None:
+            assert activity is not None
+            line = activity.record(event)
+            if line is not None:
+                stream(line)
+
         def read(request: Any) -> dict[str, Any]:
             if stop_event.is_set():
                 raise AgentStopped("Agent run stopped.")
+            stream(CARD_READ_ACTIVITY_LINE)
             return self._run_on_main(lambda: self._read_cards(scope, request))
 
         agent = self._make_agent(settings)
@@ -482,7 +516,7 @@ class QueueRunner:
                     "" if provider == PROVIDER_OLLAMA else settings["project_folder"]
                 ),
                 history=history,
-                event_callback=activity.record if activity is not None else None,
+                event_callback=record if activity is not None else None,
                 run_logger=logger,
             )
         except AgentStopped:
