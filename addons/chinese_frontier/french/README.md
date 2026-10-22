@@ -158,6 +158,8 @@ or contrasts; generic frames such as “Il explique sa…” do not qualify. The
 `Disambiguation` field records a French-only judgment and exact situational clues
 for each example, followed by the alternative-answer checks. A prefix can resolve
 remaining synonym ambiguity, but cannot compensate for missing semantic context.
+Conjugation cards supply the infinitive, so their French-only check asks whether
+the French fixes the form's mood, tense and person instead.
 Existing generated notes are queued for repair when this policy changes; original
 notes remain untouched and repairs preserve card IDs and scheduling.
 

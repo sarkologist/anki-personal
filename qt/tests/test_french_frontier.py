@@ -2648,3 +2648,13 @@ def test_established_syncretic_surface_is_recognised_in_context():
 
     generate([target()], known, lex, {}, Event(), Client())
     assert first.key in payloads[0]["context_analyses"]["fais"]
+
+
+def test_conjugation_audit_judges_the_form_not_the_given_verb():
+    from chinese_frontier.french.generation import AUDIT_INSTRUCTIONS
+
+    rule = next(
+        line for line in AUDIT_INSTRUCTIONS.splitlines() if '"conjugation"' in line
+    )
+    assert "infinitive cue as given" in rule
+    assert "mood, tense and person" in rule
