@@ -178,7 +178,7 @@ def hhmm(value: float | None) -> str:
 
 
 def yield_chart(store: dict[str, Any], state: dict[str, Any]) -> str:
-    caption = "Target attempts and gate approvals per Anki day (last 14 kept). Attempts include repairs and repeat attempts; yield measures gate acceptance, not learning outcomes."
+    caption = "Target attempts and gate approvals per Anki day (last 14 kept). The percentage is the share of that day's attempts that passed the audit. An attempt is one target in one batch, so a retried target counts each time; yield measures gate acceptance, not learning outcomes."
     days = sorted((int(d), v) for d, v in store.get("days", {}).items())
     # Keep days without attempts so both daily charts share one axis.
     if not any(v.get("attempted") or v.get("approved") for _, v in days):
@@ -202,7 +202,10 @@ def yield_chart(store: dict[str, Any], state: dict[str, Any]) -> str:
         + columns(
             labels,
             [("attempted", OTHER, attempted), ("approved", "#2f9e6e", approved)],
-            notes=[f"{p / a:.0%}" if a else "–" for a, p in zip(attempted, approved)],
+            notes=[
+                f"{p / a:.0%} approved" if a else "no attempts"
+                for a, p in zip(attempted, approved)
+            ],
         ),
         headline,
     )
