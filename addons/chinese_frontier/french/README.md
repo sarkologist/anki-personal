@@ -22,7 +22,12 @@ needed. No dictionary or corpus data is bundled in the add-on.
   verb analysis, LGPL-LR; cite Sagot (2010). Its original GForge download is
   unavailable, so the add-on uses the pinned redistribution in
   [FrenchLefffLemmatizer](https://github.com/ClaudeCoulombe/FrenchLefffLemmatizer).
-  Unsupported or conflicting verb analyses are excluded.
+  Unsupported or conflicting verb analyses are excluded. Its complete paradigms
+  also supply the conjugation tables on the back of conjugation cards: for a
+  finite form, the tested tense with the tested form highlighted, plus the
+  present indicative; for an infinitive or participle, the present indicative.
+  Variant spellings absent from Lexique are hidden. Unmodified existing
+  conjugation notes gain tables in place, without regeneration.
 - [DBnary](https://kaiko.getalp.org/about-dbnary/download/): dictionary senses
   extracted from Wiktionary. Preserve Wiktionary attribution and share-alike
   terms when reusing the cached data. Source sense URIs are saved on notes.

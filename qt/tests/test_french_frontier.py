@@ -2774,3 +2774,181 @@ def test_writer_gets_analyses_for_every_established_verb_surface():
     generate([target()], known, lex, {}, Event(), Client())
     assert "fais" not in payloads[0]["context_evidence"]
     assert first.key in payloads[0]["context_analyses"]["fais"]
+
+
+def aller():
+    persons = ["1:s", "2:s", "3:s", "1:p", "2:p", "3:p"]
+    sub = ["aille", "ailles", "aille", "allions", "alliez", "aillent"]
+    ind = ["vais", "vas", "va", "allons", "allez", "vont"]
+    paradigm = {"par:pas:m:s": ["allé"]}
+    for tense, forms in (("sub:pre", sub), ("ind:pre", ind)):
+        for person, surface in zip(persons, forms, strict=True):
+            paradigm[tense + ":" + person] = [surface]
+    return Lexicon([], [], {"aller": paradigm})
+
+
+def test_paradigms_come_from_lefff_and_are_cached(tmp_path, monkeypatch):
+    from chinese_frontier.french import lexicon as module
+
+    lex = Lexicon(
+        [
+            Form("aille", "aller", "VER", "sub:pre:3:s"),
+            Form("sont", "être", "VER", "ind:pre:3:p"),
+        ],
+        [],
+    )
+    mlex = (
+        "aille\tv\taller\tS13s\nallions\tv\taller\tS1p\n"
+        "sont\tv\têtre\tP3p\nst\tv\têtre\tP3p\nfoo\tv\tfaux\tS3s\n"
+    )
+    paradigms = module.load_paradigms(tmp_path, lex, mlex)
+    assert paradigms == {
+        "aller": {
+            "sub:pre:1:s": ["aille"],
+            "sub:pre:3:s": ["aille"],
+            "sub:pre:1:p": ["allions"],
+        },
+        "être": {"ind:pre:3:p": ["sont"]},
+    }
+    monkeypatch.setattr(module, "fetch", lambda url: pytest.fail("refetched"))
+    assert module.load_paradigms(tmp_path, lex) == paradigms
+
+
+def test_conjugation_tables_show_tested_tense_and_present_indicative():
+    from chinese_frontier.french.collection import conjugation_tables
+
+    tables = conjugation_tables(aller(), "aille|aller|VER|sub:pre:3:s")
+    assert tables.index("SUBJONCTIF") < tables.index("INDICATIF")
+    assert "<i>que&nbsp;j&#x27;</i><i>aille</i>" in tables
+    assert (
+        '<i>qu&#x27;il/elle&nbsp;</i><i><font color="#ff0000">aille</font></i>'
+        in tables
+    )
+    assert "<i>qu&#x27;ils/elles&nbsp;</i><i>aillent</i>" in tables
+    assert "<i>je&nbsp;</i><i>vais</i>" in tables
+    assert tables.count("#ff0000") == 1
+    present = conjugation_tables(aller(), "vont|aller|VER|ind:pre:3:p")
+    assert present.count("INDICATIF") == 1 and "SUBJONCTIF" not in present
+    assert (
+        conjugation_tables(aller(), "allé|aller|VER|par:pas:m:s").count("INDICATIF")
+        == 1
+    )
+
+
+def test_existing_conjugation_notes_gain_tables_without_regeneration(collection):
+    import html
+    import json
+
+    from chinese_frontier.french.collection import (
+        SETTINGS,
+        admit,
+        presentation_hash,
+        refresh_conjugation_tables,
+        snapshot,
+    )
+    from chinese_frontier.french.generation import Draft, candidate_hash
+
+    settings = {"enabled": True, "deck_id": 1}
+    collection.set_config(SETTINGS, settings)
+    for word in ("je", "le", "train", "regarde", "parle"):
+        add_cloze(collection, "{{c1::" + word + "}}", learned=True)
+    c, t = candidate(), target()
+    review = {
+        "approved": True,
+        "context_checks": context_checks(),
+        "reason": "clear",
+        "search_summary": "Checked rent",
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": True,
+                "reason": "rent differs",
+            }
+        ],
+    }
+    d = Draft(
+        t,
+        c,
+        {
+            "policy": POLICY,
+            "target_key": t.key,
+            "fingerprint": candidate_hash(c),
+            "review": review,
+        },
+    )
+    nid = admit(collection, settings, {}, [d], dictionary()).admitted[0]
+    # Reshape the note into a legacy conjugation note with a consistent hash.
+    note = collection.get_note(nid)
+    metadata = json.loads(html.unescape(note["Source"]))
+    metadata["target"]["kind"] = "conjugation"
+    metadata["form_key"] = "aille|aller|VER|sub:pre:3:s"
+    metadata["policy"] = POLICY - 1  # outdated notes still get tables
+    note["CardKind"] = "Conjugation"
+    metadata["presentation_hash"] = presentation_hash(
+        {name: note[name] for name in note.keys()}
+    )
+    note["Source"] = html.escape(json.dumps(metadata, ensure_ascii=False))
+    collection.update_note(note)
+    cards = collection.db.all("select * from cards where nid=?", nid)
+
+    refresh_conjugation_tables(collection, aller())
+    note = collection.get_note(nid)
+    assert note["Extra"].startswith(html.escape(c.explanation))
+    assert '<font color="#ff0000">aille</font>' in note["Extra"]
+    assert collection.db.all("select * from cards where nid=?", nid) == cards
+    # Still queued for regeneration because of its policy, not because of tables.
+    assert json.loads(html.unescape(note["Source"]))["policy"] == POLICY - 1
+    assert len(snapshot(collection, settings, {}, dictionary()).repairs) == 1
+    mod = note.mod
+    refresh_conjugation_tables(collection, aller())
+    assert collection.get_note(nid).mod == mod
+
+
+def test_partial_word_conjugation_cards_also_get_tables():
+    from chinese_frontier.french.collection import extra_field
+
+    extra = extra_field(
+        "x", "conjugation", "aille|aller|VER|sub:pre:3:s", "stem", aller()
+    )
+    assert extra.startswith("Recall the missing part")
+    assert '<font color="#ff0000">aille</font>' in extra
+    assert "SUBJONCTIF" not in extra_field(
+        "x", "vocabulary", "aille|aller|VER|sub:pre:3:s", "stem", aller()
+    )
+
+
+def test_backfill_without_paradigms_keeps_existing_tables(collection, monkeypatch):
+    from chinese_frontier.french import collection as module
+
+    note = collection.new_note(module.ensure_model(collection))
+    note["Text"] = "{{c1::aille}}"
+    collection.add_note(note, 1)
+    monkeypatch.setattr(
+        module.Collection, "get_note", lambda *a: pytest.fail("scanned notes")
+    )
+    module.refresh_conjugation_tables(collection, Lexicon([], []))
+
+
+def test_backfill_skips_notes_with_a_queued_regeneration(collection, monkeypatch):
+    from chinese_frontier.french import collection as module
+
+    note = collection.new_note(module.ensure_model(collection))
+    note["Text"] = "{{c1::aille}}"
+    collection.add_note(note, 1)
+    monkeypatch.setattr(
+        module.Collection, "get_note", lambda *a: pytest.fail("touched queued note")
+    )
+    module.refresh_conjugation_tables(collection, aller(), skip={note.id})
+
+
+def test_corrupt_paradigm_cache_does_not_block_loading(tmp_path):
+    import json
+
+    forms = [{"surface": f"m{i}", "lemma": f"m{i}", "pos": "NOM"} for i in range(10000)]
+    (tmp_path / "lexicon-v4.json").write_text(
+        json.dumps({"version": 4, "forms": forms, "entries": []})
+    )
+    (tmp_path / "paradigms-v1.json").write_text(json.dumps({"version": 1}))
+    assert Lexicon.load(tmp_path).paradigms == {}

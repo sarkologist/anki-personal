@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import re
+from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -78,6 +79,145 @@ def presentation_hash(fields: dict[str, str]) -> str:
             sort_keys=True,
         ).encode()
     ).hexdigest()
+
+
+MOODS = {
+    "ind": "INDICATIF",
+    "sub": "SUBJONCTIF",
+    "cnd": "CONDITIONNEL",
+    "imp": "IMPÉRATIF",
+}
+TENSES = {"pre": "Présent", "imp": "Imparfait", "fut": "Futur", "pas": "Passé simple"}
+SUBJECTS = {
+    ("1", "s"): "je",
+    ("2", "s"): "tu",
+    ("3", "s"): "il/elle",
+    ("1", "p"): "nous",
+    ("2", "p"): "vous",
+    ("3", "p"): "ils/elles",
+}
+# Verbs whose initial h blocks elision (je hais, not j'hais).
+ASPIRATED = {
+    "hacher", "haler", "haleter", "hanter", "happer", "haranguer", "harasser",
+    "harceler", "harnacher", "harponner", "hasarder", "hausser", "haïr", "hennir",
+    "heurter", "hisser", "hocher", "honnir", "huer", "hurler", "hâbler", "hâter",
+    "héler", "hérisser",
+}  # fmt: skip
+
+
+def _subject(person: tuple[str, str], tense: str, surface: str, lemma: str) -> str:
+    if tense.startswith("imp:"):
+        return ""
+    subject = SUBJECTS[person]
+    if subject == "je" and (
+        surface[:1] in "aeiouyàâéèêëîïôûœæ"
+        or (surface[:1] == "h" and lemma not in ASPIRATED)
+    ):
+        subject = "j'"
+    else:
+        subject += " "
+    if tense.startswith("sub:"):
+        subject = ("qu'" if subject.startswith("il") else "que ") + subject
+    return html.escape(subject).replace(" ", "&nbsp;")
+
+
+def conjugation_tables(lexicon: Lexicon, form_key: str) -> str:
+    """Present the tested tense, plus the present indicative for reference."""
+    try:
+        surface, lemma, pos, features = form_key.split("|")
+    except ValueError:
+        return ""
+    if pos != "VER":
+        return ""
+    tested = ":".join(features.split(":")[:2])
+    tenses = [tested] if tested.split(":")[0] in MOODS else []
+    if tested != "ind:pre":
+        tenses.append("ind:pre")
+    paradigm = lexicon.paradigms.get(lemma, {})
+    parts = []
+    for tense in tenses:
+        rows = []
+        for person in SUBJECTS:
+            feature = tense + ":" + ":".join(person)
+            surfaces = paradigm.get(feature, [])
+            if not surfaces:
+                continue
+            shown = "/".join(
+                f'<font color="#ff0000">{html.escape(s)}</font>'
+                if feature == features and s == surface
+                else html.escape(s)
+                for s in surfaces
+            )
+            rows.append(
+                f"<li><i>{_subject(person, tense, surfaces[0], lemma)}</i><i>{shown}</i></li>"
+            )
+        if rows:
+            mood, time = tense.split(":")
+            parts.append(
+                f"<div>{MOODS[mood]}</div><div><div>{TENSES.get(time, time)}</div>"
+                f"<ul>{''.join(rows)}</ul></div>"
+            )
+    if not parts:
+        return ""
+    return f"<hr><div><b>{html.escape(lemma)}</b></div>" + "".join(parts)
+
+
+def extra_field(
+    explanation: str, kind: str, form_key: str, mode: str, lexicon: Lexicon
+) -> str:
+    if mode == "stem":
+        explanation = "Recall the missing part using the visible stem."
+    tables = (
+        conjugation_tables(lexicon, form_key)
+        if kind == "conjugation" and mode in ("word", "stem")
+        else ""
+    )
+    return html.escape(explanation) + tables
+
+
+def refresh_conjugation_tables(
+    col: Collection, lexicon: Lexicon, skip: AbstractSet[int] = frozenset()
+) -> OpChanges:
+    """Fill tables into unmodified generated notes without regenerating them."""
+    model = col.models.by_name(MODEL)
+    if not model or not lexicon.paradigms:
+        # Without paradigms every table would render empty and erase existing ones.
+        return OpChanges()
+    undo = None
+    for nid in col.models.nids(model["id"]):
+        if nid in skip:
+            # A queued regeneration fingerprints the current hash; leave it intact.
+            continue
+        note = col.get_note(nid)
+        values = {name: note[name] for name in note.keys()}
+        data = json_field(values["Source"])
+        target = data.get("target")
+        candidate = data.get("candidate")
+        if (
+            TAG not in note.tags
+            or REPAIR_TAG in note.tags
+            or not isinstance(target, dict)
+            or not isinstance(candidate, dict)
+            or target.get("kind") != "conjugation"
+            or data.get("presentation_hash") != presentation_hash(values)
+        ):
+            continue
+        extra = extra_field(
+            str(candidate.get("explanation", "")),
+            "conjugation",
+            str(data.get("form_key", "")),
+            str(data.get("mode", "")),
+            lexicon,
+        )
+        if extra == values["Extra"]:
+            continue
+        if undo is None:
+            undo = col.add_custom_undo_entry("Add French conjugation tables")
+        note["Extra"] = values["Extra"] = extra
+        data["presentation_hash"] = presentation_hash(values)
+        note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
+        col.update_note(note)
+    return col.merge_undo_entries(undo) if undo is not None else OpChanges()
 
 
 def request_repair(col: Collection, note_id: int) -> OpChanges:
@@ -504,10 +644,8 @@ def admit(
             "Cue": html.escape(c.cue),
             "Target": html.escape(draft.target.lemma),
             "Meaning": html.escape(c.meaning),
-            "Extra": html.escape(
-                c.explanation
-                if c.mode != "stem"
-                else "Recall the missing part using the visible stem."
+            "Extra": extra_field(
+                c.explanation, draft.target.kind, valid.form_key, c.mode, lexicon
             ),
             "CardKind": kind,
             "Source": html.escape(json.dumps(data, ensure_ascii=False)),
