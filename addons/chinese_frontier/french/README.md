@@ -170,8 +170,9 @@ notes remain untouched and repairs preserve card IDs and scheduling.
 Both languages use the shared approved-note buffer (`buffer_notes`, default 4,
 0 disables it). Preparation may run when today's slots are full; native admission
 limits and all source, context, conjugation and ambiguity checks still apply.
-Writers receive every established surface, a compact, relevant selection of
-reviewed usage, plus persistent rejection lessons. Examples do not establish additional words.
+Writers receive every established surface with the admissible analyses of each
+verb homograph, a compact, relevant selection of reviewed usage, plus persistent
+rejection lessons. Examples do not establish additional words.
 French can fill a missing context analysis only when exactly one dictionary reading
 has direct learned-form evidence, and never reads an established noun or adjective
 (bois) as its proven verb homograph. Explicit model annotations are never overwritten;

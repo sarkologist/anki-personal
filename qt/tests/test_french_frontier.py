@@ -2745,3 +2745,32 @@ def test_elided_s_reads_as_si_only_before_il():
     known.learn("qui", dictionary(), 1, "qui")
     with pytest.raises(ValidationError, match="Unlearned context: s'"):
         validate(c, target(), known, dictionary())
+
+
+def test_writer_gets_analyses_for_every_established_verb_surface():
+    import json
+    from threading import Event
+
+    from chinese_frontier.french.generation import generate
+
+    first = Form("fais", "faire", "VER", "ind:pre:1:s")
+    lex = homograph_lexicon(first, Form("fais", "faire", "VER", "ind:pre:2:s"))
+    known = learned("je", "le", "train", "regarde", "parle")
+    for i in range(1000):
+        known.surfaces[f"irrelevant{i}"] = [
+            {"card": i, "context": "Unrelated example."}
+        ]
+    known.learn("fais", lex, 1, "Zzz.")
+    payloads = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            payloads.append(json.loads(prompt[prompt.index('{"targets"') :]))
+            return {"proposals": []}
+
+    generate([target()], known, lex, {}, Event(), Client())
+    assert "fais" not in payloads[0]["context_evidence"]
+    assert first.key in payloads[0]["context_analyses"]["fais"]

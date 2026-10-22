@@ -712,6 +712,17 @@ def generate(
     records = {
         word: [r["context"] for r in rows] for word, rows in known.surfaces.items()
     }
+    # Every established surface is offered to the writer, so every verb
+    # homograph among them needs its admissible analyses too.
+    context_analyses = {
+        surface: [
+            f.key
+            for f in lexicon.analyses(surface)
+            if f.pos != "VER" or known.recognizes(f, lexicon)
+        ]
+        for surface in sorted(known.surfaces)
+        if any(f.pos == "VER" for f in lexicon.analyses(surface))
+    }
     query = " ".join(t.lemma + " " + t.definition for t in targets)
     query += " " + json.dumps(lessons, ensure_ascii=False)
     for attempt in range(3):
@@ -756,15 +767,7 @@ When supplying a contrast object, the TOP-LEVEL mode MUST be contrast. The neste
             },
             "attempt": attempt,
             "feedback": feedback,
-            "context_analyses": {
-                surface: [
-                    f.key
-                    for f in lexicon.analyses(surface)
-                    if f.pos != "VER" or known.recognizes(f, lexicon)
-                ]
-                for surface in selected
-                if any(f.pos == "VER" for f in lexicon.analyses(surface))
-            },
+            "context_analyses": context_analyses,
             "target_forms": {
                 t.key: [
                     f.key
