@@ -301,9 +301,15 @@ class Lexicon:
         )
         return lexicon
 
-    def definitions(self, entry: Entry, folder: Path) -> list[dict[str, str]]:
+    def _senses_path(self, entry: Entry, folder: Path) -> Path:
         key = hashlib.sha256((entry.lemma + "|" + entry.pos).encode()).hexdigest()
-        path = folder / "senses" / (key + ".json")
+        return folder / "senses" / (key + ".json")
+
+    def has_definitions(self, entry: Entry, folder: Path) -> bool:
+        return self._senses_path(entry, folder).exists()
+
+    def definitions(self, entry: Entry, folder: Path) -> list[dict[str, str]]:
+        path = self._senses_path(entry, folder)
         if path.exists():
             return json.loads(path.read_text(encoding="utf8"))
         literal = json.dumps(entry.lemma, ensure_ascii=False)

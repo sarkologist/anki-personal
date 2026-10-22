@@ -237,3 +237,19 @@ def test_diagnostics_widget_refreshes_real_calls_and_preserves_plain_text(
     widget.export()
     assert json.loads(output.read_text())["store"]["calls"][0]["status"] == "timeout"
     parent.close()
+
+
+def test_error_location_names_the_add_on_caller_not_only_library_frames():
+    import urllib.request
+
+    from chinese_frontier.telemetry import error_location
+
+    def fetch_senses():
+        return urllib.request.urlopen("unknown://dictionary")
+
+    try:
+        fetch_senses()
+    except OSError as exc:
+        where = error_location(exc)
+    assert where.startswith("request.py")
+    assert "fetch_senses" in where

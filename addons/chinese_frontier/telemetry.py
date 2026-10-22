@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import sysconfig
 import time
 import traceback
 import uuid
@@ -73,9 +74,13 @@ def request_model(
 
 def error_location(exc: BaseException) -> str:
     """Innermost frames of an unexpected error; str(exc) alone hides the source."""
-    frames = traceback.extract_tb(exc.__traceback__)[-4:]
+    frames = traceback.extract_tb(exc.__traceback__)
+    library = Path(sysconfig.get_paths()["stdlib"]).resolve()
+    # Library frames alone (e.g. urllib internals) hide which call failed.
+    own = [f for f in frames[:-1] if library not in Path(f.filename).resolve().parents]
+    chosen = own[-3:] + frames[-1:]
     return " <- ".join(
-        f"{Path(f.filename).name}:{f.lineno} {f.name}" for f in reversed(frames)
+        f"{Path(f.filename).name}:{f.lineno} {f.name}" for f in reversed(chosen)
     )
 
 

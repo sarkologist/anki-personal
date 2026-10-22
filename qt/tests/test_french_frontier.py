@@ -2105,3 +2105,65 @@ def test_self_listed_answer_is_not_a_fitting_alternative_on_retry():
     )
     assert not any("fitting alternative" in d.get("reason", "") for d in decisions)
     assert [d["stage"] for d in decisions].count("audit") == 3
+
+
+def test_unreachable_dictionary_falls_back_to_cached_senses(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    entries = [Entry(w, "NOM", 1, 10) for w in ("enjeu", "atout", "rouage")]
+    lex = Lexicon([], entries)
+    looked_up = []
+
+    def definitions(entry, folder):
+        looked_up.append(entry.lemma)
+        if entry.lemma != "rouage":
+            raise OSError("Connection reset by peer")
+        return [{"sense": "cog", "definition": "cog"}]
+
+    lex.definitions = definitions
+    lex.has_definitions = lambda entry, folder: entry.lemma == "rouage"
+    selected = choose_targets(
+        lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event()
+    )
+    assert [t.lemma for t in selected] == ["rouage"]
+    # After one failure, uncached senses are not fetched again this batch.
+    assert len(looked_up) == 2 and "rouage" in looked_up
+
+
+def test_unreachable_dictionary_reports_when_nothing_is_cached(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon([], [Entry("enjeu", "NOM", 1, 10)])
+
+    def definitions(entry, folder):
+        raise OSError("Connection reset by peer")
+
+    lex.definitions = definitions
+    lex.has_definitions = lambda entry, folder: False
+    with pytest.raises(OSError, match="Connection reset"):
+        choose_targets(lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event())
+
+
+def test_corrupt_sense_cache_is_not_mistaken_for_an_outage(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon([], [Entry(w, "NOM", 1, 10) for w in ("enjeu", "rouage")])
+
+    def definitions(entry, folder):
+        if entry.lemma == "enjeu":
+            raise ValueError("Expecting value: line 1 column 1")
+        return [{"sense": "cog", "definition": "cog"}]
+
+    lex.definitions = definitions
+    lex.has_definitions = lambda entry, folder: True
+    with pytest.raises(ValueError, match="Expecting value"):
+        choose_targets(lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event())
