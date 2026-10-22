@@ -13,7 +13,6 @@ import urllib.request
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
 
 from . import senses
 
@@ -24,6 +23,8 @@ LETTERS = r"[a-zàâäçéèêëîïôöùûüÿœæ]"
 TOKEN = re.compile(LETTERS + r"+(?:-" + LETTERS + r"+)*\'?|\d+", re.I)
 
 SOURCE_RETRY_SECONDS = 1800
+# Wikimedia's User-Agent policy asks for a way to identify the client.
+USER_AGENT = "Anki-French-Frontier/1.0 (https://github.com/sarkologist/anki-personal)"
 LEFFF = "https://raw.githubusercontent.com/ClaudeCoulombe/FrenchLefffLemmatizer/bc0ebd0135a6cc78f48ddf184069b4c0b9c017d8/french_lefff_lemmatizer/data/lefff-3.4.mlex"
 
 
@@ -135,14 +136,23 @@ class Entry:
 
 
 def fetch(url: str, maximum: int = 80 * 1024 * 1024) -> bytes:
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "Anki-French-Frontier/1.0"}
-    )
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=60) as response:
         data = response.read(maximum + 1)
     if len(data) > maximum:
-        raise ValueError("French resource exceeds download size limit")
+        raise senses.TooLarge("French resource exceeds download size limit")
     return data
+
+
+def retry_delay(error: Exception) -> float:
+    if getattr(error, "code", None) == 429:
+        # Rate limited, not down: honour Retry-After rather than 30 minutes.
+        headers = getattr(error, "headers", None) or {}
+        try:
+            return max(1.0, min(300.0, float(headers.get("Retry-After", 10))))
+        except (TypeError, ValueError):
+            return 10.0
+    return SOURCE_RETRY_SECONDS
 
 
 def atomic_json(path: Path, data: object) -> None:
@@ -161,15 +171,24 @@ class Lexicon:
             self.lemmas.setdefault((form.lemma, form.pos), []).append(form)
         self.entries = sorted(entries, key=lambda e: (e.level, -e.frequency, e.lemma))
         self.sources_down: dict[str, float] = {}
-        self.sense_sources: list[
-            tuple[str, Callable[[Entry], list[dict[str, str]]]]
-        ] = [
-            (name, lambda e, source=source: source(e.lemma, e.pos, fetch))
-            for name, source in (
-                ("dbnary", senses.dbnary),
-                ("wiktionary", senses.wiktionary),
-                ("kaikki", senses.kaikki),
-            )
+        self.last_request: dict[str, float] = {}
+        # Uncached answers, remembered for this session so batches don't
+        # re-download them while a better dictionary is unavailable.
+        self.recent: dict[str, tuple[float, list[dict[str, str]]]] = {}
+        self.sense_sources = [
+            senses.SenseSource(
+                "dbnary", lambda e: senses.dbnary(e.lemma, e.pos, fetch)
+            ),
+            senses.SenseSource(
+                "wiktionary",
+                lambda e: senses.wiktionary(e.lemma, e.pos, fetch),
+                interval=1.0,
+            ),
+            senses.SenseSource(
+                "kaikki",
+                lambda e: senses.kaikki(e.lemma, e.pos, fetch),
+                equivalent=False,
+            ),
         ]
 
     def analyses(self, surface: str) -> list[Form]:
@@ -327,28 +346,56 @@ class Lexicon:
         path = self._senses_path(entry, folder)
         if path.exists():
             return json.loads(path.read_text(encoding="utf8"))
+        expires, remembered = self.recent.get(path.name, (0.0, []))
+        if time.monotonic() < expires:
+            return remembered
         failure: Exception | None = None
-        answered = False
-        now = time.monotonic()
-        for name, source in self.sense_sources:
-            if now < self.sources_down.get(name, 0):
-                failure = failure or OSError(f"{name} dictionary recently failed")
-                continue
-            try:
-                results = source(entry)
-            except (OSError, ValueError, KeyError) as exc:
-                # Outages often answer with HTML or truncated JSON, not only
-                # connection errors. Skip this source for a while.
-                self.sources_down[name] = now + SOURCE_RETRY_SECONDS
-                failure = exc
-                continue
-            if results:
-                atomic_json(path, results)
-                return results
-            answered = True
-        if not failure:
-            atomic_json(path, [])
-        elif not answered:
+        answered = equivalent_empty = equivalent_failed = other_failed = False
+        for source in self.sense_sources:
+            now = time.monotonic()
+            if now < self.sources_down.get(source.name, 0):
+                exc: Exception = OSError(f"{source.name} dictionary recently failed")
+            else:
+                wait = self.last_request.get(source.name, -1e9) + source.interval - now
+                if wait > 0:
+                    time.sleep(wait)
+                self.last_request[source.name] = time.monotonic()
+                try:
+                    results = source.lookup(entry)
+                except (
+                    OSError,
+                    json.JSONDecodeError,
+                    UnicodeDecodeError,
+                    senses.TooLarge,
+                ) as error:
+                    # Outages also answer with HTML or truncated JSON.
+                    self.sources_down[source.name] = now + retry_delay(error)
+                    exc = error
+                else:
+                    answered = True
+                    if results:
+                        # Glosses from a lesser source are not kept forever
+                        # while an equivalent French source was unavailable.
+                        if source.equivalent or not equivalent_failed:
+                            atomic_json(path, results)
+                        else:
+                            self.remember(path, results)
+                        return results
+                    equivalent_empty |= source.equivalent
+                    continue
+            failure = failure or exc
+            if source.equivalent:
+                equivalent_failed = True
+            else:
+                other_failed = True
+        if not answered:
             raise OSError(f"No sense dictionary answered: {failure}") from failure
-        # Otherwise not cached: a source that was down may still know the word.
+        if not failure or (equivalent_empty and not other_failed):
+            atomic_json(path, [])
+        else:
+            # A source that was down may still know the word.
+            self.remember(path, [])
         return []
+
+    def remember(self, path: Path, results: list[dict[str, str]]) -> None:
+        self.recent[path.name] = (time.monotonic() + SOURCE_RETRY_SECONDS, results)

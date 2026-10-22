@@ -12,10 +12,27 @@ from __future__ import annotations
 import json
 import re
 import urllib.parse
+from dataclasses import dataclass
 from typing import Any, Callable
 
 Sense = dict[str, str]
 Fetch = Callable[[str, int], bytes]
+
+
+class TooLarge(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class SenseSource:
+    name: str
+    lookup: Callable[[Any], list[Sense]]
+    # Equivalent sources carry DBnary's French Wiktionary definitions, so
+    # their answers (including "no such word") may be cached permanently.
+    equivalent: bool = True
+    # Minimum seconds between requests; Wikimedia rate-limits bursts.
+    interval: float = 0.0
+
 
 DBNARY = "https://kaiko.getalp.org/sparql"
 WIKTIONARY = "https://fr.wiktionary.org/w/api.php"
@@ -31,6 +48,7 @@ DBNARY_POS = {
     "PRO": "pronoun",
     "ART": "determiner",
 }
+# Section names: exact matches, or prefixes ending in a space.
 WIKTIONARY_POS = {
     "VER": ("verbe",),
     "NOM": ("nom",),
@@ -38,8 +56,8 @@ WIKTIONARY_POS = {
     "ADV": ("adverbe",),
     "PRE": ("préposition",),
     "CON": ("conjonction",),
-    "PRO": ("pronom",),
-    "ART": ("article",),
+    "PRO": ("pronom", "pronom "),
+    "ART": ("article ", "déterminant ", "adjectif démonstratif", "adjectif possessif"),
 }
 KAIKKI_POS = {
     "VER": ("verb",),
@@ -56,7 +74,9 @@ KAIKKI_LABELS = {"obsolete": "obsolète", "archaic": "archaïque", "dated": "vie
 
 
 def _accept(definition: str) -> bool:
-    return bool(definition) and len(definition) <= 1000
+    # Template-only lines can reduce to punctuation or a bare label.
+    text = re.sub(r"^(?:\([^()]*\)\s*)+", "", definition)
+    return bool(re.search(r"[^\W\d_]{2}", text)) and len(definition) <= 1000
 
 
 def dbnary(lemma: str, pos: str, fetch: Fetch) -> list[Sense]:
@@ -100,6 +120,48 @@ TEMPLATE = re.compile(r"\{\{([^{}]*)\}\}")
 LINK = re.compile(r"\[\[(?:[^\[\]|]*\|)?([^\[\]|]*)\]\]")
 
 
+# Usage labels kept as "(Label)". choose_targets filters the archaic ones.
+LABELS = {
+    "figuré",
+    "vieilli",
+    "désuet",
+    "archaïque",
+    "obsolète",
+    "familier",
+    "très familier",
+    "populaire",
+    "argot",
+    "littéraire",
+    "soutenu",
+    "poétique",
+    "péjoratif",
+    "mélioratif",
+    "ironique",
+    "rare",
+    "par extension",
+    "par analogie",
+    "par hyperbole",
+    "par métonymie",
+    "en particulier",
+    "spécialement",
+    "absolument",
+    "transitif",
+    "intransitif",
+    "pronominal",
+    "impersonnel",
+    "au singulier",
+    "au pluriel",
+    "vulgaire",
+    "injurieux",
+    "enfantin",
+    "informel",
+    "formel",
+    "proverbial",
+    "sens propre",
+}
+STRIP = re.compile(r"<!--.*?-->|<ref[^>]*/>|<ref[^>]*>.*?</ref>|<[^>]+>", re.S | re.I)
+
+
 def _template(match: re.Match[str]) -> str:
     parts = [p.strip() for p in match.group(1).split("|")]
     name, args = parts[0], [p for p in parts[1:] if "=" not in p]
@@ -107,18 +169,19 @@ def _template(match: re.Match[str]) -> str:
         return args[0]
     if name == "lexique" and args:
         return f"({args[0].capitalize()})"
-    if all(a == "fr" for a in args):
-        # Usage labels such as {{figuré|fr}} or {{vieilli|fr}}.
+    if name in LABELS:
         return f"({name.capitalize()})"
     return ""
 
 
 def clean_wikitext(text: str) -> str:
+    text = STRIP.sub("", text)
     previous = None
     while previous != text:
         previous, text = text, TEMPLATE.sub(_template, text)
     text = LINK.sub(r"\1", text).replace("'''", "").replace("''", "")
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+([.,;:])", r"\1", text)
 
 
 def wiktionary_senses(lemma: str, pos: str, wikitext: str) -> list[Sense]:
@@ -132,15 +195,18 @@ def wiktionary_senses(lemma: str, pos: str, wikitext: str) -> list[Sense]:
             continue
         if heading := re.match(r"^===+\s*\{\{S\|([^}]*)\}\}", line):
             parts = [p.strip() for p in heading.group(1).split("|")]
+            name = parts[0]
             section = (
                 french
-                and parts[0].startswith(wanted)
+                and any(
+                    name.startswith(w) if w.endswith(" ") else name == w for w in wanted
+                )
                 and "fr" in parts[1:]
                 and "flexion" not in parts
             )
             continue
-        if section and re.match(r"^#(?![*:#])", line):
-            definition = clean_wikitext(line[1:])
+        if section and (bullet := re.match(r"^#+(?![*:])", line)):
+            definition = clean_wikitext(line[bullet.end() :])
             if _accept(definition):
                 results.append(
                     {
@@ -172,7 +238,8 @@ def wiktionary(lemma: str, pos: str, fetch: Fetch) -> list[Sense]:
     if "error" in data:
         if data["error"].get("code") == "missingtitle":
             return []
-        raise ValueError(f"fr.wiktionary error: {data['error'].get('code')}")
+        # e.g. "ratelimited" or "maxlag": an outage, not a parser problem.
+        raise OSError(f"fr.wiktionary error: {data['error'].get('code')}")
     return wiktionary_senses(lemma, pos, data["parse"]["wikitext"])
 
 
