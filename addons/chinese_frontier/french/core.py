@@ -352,6 +352,8 @@ def validate(
             and (
                 f.features == use["features"]
                 or f.features.startswith(use["features"] + ":")
+                # Agreement is optional for non-verbs (je PRO for je PRO s).
+                or (not use["features"] and f.pos != "VER")
             )
         ]
         selected = (

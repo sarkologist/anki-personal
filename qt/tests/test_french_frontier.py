@@ -2242,3 +2242,108 @@ def test_rejected_conjugation_review_can_be_retried(monkeypatch):
     )
     assert not drafts and t.key in failures
     assert phases == ["writer", "review"] * 3
+
+
+def lexique(*rows, graded=()):
+    header = "1_Mot\t3_Phono_IPA\t4_Lemme\t5_Cgram\t7_Genre\t8_Nombre\t9_InfoVER\t10_FreqMot\t12_FreqLemme"
+    padding = [f"mot{i}\t\tmot{i}\tNOM\tm\ts\t\t1\t1" for i in range(10000)]
+    levels = "word\ttag\n" + "\n".join(
+        list(graded) + [f"mot{i}\tN" for i in range(1000)]
+    )
+    return Lexicon.parse("\n".join([header, *rows, *padding]), levels, "")
+
+
+def test_lexique_closed_class_subtypes_are_kept_by_their_prefix():
+    lex = lexique(
+        "le\tl@\tle\tART:def\tm\ts\t\t14000\t38000",
+        "je\tʒ@\tje\tPRO:per\t\ts\t\t25000\t25000",
+        "lui\tlɥi\tlui\tPRO:per\tm\ts\t\t4000\t4000",
+        "son\tsɔ̃\tson\tADJ:pos\tm\ts\t\t3000\t3000",
+        "a\ta\tavoir\tAUX\t\t\tind:pre:3s\t9000\t18000",
+    )
+    assert [(f.lemma, f.pos, f.features) for f in lex.analyses("le")] == [
+        ("le", "ART", "m:s")
+    ]
+    assert [(f.pos, f.features) for f in lex.analyses("je")] == [("PRO", "s")]
+    assert [f.pos for f in lex.analyses("lui")] == ["PRO"]
+    assert [f.pos for f in lex.analyses("son")] == ["ADJ"]
+    assert {f.pos for f in lex.analyses("a")} == {"VER"}
+
+
+def test_pronoun_and_determiner_annotations_validate_as_context():
+    from dataclasses import replace
+
+    parsed = lexique(
+        "je\tʒ@\tje\tPRO:per\t\ts\t\t25000\t25000",
+        "lui\tlɥi\tlui\tPRO:per\tm\ts\t\t4000\t4000",
+        "son\tsɔ̃\tson\tADJ:pos\tm\ts\t\t3000\t3000",
+    )
+    lex = Lexicon(
+        [f for forms in dictionary().forms.values() for f in forms if f.pos == "VER"]
+        + [f for word in ("je", "lui", "son") for f in parsed.analyses(word)]
+        + [Form("train", "train", "NOM", "m:s")],
+        [],
+    )
+    known = Knowledge()
+    for word in ("je", "lui", "son", "train", "regarde", "parle"):
+        known.learn(word, lex, 1, word)
+    c = replace(
+        candidate(),
+        sentence="Je lui emprunte son train.",
+        uses=(
+            {"surface": "son", "lemma": "son", "pos": "ADJ", "features": "m:s"},
+            {"surface": "je", "lemma": "je", "pos": "PRO", "features": ""},
+            {"surface": "lui", "lemma": "lui", "pos": "PRO", "features": ""},
+        ),
+    )
+    assert validate(c, target(), known, lex).dependencies == (
+        "je",
+        "lui",
+        "son",
+        "train",
+    )
+
+
+def test_articles_and_pronouns_never_become_vocabulary_targets(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon(
+        [],
+        [
+            Entry("le", "ART", 1, 38000),
+            Entry("il", "PRO", 1, 30000),
+            Entry("enjeu", "NOM", 1, 10),
+        ],
+    )
+    lex.definitions = lambda entry, folder: [
+        {"sense": entry.lemma, "definition": "sense"}
+    ]
+    selected = choose_targets(
+        lex, Knowledge(), set(), set(), tmp_path, 2, set(), Event()
+    )
+    assert [t.lemma for t in selected] == ["enjeu"]
+
+
+def test_lexicon_cache_without_closed_class_words_is_rebuilt(tmp_path, monkeypatch):
+    import json
+
+    from chinese_frontier.french import lexicon
+
+    forms = [{"surface": f"m{i}", "lemma": f"m{i}", "pos": "NOM"} for i in range(10000)]
+    (tmp_path / "lexicon-v3.json").write_text(
+        json.dumps({"version": 3, "forms": forms, "entries": []})
+    )
+
+    def offline(url, maximum=0):
+        raise OSError("offline")
+
+    monkeypatch.setattr(lexicon, "fetch", offline)
+    with pytest.raises(OSError, match="offline"):
+        Lexicon.load(tmp_path)
+    (tmp_path / "lexicon-v4.json").write_text(
+        json.dumps({"version": 4, "forms": forms, "entries": []})
+    )
+    assert Lexicon.load(tmp_path).analyses("m1")

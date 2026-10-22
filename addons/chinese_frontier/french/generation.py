@@ -472,7 +472,9 @@ def choose_targets(
     offline: Exception | None = None
     for entry in lexicon.entries:
         if (
-            entry.level < floor
+            # Articles and pronouns are context grammar, not vocabulary targets.
+            entry.pos in ("ART", "PRO")
+            or entry.level < floor
             or entry.frequency > frequency_ceiling
             or (entry.lemma, entry.pos) in represented
             or (entry.lemma, entry.pos) in covered
