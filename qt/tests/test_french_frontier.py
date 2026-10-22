@@ -2167,3 +2167,78 @@ def test_corrupt_sense_cache_is_not_mistaken_for_an_outage(tmp_path):
     lex.has_definitions = lambda entry, folder: True
     with pytest.raises(ValueError, match="Expecting value"):
         choose_targets(lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event())
+
+
+def test_rejected_conjugation_review_can_be_retried(monkeypatch):
+    # The audit loop once rebound generate's `records` to an evidence list,
+    # so the next attempt crashed: "'list' object has no attribute 'items'".
+    import json
+    from dataclasses import asdict
+    from threading import Event
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import generation
+
+    c = candidate()
+    t = Target(
+        "prendre",
+        "VER",
+        "established",
+        "conjugation",
+        "take",
+        1,
+        10,
+        "prenions|prendre|VER|ind:imp:1:p",
+    )
+    known = learned("je", "le", "train", "prends")
+    assert generation.verb_evidence(t, known, dictionary())
+    monkeypatch.setattr(generation, "annotate_context", lambda c, known, lex: c)
+    monkeypatch.setattr(
+        generation,
+        "validate",
+        lambda c, t, known, lex: SimpleNamespace(
+            dependencies=(), text=c.sentence, translation=c.translation
+        ),
+    )
+    phases = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            writer = "proposals" in json.dumps(schema)
+            phases.append("writer" if writer else "review")
+            if writer:
+                return json.loads(
+                    json.dumps(
+                        {"proposals": [{"key": t.key, "candidates": [asdict(c)]}]}
+                    )
+                )
+            return {
+                "reviews": [
+                    {
+                        "key": t.key,
+                        "fingerprint": generation.candidate_hash(c),
+                        "approved": False,
+                        "context_checks": context_checks(),
+                        "reason": "too generic",
+                        "search_summary": "checked",
+                        "alternatives": [
+                            {
+                                "example": 0,
+                                "answer": "loue",
+                                "fits_context": False,
+                                "fits_cloze": False,
+                                "reason": "different meaning",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+    drafts, failures = generation.generate(
+        [t], known, dictionary(), {}, Event(), Client()
+    )
+    assert not drafts and t.key in failures
+    assert phases == ["writer", "review"] * 3
