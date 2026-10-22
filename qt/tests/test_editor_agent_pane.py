@@ -7358,6 +7358,52 @@ def test_failed_reply_keeps_the_previous_proposal_applicable(
     assert _status(store, thread.id) == "applied"
 
 
+def test_reply_uses_the_form_settings_for_the_next_run(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    assert thread.settings["provider"] == "codex"
+    pane._load_threads(select=thread.id)
+    pane._provider = lambda: "ollama"
+    pane._model_text = lambda: "qwen"
+    pane._card_access = lambda: "all"
+    pane.prompt = FakePrompt("Shorter")
+
+    pane._send()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None
+    assert loaded.status == "queued"
+    assert loaded.settings["provider"] == "ollama"
+    assert loaded.settings["model"] == "qwen"
+    assert loaded.settings["card_access"] == "all"
+
+
+def test_reply_without_an_ollama_model_keeps_the_prompt(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads(select=thread.id)
+    pane._provider = lambda: "ollama"
+    pane._model_text = lambda: ""
+    pane._saved_model_for_provider = lambda _provider, _config: ""
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        pane_runtime, "showWarning", lambda text, **_kw: warnings.append(text)
+    )
+    pane.prompt = FakePrompt("Shorter")
+
+    pane._send()
+
+    assert _status(store, thread.id) == "ready"
+    assert pane.prompt.toPlainText() == "Shorter"
+    assert warnings == ["Select an Ollama model first."]
+
+
 def _reviewer(card_id: int = 42, state: str = "answer") -> Any:
     return types.SimpleNamespace(
         card=types.SimpleNamespace(

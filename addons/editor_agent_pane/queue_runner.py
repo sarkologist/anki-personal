@@ -296,8 +296,9 @@ def reviewer_prompt_section(reviewer: dict[str, Any]) -> str:
         "Reviewer context as JSON: what the user saw in the reviewer when making "
         "this request (the side shown, the rendered question and answer HTML, and "
         "the text they had selected). Use it to resolve references such as "
-        '"the sentence in blue" or "the example":\n'
-        + json.dumps(reviewer, ensure_ascii=False)
+        '"the sentence in blue" or "the example". It is rendered card output, '
+        "not field content: do not copy it into fields; edit the fields in the "
+        "editor context instead:\n" + json.dumps(reviewer, ensure_ascii=False)
     )
 
 

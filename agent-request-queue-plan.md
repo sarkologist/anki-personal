@@ -449,3 +449,26 @@ Deviations:
 
 Not done in phase 1: Queue button/window, `note_creates`, resume, re-run on
 stale, `queue_resume_sessions`/`queue_shortcut`/`queue_window_geometry`.
+
+Live check (2026-10-22, second Anki instance from this checkout, own base
+folder, driven through a control add-on; provider Ollama because Claude and
+Codex both failed on account/environment grounds from inside that session):
+
+- Edit Current → Send creates a thread with the reviewer side, rendered HTML
+  and selection captured; closing the editor mid-run does not stop the run;
+  the result persists and the reopened pane selects it with Apply enabled.
+- A failed thread survives an Anki restart (`reset_interrupted` path), and a
+  later Send on it is a reply.
+- Reply on a ready thread yields proposal v2 with v1 superseded; Apply writes
+  the note and marks v2 applied. Live re-render on completion works with the
+  editor open.
+- Fixed from the check: a reply now takes the pane's current provider, model
+  and card access (`QueueStore.set_settings`), since the stored settings were
+  silently reused after changing the form; and the reviewer prompt now says
+  the rendered HTML is not field content (a small model copied the rendered
+  answer into the Back field).
+- Observed and reproduced _without_ the pane in that instance: a cold-start
+  Edit Current that is closed writes an empty Back field (Front intact).
+  Pre-existing editor behaviour in the hidden-window harness, related to the
+  blank-webview work in editor-blank-webview-recovery-plan.md; not caused by
+  this branch, but worth a separate look.

@@ -295,6 +295,10 @@ class QueueStore:
     def set_error(self, thread_id: str, error: str | None) -> None:
         self._set_column(thread_id, "error", error)
 
+    def set_settings(self, thread_id: str, settings: dict[str, Any]) -> None:
+        """Replace the settings used for the thread's next run."""
+        self._set_column(thread_id, "settings_json", _dumps(settings))
+
     def set_session(self, thread_id: str, session: dict[str, Any] | None) -> None:
         self._set_column(
             thread_id, "session_json", _dumps(session) if session is not None else None

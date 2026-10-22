@@ -2089,17 +2089,30 @@ class EditorAgentPane(QWidget):
             self._restore_prompt(prompt)
             showWarning("The agent queue is not open yet.", parent=self)
             return
+        # A reply runs with the form as it is now, so changing the provider or
+        # model in the pane applies to the next run of the shown thread.
+        settings = self._reply_settings(service.store.get_thread(thread_id))
+        if settings is None:
+            self._restore_prompt(prompt)
+            return
         try:
             service.store.reply(thread_id, prompt)
         except QueueTransitionError as exc:
             self._restore_prompt(prompt)
             showWarning(str(exc), parent=self)
             return
-        thread = service.store.get_thread(thread_id)
-        if thread is not None:
-            self._record_prompt(thread.settings, prompt)
+        service.store.set_settings(thread_id, settings)
+        self._record_prompt(settings, prompt)
         service.runner.enqueue_kick()
         self._broadcast_thread_changed(thread_id)
+
+    def _reply_settings(self, thread: Thread | None) -> dict[str, Any] | None:
+        if thread is None:
+            return None
+        snapshot = self._thread_snapshot(thread)
+        if snapshot is None:
+            return None
+        return self._thread_settings(self._card_read_scope(snapshot))
 
     def _record_prompt(self, settings: dict[str, Any], prompt: str) -> None:
         config = _config()

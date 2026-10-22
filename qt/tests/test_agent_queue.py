@@ -534,6 +534,15 @@ def test_set_error_session_and_run_log_path(store: QueueStore) -> None:
     assert store.get_thread(thread.id).session is None  # type: ignore[union-attr]
 
 
+def test_set_settings_replaces_the_next_run_settings(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(provider="codex"), "a")
+    store.set_settings(thread.id, {**settings(), "provider": "ollama", "model": "q"})
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None
+    assert loaded.settings["provider"] == "ollama"
+    assert loaded.settings["model"] == "q"
+
+
 def test_sweep_removes_old_terminal_threads_only(store: QueueStore) -> None:
     old_applied = store.create_thread(context(), settings(), "a")
     old_ready = store.create_thread(context(), settings(), "r")
@@ -981,6 +990,7 @@ def test_reviewer_context_is_included_in_every_prompt(store: QueueStore) -> None
 
     for call in agent.calls:
         assert "Reviewer context" in call["prompt"]
+        assert "not field content" in call["prompt"]
         assert json.dumps(reviewer, ensure_ascii=False) in call["prompt"]
     first = agent.calls[0]["prompt"]
     assert first.startswith("Fix the blue one")
