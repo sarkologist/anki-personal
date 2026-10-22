@@ -62,7 +62,8 @@ class Authentication(unittest.TestCase):
             "GH_TOKEN": "old",
             "GITHUB_TOKEN": "other",
             "CODEX_REPAIR_APP_PRIVATE_KEY": "private",
-            "CODEX_AUTH_JSON": "login",
+            "CLAUDE_CODE_OAUTH_TOKEN": "login",
+            "AGENT_DISPATCH_TOKEN": "dispatch",
         }
         with patch.dict(m.os.environ, secret_env, clear=True):
             self.assertEqual(m.clean_environment(), {"PATH": "/bin"})

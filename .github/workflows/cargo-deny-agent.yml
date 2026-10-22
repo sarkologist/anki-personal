@@ -1,0 +1,97 @@
+name: cargo-deny agent
+run-name: cargo-deny agent ${{ inputs.request_id }}
+
+# Dispatched only by cargo-deny-cloud.yml. Runs one Claude task and returns its diff
+# as an artifact. This job holds no GitHub write credentials; the controller gates
+# the diff before anything is pushed.
+#
+# Claude only reads files inside the checkout and answers in JSON. Every command
+# (cargo-deny, cargo update) runs in steps that never see the Claude token.
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        required: true
+        type: string
+      mode:
+        required: true
+        type: choice
+        options: [repair, review]
+      commit:
+        required: true
+        type: string
+      base:
+        required: true
+        type: string
+      prompt:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    if: github.repository == 'sarkologist/anki-personal' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      MODE: ${{ inputs.mode }}
+      COMMIT: ${{ inputs.commit }}
+      BASE: ${{ inputs.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify commit
+        run: test "$(git rev-parse HEAD)" = "$COMMIT"
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+
+      - name: Install pinned tools
+        run: |
+          npm install --global @anthropic-ai/claude-code@2.1.295
+          cargo install --locked cargo-deny@0.20.2
+
+      - name: Gather evidence
+        run: |
+          mkdir .agent-evidence
+          echo .agent-evidence >> .git/info/exclude
+          cargo deny check advisories > .agent-evidence/deny.txt 2>&1 || true
+          git diff "$BASE" HEAD > .agent-evidence/review.diff
+
+      # --restricted: no command-running tools, file tools confined to the checkout,
+      # repository settings ignored. --safe-mode: CLAUDE.md and other customizations
+      # off. dontAsk: anything not pre-approved is denied. Output is kept off the log.
+      - name: Run Claude
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          AGENT_PROMPT: ${{ inputs.prompt }}
+        run: |
+          claude -p "$AGENT_PROMPT" \
+            --restricted --safe-mode --strict-mcp-config \
+            --tools Read Grep Glob \
+            --permission-mode dontAsk \
+            --model opus \
+            --max-turns 40 \
+            --no-session-persistence \
+            --output-format json \
+            --json-schema "$(python3 .github/scripts/cargo_deny_agent.py schema "$MODE")" \
+            > "$RUNNER_TEMP/claude.json"
+
+      - name: Apply answer
+        run: >-
+          python3 .github/scripts/cargo_deny_agent.py apply
+          "$MODE" "$RUNNER_TEMP/claude.json" "$COMMIT" "$BASE" "$RUNNER_TEMP/agent.patch"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-patch
+          path: ${{ runner.temp }}/agent.patch
+          if-no-files-found: error
+          retention-days: 1
