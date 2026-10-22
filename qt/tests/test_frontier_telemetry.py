@@ -195,6 +195,8 @@ def test_diagnostics_widget_refreshes_real_calls_and_preserves_plain_text(
     parent = QDialog()
     widget = Diagnostics(parent, lambda: data)
     assert "2 / 4" in widget.summary.toPlainText()
+    assert widget.tabText(0) == "Charts" and widget.currentIndex() == 0
+    assert "no data yet" in widget.chart_html
     observe(
         store,
         {
@@ -225,6 +227,8 @@ def test_diagnostics_widget_refreshes_real_calls_and_preserves_plain_text(
     assert "timeout" in widget.calls.toPlainText()
     assert "timeout" in widget.details.toPlainText()
     assert "<b>Synonym also fits.</b>" in widget.decisions.toPlainText()
+    assert "call 1 · timeout" in widget.chart_html
+    assert "&lt;b&gt;" not in widget.chart_html  # substantive audit prose is bucketed
     assert app is not None
     import json
 
