@@ -2148,3 +2148,22 @@ def test_unreachable_dictionary_reports_when_nothing_is_cached(tmp_path):
     lex.has_definitions = lambda entry, folder: False
     with pytest.raises(OSError, match="Connection reset"):
         choose_targets(lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event())
+
+
+def test_corrupt_sense_cache_is_not_mistaken_for_an_outage(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon([], [Entry(w, "NOM", 1, 10) for w in ("enjeu", "rouage")])
+
+    def definitions(entry, folder):
+        if entry.lemma == "enjeu":
+            raise ValueError("Expecting value: line 1 column 1")
+        return [{"sense": "cog", "definition": "cog"}]
+
+    lex.definitions = definitions
+    lex.has_definitions = lambda entry, folder: True
+    with pytest.raises(ValueError, match="Expecting value"):
+        choose_targets(lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event())

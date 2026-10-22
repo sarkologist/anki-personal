@@ -493,7 +493,7 @@ def choose_targets(
             continue
         try:
             found = lexicon.definitions(entry, folder)
-        except (OSError, ValueError) as exc:
+        except OSError as exc:
             # The online dictionary can be down for hours; one failure must
             # not void the batch while cached senses and verb forms remain.
             offline = exc
