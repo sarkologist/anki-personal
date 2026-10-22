@@ -155,6 +155,19 @@ def competing_alternatives(review: dict[str, Any], candidate: Candidate) -> list
     ]
 
 
+def visible_clue(clue: Any, context: str) -> bool:
+    """Whether a clue quotes the French context, ignoring case, apostrophe
+    style, spacing and quote marks. "…" or "..." joins discontinuous parts,
+    each of which must be visible; the hidden answer never counts."""
+    if not isinstance(clue, str) or "[…]" in clue or "[...]" in clue:
+        return False
+    fragments = [
+        normalize(part).strip(" «»“”\"'.,;:!?") for part in re.split(r"…|\.\.\.", clue)
+    ]
+    fragments = [part for part in fragments if part]
+    return bool(fragments) and all(part in normalize(context) for part in fragments)
+
+
 def validate_review(review: Any, candidate: Candidate) -> bool:
     if not isinstance(review, dict) or type(review.get("approved")) is not bool:
         raise ValidationError("Invalid independent review")
@@ -224,12 +237,8 @@ def validate_review(review: Any, candidate: Candidate) -> bool:
         clues = check["clues"]
         if check["sufficient"] and not clues:
             raise ValidationError("Approval must cite visible French situational clues")
-        if any(
-            not isinstance(clue, str)
-            or not clue.strip()
-            or "[…]" in clue
-            or clue not in contexts[index]
-            for clue in clues
+        if check["sufficient"] and not any(
+            visible_clue(clue, contexts[index]) for clue in clues
         ):
             raise ValidationError(
                 "Context clues must quote visible French, not the answer or translation"

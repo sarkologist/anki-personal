@@ -2396,3 +2396,70 @@ def test_elided_clitic_depends_on_its_established_full_form():
             learned("je", "autre", "train", "regarde", "parle"),
             dictionary(),
         )
+
+
+def clue_review(*clues):
+    return {
+        "approved": True,
+        "reason": "clear",
+        "search_summary": "checked",
+        "context_checks": [
+            {
+                "example": 0,
+                "sufficient": True,
+                "clues": list(clues),
+                "reason": "French situational clue.",
+            }
+        ],
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": False,
+                "reason": "Different meaning.",
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "clues",
+    [
+        ["dans son esprit"],
+        ["Dans son esprit"],
+        ["train d'Anne"],
+        ["ne … pas encore"],
+        ["ne...pas encore"],
+        ["dans  son esprit"],
+        ["« dans son esprit »"],
+        ["“Dans son esprit,”"],
+        ["dans son esprit", "a hallucinated clue"],
+    ],
+)
+def test_audit_clues_are_matched_as_visible_french_text(clues):
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import validate_review
+
+    c = replace(
+        candidate(),
+        sentence="Dans son esprit, je ne emprunte pas encore le train d’Anne.",
+    )
+    assert validate_review(clue_review(*clues), c)
+
+
+@pytest.mark.parametrize(
+    "clues", [["je […] pas"], ["a hallucinated clue"], ["ne … hallucinated"], ["« »"]]
+)
+def test_sufficient_check_still_needs_a_genuinely_visible_clue(clues):
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import validate_review
+
+    c = replace(
+        candidate(),
+        sentence="Dans son esprit, je ne emprunte pas encore le train d’Anne.",
+    )
+    with pytest.raises(ValidationError, match="visible French"):
+        validate_review(clue_review(*clues), c)
