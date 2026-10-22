@@ -158,4 +158,7 @@ Svelte's immediate `""` emission queued `key:<last field>:""` on the shared
 action, and the next `saveNow`/field blur/agent apply ran it, reading the now-loaded
 note id at fire time. Fixed by making `ChangeTimer.clear()` discard the action and
 binding each queued save to the note id current when it was queued. Test:
-`ts/editable/change-timer.test.ts`.
+`ts/editable/change-timer.test.ts`. Live check on the unfixed build: closing Edit
+Current after 0.3 s, 1 s or 3 s, or just minimizing it (`saveOnPageHide`), each
+sent `key:1:<nid>:` and emptied Back; Browser row switching did not. All pass on the
+fix (sarkologist/anki-personal#102).
