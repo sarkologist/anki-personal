@@ -837,7 +837,7 @@ When supplying a contrast object, the TOP-LEVEL mode MUST be contrast. The neste
                 situation += " " + c.contrast["sentence"]
             context = source_evidence(known, context_words, situation)
             meaning = verb_evidence(pending[key], known, lexicon, c.sentence)
-            evidence = {word: records.copy() for word, records in context.items()}
+            evidence = {word: rows.copy() for word, rows in context.items()}
             # Not `records`: that name holds generate's vocabulary index.
             for word, rows in meaning.items():
                 evidence.setdefault(word, []).extend(
