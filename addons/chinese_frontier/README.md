@@ -192,8 +192,11 @@ and preserves existing French cards. See [French Frontier](french/README.md).
 
 ## Diagnostics
 
-Both Tools dialogs contain Overview, Model calls and Decisions tabs, refreshed each
-second. Overview shows the last native budget snapshot, approved buffer, active
+Both Tools dialogs contain Charts, Overview, Model calls and Decisions tabs,
+refreshed each second. Charts draws the retained telemetry as static SVG: yield and
+rejection losses per Anki day, recent batches, writer prompt size, call latency by
+phase, top validation/audit rejection reasons and keyword-bucketed writer refusal
+themes. Overview shows the last native budget snapshot, approved buffer, active
 request age, cooldown and cycle budget, observed target approval yield, admitted
 notes and physical cards, and existing-note updates (including audit metadata).
 Model calls include French target ranking as well as writing and independent review.

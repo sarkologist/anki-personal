@@ -112,7 +112,7 @@ def columns(
     width = slot * 0.7 / (1 if stacked else len(series))
     for i, label in enumerate(labels):
         x0 = left + i * slot
-        y = base
+        y: float = base
         for j, (name, color, values) in enumerate(series):
             if not values[i]:
                 continue
@@ -276,8 +276,12 @@ def latency_chart(store: dict[str, Any]) -> str:
     rows = started(store)
     if not rows:
         return section("Call latency", caption, EMPTY)
-    phases = list(PHASES) + sorted({str(c.get("phase")) for c in rows} - set(PHASES))
-    phases = [p for p in phases if any(str(c.get("phase")) == p for c in rows)]
+    phases = list(PHASES) + sorted(
+        {str(c.get("phase") or "unknown") for c in rows} - set(PHASES)
+    )
+    phases = [
+        p for p in phases if any(str(c.get("phase") or "unknown") == p for c in rows)
+    ]
     colors = [PHASES.get(p, OTHER) for p in phases]
     return section(
         "Call latency",
@@ -291,7 +295,7 @@ def latency_chart(store: dict[str, Any]) -> str:
                     color,
                     [
                         float(c.get("elapsed_seconds") or 0)
-                        if str(c.get("phase")) == p
+                        if str(c.get("phase") or "unknown") == p
                         else 0
                         for c in rows
                     ],
