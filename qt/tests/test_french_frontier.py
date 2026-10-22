@@ -2929,3 +2929,26 @@ def test_backfill_without_paradigms_keeps_existing_tables(collection, monkeypatc
         module.Collection, "get_note", lambda *a: pytest.fail("scanned notes")
     )
     module.refresh_conjugation_tables(collection, Lexicon([], []))
+
+
+def test_backfill_skips_notes_with_a_queued_regeneration(collection, monkeypatch):
+    from chinese_frontier.french import collection as module
+
+    note = collection.new_note(module.ensure_model(collection))
+    note["Text"] = "{{c1::aille}}"
+    collection.add_note(note, 1)
+    monkeypatch.setattr(
+        module.Collection, "get_note", lambda *a: pytest.fail("touched queued note")
+    )
+    module.refresh_conjugation_tables(collection, aller(), skip={note.id})
+
+
+def test_corrupt_paradigm_cache_does_not_block_loading(tmp_path):
+    import json
+
+    forms = [{"surface": f"m{i}", "lemma": f"m{i}", "pos": "NOM"} for i in range(10000)]
+    (tmp_path / "lexicon-v4.json").write_text(
+        json.dumps({"version": 4, "forms": forms, "entries": []})
+    )
+    (tmp_path / "paradigms-v1.json").write_text(json.dumps({"version": 1}))
+    assert Lexicon.load(tmp_path).paradigms == {}

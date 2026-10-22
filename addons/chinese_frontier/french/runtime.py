@@ -255,12 +255,31 @@ class Controller:
                 self.tick(force=force)
 
             def unrefreshed(exc: Exception) -> None:
-                # Missing tables are cosmetic; never let them block generation.
+                # Missing tables are cosmetic; record it and keep generating.
+                if not self.valid(epoch):
+                    return
                 self.tables_refreshed = True
-                self.failed(exc, epoch)
+                self.busy = False
+                self.observe(
+                    {
+                        "type": "decision",
+                        "stage": "tables",
+                        "outcome": "error",
+                        "reason": str(exc),
+                        "where": error_location(exc),
+                    }
+                )
+                self.tick(force=force)
+
+            queued = {
+                int(d["repair_note"])
+                for d in self.state.get("drafts", [])
+                if isinstance(d, dict) and d.get("repair_note")
+            }
 
             CollectionOp(
-                parent=mw, op=lambda col: refresh_conjugation_tables(col, lexicon)
+                parent=mw,
+                op=lambda col: refresh_conjugation_tables(col, lexicon, queued),
             ).success(refreshed).failure(unrefreshed).run_in_background(initiator=self)
             return
         QueryOp(

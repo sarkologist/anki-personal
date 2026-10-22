@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import re
+from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -97,8 +98,10 @@ SUBJECTS = {
 }
 # Verbs whose initial h blocks elision (je hais, not j'hais).
 ASPIRATED = {
-    "haïr", "hacher", "harceler", "hausser", "hâter", "hanter", "hisser", "huer",
-    "hurler", "heurter", "hennir", "hérisser", "hocher", "hasarder", "héler",
+    "hacher", "haler", "haleter", "hanter", "happer", "haranguer", "harasser",
+    "harceler", "harnacher", "harponner", "hasarder", "hausser", "haïr", "hennir",
+    "heurter", "hisser", "hocher", "honnir", "huer", "hurler", "hâbler", "hâter",
+    "héler", "hérisser",
 }  # fmt: skip
 
 
@@ -172,7 +175,9 @@ def extra_field(
     return html.escape(explanation) + tables
 
 
-def refresh_conjugation_tables(col: Collection, lexicon: Lexicon) -> OpChanges:
+def refresh_conjugation_tables(
+    col: Collection, lexicon: Lexicon, skip: AbstractSet[int] = frozenset()
+) -> OpChanges:
     """Fill tables into unmodified generated notes without regenerating them."""
     model = col.models.by_name(MODEL)
     if not model or not lexicon.paradigms:
@@ -180,6 +185,9 @@ def refresh_conjugation_tables(col: Collection, lexicon: Lexicon) -> OpChanges:
         return OpChanges()
     undo = None
     for nid in col.models.nids(model["id"]):
+        if nid in skip:
+            # A queued regeneration fingerprints the current hash; leave it intact.
+            continue
         note = col.get_note(nid)
         values = {name: note[name] for name in note.keys()}
         data = json_field(values["Source"])

@@ -350,7 +350,7 @@ class Lexicon:
             )
             try:
                 lexicon.paradigms = load_paradigms(folder, lexicon)
-            except (OSError, ValueError):
+            except Exception:  # noqa: BLE001
                 pass  # Tables are display-only; never block generation on them.
             return lexicon
         archive = zipfile.ZipFile(io.BytesIO(fetch(LEXIQUE)))
