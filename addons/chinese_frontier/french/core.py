@@ -420,11 +420,8 @@ def validate(
         if selected.pos == "VER" and not known.recognizes(selected, lexicon):
             raise ValidationError("Unlearned context verb form: " + selected.surface)
     for unit in dependencies:
-        if (
-            any(f.pos == "VER" for f in lexicon.analyses(unit))
-            and unit not in uses
-            and not known.non_verb_reading(unit, lexicon)
-        ):
+        # An explicit non-verb annotation also counts: it is what the audit sees.
+        if any(f.pos == "VER" for f in lexicon.analyses(unit)) and unit not in uses:
             raise ValidationError("Missing context verb analysis: " + unit)
     span = spans[0]
     replacement = "{{c1::" + c.sentence[span.start() : span.end()] + "}}"

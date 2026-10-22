@@ -96,9 +96,10 @@ ordering of dictionary readings. Context verb analyses are checked explicitly, i
 and participle forms. A context reading of an answered syncretic surface (fais,
 dit) is accepted when its answers could only be that verb and its verb meaning
 is established: recognising a form is not producing it. A surface answered as a
-noun (été, bois) is never recognised as its verb homograph. A verb homograph needs no verb analysis when its established
-meaning is a unique non-verb or its non-verb reading is more frequent (plus,
-affaire). Pronunciation metadata remains available in the cached
+noun (été, bois) is never recognised as its verb homograph. Every context verb homograph needs an explicit analysis. When
+its established meaning is a unique non-verb or its non-verb reading is more
+frequent (plus, affaire), an omitted analysis is filled with that non-verb
+reading, which the review then checks. Pronunciation metadata remains available in the cached
 lexicon; this version does not create pronunciation or listening cards.
 
 Independent subscription-model review checks sense, grammar, translation, known

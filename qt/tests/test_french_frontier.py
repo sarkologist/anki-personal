@@ -2551,8 +2551,10 @@ def homograph_lexicon(*forms):
     )
 
 
-def test_dominant_non_verb_reading_needs_no_verb_analysis():
+def test_dominant_non_verb_reading_is_annotated_as_a_non_verb():
     from dataclasses import replace
+
+    from chinese_frontier.french.generation import annotate_context
 
     lex = homograph_lexicon(
         Form("plus", "plus", "ADV", frequency=3746),
@@ -2561,20 +2563,32 @@ def test_dominant_non_verb_reading_needs_no_verb_analysis():
     known = learned("je", "le", "train", "regarde", "parle")
     known.learn("plus", lex, 1, "Je ne regarde plus.")
     c = replace(candidate(), sentence="Je emprunte plus le train.")
-    assert "plus" in validate(c, target(), known, lex).dependencies
+    with pytest.raises(ValidationError, match="Missing context verb analysis: plus"):
+        validate(c, target(), known, lex)
+    fixed = annotate_context(c, known, lex)
+    assert fixed.uses == (
+        {"surface": "plus", "lemma": "plus", "pos": "ADV", "features": ""},
+    )
+    assert "plus" in validate(fixed, target(), known, lex).dependencies
 
 
-def test_established_non_verb_meaning_needs_no_verb_analysis():
+def test_noun_answer_does_not_waive_a_verb_analysis_for_its_homograph():
     from dataclasses import replace
 
-    lex = homograph_lexicon(
-        Form("pages", "page", "NOM", "f:p"),
-        Form("pages", "pager", "VER", "ind:pre:2:s"),
+    from chinese_frontier.french.generation import annotate_context
+
+    noun = Form("porte", "porte", "NOM", "f:s")
+    lex = homograph_lexicon(noun, Form("porte", "porter", "VER", "ind:pre:3:s"))
+    known = learned("je", "le", "train", "regarde", "parle")
+    known.learn("porte", lex, 1, "Ferme la porte.", form_key=noun.key)
+    c = replace(candidate(), sentence="Je emprunte le train porte.")
+    with pytest.raises(ValidationError, match="Missing context verb analysis: porte"):
+        validate(c, target(), known, lex)
+    fixed = annotate_context(c, known, lex)
+    assert fixed.uses == (
+        {"surface": "porte", "lemma": "porte", "pos": "NOM", "features": "f:s"},
     )
-    known = learned("je", "regarde", "parle")
-    known.learn("pages", lex, 1, "Deux cents pages.", form_key="pages|page|NOM|f:p")
-    c = replace(candidate(), sentence="Je emprunte 200 pages.")
-    assert "pages" in validate(c, target(), known, lex).dependencies
+    assert "porte" in validate(fixed, target(), known, lex).dependencies
 
 
 def test_dominant_verb_reading_still_needs_a_verb_analysis():
@@ -2607,7 +2621,9 @@ def test_context_annotation_keeps_an_established_noun_out_of_a_verb_reading():
         {"surface": "bois", "lemma": "boire", "pos": "VER", "features": "ind:pre:1:s"},
     )
     known.meanings.add(("bois", "NOM"))
-    assert annotate_context(c, known, lex).uses == ()
+    assert annotate_context(c, known, lex).uses == (
+        {"surface": "bois", "lemma": "bois", "pos": "NOM", "features": "m"},
+    )
     validate(annotate_context(c, known, lex), target(), known, lex)
 
 
