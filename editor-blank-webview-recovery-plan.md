@@ -146,3 +146,16 @@ Codex-flagged latent issues (deferred, see follow-ups):
 - [x] Codex review diff — 2 findings (retry-wedge High, dialog/repaint race Medium) fixed
       + covered by tests
 - [x] PR — sarkologist/anki-personal#38
+
+## Related: first editor load blanked the last field on the next flush (2026-10-22)
+
+Found while live-checking the agent pane: opening Edit Current from the reviewer and
+closing it without typing wrote `""` into Back. It was not webview-specific (repro'd
+with a visible window, warm or cold page) and not the save-ack race above. The cause:
+`setFields` creates and subscribes the field stores before suppressing saves, so
+Svelte's immediate `""` emission queued `key:<last field>:""` on the shared
+`fieldSave` timer. `fieldSave.clear()` then cancelled only the timeout and kept the
+action, and the next `saveNow`/field blur/agent apply ran it, reading the now-loaded
+note id at fire time. Fixed by making `ChangeTimer.clear()` discard the action and
+binding each queued save to the note id current when it was queued. Test:
+`ts/editable/change-timer.test.ts`.
