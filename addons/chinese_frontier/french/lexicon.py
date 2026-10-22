@@ -7,19 +7,24 @@ import hashlib
 import io
 import json
 import re
+import time
 import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import senses
+
 FLELEX = "https://cental.uclouvain.be/cefrlex/static/resources/fr/FleLex_CRF.csv"
 LEVELS = "https://cental.uclouvain.be/cefrlex/static/resources/fr/FleLex_TT_Beacco.tsv"
 LEXIQUE = "https://www.lexique.org/databases/Lexique410/Lexique4.1.zip"
-DICTIONARY = "https://kaiko.getalp.org/sparql"
 LETTERS = r"[a-zàâäçéèêëîïôöùûüÿœæ]"
 TOKEN = re.compile(LETTERS + r"+(?:-" + LETTERS + r"+)*\'?|\d+", re.I)
 
+SOURCE_RETRY_SECONDS = 1800
+# Wikimedia's User-Agent policy asks for a way to identify the client.
+USER_AGENT = "Anki-French-Frontier/1.0 (https://github.com/sarkologist/anki-personal)"
 LEFFF = "https://raw.githubusercontent.com/ClaudeCoulombe/FrenchLefffLemmatizer/bc0ebd0135a6cc78f48ddf184069b4c0b9c017d8/french_lefff_lemmatizer/data/lefff-3.4.mlex"
 
 
@@ -35,12 +40,22 @@ def verb_features(info: str, gender: str, number: str) -> list[str]:
             for n in [number] if number in ("s", "p") else ["s", "p"]:
                 result.append(":".join(filter(None, (base, gender, n))))
         else:
-            result.append(base + ":" + number)
+            # Lexique often leaves the number empty; without Lefff, keep both.
+            for n in [number] if number in ("s", "p") else ["s", "p"]:
+                result.append(base + ":" + n)
     return result
 
 
 def lefff_verbs(text: str) -> set[tuple[str, str, str]]:
-    allowed = set()
+    return {
+        (surface, lemma, f)
+        for (surface, lemma), features in lefff_readings(text).items()
+        for f in features
+    }
+
+
+def lefff_readings(text: str) -> dict[tuple[str, str], list[str]]:
+    readings: dict[tuple[str, str], list[str]] = {}
     moods = {
         "P": "ind:pre",
         "I": "ind:imp",
@@ -60,6 +75,9 @@ def lefff_verbs(text: str) -> set[tuple[str, str, str]]:
             features = ["inf"]
         elif code == "G":
             features = ["par:pre"]
+        elif code == "K":
+            # Invariable participles (été, pu, fallu) carry no agreement.
+            features = ["par:pas:m:s"]
         elif code.startswith("K"):
             features = [
                 "par:pas:" + g + ":" + n
@@ -78,8 +96,9 @@ def lefff_verbs(text: str) -> set[tuple[str, str, str]]:
                 for number in "sp"
                 if number in code
             ]
-        allowed.update((normalize(surface), normalize(lemma), f) for f in features)
-    return allowed
+        known = readings.setdefault((normalize(surface), normalize(lemma)), [])
+        known.extend(f for f in features if f not in known)
+    return readings
 
 
 def normalize(value: str) -> str:
@@ -117,14 +136,23 @@ class Entry:
 
 
 def fetch(url: str, maximum: int = 80 * 1024 * 1024) -> bytes:
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "Anki-French-Frontier/1.0"}
-    )
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=60) as response:
         data = response.read(maximum + 1)
     if len(data) > maximum:
-        raise ValueError("French resource exceeds download size limit")
+        raise senses.TooLarge("French resource exceeds download size limit")
     return data
+
+
+def retry_delay(error: Exception) -> float:
+    if getattr(error, "code", None) == 429:
+        # Rate limited, not down: honour Retry-After rather than 30 minutes.
+        headers = getattr(error, "headers", None) or {}
+        try:
+            return max(1.0, min(300.0, float(headers.get("Retry-After", 10))))
+        except (TypeError, ValueError):
+            return 10.0
+    return SOURCE_RETRY_SECONDS
 
 
 def atomic_json(path: Path, data: object) -> None:
@@ -177,6 +205,26 @@ class Lexicon:
             self.forms.setdefault(form.surface, []).append(form)
             self.lemmas.setdefault((form.lemma, form.pos), []).append(form)
         self.entries = sorted(entries, key=lambda e: (e.level, -e.frequency, e.lemma))
+        self.sources_down: dict[str, float] = {}
+        self.last_request: dict[str, float] = {}
+        # Uncached answers, remembered for this session so batches don't
+        # re-download them while a better dictionary is unavailable.
+        self.recent: dict[str, tuple[float, list[dict[str, str]]]] = {}
+        self.sense_sources = [
+            senses.SenseSource(
+                "dbnary", lambda e: senses.dbnary(e.lemma, e.pos, fetch)
+            ),
+            senses.SenseSource(
+                "wiktionary",
+                lambda e: senses.wiktionary(e.lemma, e.pos, fetch),
+                interval=1.0,
+            ),
+            senses.SenseSource(
+                "kaikki",
+                lambda e: senses.kaikki(e.lemma, e.pos, fetch),
+                equivalent=False,
+            ),
+        ]
 
     def analyses(self, surface: str) -> list[Form]:
         return self.forms.get(normalize(surface), [])
@@ -187,21 +235,37 @@ class Lexicon:
     ) -> Lexicon:
         forms = []
         freq: dict[tuple[str, str], float] = {}
+        readings = lefff_readings(morphological) if morphological else None
+        if readings is not None and sum(map(len, readings.values())) < 10000:
+            raise ValueError("Incomplete Lefff morphology resource")
+        # Lexique's verb readings are incomplete (empty numbers, missing
+        # syncretism), so with Lefff it only supplies IPA and frequency.
+        verbs: dict[tuple[str, str], tuple[str, float]] = {}
         for row in csv.DictReader(io.StringIO(lexical), delimiter="\t"):
-            surface, lemma, pos = (
+            surface, lemma, cgram = (
                 normalize(row.get(k, "")) for k in ("1_Mot", "4_Lemme", "5_Cgram")
             )
+            # Closed classes carry subtypes (ART:def, PRO:per, ADJ:pos); the
+            # subtype is dropped so annotations name only the part of speech.
+            pos = cgram.split(":")[0].upper()
+            pos = "VER" if pos == "AUX" else pos
             if (
                 not tokens(surface)
                 or not tokens(lemma)
                 or pos
-                not in ("ver", "nom", "adj", "adv", "art", "pro", "pre", "con", "ono")
+                not in ("VER", "NOM", "ADJ", "ADV", "ART", "PRO", "PRE", "CON", "ONO")
             ):
                 continue
-            pos = pos.upper()
             frequency = float(row.get("12_FreqLemme") or 0)
             freq[lemma, pos] = max(frequency, freq.get((lemma, pos), 0))
             info = row.get("9_InfoVER", "").strip(";")
+            if pos == "VER" and readings is not None:
+                ipa, frequency = verbs.get((surface, lemma), ("", 0))
+                verbs[surface, lemma] = (
+                    ipa or row.get("3_Phono_IPA", ""),
+                    max(frequency, float(row.get("10_FreqMot") or 0)),
+                )
+                continue
             if pos == "VER":
                 features = verb_features(
                     info, row.get("7_Genre", ""), row.get("8_Nombre", "")
@@ -223,15 +287,9 @@ class Lexicon:
                         float(row.get("10_FreqMot") or 0),
                     )
                 )
-        if morphological:
-            allowed = lefff_verbs(morphological)
-            if len(allowed) < 10000:
-                raise ValueError("Incomplete Lefff morphology resource")
-            forms = [
-                f
-                for f in forms
-                if f.pos != "VER" or (f.surface, f.lemma, f.features) in allowed
-            ]
+        for (surface, lemma), (ipa, frequency) in verbs.items():
+            for feature in (readings or {}).get((surface, lemma), []):
+                forms.append(Form(surface, lemma, "VER", feature, ipa, frequency))
         mapped = {
             "N": "NOM",
             "V": "VER",
@@ -281,16 +339,19 @@ class Lexicon:
 
     @classmethod
     def load(cls, folder: Path) -> Lexicon:
-        path = folder / "lexicon-v2.json"
+        path = folder / "lexicon-v4.json"
         if path.exists():
             data = json.loads(path.read_text(encoding="utf8"))
-            if data.get("version") != 2 or len(data.get("forms", [])) < 10000:
+            if data.get("version") != 4 or len(data.get("forms", [])) < 10000:
                 raise ValueError("Invalid French dictionary cache")
             lexicon = cls(
                 [Form(**f) for f in data["forms"]],
                 [Entry(**e) for e in data["entries"]],
             )
-            lexicon.paradigms = load_paradigms(folder, lexicon)
+            try:
+                lexicon.paradigms = load_paradigms(folder, lexicon)
+            except (OSError, ValueError):
+                pass  # Tables are display-only; never block generation on them.
             return lexicon
         archive = zipfile.ZipFile(io.BytesIO(fetch(LEXIQUE)))
         name = next(
@@ -311,7 +372,7 @@ class Lexicon:
         atomic_json(
             path,
             {
-                "version": 2,
+                "version": 4,
                 "forms": [asdict(f) for items in lexicon.forms.values() for f in items],
                 "entries": [asdict(e) for e in lexicon.entries],
                 "sources": [LEXIQUE, FLELEX, LEVELS, LEFFF],
@@ -319,54 +380,67 @@ class Lexicon:
         )
         return lexicon
 
-    def definitions(self, entry: Entry, folder: Path) -> list[dict[str, str]]:
+    def _senses_path(self, entry: Entry, folder: Path) -> Path:
         key = hashlib.sha256((entry.lemma + "|" + entry.pos).encode()).hexdigest()
-        path = folder / "senses" / (key + ".json")
+        return folder / "senses" / (key + ".json")
+
+    def has_definitions(self, entry: Entry, folder: Path) -> bool:
+        return self._senses_path(entry, folder).exists()
+
+    def definitions(self, entry: Entry, folder: Path) -> list[dict[str, str]]:
+        path = self._senses_path(entry, folder)
         if path.exists():
             return json.loads(path.read_text(encoding="utf8"))
-        literal = json.dumps(entry.lemma, ensure_ascii=False)
-        query = (
-            """PREFIX ontolex: <http://www.w3.org/ns/lemon/ontolex#>
-PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
-PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-SELECT ?sense ?definition ?pos WHERE {
-?entry ontolex:canonicalForm/ontolex:writtenRep """
-            + literal
-            + """@fr ; ontolex:sense ?sense .
-FILTER(STRSTARTS(STR(?entry), "http://kaiko.getalp.org/dbnary/fra/"))
-?sense skos:definition/rdf:value ?definition .
-OPTIONAL { ?entry <http://www.lexinfo.net/ontology/2.0/lexinfo#partOfSpeech> ?pos }
-} LIMIT 24"""
-        )
-        data = json.loads(
-            fetch(
-                DICTIONARY
-                + "?"
-                + urllib.parse.urlencode(
-                    {"query": query, "format": "application/sparql-results+json"}
-                ),
-                1024 * 1024,
-            )
-        )
-        expected = {
-            "VER": "verb",
-            "NOM": "noun",
-            "ADJ": "adjective",
-            "ADV": "adverb",
-            "PRE": "preposition",
-            "CON": "conjunction",
-            "PRO": "pronoun",
-            "ART": "determiner",
-        }[entry.pos]
-        results = []
-        for row in data["results"]["bindings"]:
-            pos = row.get("pos", {}).get("value", "").rsplit("#", 1)[-1]
-            if pos and pos != expected:
-                continue
-            definition = row["definition"]["value"].strip()
-            if definition and len(definition) <= 1000:
-                results.append(
-                    {"sense": row["sense"]["value"], "definition": definition}
-                )
-        atomic_json(path, results)
-        return results
+        expires, remembered = self.recent.get(path.name, (0.0, []))
+        if time.monotonic() < expires:
+            return remembered
+        failure: Exception | None = None
+        answered = equivalent_empty = equivalent_failed = other_failed = False
+        for source in self.sense_sources:
+            now = time.monotonic()
+            if now < self.sources_down.get(source.name, 0):
+                exc: Exception = OSError(f"{source.name} dictionary recently failed")
+            else:
+                wait = self.last_request.get(source.name, -1e9) + source.interval - now
+                if wait > 0:
+                    time.sleep(wait)
+                self.last_request[source.name] = time.monotonic()
+                try:
+                    results = source.lookup(entry)
+                except (
+                    OSError,
+                    json.JSONDecodeError,
+                    UnicodeDecodeError,
+                    senses.TooLarge,
+                ) as error:
+                    # Outages also answer with HTML or truncated JSON.
+                    self.sources_down[source.name] = now + retry_delay(error)
+                    exc = error
+                else:
+                    answered = True
+                    if results:
+                        # Glosses from a lesser source are not kept forever
+                        # while an equivalent French source was unavailable.
+                        if source.equivalent or not equivalent_failed:
+                            atomic_json(path, results)
+                        else:
+                            self.remember(path, results)
+                        return results
+                    equivalent_empty |= source.equivalent
+                    continue
+            failure = failure or exc
+            if source.equivalent:
+                equivalent_failed = True
+            else:
+                other_failed = True
+        if not answered:
+            raise OSError(f"No sense dictionary answered: {failure}") from failure
+        if not failure or (equivalent_empty and not other_failed):
+            atomic_json(path, [])
+        else:
+            # A source that was down may still know the word.
+            self.remember(path, [])
+        return []
+
+    def remember(self, path: Path, results: list[dict[str, str]]) -> None:
+        self.recent[path.name] = (time.monotonic() + SOURCE_RETRY_SECONDS, results)

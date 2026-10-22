@@ -58,6 +58,7 @@ FIELDS = (
     "Disambiguation",
     "CardKind",
 )
+METADATA_FIELDS = ("Source", "Dependencies", "Disambiguation")
 KEY_PREFIX = "chinese-frontier::key::"
 REPAIR_TAG = "chinese-frontier::repair"
 
@@ -604,6 +605,17 @@ def _read_budgets(
     return budgets
 
 
+def _hide_metadata(model: dict[str, Any]) -> bool:
+    changed = False
+    for item in model["flds"]:
+        if item["name"] in METADATA_FIELDS and not (
+            item["excludeFromSearch"] and item["collapsed"]
+        ):
+            item["excludeFromSearch"] = item["collapsed"] = True
+            changed = True
+    return changed
+
+
 def ensure_model(col: Collection) -> dict[str, Any]:
     if model := col.models.by_name(MODEL_NAME):
         names = tuple(item["name"] for item in model["flds"])
@@ -627,6 +639,7 @@ def ensure_model(col: Collection) -> dict[str, Any]:
         if template["afmt"] == DEFAULT_BACK:
             template["afmt"] = KIND_LABEL + DEFAULT_BACK
             changed = True
+        changed |= _hide_metadata(model)
         if changed:
             col.models.update_dict(model)
         return model
@@ -634,6 +647,7 @@ def ensure_model(col: Collection) -> dict[str, Any]:
     model["type"] = 1
     for name in FIELDS:
         col.models.add_field(model, col.models.new_field(name))
+    _hide_metadata(model)
     template = col.models.new_template("Sentence")
     template["qfmt"] = CURRENT_FRONT
     template["afmt"] = KIND_LABEL + DEFAULT_BACK

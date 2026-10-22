@@ -34,6 +34,29 @@ ER_ENDINGS = {
     "par:pas:m:s": "é",
 }
 
+# An elided clitic is spelling, not a new word: it is established through
+# its full form, which also keys its reviewed evidence.
+ELISIONS = {
+    "l'": ("le", "la"),
+    "d'": ("de",),
+    "qu'": ("que",),
+    "n'": ("ne",),
+    "j'": ("je",),
+    "s'": ("se",),
+    "c'": ("ce",),
+    "m'": ("me",),
+    "t'": ("te",),
+    "jusqu'": ("jusque",),
+}
+
+
+def full_form(unit: str, surfaces: Any, following: str = "") -> str:
+    if unit in surfaces:
+        return unit
+    # s'il and s'ils elide si; elsewhere s' is the pronoun se.
+    full = ("si",) if unit == "s'" and following in ("il", "ils") else ()
+    return next((f for f in full or ELISIONS.get(unit, ()) if f in surfaces), unit)
+
 
 @dataclass
 class Knowledge:
@@ -41,6 +64,8 @@ class Knowledge:
     forms: set[str] = field(default_factory=set)
     meanings: set[tuple[str, str]] = field(default_factory=set)
     constructions: set[str] = field(default_factory=set)
+    # Lemma/POS readings each answered surface could have had.
+    identities: dict[str, set[tuple[str, str]]] = field(default_factory=dict)
     _rules: set[str] | None = field(default=None, repr=False)
 
     def learn(
@@ -67,6 +92,7 @@ class Knowledge:
         elif allowed_keys:
             analyses = [f for f in analyses if f.key in allowed_keys]
         identities = {(f.lemma, f.pos) for f in analyses}
+        self.identities.setdefault(answer, set()).update(identities)
         if len(identities) == 1:
             self.meanings.update(identities)
         # A syncretic answer does not establish all its tense/person readings.
@@ -83,6 +109,30 @@ class Knowledge:
         if not suffix or form.surface != form.lemma[:-2] + suffix:
             return False
         return form.features in self.regular_rules
+
+    def recognizes(self, form: Form, lexicon: Lexicon) -> bool:
+        """Context may use a reading of an answered syncretic surface (fais,
+        dit) whose verb meaning is established: recognition, not production.
+        Only person/tense syncretism qualifies: a surface answered as a noun
+        (été, bois) is never recognised as its verb homograph."""
+        identity = (form.lemma, "VER")
+        return self.licenses(form, lexicon) or (
+            self.identities.get(form.surface) == {identity}
+            and identity in self.meanings
+        )
+
+    def non_verb_reading(self, surface: str, lexicon: Lexicon) -> bool:
+        """Whether a verb homograph reads as a non-verb: its established
+        meaning is a unique non-verb, or a non-verb reading dominates."""
+        analyses = lexicon.analyses(surface)
+        established = {
+            (f.lemma, f.pos) for f in analyses if (f.lemma, f.pos) in self.meanings
+        }
+        if len(established) == 1 and next(iter(established))[1] != "VER":
+            return True
+        return max((f.frequency for f in analyses if f.pos != "VER"), default=0) > max(
+            (f.frequency for f in analyses if f.pos == "VER"), default=0
+        )
 
     @property
     def regular_rules(self) -> set[str]:
@@ -292,11 +342,14 @@ def validate(
     )
     if len(spans) != 1:
         raise ValidationError("Cloze a complete target exactly once")
+    units = _units(c.sentence, set(known.surfaces), answer)
+    resolved = {
+        unit: full_form(unit, known.surfaces, next(iter(tokens(following)), ""))
+        for unit, following in zip(units, units[1:] + [""])
+    }
     dependencies = tuple(
         dict.fromkeys(
-            unit
-            for unit in _units(c.sentence, set(known.surfaces), answer)
-            if unit != answer and not unit.isdecimal()
+            resolved[unit] for unit in units if unit != answer and not unit.isdecimal()
         )
     )
     unknown = [unit for unit in dependencies if unit not in known.surfaces]
@@ -344,14 +397,18 @@ def validate(
             normalize(use[k]) if k in ("surface", "lemma") else use[k]
             for k in ("surface", "lemma", "pos", "features")
         )
+        surface = normalize(use["surface"])
+        surface = resolved.get(surface, full_form(surface, known.surfaces))
         matching = [
             f
-            for f in lexicon.analyses(use["surface"])
+            for f in lexicon.analyses(use["surface"]) or lexicon.analyses(surface)
             if f.lemma == normalize(use["lemma"])
             and f.pos == use["pos"]
             and (
                 f.features == use["features"]
                 or f.features.startswith(use["features"] + ":")
+                # Agreement is optional for non-verbs (je PRO for je PRO s).
+                or (not use["features"] and f.pos != "VER")
             )
         ]
         selected = (
@@ -363,12 +420,13 @@ def validate(
             if selected.key != form.key:
                 raise ValidationError("Incorrect target morphology annotation")
             continue
-        if not selected or normalize(use["surface"]) not in dependencies:
+        if not selected or surface not in dependencies:
             raise ValidationError("Incorrect context morphology annotation")
-        uses[normalize(use["surface"])] = selected
-        if selected.pos == "VER" and not known.licenses(selected, lexicon):
+        uses[surface] = selected
+        if selected.pos == "VER" and not known.recognizes(selected, lexicon):
             raise ValidationError("Unlearned context verb form: " + selected.surface)
     for unit in dependencies:
+        # An explicit non-verb annotation also counts: it is what the audit sees.
         if any(f.pos == "VER" for f in lexicon.analyses(unit)) and unit not in uses:
             raise ValidationError("Missing context verb analysis: " + unit)
     span = spans[0]

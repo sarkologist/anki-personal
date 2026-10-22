@@ -366,6 +366,68 @@ def test_lefff_blocks_a_bogus_avoir_participle():
     assert ("emprunte", "emprunter", "sub:pre:1:s") in forms
 
 
+def test_lefff_invariable_participle_reads_as_masculine_singular():
+    from chinese_frontier.french.lexicon import lefff_verbs
+
+    # Lefff writes invariable participles (été, pu, fallu) as a bare "K".
+    assert lefff_verbs("été\tv\têtre\tK\npu\tv\tpouvoir\tK") == {
+        ("été", "être", "par:pas:m:s"),
+        ("pu", "pouvoir", "par:pas:m:s"),
+    }
+
+
+def test_lefff_supplies_verb_readings_lexique_leaves_incomplete():
+    # Lexique 4.1 leaves 8_Nombre empty for many common forms, lists bogus
+    # readings (vais as "inf") and misses syncretism (allions as sub:pre).
+    header = "1_Mot\t3_Phono_IPA\t4_Lemme\t5_Cgram\t7_Genre\t8_Nombre\t9_InfoVER\t10_FreqMot\t12_FreqLemme"
+    rows = [
+        "vais\tvɛ\taller\tVER\t\t\tind:pre:1,inf\t300\t900",
+        "allons\talɔ̃\taller\tVER\t\t\tind:pre:1,imp:pre:1,inf\t200\t900",
+        "ira\tiʁa\taller\tVER\t\t\tind:fut:3\t50\t900",
+        "allions\taljɔ̃\taller\tVER\t\tp\tind:imp:1\t5\t900",
+        "allé\tale\taller\tVER\tm\ts\tpar:pas\t40\t900",
+        "allé\tale\taller\tVER\tm\ts\tpar:pas\t1\t900",
+    ] + [f"mot{i}\t\tmot{i}\tNOM\tm\ts\t\t1\t1" for i in range(10000)]
+    lefff = "\n".join(
+        [
+            "vais\tv\taller\tP1s",
+            "allons\tv\taller\tP1p",
+            "allons\tv\taller\tY1p",
+            "ira\tv\taller\tF3s",
+            "allions\tv\taller\tI1p",
+            "allions\tv\taller\tS1p",
+            "allé\tv\taller\tKms",
+        ]
+        + [f"pad{i}\tv\tpad\tW" for i in range(10000)]
+    )
+    graded = "word\ttag\n" + "\n".join(f"mot{i}\tN" for i in range(1000))
+    lex = Lexicon.parse("\n".join([header] + rows), graded, "", lefff)
+
+    def readings(surface):
+        return sorted(f.features for f in lex.analyses(surface))
+
+    assert readings("vais") == ["ind:pre:1:s"]
+    assert readings("allons") == ["imp:pre:1:p", "ind:pre:1:p"]
+    assert readings("ira") == ["ind:fut:3:s"]
+    assert readings("allions") == ["ind:imp:1:p", "sub:pre:1:p"]
+    # Duplicate Lexique rows collapse into one form, keeping the larger frequency.
+    assert [(f.features, f.frequency, f.ipa) for f in lex.analyses("allé")] == [
+        ("par:pas:m:s", 40, "ale")
+    ]
+    assert lex.analyses("vais")[0].frequency == 300
+
+
+def test_verb_features_without_lefff_infer_a_missing_number():
+    from chinese_frontier.french.lexicon import verb_features
+
+    assert verb_features("ind:pre:1,imp:pre:1", "", "") == [
+        "ind:pre:1:s",
+        "ind:pre:1:p",
+        "imp:pre:1:s",
+        "imp:pre:1:p",
+    ]
+
+
 @pytest.mark.parametrize("outdated_policy", [False, True])
 def test_generated_repair_preserves_card_ids_and_scheduling(
     collection, outdated_policy
@@ -509,6 +571,50 @@ def test_standalone_subject_establishes_present_not_subjunctive(collection):
     known = snapshot(collection, {"deck_id": 1}, {}, lex).known
     assert "parle|parler|VER|ind:pre:1:s" in known.forms
     assert "parle|parler|VER|sub:pre:1:s" not in known.forms
+
+
+@pytest.mark.parametrize(
+    "text,indicative",
+    [
+        ("Le soir, je {{c1::parle}} français.", True),
+        ("Est-ce que je {{c1::parle}} trop ?", True),
+        ("Qu'est-ce qu'il {{c1::parle}} bien !", True),
+        ("Il faut que je {{c1::parle}}.", False),
+        ("Il faut qu'il {{c1::parle}}.", False),
+        ("Bien qu'elle {{c1::parle}} vite, on comprend.", False),
+        ("Quoiqu'il {{c1::parle}} peu, il écoute.", False),
+        ("Il faut quʼil {{c1::parle}}.", False),
+        ("La raison pour laquelle je {{c1::parle}} est simple.", False),
+        # Relative clauses after an indefinite or superlative antecedent can
+        # be subjunctive without que.
+        ("Je cherche un endroit où je {{c1::parle}} librement.", False),
+        ("C'est le seul sujet dont il {{c1::parle}}.", False),
+        ("C'est la seule personne à qui je {{c1::parle}}.", False),
+        ("C'est le meilleur outil avec lequel je {{c1::parle}}.", False),
+    ],
+)
+def test_subject_without_preceding_que_rules_out_subjunctive(
+    collection, text, indicative
+):
+    from chinese_frontier.french.collection import snapshot
+
+    lex = Lexicon(
+        [
+            Form("parle", "parler", "VER", feature)
+            for feature in (
+                "ind:pre:1:s",
+                "sub:pre:1:s",
+                "ind:pre:3:s",
+                "sub:pre:3:s",
+            )
+        ],
+        [],
+    )
+    add_cloze(collection, text, learned=True)
+    known = snapshot(collection, {"deck_id": 1}, {}, lex).known
+    person = "1:s" if " je " in f" {text.lower()} " else "3:s"
+    assert (f"parle|parler|VER|ind:pre:{person}" in known.forms) == indicative
+    assert f"parle|parler|VER|sub:pre:{person}" not in known.forms
 
 
 def test_contrast_uses_one_card_and_labels_both_sides(collection):
@@ -1752,7 +1858,7 @@ def test_french_writer_receives_proven_usage_and_previous_lessons():
     )
     assert not drafts
     assert len(failures) == 1
-    assert max(len(p["knowledge"]["established_context"]) for p in payloads) <= 160
+    assert max(len(p["context_evidence"]) for p in payloads) <= 160
     assert all(p["context_evidence"]["train"][0]["card"] == 99 for p in payloads)
     assert all(
         p["previous_lessons"][target().key]["reason"] == "Use railway context."
@@ -1848,8 +1954,8 @@ def test_french_empty_proposal_reason_guides_next_retrieval_and_is_persisted():
 
     drafts, failures = generate([target()], known, dictionary(), {}, Event(), Client())
     assert not drafts
-    assert "paiement" not in payloads[0]["knowledge"]["established_context"]
-    assert "paiement" in payloads[1]["knowledge"]["established_context"]
+    assert "paiement" not in payloads[0]["context_evidence"]
+    assert "paiement" in payloads[1]["context_evidence"]
     assert json.loads(failures[target().key])["reason"] == "Need payment context."
 
 
@@ -1903,6 +2009,771 @@ def test_runtime_errors_record_where_they_were_raised(monkeypatch):
     assert event["stage"] == "runtime"
     assert "explode" in event["where"]
     assert "test_french_frontier.py" in event["where"]
+
+
+METADATA = {"Source", "Dependencies", "Disambiguation"}
+
+
+def field_flags(model):
+    return {f["name"]: (f["excludeFromSearch"], f["collapsed"]) for f in model["flds"]}
+
+
+def test_new_model_hides_metadata_fields(collection):
+    from chinese_frontier.french.collection import ensure_model
+
+    flags = field_flags(ensure_model(collection))
+    assert flags == {name: (name in METADATA, name in METADATA) for name in flags}
+
+
+def test_existing_model_gets_metadata_flags_once(collection):
+    from chinese_frontier.french.collection import ensure_model
+
+    model = ensure_model(collection)
+    for f in model["flds"]:
+        f["excludeFromSearch"] = f["collapsed"] = False
+    collection.models.update_dict(model)
+    upgraded = ensure_model(collection)
+    flags = field_flags(upgraded)
+    assert flags == {name: (name in METADATA, name in METADATA) for name in flags}
+    stored = collection.models.get(upgraded["id"])
+    assert field_flags(stored) == flags
+    before = (stored["mod"], stored["flds"])
+    again = ensure_model(collection)
+    assert (again["mod"], again["flds"]) == before
+
+
+def test_self_listed_answer_is_not_a_fitting_alternative_on_retry():
+    import json
+    from dataclasses import asdict
+    from threading import Event
+
+    from chinese_frontier.french.generation import candidate_hash, generate
+
+    c, t = candidate(), target()
+    decisions = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            if "proposals" in json.dumps(schema):
+                return json.loads(
+                    json.dumps(
+                        {"proposals": [{"key": t.key, "candidates": [asdict(c)]}]}
+                    )
+                )
+            checks = context_checks()
+            checks[0]["sufficient"] = False
+            return {
+                "reviews": [
+                    {
+                        "key": t.key,
+                        "fingerprint": candidate_hash(c),
+                        "approved": False,
+                        "context_checks": checks,
+                        "reason": "context too thin",
+                        "search_summary": "checked",
+                        "alternatives": [
+                            {
+                                "example": 0,
+                                "answer": c.answer,
+                                "fits_context": True,
+                                "fits_cloze": True,
+                                "reason": "The intended answer.",
+                            },
+                            {
+                                "example": 0,
+                                "answer": "loue",
+                                "fits_context": False,
+                                "fits_cloze": False,
+                                "reason": "rent is not borrow",
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    generate(
+        [t],
+        learned("je", "le", "train", "regarde", "parle"),
+        dictionary(),
+        {},
+        Event(),
+        Client(),
+        observe=decisions.append,
+    )
+    assert not any("fitting alternative" in d.get("reason", "") for d in decisions)
+    assert [d["stage"] for d in decisions].count("audit") == 3
+
+
+def test_unreachable_dictionary_falls_back_to_cached_senses(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    entries = [Entry(w, "NOM", 1, 10) for w in ("enjeu", "atout", "rouage")]
+    lex = Lexicon([], entries)
+    looked_up = []
+
+    def definitions(entry, folder):
+        looked_up.append(entry.lemma)
+        if entry.lemma != "rouage":
+            raise OSError("Connection reset by peer")
+        return [{"sense": "cog", "definition": "cog"}]
+
+    lex.definitions = definitions
+    lex.has_definitions = lambda entry, folder: entry.lemma == "rouage"
+    selected = choose_targets(
+        lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event()
+    )
+    assert [t.lemma for t in selected] == ["rouage"]
+    # After one failure, uncached senses are not fetched again this batch.
+    assert len(looked_up) == 2 and "rouage" in looked_up
+
+
+def test_unreachable_dictionary_reports_when_nothing_is_cached(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon([], [Entry("enjeu", "NOM", 1, 10)])
+
+    def definitions(entry, folder):
+        raise OSError("Connection reset by peer")
+
+    lex.definitions = definitions
+    lex.has_definitions = lambda entry, folder: False
+    with pytest.raises(OSError, match="Connection reset"):
+        choose_targets(lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event())
+
+
+def test_corrupt_sense_cache_is_not_mistaken_for_an_outage(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon([], [Entry(w, "NOM", 1, 10) for w in ("enjeu", "rouage")])
+
+    def definitions(entry, folder):
+        if entry.lemma == "enjeu":
+            raise ValueError("Expecting value: line 1 column 1")
+        return [{"sense": "cog", "definition": "cog"}]
+
+    lex.definitions = definitions
+    lex.has_definitions = lambda entry, folder: True
+    with pytest.raises(ValueError, match="Expecting value"):
+        choose_targets(lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event())
+
+
+def test_rejected_conjugation_review_can_be_retried(monkeypatch):
+    # The audit loop once rebound generate's `records` to an evidence list,
+    # so the next attempt crashed: "'list' object has no attribute 'items'".
+    import json
+    from dataclasses import asdict
+    from threading import Event
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import generation
+
+    c = candidate()
+    t = Target(
+        "prendre",
+        "VER",
+        "established",
+        "conjugation",
+        "take",
+        1,
+        10,
+        "prenions|prendre|VER|ind:imp:1:p",
+    )
+    known = learned("je", "le", "train", "prends")
+    assert generation.verb_evidence(t, known, dictionary())
+    monkeypatch.setattr(generation, "annotate_context", lambda c, known, lex: c)
+    monkeypatch.setattr(
+        generation,
+        "validate",
+        lambda c, t, known, lex: SimpleNamespace(
+            dependencies=(), text=c.sentence, translation=c.translation
+        ),
+    )
+    phases = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            writer = "proposals" in json.dumps(schema)
+            phases.append("writer" if writer else "review")
+            if writer:
+                return json.loads(
+                    json.dumps(
+                        {"proposals": [{"key": t.key, "candidates": [asdict(c)]}]}
+                    )
+                )
+            return {
+                "reviews": [
+                    {
+                        "key": t.key,
+                        "fingerprint": generation.candidate_hash(c),
+                        "approved": False,
+                        "context_checks": context_checks(),
+                        "reason": "too generic",
+                        "search_summary": "checked",
+                        "alternatives": [
+                            {
+                                "example": 0,
+                                "answer": "loue",
+                                "fits_context": False,
+                                "fits_cloze": False,
+                                "reason": "different meaning",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+    drafts, failures = generation.generate(
+        [t], known, dictionary(), {}, Event(), Client()
+    )
+    assert not drafts and t.key in failures
+    assert phases == ["writer", "review"] * 3
+
+
+def lexique(*rows, graded=()):
+    header = "1_Mot\t3_Phono_IPA\t4_Lemme\t5_Cgram\t7_Genre\t8_Nombre\t9_InfoVER\t10_FreqMot\t12_FreqLemme"
+    padding = [f"mot{i}\t\tmot{i}\tNOM\tm\ts\t\t1\t1" for i in range(10000)]
+    levels = "word\ttag\n" + "\n".join(
+        list(graded) + [f"mot{i}\tN" for i in range(1000)]
+    )
+    return Lexicon.parse("\n".join([header, *rows, *padding]), levels, "")
+
+
+def test_lexique_closed_class_subtypes_are_kept_by_their_prefix():
+    lex = lexique(
+        "le\tl@\tle\tART:def\tm\ts\t\t14000\t38000",
+        "je\tʒ@\tje\tPRO:per\t\ts\t\t25000\t25000",
+        "lui\tlɥi\tlui\tPRO:per\tm\ts\t\t4000\t4000",
+        "son\tsɔ̃\tson\tADJ:pos\tm\ts\t\t3000\t3000",
+        "a\ta\tavoir\tAUX\t\t\tind:pre:3s\t9000\t18000",
+    )
+    assert [(f.lemma, f.pos, f.features) for f in lex.analyses("le")] == [
+        ("le", "ART", "m:s")
+    ]
+    assert [(f.pos, f.features) for f in lex.analyses("je")] == [("PRO", "s")]
+    assert [f.pos for f in lex.analyses("lui")] == ["PRO"]
+    assert [f.pos for f in lex.analyses("son")] == ["ADJ"]
+    assert {f.pos for f in lex.analyses("a")} == {"VER"}
+
+
+def test_pronoun_and_determiner_annotations_validate_as_context():
+    from dataclasses import replace
+
+    parsed = lexique(
+        "je\tʒ@\tje\tPRO:per\t\ts\t\t25000\t25000",
+        "lui\tlɥi\tlui\tPRO:per\tm\ts\t\t4000\t4000",
+        "son\tsɔ̃\tson\tADJ:pos\tm\ts\t\t3000\t3000",
+    )
+    lex = Lexicon(
+        [f for forms in dictionary().forms.values() for f in forms if f.pos == "VER"]
+        + [f for word in ("je", "lui", "son") for f in parsed.analyses(word)]
+        + [Form("train", "train", "NOM", "m:s")],
+        [],
+    )
+    known = Knowledge()
+    for word in ("je", "lui", "son", "train", "regarde", "parle"):
+        known.learn(word, lex, 1, word)
+    c = replace(
+        candidate(),
+        sentence="Je lui emprunte son train.",
+        uses=(
+            {"surface": "son", "lemma": "son", "pos": "ADJ", "features": "m:s"},
+            {"surface": "je", "lemma": "je", "pos": "PRO", "features": ""},
+            {"surface": "lui", "lemma": "lui", "pos": "PRO", "features": ""},
+        ),
+    )
+    assert validate(c, target(), known, lex).dependencies == (
+        "je",
+        "lui",
+        "son",
+        "train",
+    )
+
+
+def test_articles_and_pronouns_never_become_vocabulary_targets(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon(
+        [],
+        [
+            Entry("le", "ART", 1, 38000),
+            Entry("il", "PRO", 1, 30000),
+            Entry("enjeu", "NOM", 1, 10),
+        ],
+    )
+    lex.definitions = lambda entry, folder: [
+        {"sense": entry.lemma, "definition": "sense"}
+    ]
+    selected = choose_targets(
+        lex, Knowledge(), set(), set(), tmp_path, 2, set(), Event()
+    )
+    assert [t.lemma for t in selected] == ["enjeu"]
+
+
+def test_lexicon_cache_without_closed_class_words_is_rebuilt(tmp_path, monkeypatch):
+    import json
+
+    from chinese_frontier.french import lexicon
+
+    forms = [{"surface": f"m{i}", "lemma": f"m{i}", "pos": "NOM"} for i in range(10000)]
+    (tmp_path / "lexicon-v3.json").write_text(
+        json.dumps({"version": 3, "forms": forms, "entries": []})
+    )
+
+    def offline(url, maximum=0):
+        raise OSError("offline")
+
+    monkeypatch.setattr(lexicon, "fetch", offline)
+    with pytest.raises(OSError, match="offline"):
+        Lexicon.load(tmp_path)
+    (tmp_path / "lexicon-v4.json").write_text(
+        json.dumps({"version": 4, "forms": forms, "entries": []})
+    )
+    assert Lexicon.load(tmp_path).analyses("m1")
+
+
+def test_french_writer_sees_every_established_surface():
+    import json
+    from threading import Event
+
+    from chinese_frontier.french.generation import generate
+
+    known = learned("je", "le", "train", "regarde", "parle")
+    for i in range(1000):
+        known.surfaces[f"irrelevant{i}"] = [
+            {"card": i, "context": "Unrelated example."}
+        ]
+    payloads = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            payloads.append(json.loads(prompt[prompt.index('{"targets"') :]))
+            return {"proposals": []}
+
+    generate([target()], known, dictionary(), {}, Event(), Client())
+    for payload in payloads:
+        assert payload["knowledge"]["established_context"] == sorted(known.surfaces)
+        assert "irrelevant999" not in payload["context_evidence"]
+
+
+def test_elided_clitic_depends_on_its_established_full_form():
+    from dataclasses import replace
+
+    known = learned("je", "le", "autre", "train", "regarde", "parle")
+    c = replace(candidate(), sentence="Je emprunte l’autre train.")
+    valid = validate(c, target(), known, dictionary())
+    assert valid.dependencies == ("je", "le", "autre", "train")
+    annotated = replace(
+        c, uses=({"surface": "l'", "lemma": "le", "pos": "ART", "features": ""},)
+    )
+    assert validate(annotated, target(), known, dictionary()).dependencies == (
+        valid.dependencies
+    )
+    with pytest.raises(ValidationError, match="Unlearned context: l'"):
+        validate(
+            c,
+            target(),
+            learned("je", "autre", "train", "regarde", "parle"),
+            dictionary(),
+        )
+
+
+def clue_review(*clues):
+    return {
+        "approved": True,
+        "reason": "clear",
+        "search_summary": "checked",
+        "context_checks": [
+            {
+                "example": 0,
+                "sufficient": True,
+                "clues": list(clues),
+                "reason": "French situational clue.",
+            }
+        ],
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": False,
+                "reason": "Different meaning.",
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "clues",
+    [
+        ["dans son esprit"],
+        ["Dans son esprit"],
+        ["train d'Anne"],
+        ["ne … pas encore"],
+        ["ne...pas encore"],
+        ["dans  son esprit"],
+        ["« dans son esprit »"],
+        ["“Dans son esprit,”"],
+        ["dans son esprit", "a hallucinated clue"],
+    ],
+)
+def test_audit_clues_are_matched_as_visible_french_text(clues):
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import validate_review
+
+    c = replace(
+        candidate(),
+        sentence="Dans son esprit, je ne emprunte pas encore le train d’Anne.",
+    )
+    assert validate_review(clue_review(*clues), c)
+
+
+@pytest.mark.parametrize(
+    "clues",
+    [
+        ["je […] pas"],
+        ["a hallucinated clue"],
+        ["ne … hallucinated"],
+        ["« »"],
+        ["ne [ … ] pas"],
+        ["sprit"],
+        ["n esprit"],
+    ],
+)
+def test_sufficient_check_still_needs_a_genuinely_visible_clue(clues):
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import validate_review
+
+    c = replace(
+        candidate(),
+        sentence="Dans son esprit, je ne emprunte pas encore le train d’Anne.",
+    )
+    with pytest.raises(ValidationError, match="visible French"):
+        validate_review(clue_review(*clues), c)
+
+
+def sense_lexicon(*lemmas):
+    from chinese_frontier.french.lexicon import Entry
+
+    lex = Lexicon([], [Entry(lemma, "ADJ", 1, 10) for lemma in lemmas])
+    lex.definitions = lambda entry, folder: [
+        {"sense": f"{entry.lemma}-{i}", "definition": f"Sense {i}."}
+        for i in range(1, 7)
+    ]
+    return lex
+
+
+def test_ranker_chooses_among_the_senses_of_each_lemma(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+
+    pools = []
+
+    def ranker(pool, count):
+        pools.append(pool)
+        return [t for t in pool if t.sense == "crucial-2"]
+
+    lex = sense_lexicon("crucial")
+    args = (lex, Knowledge(), set(), set(), tmp_path, 1, set(), Event())
+    assert [t.sense for t in choose_targets(*args, ranker=ranker)] == ["crucial-2"]
+    # Bounded to four senses per lemma.
+    assert [t.sense for t in pools[0]] == [f"crucial-{i}" for i in range(1, 5)]
+    assert [t.sense for t in choose_targets(*args)] == ["crucial-1"]
+
+
+def test_sense_pool_is_bounded_by_lemmas_not_senses(tmp_path):
+    from threading import Event
+
+    from chinese_frontier.french.generation import choose_targets
+
+    pools = []
+    lex = sense_lexicon(*(f"mot{i}" for i in range(10)))
+    choose_targets(
+        lex,
+        Knowledge(),
+        set(),
+        set(),
+        tmp_path,
+        1,
+        {Target("mot0", "ADJ", "mot0-1", "vocabulary", "Sense 1.", 1, 10).key},
+        Event(),
+        ranker=lambda pool, count: pools.append(pool) or pool[:1],
+    )
+    assert {t.lemma for t in pools[0]} == {"mot0", "mot1", "mot2"}
+    assert "mot0-1" not in {t.sense for t in pools[0]}
+
+
+def test_target_ranker_selects_at_most_one_sense_per_lemma():
+    from threading import Event
+
+    from chinese_frontier.french.generation import rank_targets
+
+    first, second = (
+        Target("crucial", "ADJ", f"crucial-{i}", "vocabulary", "sense", 4, 10)
+        for i in (1, 2)
+    )
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            assert "at most one sense per lemma" in prompt
+            return {
+                "selected": [
+                    {"key": second.key, "reason": "Current sense."},
+                    {"key": first.key, "reason": "Also useful."},
+                ]
+            }
+
+    assert rank_targets(
+        [first, second], 2, learned(), dictionary(), {}, Event(), Client()
+    ) == [second]
+
+
+def homograph_lexicon(*forms):
+    return Lexicon(
+        [f for forms in dictionary().forms.values() for f in forms] + list(forms), []
+    )
+
+
+def test_dominant_non_verb_reading_is_annotated_as_a_non_verb():
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import annotate_context
+
+    lex = homograph_lexicon(
+        Form("plus", "plus", "ADV", frequency=3746),
+        Form("plus", "plaire", "VER", "par:pas:m:p", frequency=3.6),
+    )
+    known = learned("je", "le", "train", "regarde", "parle")
+    known.learn("plus", lex, 1, "Je ne regarde plus.")
+    c = replace(candidate(), sentence="Je emprunte plus le train.")
+    with pytest.raises(ValidationError, match="Missing context verb analysis: plus"):
+        validate(c, target(), known, lex)
+    fixed = annotate_context(c, known, lex)
+    assert fixed.uses == (
+        {"surface": "plus", "lemma": "plus", "pos": "ADV", "features": ""},
+    )
+    assert "plus" in validate(fixed, target(), known, lex).dependencies
+
+
+def test_noun_answer_does_not_waive_a_verb_analysis_for_its_homograph():
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import annotate_context
+
+    noun = Form("porte", "porte", "NOM", "f:s")
+    lex = homograph_lexicon(noun, Form("porte", "porter", "VER", "ind:pre:3:s"))
+    known = learned("je", "le", "train", "regarde", "parle")
+    known.learn("porte", lex, 1, "Ferme la porte.", form_key=noun.key)
+    c = replace(candidate(), sentence="Je emprunte le train porte.")
+    with pytest.raises(ValidationError, match="Missing context verb analysis: porte"):
+        validate(c, target(), known, lex)
+    fixed = annotate_context(c, known, lex)
+    assert fixed.uses == (
+        {"surface": "porte", "lemma": "porte", "pos": "NOM", "features": "f:s"},
+    )
+    assert "porte" in validate(fixed, target(), known, lex).dependencies
+
+
+def test_dominant_verb_reading_still_needs_a_verb_analysis():
+    from dataclasses import replace
+
+    lex = homograph_lexicon(
+        Form("est", "être", "VER", "ind:pre:3:s", frequency=1000),
+        Form("est", "est", "NOM", "m:s", frequency=10),
+    )
+    known = learned("je", "le", "train", "regarde", "parle")
+    known.learn("est", lex, 1, "Il est ici.")
+    c = replace(candidate(), sentence="Je emprunte le train est.")
+    with pytest.raises(ValidationError, match="Missing context verb analysis: est"):
+        validate(c, target(), known, lex)
+
+
+def test_context_annotation_keeps_an_established_noun_out_of_a_verb_reading():
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import annotate_context
+
+    noun = Form("bois", "bois", "NOM", "m", frequency=75)
+    verb = Form("bois", "boire", "VER", "ind:pre:1:s", frequency=10)
+    lex = homograph_lexicon(noun, verb)
+    known = learned("je", "le", "train", "en", "regarde", "parle")
+    known.surfaces["bois"] = [{"card": 1, "context": "Je bois du thé."}]
+    known.forms.add(verb.key)
+    c = replace(candidate(), sentence="Je emprunte le train en bois.")
+    assert annotate_context(c, known, lex).uses == (
+        {"surface": "bois", "lemma": "boire", "pos": "VER", "features": "ind:pre:1:s"},
+    )
+    known.meanings.add(("bois", "NOM"))
+    assert annotate_context(c, known, lex).uses == (
+        {"surface": "bois", "lemma": "bois", "pos": "NOM", "features": "m"},
+    )
+    validate(annotate_context(c, known, lex), target(), known, lex)
+
+
+def test_established_syncretic_surface_is_recognised_in_context():
+    import json
+    from dataclasses import replace
+    from threading import Event
+
+    from chinese_frontier.french.generation import generate
+
+    first = Form("fais", "faire", "VER", "ind:pre:1:s")
+    lex = homograph_lexicon(first, Form("fais", "faire", "VER", "ind:pre:2:s"))
+    known = learned("je", "le", "train", "et", "regarde", "parle")
+    known.learn("fais", lex, 1, "Je fais mes devoirs.")
+    assert ("faire", "VER") in known.meanings and not known.licenses(first, lex)
+    c = replace(
+        candidate(),
+        sentence="Je fais et je emprunte le train.",
+        uses=(
+            {
+                "surface": "fais",
+                "lemma": "faire",
+                "pos": "VER",
+                "features": "ind:pre:1:s",
+            },
+        ),
+    )
+    assert "fais" in validate(c, target(), known, lex).dependencies
+    payloads = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            payloads.append(json.loads(prompt[prompt.index('{"targets"') :]))
+            return {"proposals": []}
+
+    generate([target()], known, lex, {}, Event(), Client())
+    assert first.key in payloads[0]["context_analyses"]["fais"]
+
+
+def test_conjugation_audit_judges_the_form_not_the_given_verb():
+    from chinese_frontier.french.generation import AUDIT_INSTRUCTIONS
+
+    rule = next(
+        line for line in AUDIT_INSTRUCTIONS.splitlines() if '"conjugation"' in line
+    )
+    assert "infinitive cue as given" in rule
+    assert "mood, tense and person" in rule
+
+
+@pytest.mark.parametrize(
+    "surface,noun,verb",
+    [
+        (
+            "été",
+            Form("été", "été", "NOM", "m:s"),
+            Form("été", "être", "VER", "par:pas:m:s"),
+        ),
+        (
+            "bois",
+            Form("bois", "bois", "NOM", "m"),
+            Form("bois", "boire", "VER", "ind:pre:1:s"),
+        ),
+    ],
+)
+def test_noun_answer_is_not_recognised_as_its_verb_homograph(surface, noun, verb):
+    from dataclasses import replace
+
+    lex = homograph_lexicon(noun, verb, Form("est", "être", "VER", "ind:pre:3:s"))
+    known = learned("je", "le", "train", "regarde", "parle")
+    known.learn(surface, lex, 1, "L'été.", form_key=noun.key)
+    known.meanings.add((verb.lemma, "VER"))
+    assert not known.recognizes(verb, lex)
+    c = replace(
+        candidate(),
+        sentence=f"Je emprunte le train {surface}.",
+        uses=(
+            {
+                "surface": surface,
+                "lemma": verb.lemma,
+                "pos": "VER",
+                "features": verb.features,
+            },
+        ),
+    )
+    with pytest.raises(ValidationError, match="Unlearned context verb form"):
+        validate(c, target(), known, lex)
+
+
+def test_syncretic_verb_answers_are_recognised():
+    lex = homograph_lexicon(
+        Form("dit", "dire", "VER", "ind:pre:3:s"),
+        Form("dit", "dire", "VER", "par:pas:m:s"),
+    )
+    known = Knowledge()
+    known.learn("dit", lex, 1, "Il dit non.")
+    assert all(known.recognizes(f, lex) for f in lex.analyses("dit"))
+
+
+def test_elided_s_reads_as_si_only_before_il():
+    from dataclasses import replace
+
+    known = learned("je", "le", "train", "regarde", "parle", "si", "il", "pleut")
+    known.learn("ouvre", dictionary(), 1, "ouvre")
+    c = replace(candidate(), sentence="Je emprunte le train s'il pleut.")
+    assert "si" in validate(c, target(), known, dictionary()).dependencies
+    c = replace(candidate(), sentence="Je emprunte le train qui s'ouvre.")
+    known.learn("qui", dictionary(), 1, "qui")
+    with pytest.raises(ValidationError, match="Unlearned context: s'"):
+        validate(c, target(), known, dictionary())
+
+
+def test_writer_gets_analyses_for_every_established_verb_surface():
+    import json
+    from threading import Event
+
+    from chinese_frontier.french.generation import generate
+
+    first = Form("fais", "faire", "VER", "ind:pre:1:s")
+    lex = homograph_lexicon(first, Form("fais", "faire", "VER", "ind:pre:2:s"))
+    known = learned("je", "le", "train", "regarde", "parle")
+    for i in range(1000):
+        known.surfaces[f"irrelevant{i}"] = [
+            {"card": i, "context": "Unrelated example."}
+        ]
+    known.learn("fais", lex, 1, "Zzz.")
+    payloads = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            payloads.append(json.loads(prompt[prompt.index('{"targets"') :]))
+            return {"proposals": []}
+
+    generate([target()], known, lex, {}, Event(), Client())
+    assert "fais" not in payloads[0]["context_evidence"]
+    assert first.key in payloads[0]["context_analyses"]["fais"]
 
 
 def aller():
@@ -2046,3 +2917,15 @@ def test_partial_word_conjugation_cards_also_get_tables():
     assert "SUBJONCTIF" not in extra_field(
         "x", "vocabulary", "aille|aller|VER|sub:pre:3:s", "stem", aller()
     )
+
+
+def test_backfill_without_paradigms_keeps_existing_tables(collection, monkeypatch):
+    from chinese_frontier.french import collection as module
+
+    note = collection.new_note(module.ensure_model(collection))
+    note["Text"] = "{{c1::aille}}"
+    collection.add_note(note, 1)
+    monkeypatch.setattr(
+        module.Collection, "get_note", lambda *a: pytest.fail("scanned notes")
+    )
+    module.refresh_conjugation_tables(collection, Lexicon([], []))

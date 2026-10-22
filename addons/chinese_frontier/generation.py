@@ -612,16 +612,16 @@ not become trivial copy-the-visible-character drills; defer if no useful recall 
             and source.existing_cards
             and history[source.card_id]
         ):
-            records = history[source.card_id]
+            checks = history[source.card_id]
             drafts[source.card_id] = Draft(
                 source,
-                Candidate.from_dict(records[-1]["candidate"]),
+                Candidate.from_dict(checks[-1]["candidate"]),
                 {
                     "version": GENERATION_POLICY,
                     "provider": config.get("provider", "codex"),
                     "status": "deferred",
                     "reason": deferred[source.key],
-                    "checks": records,
+                    "checks": checks,
                 },
                 True,
             )
