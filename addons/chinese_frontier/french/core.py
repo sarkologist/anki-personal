@@ -34,6 +34,27 @@ ER_ENDINGS = {
     "par:pas:m:s": "é",
 }
 
+# An elided clitic is spelling, not a new word: it is established through
+# its full form, which also keys its reviewed evidence.
+ELISIONS = {
+    "l'": ("le", "la"),
+    "d'": ("de",),
+    "qu'": ("que",),
+    "n'": ("ne",),
+    "j'": ("je",),
+    "s'": ("se", "si"),
+    "c'": ("ce",),
+    "m'": ("me",),
+    "t'": ("te",),
+    "jusqu'": ("jusque",),
+}
+
+
+def full_form(unit: str, surfaces: Any) -> str:
+    if unit in surfaces:
+        return unit
+    return next((f for f in ELISIONS.get(unit, ()) if f in surfaces), unit)
+
 
 @dataclass
 class Knowledge:
@@ -294,7 +315,7 @@ def validate(
         raise ValidationError("Cloze a complete target exactly once")
     dependencies = tuple(
         dict.fromkeys(
-            unit
+            full_form(unit, known.surfaces)
             for unit in _units(c.sentence, set(known.surfaces), answer)
             if unit != answer and not unit.isdecimal()
         )
@@ -344,9 +365,10 @@ def validate(
             normalize(use[k]) if k in ("surface", "lemma") else use[k]
             for k in ("surface", "lemma", "pos", "features")
         )
+        surface = full_form(normalize(use["surface"]), known.surfaces)
         matching = [
             f
-            for f in lexicon.analyses(use["surface"])
+            for f in lexicon.analyses(use["surface"]) or lexicon.analyses(surface)
             if f.lemma == normalize(use["lemma"])
             and f.pos == use["pos"]
             and (
@@ -365,9 +387,9 @@ def validate(
             if selected.key != form.key:
                 raise ValidationError("Incorrect target morphology annotation")
             continue
-        if not selected or normalize(use["surface"]) not in dependencies:
+        if not selected or surface not in dependencies:
             raise ValidationError("Incorrect context morphology annotation")
-        uses[normalize(use["surface"])] = selected
+        uses[surface] = selected
         if selected.pos == "VER" and not known.licenses(selected, lexicon):
             raise ValidationError("Unlearned context verb form: " + selected.surface)
     for unit in dependencies:

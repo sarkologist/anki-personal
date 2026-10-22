@@ -2374,3 +2374,25 @@ def test_french_writer_sees_every_established_surface():
     for payload in payloads:
         assert payload["knowledge"]["established_context"] == sorted(known.surfaces)
         assert "irrelevant999" not in payload["context_evidence"]
+
+
+def test_elided_clitic_depends_on_its_established_full_form():
+    from dataclasses import replace
+
+    known = learned("je", "le", "autre", "train", "regarde", "parle")
+    c = replace(candidate(), sentence="Je emprunte l’autre train.")
+    valid = validate(c, target(), known, dictionary())
+    assert valid.dependencies == ("je", "le", "autre", "train")
+    annotated = replace(
+        c, uses=({"surface": "l'", "lemma": "le", "pos": "ART", "features": ""},)
+    )
+    assert validate(annotated, target(), known, dictionary()).dependencies == (
+        valid.dependencies
+    )
+    with pytest.raises(ValidationError, match="Unlearned context: l'"):
+        validate(
+            c,
+            target(),
+            learned("je", "autre", "train", "regarde", "parle"),
+            dictionary(),
+        )

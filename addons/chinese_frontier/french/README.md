@@ -62,7 +62,8 @@ metadata, never evidence that visible words are learned. Basic notes are current
 not used as evidence; this user's French deck consists of cloze notes.
 
 Accents, apostrophes, expressions and inflections are preserved. Each learned
-surface, lemma/POS and exact verb form is tracked separately. Explicit adjacent
+surface, lemma/POS and exact verb form is tracked separately. An elided clitic
+such as l', d' or qu' is familiar context when its full form is established. Explicit adjacent
 subjects, supplied infinitive hints and an immediately preceding avoir auxiliary
 can resolve legacy analyses. A following infinitive can distinguish a finite verb
 from a noun homograph without guessing its person or tense. Standalone present subjects can distinguish present indicative from a syncretic present subjunctive; genuine tense ambiguity remains unresolved. Reviewed negation and avoir-participle frames establish construction recognition without promoting their visible words. Unresolved person or tense readings stay ambiguous.
