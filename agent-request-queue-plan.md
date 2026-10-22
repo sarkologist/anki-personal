@@ -1,6 +1,7 @@
 # Agent request queue — design and spec
 
-**Status:** design. Nothing implemented yet. Phases at the bottom.
+**Status:** phase 1 implemented on `claude/agent-queue-phase1` (see Results /
+notes). Phases at the bottom.
 
 Builds on the repo-local add-on in [addons/editor_agent_pane](addons/editor_agent_pane),
 which already has the provider clients (Codex, Claude, Ollama), the fixed JSON
@@ -99,6 +100,13 @@ tied to what they were looking at).
   what makes "the sentence in blue" or "the example" resolvable, since the
   editor sees fields, not the rendered card.
 
+Stored as `context_json = {"source", "snapshot", "note_mod", "reviewer"}`:
+`snapshot` is `snapshots.snapshot_to_dict` of the `EditorSnapshot` /
+`MultiCardSnapshot` (with local image paths), `note_mod` is the editor note's
+`mod` at capture (null for Add Cards and multi-card), and `reviewer` is
+`{"side", "question_html", "answer_html", "selection"}` or null. The runner
+appends `reviewer` to every prompt as a "Reviewer context as JSON" section.
+
 Both the run and the pane's context label are built from this snapshot, so the
 provider clients and patch validators work unchanged. Mode strings stay as
 they are today (`add`, `edit_current`, `browse`, `browse_multi`).
@@ -159,7 +167,14 @@ queued ──► running ──► ready        (patch present)
 ready ────► applied | discarded | stale
 stale ────► queued (re-run) | discarded | applied (forced)
 ready / answered / failed ──reply──► queued
+failed ───► applied   (a failed run keeps the previous proposal current)
+applied ──► ready | failed   (revert when the apply's collection write fails)
 ```
+
+A run that ends without a patch supersedes the thread's current proposal (a
+null patch drops it); a failed run leaves it current. A run whose collection
+is closed, or that is interrupted by shutdown, goes running → queued with no
+error.
 
 Anything in `queued`/`running` at Anki startup is reset to `queued` and the
 worker resumes it (a run that died with Anki is simply re-run; the thread
@@ -389,4 +404,71 @@ badge, "Apply then edit".
 
 ## Results / notes
 
-(Update as phases land.)
+**Phase 1 (2026-10-22, uncommitted on `claude/agent-queue-phase1`).**
+`queue_store.py`, `queue_runner.py`, `snapshots.py` (earlier commits), plus:
+
+- `queue_runtime.py`: opens the store at `<profile>/agent_queue.sqlite` on
+  `profile_did_open` (sweeping with `queue_retention_days`), starts one
+  `QueueRunner` (`queue_concurrency`), closes on `profile_will_close`.
+  `run_on_main` blocks the worker on a `Future` and raises `AgentStopped` once
+  the profile is closing, so shutdown never deadlocks; the runner re-queues a
+  thread interrupted that way. `notify` fans out to open panes on the main
+  thread and shows a tooltip for ready/answered/failed (not for a user cancel)
+  when `queue_notify` is on. Streamed activity lines reach panes through a new
+  `QueueRunner(on_stream_event=...)` hook (also emits the card-read line).
+- `thread_view.py`: pure helpers (thread picking, transcript fragments, status
+  banner, base-revision check `stale_reason`, reviewer HTML cleanup).
+- `runtime.py`: the pane is a view over the store. Send creates a thread
+  (settings snapshot from the form, including `deck_ids`), or replies when the
+  shown thread is ready/answered/failed; the prompt box stays enabled; Stop =
+  `runner.cancel`; Discard/Apply transition the thread. A thread selector shows
+  when a note has more than one thread. The in-memory run path (`history`,
+  `pending_patch`, `_start_agent_request`, `_handle_agent_done`) is gone.
+- Reviewer context is captured at Send in Edit Current on the reviewer's card.
+- Config: `queue_concurrency`, `queue_notify`, `queue_retention_days`;
+  `card_access` default is now `all`.
+
+Deviations:
+
+- Staleness: a stale proposal is refused with a warning and stays `ready` (no
+  transition to `stale`, since phase 1 has no re-run and `stale` cannot be
+  replied to). The check compares `mod` from the collection and the fields/tags
+  hash of the note as currently held by the editor (which may have unsaved
+  typing). Multi-note apply uses the same base check, then validates against the
+  snapshot refreshed to the current notes.
+- Card-access change no longer clears anything; it makes the next Send start a
+  new thread. "Reset chat" became **New request** (deselects; nothing deleted).
+- Multi-card Browser threads, like Add Cards threads, have `note_id = null` and
+  are listed by the pane that created them for its lifetime, filtered to the
+  same card selection. Phase 2's queue window is how to find them later.
+- The multi-card review dialog opens when the shown thread finishes running,
+  not on every re-render.
+- System messages store only the compact activity summary; the expandable
+  per-line details of a finished run are not persisted.
+- `retention sweep` runs in phase 1 (once per profile open), not phase 3.
+
+Not done in phase 1: Queue button/window, `note_creates`, resume, re-run on
+stale, `queue_resume_sessions`/`queue_shortcut`/`queue_window_geometry`.
+
+Live check (2026-10-22, second Anki instance from this checkout, own base
+folder, driven through a control add-on; provider Ollama because Claude and
+Codex both failed on account/environment grounds from inside that session):
+
+- Edit Current → Send creates a thread with the reviewer side, rendered HTML
+  and selection captured; closing the editor mid-run does not stop the run;
+  the result persists and the reopened pane selects it with Apply enabled.
+- A failed thread survives an Anki restart (`reset_interrupted` path), and a
+  later Send on it is a reply.
+- Reply on a ready thread yields proposal v2 with v1 superseded; Apply writes
+  the note and marks v2 applied. Live re-render on completion works with the
+  editor open.
+- Fixed from the check: a reply now takes the pane's current provider, model
+  and card access (`QueueStore.set_settings`), since the stored settings were
+  silently reused after changing the form; and the reviewer prompt now says
+  the rendered HTML is not field content (a small model copied the rendered
+  answer into the Back field).
+- Observed and reproduced _without_ the pane in that instance: a cold-start
+  Edit Current that is closed writes an empty Back field (Front intact).
+  Pre-existing editor behaviour in the hidden-window harness, related to the
+  blank-webview work in editor-blank-webview-recovery-plan.md; not caused by
+  this branch, but worth a separate look.

@@ -43,6 +43,24 @@ direct OpenAI API billing.
   scratchpad content is not displayed.
 - `timeout_seconds`: Maximum time to wait for a Codex CLI response.
 - `splitter_sizes`: Saved rich agent surface/prompt pane sizes.
+- `queue_concurrency`: How many agent requests run at once (default 1). Every
+  request is queued and run in the background, independent of the editor
+  window that sent it.
+- `queue_notify`: Whether to show a tooltip when a queued request finishes
+  (proposal ready, reply ready, or failed). Default `true`.
+- `queue_retention_days`: Applied and discarded requests older than this many
+  days are deleted when the profile opens. Default 30.
+
+Requests are stored per profile in `agent_queue.sqlite` in the profile folder.
+Closing the editor or switching notes does not stop a request: reopen the
+editor on the note to see its transcript and proposal. Send on a note whose
+request has finished replies to it; **New request** starts a separate one.
+Requests that were running when Anki quit run again at the next start. Before
+applying, the pane checks that the note has not changed since the agent made
+the proposal, and refuses a stale proposal. In Edit Current opened from the reviewer, a
+request also records the side you were shown, the rendered question and
+answer, and the text you had selected in the reviewer, so the agent can
+resolve references like "the example in blue".
 
 For Codex, run `codex login` first and choose ChatGPT sign-in. The add-on invokes
 `codex exec --json` with the selected project folder access and your normal
@@ -80,12 +98,14 @@ To smoke-test the real CLI integration manually, run the editor agent pane tests
 with `ANKI_CODEX_CLI_INTEGRATION=1`. Optionally set `ANKI_CODEX_CLI_PATH` to a
 specific Codex binary.
 
-`card_access` controls additional read-only card context: `current` (default),
-`deck`, or `all`. Invalid values fall back to `current`. This is independent of
-project folder access and applies to Codex, Claude, and Ollama. Change it using
-**Card access** in the pane; changes save immediately, stop any running request,
-and clear the chat. Current access keeps the existing current-note or selected
-Browser-card context.
+`card_access` controls additional read-only card context: `current`, `deck`, or
+`all` (default, since queued requests usually run while you are not watching
+and often need to compare with other cards). Invalid values fall back to
+`current`. This is independent of project folder access and applies to Codex,
+Claude, and Ollama. Change it using **Card access** in the pane; changes save
+immediately and apply to the next request (Send after a change starts a new
+request; replies keep the access their request was made with). Current access
+keeps the existing current-note or selected Browser-card context.
 
 Deck scope uses exact home deck IDs (including cards in filtered decks), without
 subdecks. In Add Cards it uses the selected target deck. A missing deck fails

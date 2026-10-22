@@ -98,6 +98,8 @@ from editor_agent_pane.patches import (  # noqa: E402
     validate_note_patch,
     validate_selected_text_snapshot,
 )
+from editor_agent_pane.queue_runner import base_for  # noqa: E402
+from editor_agent_pane.queue_store import QueueStore, QueueTransitionError  # noqa: E402
 from editor_agent_pane.recent_folders import (  # noqa: E402
     MAX_RECENT_PROJECT_FOLDERS,
     NO_PROJECT_FOLDER_LABEL,
@@ -105,6 +107,10 @@ from editor_agent_pane.recent_folders import (  # noqa: E402
     remember_project_folder,
 )
 from editor_agent_pane.sanitize import sanitize_html  # noqa: E402
+from editor_agent_pane.snapshots import (  # noqa: E402
+    patch_to_dict,
+    snapshot_from_dict,
+)
 from editor_agent_pane.sources import (  # noqa: E402
     SourceAccessError,
     read_source_file,
@@ -350,6 +356,9 @@ class FakeButton:
     def setToolTip(self, tooltip: str) -> None:
         self.tooltip = tooltip
 
+    def setText(self, text: str) -> None:
+        self.text = text
+
 
 class FakeToolButton(FakeButton):
     def __init__(self) -> None:
@@ -368,6 +377,12 @@ class FakePrompt:
     def clear(self) -> None:
         self.cleared = True
         self.text = ""
+
+    def setPlainText(self, text: str) -> None:
+        self.text = text
+
+    def toPlainText(self) -> str:
+        return self.text
 
 
 class FakeKeyEvent:
@@ -686,33 +701,9 @@ class FakeBrowserPane(FakeVisibleWidget):
         self.context_changes += 1
 
 
-class FutureThatMustNotBeRead:
-    def __init__(self) -> None:
-        self.read = False
-
-    def result(self) -> object:
-        self.read = True
-        raise AssertionError("stale agent completion should be ignored")
-
-
-class FutureWithResult:
-    def __init__(self, result: object) -> None:
-        self._result = result
-
-    def result(self) -> object:
-        return self._result
-
-
-class FutureWithException:
-    def __init__(self, exc: BaseException) -> None:
-        self.exc = exc
-
-    def result(self) -> object:
-        raise self.exc
-
-
 def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
     sys.modules.pop("editor_agent_pane.runtime", None)
+    sys.modules.pop("editor_agent_pane.queue_runtime", None)
 
     class Widget:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -723,6 +714,7 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     class EditorMode:
         ADD_CARDS = object()
+        EDIT_CURRENT = object()
         BROWSER = object()
 
     class Qt:
@@ -830,77 +822,93 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
     return importlib.import_module("editor_agent_pane.runtime")
 
 
-def _pane_for_runtime(
-    runtime: Any,
-    *,
-    mode: object,
-    current_note_id: int | None,
-    last_browser_note_id: int | None,
+class FakeRunner:
+    def __init__(self) -> None:
+        self.kicks = 0
+        self.cancelled: list[str] = []
+
+    def enqueue_kick(self) -> None:
+        self.kicks += 1
+
+    def cancel(self, thread_id: str) -> bool:
+        self.cancelled.append(thread_id)
+        return True
+
+
+def _open_queue(
+    runtime: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[QueueStore, FakeRunner]:
+    store = QueueStore.open(tmp_path / "agent_queue.sqlite")
+    runner = FakeRunner()
+    monkeypatch.setattr(
+        runtime.queue_runtime,
+        "_service",
+        runtime.queue_runtime.QueueService(store=store, runner=runner),
+    )
+    return store, runner
+
+
+def _editor_note(note_id: int = 123) -> FakeMutableNote:
+    note = FakeMutableNote(
+        field_names=("Front", "Back"),
+        note_id=note_id,
+        mid=7,
+        fields=("<p>front</p>", "<p>back</p>"),
+    )
+    note.mod = 100  # type: ignore[attr-defined]
+    return note
+
+
+def _pane_for_agent_request(
+    runtime: Any, tmp_path: Path, *, mode: object | None = None
 ) -> Any:
-    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
-    note = None
-    if current_note_id is not None:
-        note = types.SimpleNamespace(id=current_note_id)
-    pane.editor = types.SimpleNamespace(editorMode=mode, note=note)
-    pane.history = [("old prompt", "old answer")]
-    pane.pending_patch = object()
-    pane.pending_snapshot = object()
-    pane._activity_id = "agent-activity-1"
-    pane._activity_open = True
-    pane._agent_stop_event = None
-    pane._context_generation = 0
-    pane._last_browser_note_id = last_browser_note_id
-    pane._selected_text_snapshot = None
-    pane._selection_context_refresh_pending = False
-    pane._selection_context_request_id = 0
-    pane.surface = FakeSurface()
-    pane.send_button = FakeButton(False)
-    pane.stop_button = FakeButton(True)
-    pane.apply_button = FakeButton(True)
-    pane.prompt = FakePrompt("draft prompt")
-    pane.selection_context_label = FakeLabel()
-    pane.refresh_calls = 0
-
-    def refresh_context_label() -> None:
-        pane.refresh_calls += 1
-
-    pane.refresh_context_label = refresh_context_label
-    return pane
-
-
-def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
     media_dir = tmp_path / "collection.media"
-    media_dir.mkdir()
-    note = FakeNote(fields=(("Front", "<p>front</p>"), ("Back", "<p>back</p>")))
+    media_dir.mkdir(exist_ok=True)
+    note = _editor_note()
     editor = types.SimpleNamespace(
-        editorMode=runtime.EditorMode.BROWSER,
+        editorMode=mode if mode is not None else runtime.EditorMode.BROWSER,
         note=note,
         currentField=0,
         card=None,
+        web=None,
+        widget=None,
         mw=types.SimpleNamespace(
-            col=types.SimpleNamespace(media=FakeMediaManager(media_dir, {}))
+            col=types.SimpleNamespace(
+                media=FakeMediaManager(media_dir, {}),
+                models=types.SimpleNamespace(get=lambda _id: {"name": "Basic"}),
+            )
         ),
     )
     editor.note_type = lambda: {"name": "Basic"}
+    editor.call_after_note_saved = lambda callback, keepFocus=False: callback()
+    editor.checkValid = lambda: None
 
     pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
     pane.editor = editor
-    pane.history = []
-    pane.pending_patch = None
-    pane.pending_snapshot = None
+    pane.browser = None
+    pane._thread_id = None
+    pane._threads_shown = []
+    pane._local_thread_ids = []
+    pane._force_new_thread = False
+    pane._suppress_autopick = False
+    pane._updating_thread_combo = False
+    pane._last_rendered = None
     pane._activity_id = None
-    pane._activity_counter = 0
     pane._activity_open = False
-    pane._agent_stop_event = None
     pane._context_generation = 0
-    pane._last_browser_note_id = 123
+    pane._shown_context = pane._context_key()
     pane._selected_text_snapshot = None
     pane._selection_context_refresh_pending = False
     pane._selection_context_request_id = 0
+    pane._multi_proposal_dialog = None
+    pane._loading_settings = False
     pane.surface = FakeSurface()
     pane.send_button = FakeButton(True)
     pane.stop_button = FakeButton(False)
-    pane.apply_button = FakeButton(True)
+    pane.apply_button = FakeButton(False)
+    pane.discard_button = FakeButton(False)
+    pane.thread_combo = FakeCombo()
+    pane.prompt = FakePrompt("")
     pane.selection_context_label = FakeLabel()
     pane.codex_path_edit = types.SimpleNamespace(text=lambda: "")
     pane.ollama_path_edit = types.SimpleNamespace(text=lambda: "")
@@ -920,6 +928,26 @@ def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
     pane._custom_instructions_text = lambda: ""
     pane._fast_mode = lambda: False
     pane._stream_reasoning_summaries = lambda: True
+    pane._save_settings = lambda: None
+    pane.refresh_context_label = lambda: None
+    pane.note_mods: dict[int, int] = {}
+
+    def read_note_state(note_ids: list[int]) -> dict[int, Any]:
+        current = pane.editor.note
+        return {
+            nid: (
+                {
+                    "mod": pane.note_mods.get(nid, current.mod),
+                    "fields": list(current.fields),
+                    "tags": list(current.tags),
+                }
+                if current is not None and nid == current.id
+                else None
+            )
+            for nid in note_ids
+        }
+
+    pane._read_note_state = read_note_state
     return pane
 
 
@@ -1019,332 +1047,6 @@ def test_prompt_edit_arrows_do_not_recall_history_away_from_edges(
     assert prompt.text == "line 1\nline 2"
 
 
-def test_browser_note_change_clears_agent_chat_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.BROWSER,
-        current_note_id=456,
-        last_browser_note_id=123,
-    )
-
-    pane.on_editor_context_changed()
-
-    assert pane.refresh_calls == 1
-    assert pane._last_browser_note_id == 456
-    assert pane._context_generation == 1
-    assert pane.history == []
-    assert pane.pending_patch is None
-    assert pane.pending_snapshot is None
-    assert pane._activity_id is None
-    assert pane._activity_open is False
-    assert pane.send_button.enabled is True
-    assert pane.stop_button.enabled is False
-    assert pane.apply_button.enabled is False
-    assert pane.surface.evals == [
-        "window.agentPane.clearTranscript();",
-        "window.agentPane.clearProposal();",
-    ]
-
-
-def test_browser_same_note_keeps_agent_chat_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.BROWSER,
-        current_note_id=123,
-        last_browser_note_id=123,
-    )
-
-    pane.on_editor_context_changed()
-
-    assert pane.refresh_calls == 1
-    assert pane.history == [("old prompt", "old answer")]
-    assert pane.pending_patch is not None
-    assert pane._context_generation == 0
-    assert pane.surface.evals == []
-
-
-def test_non_browser_note_change_keeps_agent_chat_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.ADD_CARDS,
-        current_note_id=456,
-        last_browser_note_id=123,
-    )
-
-    pane.on_editor_context_changed()
-
-    assert pane.refresh_calls == 1
-    assert pane.history == [("old prompt", "old answer")]
-    assert pane.pending_patch is not None
-    assert pane._context_generation == 0
-    assert pane.surface.evals == []
-
-
-def test_browser_note_change_cancels_active_run_and_ignores_stale_completion(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.BROWSER,
-        current_note_id=None,
-        last_browser_note_id=123,
-    )
-    stop_event = runtime.Event()
-    pane._agent_stop_event = stop_event
-
-    pane.on_editor_context_changed()
-
-    assert stop_event.is_set()
-    assert pane._agent_stop_event is None
-    assert pane._context_generation == 1
-
-    pane._start_agent_request("old prompt", generation=0)
-
-    stale_future = FutureThatMustNotBeRead()
-    pane._handle_agent_done(
-        stale_future,
-        generation=0,
-        stop_event=stop_event,
-        prompt="old",
-        snapshot=snapshot(),
-        notetype={},
-        activity=object(),
-    )
-
-    assert stale_future.read is False
-    assert pane.history == []
-    assert pane.surface.evals == [
-        "window.agentPane.clearTranscript();",
-        "window.agentPane.clearProposal();",
-    ]
-
-
-def test_reset_chat_button_clears_agent_chat_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.ADD_CARDS,
-        current_note_id=123,
-        last_browser_note_id=None,
-    )
-
-    pane._reset_chat()
-
-    assert pane._context_generation == 1
-    assert pane.history == []
-    assert pane.pending_patch is None
-    assert pane.pending_snapshot is None
-    assert pane._activity_id is None
-    assert pane._activity_open is False
-    assert pane.send_button.enabled is True
-    assert pane.stop_button.enabled is False
-    assert pane.apply_button.enabled is False
-    assert pane.prompt.text == "draft prompt"
-    assert pane.prompt.cleared is False
-    assert pane.surface.evals == [
-        "window.agentPane.clearTranscript();",
-        "window.agentPane.clearProposal();",
-    ]
-
-
-def test_reset_chat_button_cancels_active_run_and_ignores_stale_completion(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.ADD_CARDS,
-        current_note_id=123,
-        last_browser_note_id=None,
-    )
-    stop_event = runtime.Event()
-    pane._agent_stop_event = stop_event
-
-    pane._reset_chat()
-
-    assert stop_event.is_set()
-    assert pane._agent_stop_event is None
-    assert pane._context_generation == 1
-
-    pane._start_agent_request("old prompt", generation=0)
-
-    stale_future = FutureThatMustNotBeRead()
-    pane._handle_agent_done(
-        stale_future,
-        generation=0,
-        stop_event=stop_event,
-        prompt="old",
-        snapshot=snapshot(),
-        notetype={},
-        activity=object(),
-    )
-
-    assert stale_future.read is False
-    assert pane.history == []
-    assert pane.prompt.text == "draft prompt"
-    assert pane.prompt.cleared is False
-    assert pane.surface.evals == [
-        "window.agentPane.clearTranscript();",
-        "window.agentPane.clearProposal();",
-    ]
-
-
-def test_agent_done_summarizes_success_elapsed_time(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.ADD_CARDS,
-        current_note_id=123,
-        last_browser_note_id=None,
-    )
-    stop_event = runtime.Event()
-    pane._agent_stop_event = stop_event
-    monkeypatch.setattr(runtime.time, "monotonic", lambda: 12.4)
-
-    pane._handle_agent_done(
-        FutureWithResult(
-            (
-                "Done",
-                "<p>Done</p>",
-                (),
-                "[Codex activity: 2 stream events]\n",
-                ("[tool] rg canonical",),
-            )
-        ),
-        generation=0,
-        stop_event=stop_event,
-        prompt="Explain",
-        snapshot=snapshot(),
-        notetype={},
-        activity=types.SimpleNamespace(detail_lines=[]),
-        started_at=5.0,
-    )
-
-    assert any("took 7.4s" in eval for eval in pane.surface.evals)
-    assert pane.history == [("old prompt", "old answer"), ("Explain", "Done")]
-
-
-def test_agent_done_records_prompt_history_with_captured_scope(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.ADD_CARDS,
-        current_note_id=123,
-        last_browser_note_id=None,
-    )
-    stop_event = runtime.Event()
-    pane._agent_stop_event = stop_event
-    config = dict(runtime.DEFAULT_CONFIG)
-    saved: dict[str, Any] = {}
-    monkeypatch.setattr(runtime, "_config", lambda: config)
-    monkeypatch.setattr(runtime, "_write_config", lambda data: saved.update(data))
-
-    pane._handle_agent_done(
-        FutureWithResult(
-            (
-                "Done",
-                "<p>Done</p>",
-                (),
-                "[Codex activity: 2 stream events]\n",
-                (),
-            )
-        ),
-        generation=0,
-        stop_event=stop_event,
-        prompt="Explain",
-        snapshot=snapshot(),
-        notetype={},
-        activity=types.SimpleNamespace(detail_lines=[]),
-        prompt_history_scope=(PROVIDER_CODEX, "gpt-5.4"),
-    )
-
-    assert saved["prompt_history_by_model"] == {
-        PROVIDER_CODEX: {"gpt-5.4": ["Explain"]}
-    }
-
-
-def test_agent_done_summarizes_stopped_elapsed_time(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.ADD_CARDS,
-        current_note_id=123,
-        last_browser_note_id=None,
-    )
-    stop_event = runtime.Event()
-    pane._agent_stop_event = stop_event
-    monkeypatch.setattr(runtime.time, "monotonic", lambda: 12.4)
-
-    pane._handle_agent_done(
-        FutureWithException(AgentStopped("stopped")),
-        generation=0,
-        stop_event=stop_event,
-        prompt="Explain",
-        snapshot=snapshot(),
-        notetype={},
-        activity=types.SimpleNamespace(detail_lines=["[tool] rg canonical"]),
-        started_at=5.0,
-    )
-
-    assert any("stopped after 7.4s" in eval for eval in pane.surface.evals)
-    assert pane.history == [("old prompt", "old answer")]
-
-
-def test_agent_done_summarizes_failed_elapsed_time(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.ADD_CARDS,
-        current_note_id=123,
-        last_browser_note_id=None,
-    )
-    stop_event = runtime.Event()
-    pane._agent_stop_event = stop_event
-    monkeypatch.setattr(runtime.time, "monotonic", lambda: 12.4)
-
-    pane._handle_agent_done(
-        FutureWithException(RuntimeError("boom")),
-        generation=0,
-        stop_event=stop_event,
-        prompt="Explain",
-        snapshot=snapshot(),
-        notetype={},
-        activity=types.SimpleNamespace(detail_lines=["[tool] rg canonical"]),
-        started_at=5.0,
-    )
-
-    assert any("failed after 7.4s" in eval for eval in pane.surface.evals)
-    assert any("boom" in eval for eval in pane.surface.evals)
-    assert pane.history == [("old prompt", "old answer")]
-
-
-def test_agent_turn_duration_formatting(monkeypatch: pytest.MonkeyPatch) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-
-    assert runtime._format_agent_turn_duration(7.44) == "7.4s"
-    assert runtime._format_agent_turn_duration(123.4) == "2m 03s"
-
-
 def test_selection_context_indicator_updates_and_hides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1440,204 +1142,6 @@ def test_selection_context_refresh_hides_when_dock_is_hidden(
     assert pane.selection_context_label.visible is False
 
 
-def test_agent_request_transcript_mentions_validated_selection_context(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_agent_request(runtime, tmp_path)
-    taskman = ImmediateTaskman()
-    runtime.aqt.mw = types.SimpleNamespace(
-        taskman=taskman,
-        addonManager=FakeAddonManager(),
-    )
-    config = dict(runtime.DEFAULT_CONFIG)
-    monkeypatch.setattr(runtime, "_config", lambda: config)
-    captured: dict[str, Any] = {}
-
-    class CapturingAgent:
-        def __init__(self, **kwargs: Any) -> None:
-            captured["agent_kwargs"] = kwargs
-
-        def send(self, **kwargs: Any) -> Any:
-            captured["send_kwargs"] = kwargs
-            return types.SimpleNamespace(
-                text="", html="", proposals=(), card_request=None
-            )
-
-    monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
-    selected_text = {
-        "field_name": "Front",
-        "field_index": 0,
-        "input_kind": "rich_text",
-        "text": "selected <text>",
-        "html": "<strong>selected</strong>",
-    }
-
-    pane._start_agent_request(
-        "Improve this",
-        generation=0,
-        selected_text=selected_text,
-    )
-
-    snapshot_sent = captured["send_kwargs"]["snapshot"]
-    assert snapshot_sent.selected_text == SelectedTextSnapshot(
-        field_name="Front",
-        field_index=0,
-        input_kind="rich_text",
-        text="selected <text>",
-        html="<strong>selected</strong>",
-    )
-    assert pane._selected_text_snapshot == snapshot_sent.selected_text
-    assert pane.selection_context_label.visible is True
-    assert pane.selection_context_label.text == (
-        'Selection context: Front - "selected <text>"'
-    )
-    assert pane.surface.evals[0].startswith("window.agentPane.appendTranscript(")
-    assert "Selection sent from Front" in pane.surface.evals[0]
-    assert "selected &lt;text&gt;" in pane.surface.evals[0]
-    assert "<strong>selected</strong>" not in pane.surface.evals[0]
-    assert captured["agent_kwargs"]["reasoning_effort"] == ""
-    assert taskman.uses_collection is False
-
-
-def test_agent_request_passes_selected_reasoning_effort(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_agent_request(runtime, tmp_path)
-    pane._reasoning_effort = lambda: "high"
-    runtime.aqt.mw = types.SimpleNamespace(
-        taskman=ImmediateTaskman(),
-        addonManager=FakeAddonManager(),
-    )
-    config = dict(runtime.DEFAULT_CONFIG)
-    monkeypatch.setattr(runtime, "_config", lambda: config)
-    captured: dict[str, Any] = {}
-
-    class CapturingAgent:
-        def __init__(self, **kwargs: Any) -> None:
-            captured["agent_kwargs"] = kwargs
-
-        def send(self, **_kwargs: Any) -> Any:
-            return types.SimpleNamespace(
-                text="", html="", proposals=(), card_request=None
-            )
-
-    monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
-
-    pane._start_agent_request("Improve this", generation=0)
-
-    assert captured["agent_kwargs"]["reasoning_effort"] == "high"
-
-
-def test_agent_request_uses_ollama_provider(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_agent_request(runtime, tmp_path)
-    pane._provider = lambda: PROVIDER_OLLAMA
-    pane._model_text = lambda: "qwen3:latest"
-    pane.ollama_path_edit = types.SimpleNamespace(text=lambda: "/usr/local/bin/ollama")
-    pane.ollama_host_edit = types.SimpleNamespace(text=lambda: "localhost:11434")
-    runtime.aqt.mw = types.SimpleNamespace(
-        taskman=ImmediateTaskman(),
-        addonManager=FakeAddonManager(),
-    )
-    config = dict(runtime.DEFAULT_CONFIG)
-    monkeypatch.setattr(runtime, "_config", lambda: config)
-    captured: dict[str, Any] = {}
-
-    class CapturingOllamaAgent:
-        def __init__(self, **kwargs: Any) -> None:
-            captured["agent_kwargs"] = kwargs
-
-        def send(self, **kwargs: Any) -> Any:
-            captured["send_kwargs"] = kwargs
-            return types.SimpleNamespace(
-                text="Done", html="<p>Done</p>", proposals=(), card_request=None
-            )
-
-    monkeypatch.setattr(
-        runtime,
-        "CodexCliAgent",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Codex")),
-    )
-    monkeypatch.setattr(runtime, "OllamaCliAgent", CapturingOllamaAgent)
-
-    pane._start_agent_request("Improve this", generation=0)
-
-    assert captured["agent_kwargs"] == {
-        "ollama_path": "/usr/local/bin/ollama",
-        "ollama_host": "localhost:11434",
-        "model": "qwen3:latest",
-        "timeout_seconds": 300,
-        "custom_instructions": "",
-    }
-    assert captured["send_kwargs"]["project_root"] == ""
-    assert "event_callback" not in captured["send_kwargs"]
-    assert any("Ollama activity" in eval for eval in pane.surface.evals)
-
-
-def test_agent_request_uses_claude_provider(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_agent_request(runtime, tmp_path)
-    pane._provider = lambda: PROVIDER_CLAUDE
-    pane._model_text = lambda: "opus"
-    pane._reasoning_effort = lambda: "high"
-    pane._project_folder_text = lambda: str(tmp_path)
-    pane.claude_path_edit = types.SimpleNamespace(text=lambda: "/usr/local/bin/claude")
-    runtime.aqt.mw = types.SimpleNamespace(
-        taskman=ImmediateTaskman(),
-        addonManager=FakeAddonManager(),
-    )
-    config = dict(runtime.DEFAULT_CONFIG)
-    monkeypatch.setattr(runtime, "_config", lambda: config)
-    captured: dict[str, Any] = {}
-
-    class CapturingClaudeAgent:
-        def __init__(self, **kwargs: Any) -> None:
-            captured["agent_kwargs"] = kwargs
-
-        def send(self, **kwargs: Any) -> Any:
-            captured["send_kwargs"] = kwargs
-            return types.SimpleNamespace(
-                text="Done", html="<p>Done</p>", proposals=(), card_request=None
-            )
-
-    monkeypatch.setattr(
-        runtime,
-        "CodexCliAgent",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Codex")),
-    )
-    monkeypatch.setattr(
-        runtime,
-        "OllamaCliAgent",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected Ollama")),
-    )
-    monkeypatch.setattr(runtime, "ClaudeCliAgent", CapturingClaudeAgent)
-
-    pane._start_agent_request("Improve this", generation=0)
-
-    assert captured["agent_kwargs"] == {
-        "claude_path": "/usr/local/bin/claude",
-        "model": "opus",
-        "timeout_seconds": 300,
-        "project_folder_access": PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
-        "custom_instructions": "",
-        "reasoning_effort": "high",
-    }
-    assert captured["send_kwargs"]["project_root"] == str(tmp_path)
-    # Claude streams events, so it must receive the activity callback.
-    assert callable(captured["send_kwargs"]["event_callback"])
-    assert any("Claude activity" in eval for eval in pane.surface.evals)
-
-
 def test_effort_for_provider_drops_unsupported_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1675,100 +1179,6 @@ def test_effort_for_provider_drops_values_the_model_rejects(
     # dropped here - the CLI reports it if the effort does not fit.
     assert runtime._effort_for_provider(PROVIDER_CODEX, "ultra", "") == "ultra"
     assert runtime._effort_for_provider(PROVIDER_CLAUDE, "max", "") == "max"
-
-
-def test_agent_request_drops_effort_the_codex_model_rejects(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_agent_request(runtime, tmp_path)
-    pane._provider = lambda: PROVIDER_CODEX
-    pane._model_text = lambda: "gpt-5.5"
-    pane._reasoning_effort = lambda: "ultra"  # gpt-5.5 does not reason that far
-    runtime.aqt.mw = types.SimpleNamespace(
-        taskman=ImmediateTaskman(),
-        addonManager=FakeAddonManager(),
-    )
-    config = dict(runtime.DEFAULT_CONFIG)
-    monkeypatch.setattr(runtime, "_config", lambda: config)
-    captured: dict[str, Any] = {}
-
-    class CapturingAgent:
-        def __init__(self, **kwargs: Any) -> None:
-            captured["agent_kwargs"] = kwargs
-
-        def send(self, **_kwargs: Any) -> Any:
-            return types.SimpleNamespace(
-                text="", html="", proposals=(), card_request=None
-            )
-
-    monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
-
-    pane._start_agent_request("Improve this", generation=0)
-
-    assert captured["agent_kwargs"]["reasoning_effort"] == ""
-
-
-@pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-6-astra"])
-def test_agent_request_passes_ultra_effort_for_a_codex_model_that_supports_it(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    model: str,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_agent_request(runtime, tmp_path)
-    pane._provider = lambda: PROVIDER_CODEX
-    pane._model_text = lambda: model
-    pane._reasoning_effort = lambda: "ultra"
-    runtime.aqt.mw = types.SimpleNamespace(
-        taskman=ImmediateTaskman(),
-        addonManager=FakeAddonManager(),
-    )
-    config = dict(runtime.DEFAULT_CONFIG)
-    monkeypatch.setattr(runtime, "_config", lambda: config)
-    captured: dict[str, Any] = {}
-
-    class CapturingAgent:
-        def __init__(self, **kwargs: Any) -> None:
-            captured["agent_kwargs"] = kwargs
-
-        def send(self, **_kwargs: Any) -> Any:
-            return types.SimpleNamespace(
-                text="", html="", proposals=(), card_request=None
-            )
-
-    monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
-
-    pane._start_agent_request("Improve this", generation=0)
-
-    assert captured["agent_kwargs"]["model"] == model
-    assert captured["agent_kwargs"]["reasoning_effort"] == "ultra"
-
-
-def test_agent_request_blocks_ollama_without_model(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_agent_request(runtime, tmp_path)
-    pane._provider = lambda: PROVIDER_OLLAMA
-    pane._model_text = lambda: ""
-    runtime.aqt.mw = types.SimpleNamespace(
-        taskman=ImmediateTaskman(),
-        addonManager=FakeAddonManager(),
-    )
-    config = dict(runtime.DEFAULT_CONFIG)
-    monkeypatch.setattr(runtime, "_config", lambda: config)
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        runtime, "showWarning", lambda message, parent: warnings.append(message)
-    )
-
-    pane._start_agent_request("Improve this", generation=0)
-
-    assert warnings == ["Select an Ollama model first."]
-    assert pane.surface.evals == []
 
 
 def test_load_settings_restores_reasoning_effort(
@@ -1917,50 +1327,6 @@ def test_toggle_instructions_collapsed_saves_setting(
     assert pane.instructions_reset_button.visible is False
     assert pane.instructions_toggle_button.arrow_type == runtime.Qt.ArrowType.RightArrow
     assert saves == [True]
-
-
-def test_agent_request_drops_stale_selection_from_transcript(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_agent_request(runtime, tmp_path)
-    runtime.aqt.mw = types.SimpleNamespace(
-        taskman=ImmediateTaskman(),
-        addonManager=FakeAddonManager(),
-    )
-    config = dict(runtime.DEFAULT_CONFIG)
-    monkeypatch.setattr(runtime, "_config", lambda: config)
-    captured: dict[str, Any] = {}
-
-    class CapturingAgent:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def send(self, **kwargs: Any) -> Any:
-            captured["snapshot"] = kwargs["snapshot"]
-            return types.SimpleNamespace(
-                text="", html="", proposals=(), card_request=None
-            )
-
-    monkeypatch.setattr(runtime, "CodexCliAgent", CapturingAgent)
-
-    pane._start_agent_request(
-        "Improve this",
-        generation=0,
-        selected_text={
-            "field_name": "Front",
-            "field_index": 1,
-            "input_kind": "rich_text",
-            "text": "stale",
-            "html": "<strong>stale</strong>",
-        },
-    )
-
-    assert captured["snapshot"].selected_text is None
-    assert pane._selected_text_snapshot is None
-    assert pane.selection_context_label.visible is False
-    assert "Selection sent" not in pane.surface.evals[0]
 
 
 def test_fast_mode_toggle_saves_settings_immediately(
@@ -7117,27 +6483,6 @@ def test_agent_can_request_card_context_then_answer() -> None:
     assert len(prompts) == 2
 
 
-def test_card_permission_change_cancels_run_and_clears_history(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_runtime(
-        runtime,
-        mode=runtime.EditorMode.BROWSER,
-        current_note_id=123,
-        last_browser_note_id=123,
-    )
-    stopped = []
-    saved = []
-    pane._agent_stop_event = types.SimpleNamespace(set=lambda: stopped.append(True))
-    pane._save_settings = lambda: saved.append(True)
-    pane._on_card_access_changed(0)
-    assert stopped == [True]
-    assert saved == [True]
-    assert pane.history == []
-    assert pane._context_generation == 1
-
-
 @pytest.mark.parametrize("provider", ["codex", "claude", "ollama"])
 def test_providers_return_card_lookup_requests(
     monkeypatch: pytest.MonkeyPatch, provider: str
@@ -7258,97 +6603,6 @@ def test_card_read_scope_uses_home_decks_and_add_target(
     assert pane._card_read_scope(snapshot()).deck_ids == ()
 
 
-@pytest.mark.parametrize("provider", ["codex", "claude", "ollama"])
-def test_runtime_routes_card_lookup_through_collection_task(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, provider: str
-) -> None:
-    from editor_agent_pane.codex_client import AgentResult
-
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_agent_request(runtime, tmp_path)
-    pane._card_access = lambda: "all"
-    pane._provider = lambda: provider
-    pane._model_text = lambda: "model"
-    runtime.aqt.mw = types.SimpleNamespace(
-        taskman=ImmediateTaskman(),
-        addonManager=FakeAddonManager(),
-        col=pane.editor.mw.col,
-    )
-    monkeypatch.setattr(runtime, "_config", lambda: dict(runtime.DEFAULT_CONFIG))
-    queries = []
-    monkeypatch.setattr(
-        runtime,
-        "read_cards",
-        lambda col, scope, request: (
-            queries.append((col, scope, request)) or {"cards": ["related fact"]}
-        ),
-    )
-    calls = []
-
-    class Agent:
-        def __init__(self, **kwargs: Any) -> None:
-            pass
-
-        def send(self, **kwargs: Any) -> AgentResult:
-            calls.append(kwargs)
-            return AgentResult(
-                "Done",
-                "",
-                (),
-                card_request={"query": "tag:topic", "offset": 0, "limit": 1}
-                if len(calls) == 1
-                else None,
-            )
-
-    monkeypatch.setattr(
-        runtime,
-        {
-            "codex": "CodexCliAgent",
-            "claude": "ClaudeCliAgent",
-            "ollama": "OllamaCliAgent",
-        }[provider],
-        Agent,
-    )
-    pane._start_agent_request("Find related cards", generation=0)
-    assert len(queries) == 1
-    assert queries[0][0] is pane.editor.mw.col
-    assert queries[0][1].access == "all"
-    assert "related fact" in calls[1]["prompt"]
-    assert pane.history == [("Find related cards", "Done")]
-
-
-def test_changing_decks_discards_previous_card_context(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from editor_agent_pane.card_access import CardReadScope
-    from editor_agent_pane.codex_client import AgentResult
-
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = _pane_for_agent_request(runtime, tmp_path)
-    pane._card_access = lambda: "deck"
-    pane._history_card_scope = CardReadScope("deck", (1,))
-    pane.history = [("Old query", "Private data from deck 1")]
-    pane.editor.card = types.SimpleNamespace(id=42, current_deck_id=lambda: 2)
-    runtime.aqt.mw = types.SimpleNamespace(
-        taskman=ImmediateTaskman(), addonManager=FakeAddonManager()
-    )
-    monkeypatch.setattr(runtime, "_config", lambda: dict(runtime.DEFAULT_CONFIG))
-
-    class Agent:
-        def __init__(self, **kwargs: Any) -> None:
-            pass
-
-        def send(self, **kwargs: Any) -> AgentResult:
-            assert kwargs["history"] == []
-            assert '"deck_ids": [2]' in kwargs["prompt"]
-            return AgentResult("New answer", "", ())
-
-    monkeypatch.setattr(runtime, "CodexCliAgent", Agent)
-    pane._start_agent_request("New query", generation=0)
-    assert pane.history == [("New query", "New answer")]
-    assert pane._context_generation == 1
-
-
 @pytest.mark.parametrize("invalid", [None, "write", "", [], {}, True])
 def test_unknown_card_access_fails_closed(invalid: Any) -> None:
     from editor_agent_pane.card_access import (
@@ -7361,3 +6615,1294 @@ def test_unknown_card_access_fails_closed(invalid: Any) -> None:
     assert "error" in read_cards(
         None, CardReadScope(invalid), {"query": "", "offset": 0, "limit": 1}
     )
+
+
+# --- thread-backed pane -----------------------------------------------------
+
+
+@pytest.fixture
+def pane_runtime(monkeypatch: pytest.MonkeyPatch) -> Any:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    runtime.aqt.mw = types.SimpleNamespace(reviewer=None)
+    monkeypatch.setattr(runtime, "_config", lambda: dict(runtime.DEFAULT_CONFIG))
+    runtime.saved_configs = []
+    monkeypatch.setattr(runtime, "_write_config", runtime.saved_configs.append)
+    runtime.warnings = []
+    monkeypatch.setattr(
+        runtime,
+        "showWarning",
+        lambda message, parent=None: runtime.warnings.append(message),
+    )
+    monkeypatch.setattr(runtime, "tooltip", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runtime,
+        "LegacyLatexPreviewRenderer",
+        lambda **_kwargs: types.SimpleNamespace(render=sanitize_html),
+    )
+    return runtime
+
+
+@pytest.fixture
+def queue(pane_runtime: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+    store, runner = _open_queue(pane_runtime, monkeypatch, tmp_path)
+    yield store, runner
+    store.close()
+
+
+def _ready_thread(
+    runtime: Any,
+    store: QueueStore,
+    pane: Any,
+    *,
+    back: str = "<p>new back</p>",
+    prompt: str = "Fix back",
+) -> Any:
+    from editor_agent_pane.patches import NotePatch
+    from editor_agent_pane.thread_view import thread_context
+
+    note_id = int(pane.editor.note.id)
+    thread = store.create_thread(
+        thread_context("browser", runtime.editor_snapshot(pane.editor)),
+        {"provider": "codex", "model": ""},
+        prompt,
+        note_id=note_id,
+    )
+    store.transition(thread.id, "queued", "running")
+    store.add_message(thread.id, "agent", "Done", "<p>Done</p>")
+    patch = NotePatch(
+        summary="Fix", note_id=note_id, notetype_id=7, field_updates={"Back": back}
+    )
+    store.add_proposal(
+        thread.id,
+        patch_to_dict(patch),
+        base_for([note_id], pane._read_note_state([note_id])),
+    )
+    store.transition(thread.id, "running", "ready")
+    return thread
+
+
+def _status(store: QueueStore, thread_id: str) -> str:
+    thread = store.get_thread(thread_id)
+    assert thread is not None
+    return thread.status
+
+
+def test_send_creates_queued_thread_with_form_settings(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane._model_text = lambda: "gpt-5.5"
+    pane._reasoning_effort = lambda: "high"
+    pane._card_access = lambda: "deck"
+    pane._custom_instructions_text = lambda: "be brief"
+    pane.editor.card = types.SimpleNamespace(id=42, current_deck_id=lambda: 3)
+    pane.codex_path_edit = types.SimpleNamespace(text=lambda: "/bin/codex")
+    pane.prompt = FakePrompt("Improve this")
+
+    pane._send()
+
+    [thread] = store.threads_for_note(123)
+    assert thread.status == "queued"
+    assert thread.settings == {
+        "provider": PROVIDER_CODEX,
+        "model": "gpt-5.5",
+        "reasoning_effort": "high",
+        "card_access": "deck",
+        "deck_ids": [3],
+        "project_folder": "",
+        "project_folder_access": PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
+        "custom_instructions": "be brief",
+        "fast_mode": False,
+        "stream_reasoning_summaries": True,
+        "timeout_seconds": 300,
+        "paths": {
+            "codex_path": "/bin/codex",
+            "claude_path": "",
+            "ollama_path": "",
+            "ollama_host": DEFAULT_OLLAMA_HOST,
+        },
+    }
+    assert thread.context["source"] == "browser"
+    assert thread.context["reviewer"] is None
+    assert thread.context["note_mod"] == 100
+    captured = snapshot_from_dict(thread.context["snapshot"])
+    assert captured.note_id == 123 and captured.card_id == 42
+    assert runner.kicks == 1
+    assert pane._thread_id == thread.id
+    assert pane.prompt.cleared is True
+    assert any("Improve this" in js for js in pane.surface.evals)
+    assert any("Queued" in js for js in pane.surface.evals)
+    assert pane.stop_button.enabled is True
+    assert pane.apply_button.enabled is False
+    assert pane_runtime.saved_configs[-1]["prompt_history_by_model"] == {
+        PROVIDER_CODEX: {"gpt-5.5": ["Improve this"]}
+    }
+
+
+def test_send_records_validated_selection_in_snapshot_and_transcript(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    selected_text = {
+        "field_name": "Front",
+        "field_index": 0,
+        "input_kind": "rich_text",
+        "text": "selected <text>",
+        "html": "<strong>selected</strong>",
+    }
+
+    pane._send_after_selection_snapshot("Improve this", 0, selected_text)
+
+    [thread] = store.threads_for_note(123)
+    expected = SelectedTextSnapshot(
+        field_name="Front",
+        field_index=0,
+        input_kind="rich_text",
+        text="selected <text>",
+        html="<strong>selected</strong>",
+    )
+    assert snapshot_from_dict(thread.context["snapshot"]).selected_text == expected
+    assert pane._selected_text_snapshot == expected
+    assert pane.selection_context_label.text == (
+        'Selection context: Front - "selected <text>"'
+    )
+    transcript = "".join(pane.surface.evals)
+    assert "Selection sent from Front" in transcript
+    assert "selected &lt;text&gt;" in transcript
+
+
+def test_send_drops_stale_selection(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+
+    pane._send_after_selection_snapshot(
+        "Improve this",
+        0,
+        {
+            "field_name": "Front",
+            "field_index": 1,
+            "input_kind": "rich_text",
+            "text": "stale",
+            "html": "<strong>stale</strong>",
+        },
+    )
+
+    [thread] = store.threads_for_note(123)
+    assert snapshot_from_dict(thread.context["snapshot"]).selected_text is None
+    assert pane.selection_context_label.visible is False
+    assert "Selection sent" not in "".join(pane.surface.evals)
+
+
+def test_send_ignores_a_selection_answer_for_a_previous_note(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane._context_generation = 1
+
+    pane._send_after_selection_snapshot("Improve this", 0, None)
+
+    assert store.list_threads() == []
+
+
+def test_send_settings_for_ollama(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane._provider = lambda: PROVIDER_OLLAMA
+    pane._model_text = lambda: "qwen3:latest"
+    pane._reasoning_effort = lambda: "high"
+    pane._project_folder_text = lambda: str(tmp_path)
+    pane.ollama_path_edit = types.SimpleNamespace(text=lambda: "/usr/local/bin/ollama")
+    pane.ollama_host_edit = types.SimpleNamespace(text=lambda: "localhost:11434")
+
+    pane._create_thread("Improve this", 0)
+
+    [thread] = store.threads_for_note(123)
+    settings = thread.settings
+    assert settings["provider"] == PROVIDER_OLLAMA
+    assert settings["model"] == "qwen3:latest"
+    assert settings["reasoning_effort"] == ""
+    assert settings["project_folder"] == ""
+    assert settings["stream_reasoning_summaries"] is False
+    assert settings["paths"]["ollama_path"] == "/usr/local/bin/ollama"
+    assert settings["paths"]["ollama_host"] == "localhost:11434"
+
+
+def test_send_settings_for_claude(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane._provider = lambda: PROVIDER_CLAUDE
+    pane._model_text = lambda: "opus"
+    pane._reasoning_effort = lambda: "high"
+    pane._project_folder_text = lambda: str(tmp_path)
+    pane.claude_path_edit = types.SimpleNamespace(text=lambda: "/usr/local/bin/claude")
+
+    pane._create_thread("Improve this", 0)
+
+    [thread] = store.threads_for_note(123)
+    settings = thread.settings
+    assert settings["provider"] == PROVIDER_CLAUDE
+    assert settings["model"] == "opus"
+    assert settings["reasoning_effort"] == "high"
+    assert settings["project_folder"] == str(tmp_path)
+    assert settings["fast_mode"] is False
+    assert settings["paths"]["claude_path"] == "/usr/local/bin/claude"
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [("gpt-5.5", ""), ("gpt-5.6-sol", "ultra"), ("gpt-6-astra", "ultra")],
+)
+def test_send_settings_drop_effort_the_codex_model_rejects(
+    pane_runtime: Any, queue: Any, tmp_path: Path, model: str, expected: str
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane._model_text = lambda: model
+    pane._reasoning_effort = lambda: "ultra"
+
+    pane._create_thread("Improve this", 0)
+
+    [thread] = store.threads_for_note(123)
+    assert thread.settings["model"] == model
+    assert thread.settings["reasoning_effort"] == expected
+
+
+def test_send_blocks_ollama_without_model(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane._provider = lambda: PROVIDER_OLLAMA
+
+    pane._create_thread("Improve this", 0)
+
+    assert pane_runtime.warnings == ["Select an Ollama model first."]
+    assert store.list_threads() == []
+    assert runner.kicks == 0
+
+
+def test_send_without_open_queue_warns(
+    pane_runtime: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(pane_runtime.queue_runtime, "_service", None)
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.prompt = FakePrompt("Improve this")
+
+    pane._send()
+
+    assert pane_runtime.warnings == ["The agent queue is not open yet."]
+    assert pane.prompt.text == "Improve this"
+
+
+@pytest.mark.parametrize("status", ["ready", "answered", "failed"])
+def test_send_on_a_finished_thread_replies_to_it(
+    pane_runtime: Any, queue: Any, tmp_path: Path, status: str
+) -> None:
+    store, runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    if status != "ready":
+        store.transition(thread.id, "ready", "queued")
+        store.transition(thread.id, "queued", "running")
+        store.transition(thread.id, "running", status)
+    pane._load_threads()
+    assert pane._thread_id == thread.id
+    pane.prompt = FakePrompt("Shorter, please")
+
+    pane._send()
+
+    assert [t.id for t in store.threads_for_note(123)] == [thread.id]
+    assert _status(store, thread.id) == "queued"
+    assert store.messages(thread.id)[-1].text == "Shorter, please"
+    assert runner.kicks == 1
+
+
+def test_send_on_a_running_thread_starts_another_thread(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.prompt = FakePrompt("First")
+    pane._send()
+    [first] = store.threads_for_note(123)
+    store.transition(first.id, "queued", "running")
+    pane.prompt = FakePrompt("Second")
+
+    pane._send()
+
+    threads = store.threads_for_note(123)
+    assert len(threads) == 2
+    assert pane._thread_id == threads[1].id
+    assert pane.thread_combo.visible is True
+    assert [value for _label, value in pane.thread_combo.items] == [
+        threads[1].id,
+        first.id,
+    ]
+
+
+def test_card_access_change_makes_next_send_a_new_thread(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+
+    pane._on_card_access_changed(0)
+
+    assert pane._thread_id == thread.id  # the transcript stays visible
+    pane.prompt = FakePrompt("Look at related cards")
+    pane._send()
+    threads = store.threads_for_note(123)
+    assert len(threads) == 2
+    assert _status(store, thread.id) == "ready"
+
+
+def test_new_request_button_deselects_without_deleting(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+
+    pane._start_new_request()
+
+    assert pane._thread_id is None
+    assert pane.apply_button.enabled is False
+    assert store.get_thread(thread.id) is not None
+    pane.on_thread_changed(thread.id)
+    assert pane._thread_id is None
+
+
+def test_pick_thread_prefers_active_then_results_then_failures() -> None:
+    from editor_agent_pane.thread_view import pick_thread
+
+    def thread(status: str, created_at: float) -> Any:
+        return types.SimpleNamespace(status=status, created_at=created_at, id=status)
+
+    assert pick_thread([]) is None
+    assert pick_thread([thread("applied", 1)]) is None
+    assert (
+        pick_thread([thread("running", 1), thread("ready", 2), thread("failed", 3)]).id
+        == "running"
+    )
+    assert pick_thread([thread("failed", 3), thread("answered", 1)]).id == "answered"
+    assert pick_thread([thread("discarded", 3), thread("failed", 1)]).id == "failed"
+
+
+def test_note_switch_shows_that_notes_threads(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    ready = _ready_thread(pane_runtime, store, pane, prompt="older")
+    pane.prompt = FakePrompt("newer")
+    pane._send()
+    [_ready, queued] = store.threads_for_note(123)
+    assert queued.status == "queued"
+
+    pane.editor.note = _editor_note(456)
+    pane.on_editor_context_changed()
+
+    assert pane._thread_id is None
+    assert pane._context_generation == 1
+    assert pane.thread_combo.visible is False
+    assert pane.surface.evals[-2:] == [
+        "window.agentPane.clearTranscript();",
+        "window.agentPane.clearProposal();",
+    ]
+
+    pane.editor.note = _editor_note(123)
+    pane.on_editor_context_changed()
+
+    assert pane._thread_id == queued.id
+    assert pane.thread_combo.visible is True
+    pane.thread_combo.current_index = 1
+    pane._on_thread_combo_changed(1)
+    assert pane._thread_id == ready.id
+    assert pane.apply_button.enabled is True
+
+
+def test_same_note_reload_keeps_selection(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    evals = len(pane.surface.evals)
+
+    pane.on_editor_context_changed()
+
+    assert pane._thread_id == thread.id
+    assert len(pane.surface.evals) == evals
+    assert pane._context_generation == 0
+
+
+def test_add_cards_threads_stay_listed_after_the_note_is_added(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(
+        pane_runtime, tmp_path, mode=pane_runtime.EditorMode.ADD_CARDS
+    )
+    pane.editor.note = _editor_note(0)
+    pane._shown_context = pane._context_key()
+
+    pane._create_thread("Write the back", 0)
+
+    [thread] = store.list_threads()
+    assert thread.note_id is None
+    assert thread.context["source"] == "add_cards"
+    assert pane._local_thread_ids == [thread.id]
+
+    pane.editor.note = _editor_note(0)  # the next blank note after Add
+    pane.on_editor_context_changed()
+    assert pane._thread_id == thread.id
+
+
+def test_render_shows_transcript_activity_errors_and_proposal(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    store.add_message(thread.id, "system", "[Codex activity: 3 stream events]")
+    store.add_message(thread.id, "system", "cli died")
+
+    pane._load_threads()
+
+    transcript = "".join(pane.surface.evals)
+    assert "Fix back" in transcript
+    assert "<p>Done</p>" in transcript
+    assert "Codex activity: 3 stream events" in transcript
+    assert "agent-error" in transcript and "cli died" in transcript
+    assert "window.agentPane.setProposal(" in transcript
+    assert "new back" in transcript
+    assert pane.apply_button.enabled is True
+    assert pane.discard_button.enabled is True
+    assert pane.stop_button.enabled is False
+
+
+def test_on_thread_changed_rerenders_the_shown_thread(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane._create_thread("Fix back", 0)
+    [thread] = store.threads_for_note(123)
+    store.transition(thread.id, "queued", "running")
+    store.add_message(thread.id, "agent", "Answer", "<p>Answer</p>")
+    store.transition(thread.id, "running", "answered")
+    pane.surface.evals.clear()
+
+    pane.on_thread_changed(thread.id)
+
+    assert "<p>Answer</p>" in "".join(pane.surface.evals)
+    assert pane.stop_button.enabled is False
+
+
+def test_on_thread_changed_ignores_other_notes(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    other = store.create_thread({"snapshot": {}}, {}, "elsewhere", note_id=999)
+    pane.on_thread_changed(other.id)
+    assert pane.surface.evals == []
+
+
+def test_on_thread_changed_picks_up_a_thread_for_the_shown_note(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane._load_threads()
+    thread = _ready_thread(pane_runtime, store, pane)
+
+    pane.on_thread_changed(thread.id)
+
+    assert pane._thread_id == thread.id
+
+
+def test_on_thread_activity_streams_into_the_live_banner(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane._create_thread("Fix back", 0)
+    [thread] = store.threads_for_note(123)
+    pane.surface.evals.clear()
+
+    pane.on_thread_activity("other", "[tool] ignored")
+    pane.on_thread_activity(thread.id, "[tool] rg x")
+
+    assert len(pane.surface.evals) == 1
+    assert pane.surface.evals[0].startswith("window.agentPane.appendToActivity(")
+    assert "rg x" in pane.surface.evals[0]
+
+
+def test_stop_cancels_the_shown_thread(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane._create_thread("Fix back", 0)
+    [thread] = store.threads_for_note(123)
+
+    pane._stop_running_agent()
+
+    assert runner.cancelled == [thread.id]
+    assert pane.stop_button.enabled is False
+
+
+def test_discard_marks_thread_discarded(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+
+    pane._discard_pending_patch()
+
+    assert _status(store, thread.id) == "discarded"
+    assert store.current_proposal(thread.id) is None
+    assert pane.apply_button.enabled is False
+    assert "Discarded" in "".join(pane.surface.evals)
+
+
+def test_apply_updates_editor_and_marks_thread_applied(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    web_evals: list[str] = []
+    pane.editor.web = types.SimpleNamespace(eval=web_evals.append)
+    saved: list[Any] = []
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_note",
+        lambda **kwargs: types.SimpleNamespace(
+            run_in_background=lambda **_kw: saved.append(kwargs["note"])
+        ),
+    )
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+
+    pane._apply_pending_patch()
+
+    assert pane_runtime.warnings == []
+    assert pane.editor.note.fields[1] == "<p>new back</p>"
+    assert saved == [pane.editor.note]
+    assert web_evals and web_evals[0].startswith("applyAgentProposal(")
+    assert _status(store, thread.id) == "applied"
+    assert store.proposals(thread.id)[0].status == "applied"
+
+
+@pytest.mark.parametrize("change", ["mod", "typed"])
+def test_apply_refuses_a_stale_proposal(
+    pane_runtime: Any, queue: Any, tmp_path: Path, change: str
+) -> None:
+    from editor_agent_pane.thread_view import STALE_WARNING
+
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.editor.web = types.SimpleNamespace(eval=lambda _js: None)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    if change == "mod":
+        pane.note_mods[123] = 101
+    else:
+        pane.editor.note.fields[0] = "<p>typed since</p>"
+
+    pane._apply_pending_patch()
+
+    assert pane_runtime.warnings == [STALE_WARNING]
+    assert pane.editor.note.fields[1] == "<p>back</p>"
+    assert _status(store, thread.id) == "ready"
+
+
+def test_apply_refuses_when_the_note_is_gone(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    from editor_agent_pane.thread_view import MISSING_NOTE_WARNING
+
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    pane._read_note_state = lambda ids: {nid: None for nid in ids}
+
+    pane._apply_pending_patch()
+
+    assert pane_runtime.warnings == [MISSING_NOTE_WARNING]
+    assert _status(store, thread.id) == "ready"
+
+
+def _add_cards_ready_thread(runtime: Any, store: QueueStore, pane: Any) -> Any:
+    from editor_agent_pane.patches import NotePatch
+
+    pane._create_thread("Write the back", 0)
+    [thread] = store.list_threads()
+    store.transition(thread.id, "queued", "running")
+    patch = NotePatch(
+        summary="Back", note_id=None, notetype_id=7, field_updates={"Back": "B!"}
+    )
+    store.add_proposal(thread.id, patch_to_dict(patch), {"notes": []})
+    store.transition(thread.id, "running", "ready")
+    pane._load_threads(select=thread.id)
+    return thread
+
+
+def _add_cards_pane(runtime: Any, tmp_path: Path) -> Any:
+    pane = _pane_for_agent_request(runtime, tmp_path, mode=runtime.EditorMode.ADD_CARDS)
+    pane.editor.note = _editor_note(0)
+    pane.editor.web = types.SimpleNamespace(eval=lambda _js: None)
+    pane._shown_context = pane._context_key()
+    return pane
+
+
+def test_add_cards_apply_refuses_after_the_editor_moved_to_another_note(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    from editor_agent_pane.thread_view import STALE_WARNING
+
+    store, _runner = queue
+    pane = _add_cards_pane(pane_runtime, tmp_path)
+    thread = _add_cards_ready_thread(pane_runtime, store, pane)
+    # Add was pressed; the editor now holds the next note, still without an id.
+    next_note = _editor_note(0)
+    next_note.fields[0] = "<p>another word</p>"
+    pane.editor.note = next_note
+    pane.on_editor_context_changed()
+    pane._load_threads(select=thread.id)
+
+    pane._apply_pending_patch()
+
+    assert pane_runtime.warnings == [STALE_WARNING]
+    assert next_note.fields[1] == "<p>back</p>"
+    assert _status(store, thread.id) == "ready"
+
+
+def test_add_cards_apply_fills_the_unchanged_note(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _add_cards_pane(pane_runtime, tmp_path)
+    thread = _add_cards_ready_thread(pane_runtime, store, pane)
+
+    pane._apply_pending_patch()
+
+    assert pane_runtime.warnings == []
+    assert pane.editor.note.fields[1] == "B!"
+    assert _status(store, thread.id) == "applied"
+
+
+def test_add_cards_did_add_note_starts_a_new_request(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _add_cards_pane(pane_runtime, tmp_path)
+    thread = _add_cards_ready_thread(pane_runtime, store, pane)
+    other = _pane_for_agent_request(pane_runtime, tmp_path)
+    other._load_threads()
+    panes = [(pane.editor, pane), (other.editor, other)]
+    monkeypatch.setattr(
+        pane_runtime, "_panes", types.SimpleNamespace(items=lambda: panes)
+    )
+    generation = pane._context_generation
+
+    pane_runtime._on_add_cards_did_add_note(pane.editor.note)
+
+    assert pane._thread_id is None
+    assert pane._context_generation == generation + 1
+    assert pane.apply_button.enabled is False
+    assert other._context_generation == 0
+    assert store.get_thread(thread.id) is not None
+
+
+def test_failed_reply_keeps_the_previous_proposal_applicable(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.editor.web = types.SimpleNamespace(eval=lambda _js: None)
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_note",
+        lambda **kwargs: types.SimpleNamespace(run_in_background=lambda **_kw: None),
+    )
+    thread = _ready_thread(pane_runtime, store, pane)
+    store.reply(thread.id, "Shorter")
+    store.transition(thread.id, "queued", "running")
+    store.complete_run(
+        thread.id, to_status="failed", messages=[("system", "cli died", "")]
+    )
+    pane._load_threads(select=thread.id)
+    assert pane.apply_button.enabled is True
+
+    pane._apply_pending_patch()
+
+    assert pane.editor.note.fields[1] == "<p>new back</p>"
+    assert _status(store, thread.id) == "applied"
+
+
+def test_reply_uses_the_form_settings_for_the_next_run(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    assert thread.settings["provider"] == "codex"
+    pane._load_threads(select=thread.id)
+    pane._provider = lambda: "ollama"
+    pane._model_text = lambda: "qwen"
+    pane._card_access = lambda: "all"
+    pane.prompt = FakePrompt("Shorter")
+
+    pane._send()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None
+    assert loaded.status == "queued"
+    assert loaded.settings["provider"] == "ollama"
+    assert loaded.settings["model"] == "qwen"
+    assert loaded.settings["card_access"] == "all"
+
+
+def test_reply_without_an_ollama_model_keeps_the_prompt(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads(select=thread.id)
+    pane._provider = lambda: "ollama"
+    pane._model_text = lambda: ""
+    pane._saved_model_for_provider = lambda _provider, _config: ""
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        pane_runtime, "showWarning", lambda text, **_kw: warnings.append(text)
+    )
+    pane.prompt = FakePrompt("Shorter")
+
+    pane._send()
+
+    assert _status(store, thread.id) == "ready"
+    assert pane.prompt.toPlainText() == "Shorter"
+    assert warnings == ["Select an Ollama model first."]
+
+
+def _reviewer(card_id: int = 42, state: str = "answer") -> Any:
+    return types.SimpleNamespace(
+        card=types.SimpleNamespace(
+            id=card_id,
+            question=lambda: "<style>.card{color:red}</style><p>唉声</p>",
+            answer=lambda: (
+                "<p>sigh <script>alert(1)</script>"
+                '<span style="color:blue">example</span></p>'
+            ),
+        ),
+        state=state,
+        web=types.SimpleNamespace(
+            evalWithCallback=lambda js, callback: callback("  the example  ")
+        ),
+    )
+
+
+def test_edit_current_send_captures_reviewer_context(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(
+        pane_runtime, tmp_path, mode=pane_runtime.EditorMode.EDIT_CURRENT
+    )
+    pane.editor.card = types.SimpleNamespace(id=42, current_deck_id=lambda: 3)
+    pane_runtime.aqt.mw = types.SimpleNamespace(reviewer=_reviewer())
+    pane.prompt = FakePrompt("Fix the blue one")
+
+    pane._send()
+
+    [thread] = store.threads_for_note(123)
+    assert thread.context["source"] == "edit_current"
+    reviewer = thread.context["reviewer"]
+    assert reviewer["side"] == "answer"
+    assert reviewer["selection"] == "the example"
+    assert reviewer["question_html"] == "<p>唉声</p>"
+    assert "example" in reviewer["answer_html"]
+    assert "<script" not in reviewer["answer_html"]
+
+
+@pytest.mark.parametrize("case", ["browser", "other_card", "no_reviewer_card"])
+def test_reviewer_context_only_for_edit_current_on_the_reviewer_card(
+    pane_runtime: Any, queue: Any, tmp_path: Path, case: str
+) -> None:
+    store, _runner = queue
+    mode = (
+        pane_runtime.EditorMode.BROWSER
+        if case == "browser"
+        else pane_runtime.EditorMode.EDIT_CURRENT
+    )
+    pane = _pane_for_agent_request(pane_runtime, tmp_path, mode=mode)
+    pane.editor.card = types.SimpleNamespace(id=42, current_deck_id=lambda: 3)
+    reviewer = _reviewer(card_id=7 if case == "other_card" else 42)
+    if case == "no_reviewer_card":
+        reviewer.card = None
+    pane_runtime.aqt.mw = types.SimpleNamespace(reviewer=reviewer)
+    pane.prompt = FakePrompt("Fix it")
+
+    pane._send()
+
+    [thread] = store.threads_for_note(123)
+    assert thread.context["reviewer"] is None
+
+
+def test_agent_config_queue_defaults() -> None:
+    config = json.loads((ROOT / "addons/editor_agent_pane/config.json").read_text())
+
+    assert config["card_access"] == "all"
+    assert config["queue_concurrency"] == 1
+    assert config["queue_notify"] is True
+    assert config["queue_retention_days"] == 30
+
+
+# --- queue_runtime ------------------------------------------------------------
+
+
+def test_queue_run_on_main_blocks_worker_until_main_thread_runs_it(
+    pane_runtime: Any,
+) -> None:
+    import threading
+
+    queue_runtime = pane_runtime.queue_runtime
+    pending: list[Callable[[], None]] = []
+    queue_runtime.aqt.mw = types.SimpleNamespace(
+        taskman=types.SimpleNamespace(run_on_main=pending.append)
+    )
+    results: list[Any] = []
+    worker = threading.Thread(
+        target=lambda: results.append(
+            queue_runtime.run_on_main(lambda: threading.current_thread().name)
+        )
+    )
+    worker.start()
+    for _ in range(500):
+        if pending:
+            break
+        worker.join(0.01)
+    pending.pop()()
+    worker.join(5)
+    assert results == [threading.main_thread().name]
+
+
+def test_queue_run_on_main_raises_when_closing(pane_runtime: Any) -> None:
+    import threading
+
+    queue_runtime = pane_runtime.queue_runtime
+    queue_runtime.aqt.mw = types.SimpleNamespace(
+        taskman=types.SimpleNamespace(run_on_main=lambda _fn: None)
+    )
+    queue_runtime._closing.set()
+    errors: list[BaseException] = []
+
+    def work() -> None:
+        try:
+            queue_runtime.run_on_main(lambda: None)
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=work)
+    worker.start()
+    worker.join(5)
+    queue_runtime._closing.clear()
+    assert len(errors) == 1 and isinstance(errors[0], AgentStopped)
+
+
+def test_queue_read_note_state_and_card_lookup_errors(pane_runtime: Any) -> None:
+    queue_runtime = pane_runtime.queue_runtime
+    note = _editor_note()
+    note.tags = ["t"]
+
+    def get_note(note_id: int) -> Any:
+        if note_id != 123:
+            from anki.errors import NotFoundError
+
+            raise NotFoundError("missing", None, None, None)
+        return note
+
+    def find_cards(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("bad search")
+
+    queue_runtime.aqt.mw = types.SimpleNamespace(
+        col=types.SimpleNamespace(get_note=get_note, find_cards=find_cards)
+    )
+
+    assert queue_runtime.read_note_state([123, 9]) == {
+        123: {"mod": 100, "fields": ["<p>front</p>", "<p>back</p>"], "tags": ["t"]},
+        9: None,
+    }
+    from editor_agent_pane.card_access import CardReadScope
+
+    assert queue_runtime._read_cards(
+        CardReadScope("all"), {"query": "(", "offset": 0, "limit": 1}
+    ) == {"error": queue_runtime.CARD_LOOKUP_FAILED}
+
+
+def test_queue_read_note_state_reraises_other_backend_errors(
+    pane_runtime: Any,
+) -> None:
+    queue_runtime = pane_runtime.queue_runtime
+
+    def get_note(_note_id: int) -> Any:
+        raise RuntimeError("backend hiccup")
+
+    queue_runtime.aqt.mw = types.SimpleNamespace(
+        col=types.SimpleNamespace(get_note=get_note)
+    )
+    with pytest.raises(RuntimeError, match="backend hiccup"):
+        queue_runtime.read_note_state([123])
+
+
+def test_queue_closed_collection_raises_collection_unavailable(
+    pane_runtime: Any,
+) -> None:
+    from editor_agent_pane.card_access import CardReadScope
+    from editor_agent_pane.queue_runner import CollectionUnavailable
+
+    queue_runtime = pane_runtime.queue_runtime
+    queue_runtime.aqt.mw = types.SimpleNamespace(col=None)
+    with pytest.raises(CollectionUnavailable):
+        queue_runtime.read_note_state([123])
+    with pytest.raises(CollectionUnavailable):
+        queue_runtime._read_cards(CardReadScope("all"), {"query": ""})
+
+
+def test_close_service_stops_runner_before_unblocking_main_thread_waits(
+    pane_runtime: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_runtime = pane_runtime.queue_runtime
+    events: list[tuple[str, bool]] = []
+
+    class Runner:
+        def request_stop(self) -> None:
+            events.append(("request_stop", queue_runtime._closing.is_set()))
+
+        def join(self, timeout: float = 10.0) -> None:
+            events.append(("join", queue_runtime._closing.is_set()))
+
+        def stop(self, timeout: float = 10.0) -> None:
+            events.append(("stop", queue_runtime._closing.is_set()))
+
+    class Store:
+        def close(self) -> None:
+            events.append(("close", queue_runtime._closing.is_set()))
+
+    monkeypatch.setattr(
+        queue_runtime,
+        "_service",
+        queue_runtime.QueueService(store=Store(), runner=Runner()),  # type: ignore[arg-type]
+    )
+    try:
+        queue_runtime.close_service()
+    finally:
+        queue_runtime._closing.clear()
+    assert events == [
+        ("request_stop", False),
+        ("join", True),
+        ("close", True),
+    ]
+
+
+def test_queue_thread_changed_fans_out_and_tooltips_finished_runs(
+    pane_runtime: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    queue_runtime = pane_runtime.queue_runtime
+    store, runner = _open_queue(pane_runtime, monkeypatch, tmp_path)
+    seen: list[tuple[str, str]] = []
+
+    class Pane:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def on_thread_changed(self, thread_id: str) -> None:
+            seen.append((self.name, thread_id))
+
+    first, second = Pane("a"), Pane("b")
+    monkeypatch.setattr(queue_runtime, "_panes", lambda: [first, second])
+    config = {"queue_notify": True}
+    monkeypatch.setattr(queue_runtime, "_config", lambda: config)
+    tips: list[str] = []
+    monkeypatch.setattr(queue_runtime, "tooltip", lambda text, **_kw: tips.append(text))
+    thread = store.create_thread({"snapshot": {}}, {}, "x", note_id=1)
+
+    queue_runtime.thread_changed(thread.id, exclude=second)
+    assert seen == [("a", thread.id)]
+    assert tips == []
+
+    store.transition(thread.id, "queued", "running")
+    store.transition(thread.id, "running", "ready")
+    queue_runtime.thread_changed(thread.id)
+    assert tips == ["Agent: proposal ready"]
+
+    config["queue_notify"] = False
+    queue_runtime.thread_changed(thread.id)
+    assert tips == ["Agent: proposal ready"]
+    store.close()
+    del runner
+
+
+def _browser_pane(runtime: Any, tmp_path: Path) -> Any:
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    note_one = FakeMutableNote(
+        note_id=101,
+        mid=7,
+        field_names=("Front", "Back"),
+        fields=("front", "back"),
+        tags=("keep",),
+    )
+    note_two = FakeMutableNote(
+        note_id=202, mid=8, field_names=("Text",), fields=("text",)
+    )
+    notes = {101: note_one, 202: note_two}
+    cards = {
+        11: FakeCardForSnapshot(card_id=11, note=note_one, ord=0, template_name="A"),
+        12: FakeCardForSnapshot(card_id=12, note=note_one, ord=1, template_name="B"),
+        21: FakeCardForSnapshot(card_id=21, note=note_two, ord=0, template_name="C"),
+    }
+    selection = [11, 12, 21]
+    col = FakeCollectionForCards(cards)
+    col.get_note = notes.__getitem__  # type: ignore[attr-defined]
+    pane.browser = types.SimpleNamespace(
+        selected_cards=lambda: list(selection),
+        col=col,
+        table=types.SimpleNamespace(len_selection=lambda: len(selection)),
+    )
+    pane.selection = selection
+    pane.editor = None
+    pane._shown_context = pane._context_key()
+    pane._read_note_state = lambda ids: {
+        nid: {"mod": 1, "fields": list(notes[nid].fields), "tags": notes[nid].tags}
+        for nid in ids
+    }
+    return pane
+
+
+def test_browser_multi_send_and_apply_through_the_store(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from editor_agent_pane.patches import MultiNoteUpdate
+
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+
+    pane._create_thread("Tighten these", 0)
+
+    [thread] = store.list_threads()
+    assert thread.note_id is None
+    assert thread.context["source"] == "browser_multi"
+    assert pane._local_thread_ids == [thread.id]
+
+    patch = MultiNotePatch(
+        summary="s",
+        note_updates=(
+            MultiNoteUpdate(note_id=101, notetype_id=7, field_updates={"Back": "B"}),
+        ),
+    )
+    store.transition(thread.id, "queued", "running")
+    store.add_proposal(
+        thread.id, patch_to_dict(patch), base_for([101], pane._read_note_state([101]))
+    )
+    store.transition(thread.id, "running", "ready")
+    opened: list[str] = []
+    pane._show_multi_proposal_dialog = lambda thread_id, *_args: opened.append(
+        thread_id
+    )
+    pane.on_thread_changed(thread.id)
+    assert pane.apply_button.text == "Review proposal"
+    assert opened == [thread.id]  # the dialog opens when the run finishes
+    pane.on_thread_changed(thread.id)
+    assert opened == [thread.id]  # but not on every re-render
+
+    class Op:
+        def __init__(self, notes: list[Any]) -> None:
+            self.notes = notes
+
+        def success(self, callback: Callable[[Any], None]) -> Op:
+            self.callback = callback
+            return self
+
+        def failure(self, callback: Callable[[Exception], None]) -> Op:
+            self.on_failure = callback
+            return self
+
+        def run_in_background(self, **_kwargs: Any) -> None:
+            assert _status(store, thread.id) == "applied"  # marked before the write
+            self.callback(None)
+
+    updated: list[Any] = []
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_notes",
+        lambda parent, notes: updated.extend(notes) or Op(notes),
+    )
+
+    assert pane._apply_checked_multi_patch(thread.id, {101}) is True
+    assert [note.id for note in updated] == [101]
+    assert updated[0].fields == ["front", "B"]
+    assert _status(store, thread.id) == "applied"
+
+    pane.selection[:] = [11, 12]
+    pane.on_browser_context_changed()
+    assert pane._thread_id is None
+    pane.selection[:] = [11, 12, 21]
+    pane.on_browser_context_changed()
+    assert pane._threads_shown[0].id == thread.id
+
+
+def _browser_ready_thread(runtime: Any, store: QueueStore, pane: Any) -> Any:
+    from editor_agent_pane.patches import MultiNoteUpdate
+
+    pane._create_thread("Tighten these", 0)
+    [thread] = store.list_threads()
+    patch = MultiNotePatch(
+        summary="s",
+        note_updates=(
+            MultiNoteUpdate(note_id=101, notetype_id=7, field_updates={"Back": "B"}),
+        ),
+    )
+    store.transition(thread.id, "queued", "running")
+    store.add_proposal(
+        thread.id, patch_to_dict(patch), base_for([101], pane._read_note_state([101]))
+    )
+    store.transition(thread.id, "running", "ready")
+    pane._show_multi_proposal_dialog = lambda *_args: None
+    pane._load_threads(select=thread.id)
+    return thread
+
+
+class _PendingOp:
+    def __init__(self, notes: list[Any]) -> None:
+        self.notes = notes
+        self.on_success: Callable[[Any], None] | None = None
+        self.on_failure: Callable[[Exception], None] | None = None
+        self.started = False
+
+    def success(self, callback: Callable[[Any], None]) -> _PendingOp:
+        self.on_success = callback
+        return self
+
+    def failure(self, callback: Callable[[Exception], None]) -> _PendingOp:
+        self.on_failure = callback
+        return self
+
+    def run_in_background(self, **_kwargs: Any) -> None:
+        self.started = True
+
+
+def test_multi_apply_marks_applied_before_the_write_and_blocks_a_second_apply(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+    thread = _browser_ready_thread(pane_runtime, store, pane)
+    ops: list[_PendingOp] = []
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_notes",
+        lambda parent, notes: ops.append(_PendingOp(notes)) or ops[-1],
+    )
+
+    assert pane._apply_checked_multi_patch(thread.id, {101}) is True
+    assert ops[0].started
+    assert _status(store, thread.id) == "applied"
+    assert pane.apply_button.enabled is False
+    assert pane.discard_button.enabled is False
+
+    assert pane._apply_checked_multi_patch(thread.id, {101}) is False
+    assert len(ops) == 1
+    with pytest.raises(QueueTransitionError):
+        store.reply(thread.id, "more")
+
+
+def test_multi_apply_failure_reverts_to_ready(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+    thread = _browser_ready_thread(pane_runtime, store, pane)
+    ops: list[_PendingOp] = []
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_notes",
+        lambda parent, notes: ops.append(_PendingOp(notes)) or ops[-1],
+    )
+    assert pane._apply_checked_multi_patch(thread.id, {101}) is True
+
+    assert ops[0].on_failure is not None
+    ops[0].on_failure(RuntimeError("disk full"))
+
+    assert _status(store, thread.id) == "ready"
+    assert store.current_proposal(thread.id) is not None
+    assert pane_runtime.warnings == ["disk full"]
+    assert pane.apply_button.enabled is True
+
+
+def test_send_restores_the_prompt_when_the_note_changes_before_it_is_stored(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pending: list[Callable[[Any], None]] = []
+    pane.editor.web = types.SimpleNamespace(
+        evalWithCallback=lambda _js, callback: pending.append(callback)
+    )
+    tips: list[str] = []
+    monkeypatch.setattr(pane_runtime, "tooltip", lambda text, **_kw: tips.append(text))
+    pane.prompt = FakePrompt("Improve this")
+
+    pane._send()
+    assert pane.prompt.text == ""
+    pane.editor.note = _editor_note(456)
+    pane.on_editor_context_changed()
+    pending.pop()(None)
+
+    assert store.list_threads() == []
+    assert pane.prompt.text == "Improve this"
+    assert tips == [pane_runtime.PROMPT_NOT_SENT]
+
+
+def test_reply_restores_the_prompt_when_the_note_changes_before_it_is_stored(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    saved: list[Callable[[], None]] = []
+    pane.editor.call_after_note_saved = lambda callback, keepFocus=False: saved.append(
+        callback
+    )
+    tips: list[str] = []
+    monkeypatch.setattr(pane_runtime, "tooltip", lambda text, **_kw: tips.append(text))
+    pane.prompt = FakePrompt("Shorter")
+
+    pane._send()
+    pane.editor.note = _editor_note(456)
+    pane.on_editor_context_changed()
+    pane.prompt.text = "typed meanwhile"
+    saved.pop()()
+
+    assert _status(store, thread.id) == "ready"
+    assert pane.prompt.text == "typed meanwhile"  # not clobbered
+    assert tips == [pane_runtime.PROMPT_NOT_SENT]
