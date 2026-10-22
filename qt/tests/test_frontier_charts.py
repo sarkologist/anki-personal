@@ -75,8 +75,9 @@ def test_yield_per_day_labels_relative_days_and_rates():
     assert "today · attempted: 10</title>" in html
     assert "today · approved: 2</title>" in html
     assert "-2 · attempted: 100</title>" in html
-    assert ">20%</text>" in html and ">1%</text>" in html
+    assert ">20% approved</text>" in html and ">1% approved</text>" in html
     assert "Cumulative approval yield: 3/110 (3%)" in html
+    assert "share of that day&#x27;s attempts that passed the audit" in html
 
 
 def test_daily_charts_share_days_even_without_attempts():
@@ -84,6 +85,7 @@ def test_daily_charts_share_days_even_without_attempts():
     decision(store, 9, "writer", "empty", "Needs a word.")
     yields, losses = charts_html(store, {"day": 10}).split("<section>")[1:3]
     assert ">-1</text>" in yields and ">-1</text>" in losses
+    assert "no attempts</text>" in yields
 
 
 def test_losses_per_day_stack_rejection_kinds_with_legend():
