@@ -207,17 +207,20 @@ class Lexicon:
         # syncretism), so with Lefff it only supplies IPA and frequency.
         verbs: dict[tuple[str, str], tuple[str, float]] = {}
         for row in csv.DictReader(io.StringIO(lexical), delimiter="\t"):
-            surface, lemma, pos = (
+            surface, lemma, cgram = (
                 normalize(row.get(k, "")) for k in ("1_Mot", "4_Lemme", "5_Cgram")
             )
+            # Closed classes carry subtypes (ART:def, PRO:per, ADJ:pos); the
+            # subtype is dropped so annotations name only the part of speech.
+            pos = cgram.split(":")[0].upper()
+            pos = "VER" if pos == "AUX" else pos
             if (
                 not tokens(surface)
                 or not tokens(lemma)
                 or pos
-                not in ("ver", "nom", "adj", "adv", "art", "pro", "pre", "con", "ono")
+                not in ("VER", "NOM", "ADJ", "ADV", "ART", "PRO", "PRE", "CON", "ONO")
             ):
                 continue
-            pos = pos.upper()
             frequency = float(row.get("12_FreqLemme") or 0)
             freq[lemma, pos] = max(frequency, freq.get((lemma, pos), 0))
             info = row.get("9_InfoVER", "").strip(";")
@@ -301,10 +304,10 @@ class Lexicon:
 
     @classmethod
     def load(cls, folder: Path) -> Lexicon:
-        path = folder / "lexicon-v3.json"
+        path = folder / "lexicon-v4.json"
         if path.exists():
             data = json.loads(path.read_text(encoding="utf8"))
-            if data.get("version") != 3 or len(data.get("forms", [])) < 10000:
+            if data.get("version") != 4 or len(data.get("forms", [])) < 10000:
                 raise ValueError("Invalid French dictionary cache")
             return cls(
                 [Form(**f) for f in data["forms"]],
@@ -327,7 +330,7 @@ class Lexicon:
         atomic_json(
             path,
             {
-                "version": 3,
+                "version": 4,
                 "forms": [asdict(f) for items in lexicon.forms.values() for f in items],
                 "entries": [asdict(e) for e in lexicon.entries],
                 "sources": [LEXIQUE, FLELEX, LEVELS, LEFFF],
