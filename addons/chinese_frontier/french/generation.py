@@ -469,6 +469,7 @@ def choose_targets(
     words = []
     verbs = []
     lookups = 0
+    offline: Exception | None = None
     for entry in lexicon.entries:
         if (
             entry.level < floor
@@ -488,9 +489,18 @@ def choose_targets(
             raise GenerationStopped()
         if lookups >= 48:
             break
+        if offline and not lexicon.has_definitions(entry, folder):
+            continue
+        try:
+            found = lexicon.definitions(entry, folder)
+        except (OSError, ValueError) as exc:
+            # The online dictionary can be down for hours; one failure must
+            # not void the batch while cached senses and verb forms remain.
+            offline = exc
+            continue
         definitions = [
             definition
-            for definition in lexicon.definitions(entry, folder)
+            for definition in found
             if not re.search(
                 r"\((?:vieilli|désuet|archaïque|obsolète)\)",
                 definition["definition"],
@@ -547,6 +557,8 @@ def choose_targets(
             if target.key not in keys and target.key not in deferred:
                 verbs.append(target)
     verbs.sort(key=lambda t: -t.frequency)
+    if offline and not words and not verbs:
+        raise offline
     if ranker and (words or verbs):
         return ranker(words + verbs[:count], count)
     # Up to one grammar target per batch of four; if vocabulary is blocked,
