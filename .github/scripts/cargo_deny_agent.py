@@ -174,7 +174,8 @@ def failure_summary(raw):
     lines.append(f"denied tools: {[d.get('tool_name') for d in denials]}")
     # On error, result is the error message rather than Claude's answer.
     if result.get("is_error"):
-        lines.append(f"error: {str(result.get('result'))[:500]}")
+        # repr() keeps it on one line, so it cannot inject ::workflow-commands.
+        lines.append(f"error: {str(result.get('result'))[:500]!r}")
     return "\n".join(lines)
 
 

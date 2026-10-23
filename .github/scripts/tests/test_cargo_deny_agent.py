@@ -129,6 +129,11 @@ class FailureSummary(unittest.TestCase):
         answered = output({"upgrades": []}) | {"result": "private reasoning"}
         self.assertNotIn("private reasoning", m.failure_summary(json.dumps(answered)))
 
+    def test_error_cannot_start_workflow_command_line(self):
+        error = {"is_error": True, "result": "x\n::stop-commands::abc"}
+        for line in m.failure_summary(json.dumps(error)).splitlines():
+            self.assertFalse(line.startswith("::"))
+
     def test_non_json_output(self):
         self.assertIn("not JSON", m.failure_summary("Error: unknown option"))
         self.assertIn("no output", m.failure_summary(""))
