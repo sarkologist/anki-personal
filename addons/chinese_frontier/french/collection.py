@@ -228,7 +228,7 @@ def card_kind(mode: str, target_kind: str) -> str:
 
 
 def drop_cue_labels(col: Collection, skip: AbstractSet[int] = frozenset()) -> OpChanges:
-    """Unlabel stem cards admitted while every fallback was called Disambiguation."""
+    """Unlabel cards admitted while every fallback was called Disambiguation."""
     model = col.models.by_name(MODEL)
     if not model:
         return OpChanges()
@@ -241,13 +241,12 @@ def drop_cue_labels(col: Collection, skip: AbstractSet[int] = frozenset()) -> Op
         values = {name: note[name] for name in note.keys()}
         data = json_field(values["Source"])
         target = data.get("target")
-        if (
-            TAG not in note.tags
-            or data.get("mode") != "stem"
-            or not isinstance(target, dict)
-        ):
+        mode = data.get("mode")
+        if TAG not in note.tags or mode == "contrast" or not isinstance(target, dict):
             continue
-        kind = card_kind("stem", str(target.get("kind", "")))
+        kind = values["CardKind"]
+        if kind == "Disambiguation":
+            kind = card_kind(str(mode), str(target.get("kind", "")))
         tags = [t for t in note.tags if t != "disambiguation"]
         if kind == values["CardKind"] and tags == note.tags:
             continue
@@ -701,7 +700,7 @@ def admit(
         for name, value in values.items():
             note[name] = value
         note.tags = (
-            [t for t in note.tags if t != REPAIR_TAG]
+            [t for t in note.tags if t not in (REPAIR_TAG, "disambiguation")]
             if draft.repair_note
             else [
                 TAG,

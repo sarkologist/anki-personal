@@ -3034,3 +3034,69 @@ def test_existing_stem_cards_lose_the_label_without_regeneration(collection):
     mod = after.mod
     drop_cue_labels(collection)
     assert collection.get_note(note.id).mod == mod
+
+
+def test_stale_labels_are_cleared_from_any_non_contrast_note(collection):
+    import html
+    import json
+
+    from chinese_frontier.french.collection import drop_cue_labels, presentation_hash
+
+    _settings, note = admitted_french_note(collection, candidate())
+    note.tags.append("disambiguation")
+    collection.update_note(note)
+    drop_cue_labels(collection)
+    assert "disambiguation" not in collection.get_note(note.id).tags
+
+    # A label the user typed on a stem card is theirs, not a migration leftover.
+    metadata = json.loads(html.unescape(note["Source"]))
+    metadata["mode"] = "stem"
+    note = collection.get_note(note.id)
+    note["CardKind"] = "Mine"
+    metadata["presentation_hash"] = presentation_hash(
+        {name: note[name] for name in note.keys()}
+    )
+    note["Source"] = html.escape(json.dumps(metadata, ensure_ascii=False))
+    collection.update_note(note)
+    drop_cue_labels(collection)
+    assert collection.get_note(note.id)["CardKind"] == "Mine"
+
+
+def test_repair_drops_a_stale_disambiguation_tag(collection):
+    from dataclasses import replace
+
+    from chinese_frontier.french.collection import admit, request_repair, snapshot
+    from chinese_frontier.french.generation import Draft, candidate_hash
+
+    settings, note = admitted_french_note(
+        collection, replace(candidate(), mode="stem", explanation="empr")
+    )
+    note.tags.append("disambiguation")
+    collection.update_note(note)
+    request_repair(collection, note.id)
+    repair = snapshot(collection, settings, {}, dictionary()).repairs
+    ((key, (nid, fingerprint, t)),) = repair.items()
+    c = candidate()
+    audit = {
+        "policy": POLICY,
+        "target_key": t.key,
+        "fingerprint": candidate_hash(c),
+        "review": {
+            "approved": True,
+            "context_checks": context_checks(),
+            "reason": "clear",
+            "search_summary": "Checked rent",
+            "alternatives": [
+                {
+                    "example": 0,
+                    "answer": "loue",
+                    "fits_context": False,
+                    "fits_cloze": True,
+                    "reason": "rent differs",
+                }
+            ],
+        },
+    }
+    draft = Draft(t, c, audit, repair_note=nid, old_fingerprint=fingerprint)
+    assert admit(collection, settings, {}, [draft], dictionary()).admitted == [nid]
+    assert "disambiguation" not in collection.get_note(nid).tags
