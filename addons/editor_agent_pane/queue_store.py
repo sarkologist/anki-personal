@@ -38,14 +38,15 @@ TERMINAL_STATUSES = (APPLIED, DISCARDED)
 # answered/failed threads can be discarded, a queued thread can be cancelled
 # (-> failed) or discarded before it runs, and running -> queued is the
 # startup/shutdown reset. A failed run keeps the previous proposal current, so
-# failed -> applied applies it; applied -> ready/failed reverts an apply whose
+# failed -> applied applies it (failed -> stale when its base changed, for a
+# forced apply); applied -> ready/failed reverts an apply whose
 # collection write failed (applied -> stale for a failed forced apply).
 TRANSITIONS: dict[str, frozenset[str]] = {
     QUEUED: frozenset({RUNNING, FAILED, DISCARDED}),
     RUNNING: frozenset({READY, ANSWERED, FAILED, QUEUED}),
     READY: frozenset({APPLIED, DISCARDED, STALE, QUEUED}),
     ANSWERED: frozenset({QUEUED, DISCARDED}),
-    FAILED: frozenset({QUEUED, DISCARDED, APPLIED}),
+    FAILED: frozenset({QUEUED, DISCARDED, APPLIED, STALE}),
     STALE: frozenset({QUEUED, DISCARDED, APPLIED}),
     APPLIED: frozenset({READY, FAILED, STALE}),
     DISCARDED: frozenset(),
@@ -355,23 +356,34 @@ class QueueStore:
             if cursor.rowcount != 1:
                 raise QueueTransitionError(f"Thread {thread_id} is missing.")
 
-    def _set_column(self, thread_id: str, column: str, value: Any) -> None:
+    def _set_column(
+        self, thread_id: str, column: str, value: Any, *, touch: bool = True
+    ) -> None:
+        """``touch=False`` keeps ``updated_at``, which orders the queue."""
         with self._tx() as conn:
-            conn.execute(
-                f"update threads set {column} = ?, updated_at = ? where id = ?",
-                (value, time.time(), thread_id),
-            )
+            if touch:
+                conn.execute(
+                    f"update threads set {column} = ?, updated_at = ? where id = ?",
+                    (value, time.time(), thread_id),
+                )
+            else:
+                conn.execute(
+                    f"update threads set {column} = ? where id = ?", (value, thread_id)
+                )
 
     def set_error(self, thread_id: str, error: str | None) -> None:
         self._set_column(thread_id, "error", error)
 
     def set_settings(self, thread_id: str, settings: dict[str, Any]) -> None:
         """Replace the settings used for the thread's next run."""
-        self._set_column(thread_id, "settings_json", _dumps(settings))
+        self._set_column(thread_id, "settings_json", _dumps(settings), touch=False)
 
     def set_session(self, thread_id: str, session: dict[str, Any] | None) -> None:
         self._set_column(
-            thread_id, "session_json", _dumps(session) if session is not None else None
+            thread_id,
+            "session_json",
+            _dumps(session) if session is not None else None,
+            touch=False,
         )
 
     def set_run_log_path(self, thread_id: str, path: str | None) -> None:
@@ -438,18 +450,20 @@ class QueueStore:
         return row["status"] if row else "missing"
 
     def mark_stale(self, thread_id: str, reason: str) -> None:
-        """ready -> stale, recording ``reason`` as a system message, atomically.
+        """ready/failed -> stale, recording ``reason`` as a system message,
+        atomically.
 
         The proposal stays current so it can still be applied (forced),
-        re-run, or discarded. Raises QueueTransitionError and writes nothing
-        unless the thread is ready.
+        re-run, or discarded (a failed run keeps the previous proposal
+        current). Raises QueueTransitionError and writes nothing unless the
+        thread is ready or failed.
         """
         with self._tx() as conn:
             status = self._status(conn, thread_id)
-            if status != READY:
+            if status not in (READY, FAILED):
                 raise QueueTransitionError(f"Cannot mark a {status} thread stale.")
             self._insert_message(conn, thread_id, "system", reason, "")
-            self._transition(conn, thread_id, READY, STALE)
+            self._transition(conn, thread_id, status, STALE)
 
     def rerun(self, thread_id: str) -> None:
         """stale/ready/failed -> queued, so the worker re-runs the last request
@@ -551,8 +565,10 @@ class QueueStore:
 
     def reset_interrupted(self) -> int:
         with self._tx() as conn:
+            # An interrupted run may have reached its CLI session; replay it.
             cursor = conn.execute(
-                "update threads set status = ? where status = ?", (QUEUED, RUNNING)
+                "update threads set status = ?, session_json = null where status = ?",
+                (QUEUED, RUNNING),
             )
             return cursor.rowcount
 

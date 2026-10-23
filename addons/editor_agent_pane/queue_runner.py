@@ -25,6 +25,7 @@ from .card_access import CardReadScope, normalize_card_access, send_with_card_re
 from .codex_client import (
     AgentResult,
     AgentStopped,
+    ResumeUnavailable,
     normalize_project_folder_access,
 )
 from .effort_options import (
@@ -270,8 +271,9 @@ def trim_catalog(
     """What the prompt lists: the source deck's subtree plus Anki's Default
     deck, and the note types used in those decks (most used first) plus the
     source note type; defaults first and marked, each list capped at
-    ``limit``. Without a source deck or usage counts, every deck / note type
-    up to the cap. Validation still uses the whole catalog."""
+    ``limit``. Without a source deck or usage counts (or when that leaves no
+    note type), every deck / note type up to the cap. Validation still uses
+    the whole catalog."""
     limit = max(1, int(limit))
     decks = list(catalog.get("decks") or ())
     notetypes = list(catalog.get("notetypes") or ())
@@ -308,6 +310,10 @@ def trim_catalog(
                 str(entry.get("name", "")),
             ),
         )
+        if not listed_notetypes:
+            # Nothing used in the subtree and no source note type: list the
+            # first ones of the whole catalog rather than none.
+            listed_notetypes = notetypes
     else:
         listed_notetypes = notetypes
     shown_decks = _defaults_first(listed_decks, deck_id)[:limit]
@@ -880,6 +886,15 @@ class QueueRunner:
             delta_prompt += "\n\n" + stale_section
         elif thread.session is not None and notes_changed_since(thread.session, states):
             delta_prompt += "\n\n" + note_state_prompt_section(snapshot)
+        note_resent = delta_prompt != prompt
+        resume_extra: dict[str, Any] = {}
+        if note_resent and snapshot.image_paths():
+            if settings["provider"] == PROVIDER_CODEX:
+                # The note changed: its images may have too.
+                resume_extra["resume_images"] = True
+            else:
+                # Claude runs attach no images; replay sends the current list.
+                resume_id = None
 
         logger, log_path = (
             self._logger_factory(thread) if self._logger_factory else (None, None)
@@ -943,12 +958,15 @@ class QueueRunner:
         try:
             if resume_id is not None:
                 try:
-                    result = send(delta_prompt, [], resume_session_id=resume_id)
+                    result = send(
+                        delta_prompt, [], resume_session_id=resume_id, **resume_extra
+                    )
                     path_message = RESUMED_MESSAGE.format(session_id=resume_id)
-                except (AgentStopped, CollectionUnavailable):
-                    raise
-                except Exception as exc:
-                    # Any failure before a result: replay in the same run.
+                except ResumeUnavailable as exc:
+                    # The resume never started (unknown session, or the CLI
+                    # exited before starting it): replay in the same run.
+                    # Anything later is a normal failure, so side effects and
+                    # cost are not repeated.
                     path_message = REPLAYED_MESSAGE.format(
                         error=_one_line(str(exc) or type(exc).__name__)
                     )
@@ -987,8 +1005,10 @@ class QueueRunner:
         # the thread stays running with its user turn pending, and is re-run.
         # A run without a patch drops the proposal it was shown (see
         # proposal_prompt_section). The session is replaced by this run's (or
-        # cleared when the provider reported none).
-        session = session_for(settings, result.session_id, states)
+        # cleared when the provider reported none, or sessions are not kept).
+        session = (
+            session_for(settings, result.session_id, states) if resume_enabled else None
+        )
         self.store.complete_run(
             thread.id,
             to_status=READY if patch is not None else ANSWERED,
@@ -1011,7 +1031,12 @@ class QueueRunner:
 
     def _requeue(self, thread_id: str) -> None:
         self._requeued = True
-        self._safe(lambda: self.store.complete_run(thread_id, to_status=QUEUED))
+        # The interrupted turn may have reached the CLI session; replay it.
+        self._safe(
+            lambda: self.store.complete_run(
+                thread_id, to_status=QUEUED, clear_session=True
+            )
+        )
 
     def _fail(self, thread_id: str, message: str, error: str) -> None:
         """Fail the run; a proposal from an earlier turn stays current."""

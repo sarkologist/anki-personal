@@ -301,6 +301,16 @@ class AgentStopped(RuntimeError):
     pass
 
 
+class ResumeUnavailable(RuntimeError):
+    """A resume that never started: the CLI does not know the session, or it
+    exited before starting it. Nothing ran, so replaying instead is safe."""
+
+
+# Codex's error for an unknown thread id (codex-cli 0.159.3: "thread/resume
+# failed: no rollout found for thread id <id>").
+CODEX_UNKNOWN_THREAD = "no rollout found"
+
+
 class CodexCliAgent:
     def __init__(
         self,
@@ -339,9 +349,13 @@ class CodexCliAgent:
         run_logger: AgentRunLogger | None = None,
         stop_requested: StopRequestedCallback | None = None,
         resume_session_id: str | None = None,
+        resume_images: bool = False,
     ) -> AgentResult:
         """With ``resume_session_id``, continue that Codex session
-        (``codex exec resume``) and send ``prompt`` as the only new turn."""
+        (``codex exec resume``) and send ``prompt`` as the only new turn;
+        ``resume_images`` attaches the note's images to that turn too (the
+        note changed since the session saw them). Raises ResumeUnavailable
+        when the resume never started."""
         _log_agent_event(
             run_logger,
             "run_start",
@@ -380,6 +394,7 @@ class CodexCliAgent:
                 output_path,
                 snapshot.image_paths(),
                 resume_session_id=resume_session_id,
+                resume_images=resume_images,
             )
             _log_agent_event(
                 run_logger,
@@ -424,7 +439,13 @@ class CodexCliAgent:
                     stderr_lines=line_count(completed.stderr),
                     stderr_preview=text_preview(completed.stderr),
                 )
-                raise RuntimeError(_format_codex_error(completed))
+                message = _format_codex_error(completed)
+                if resume_session_id and (
+                    completed.session_id is None
+                    or CODEX_UNKNOWN_THREAD in completed.stderr.lower()
+                ):
+                    raise ResumeUnavailable(message)
+                raise RuntimeError(message)
             if not output_path.exists():
                 _log_agent_event(
                     run_logger,
@@ -505,10 +526,15 @@ class CodexCliAgent:
         image_paths: tuple[str, ...],
         *,
         resume_session_id: str | None = None,
+        resume_images: bool = False,
     ) -> list[str]:
         if resume_session_id:
             return self._resume_command(
-                cwd, schema_path, output_path, resume_session_id
+                cwd,
+                schema_path,
+                output_path,
+                resume_session_id,
+                image_paths if resume_images else (),
             )
         command = [
             self.codex_path,
@@ -547,10 +573,12 @@ class CodexCliAgent:
         schema_path: Path,
         output_path: Path,
         session_id: str,
+        image_paths: tuple[str, ...] = (),
     ) -> list[str]:
         # `codex exec resume` takes no --sandbox/--cd/--color of its own: they
         # go on `exec` before the subcommand, and the sandbox is repeated as a
-        # config override. Images are already in the session.
+        # config override. Images are in the session already; ``image_paths``
+        # re-attaches them when the note changed since.
         command = [
             self.codex_path,
             "exec",
@@ -577,6 +605,8 @@ class CodexCliAgent:
             "--output-last-message",
             str(output_path),
         ]
+        for path in image_paths:
+            command.extend(["--image", path])
         if self.model:
             command.extend(["--model", self.model])
         command.extend([session_id, "-"])

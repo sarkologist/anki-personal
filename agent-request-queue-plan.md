@@ -171,6 +171,7 @@ ready ────► applied | discarded | stale
 stale ────► queued (re-run) | discarded | applied (forced)
 ready / answered / failed ──reply──► queued
 failed ───► applied   (a failed run keeps the previous proposal current)
+failed ───► stale     (its proposal's base changed; then applied (forced))
 applied ──► ready | failed   (revert when the apply's collection write fails
                              before anything was written; a partial write stays applied)
 ```
@@ -214,9 +215,13 @@ Policy: **replay is the baseline and resume is an optimisation on top.**
    the user's reply, and the current note state if `note_mod` changed since
    the last run (the resumed session still believes the note looks the way
    it did).
-3. If the resume fails for any reason (unknown session, CLI error, Ollama,
-   provider or model changed), the runner falls back to replay in the same
-   run, transparently. The transcript message records which path was taken.
+3. If the resume cannot be used (Ollama, provider or model changed) the
+   runner replays; if the resume never started (unknown session, or the CLI
+   exited before starting it) it falls back to replay in the same run,
+   transparently. A failure after the resumed turn started (timeout, API
+   error, bad response) is a normal failure, not a replay, so side effects
+   and cost are not repeated. The transcript message records which path was
+   taken.
 4. Replay always builds from the store, never from the CLI's session files,
    so the two cannot disagree about what the user saw.
 
@@ -849,3 +854,41 @@ still names the shortcut); per-thread instructions/project folder editing in
 the Next run row; live checks of the window's new actions and the badge in a
 running Anki (only offscreen construction and unit tests); Codex session resume
 was never run live (3a). Everything else listed for phase 3 is in.
+
+**Phase 3 review fixes (2026-10-23, uncommitted on `claude/agent-queue-phase3`).**
+
+- Replay fallback only when the resume never started: the clients raise
+  `ResumeUnavailable` (a `RuntimeError`, in `codex_client`) when a resumed run
+  exits non-zero before starting (Claude: no `system/init` event; Codex: no
+  `thread.started`) or the CLI names the session unknown (Claude "No
+  conversation found", on stderr and in the result event's `errors`; Codex
+  "no rollout found for thread id", stderr, checked with `codex exec resume
+  <bogus-uuid>` on codex-cli 0.159.3). The runner catches only that; a
+  timeout, lookup limit, parse/schema failure or API error after the turn
+  started fails the run. `send_with_card_reads` turns a `ResumeUnavailable`
+  on a later lookup round into a plain error.
+- Apply anyway with the multi-card dialog already open: the dialog no longer
+  carries `force`; `_apply_checked_multi_patch` forces when the thread is
+  stale at click time, so the raised dialog applies.
+- A failed thread whose proposal base changed can be marked stale (store
+  edge failed -> stale; `mark_stale` accepts ready or failed), then
+  force-applied.
+- With `queue_resume_sessions` off, runs store no session (cleared).
+- A requeued run (closed collection, shutdown) and `reset_interrupted` clear
+  the session, so the interrupted turn is replayed.
+- `set_settings` / `set_session` leave `updated_at` alone, so changing a
+  thread's settings does not move it in the queue.
+- `merge_thread_settings(…, config=)`: a provider change resets `fast_mode`
+  and `stream_reasoning_summaries` (Codex: from the add-on config; others:
+  off) and clears `project_folder` for Ollama, as the pane does.
+- Images on resumed turns: when the delta resends the note (note state or
+  stale section) and the note has images, Codex resumes with
+  `resume_images=True` (`--image` after `resume`); Claude replays instead of
+  resuming.
+- Catalog: a source deck with no usage rows and no source note type lists
+  the first note types of the full catalog (up to the cap) instead of none.
+- Tests: 17 new (16 in test_agent_queue.py, 1 pane dialog test); two window
+  tests updated (dialog no longer gets `force`; a provider switch now adds
+  the reset flags), two store tests updated (failed is no longer refused by
+  `mark_stale`; the fallback test raises `ResumeUnavailable`). 529 pass, 1
+  skipped.

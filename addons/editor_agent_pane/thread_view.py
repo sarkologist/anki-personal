@@ -13,7 +13,7 @@ from __future__ import annotations
 import datetime
 import html
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from .effort_options import effort_options_for, effort_supported_by_options
@@ -536,14 +536,27 @@ def merge_thread_settings(
     reasoning_effort: str,
     card_access: str,
     deck_ids: Sequence[int] = (),
+    config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """``settings`` with a new provider/model/effort/card access for the next
     run; paths, project folder, timeouts and the rest are kept. An effort the
     model does not take falls back to the default; "deck" access without
-    stored decks takes ``deck_ids``."""
+    stored decks takes ``deck_ids``. A provider change resets the
+    provider-specific flags as the pane sets them: Codex's fast mode and
+    reasoning summaries from ``config`` (the add-on config), off for the
+    others, and no project folder for Ollama."""
     provider = provider_value(provider)
     model = str(model).strip()
     merged = dict(settings)
+    if provider != provider_value(settings.get("provider")):
+        config = config or {}
+        is_codex = provider == PROVIDER_CODEX
+        fast_mode = config.get("fast_mode", False)
+        summaries = config.get("stream_reasoning_summaries", True)
+        merged["fast_mode"] = is_codex and fast_mode is True
+        merged["stream_reasoning_summaries"] = is_codex and summaries is not False
+        if provider == PROVIDER_OLLAMA:
+            merged["project_folder"] = ""
     merged.update(
         provider=provider,
         model=model,

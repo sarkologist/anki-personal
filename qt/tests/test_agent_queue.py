@@ -18,7 +18,11 @@ if str(ADDONS) not in sys.path:
     sys.path.insert(0, str(ADDONS))
 
 from editor_agent_pane.card_access import CardReadScope  # noqa: E402
-from editor_agent_pane.codex_client import AgentResult, AgentStopped  # noqa: E402
+from editor_agent_pane.codex_client import (  # noqa: E402
+    AgentResult,
+    AgentStopped,
+    ResumeUnavailable,
+)
 from editor_agent_pane.patches import (  # noqa: E402
     EditorSnapshot,
     FieldSnapshot,
@@ -2064,7 +2068,7 @@ def test_mark_stale_moves_ready_to_stale_with_the_reason(store: QueueStore) -> N
     assert store.current_proposal(thread_id) is not None
 
 
-@pytest.mark.parametrize("status", ["queued", "answered", "failed", "stale"])
+@pytest.mark.parametrize("status", ["queued", "answered", "stale"])
 def test_mark_stale_refuses_other_statuses_and_writes_nothing(
     store: QueueStore, status: str
 ) -> None:
@@ -2072,7 +2076,6 @@ def test_mark_stale_refuses_other_statuses_and_writes_nothing(
     path = {
         "queued": (),
         "answered": ("running", "answered"),
-        "failed": ("running", "failed"),
         "stale": ("running", "ready", "stale"),
     }[status]
     current = "queued"
@@ -2289,7 +2292,7 @@ def test_failed_resume_falls_back_to_replay_in_the_same_run(
     agent = FakeAgent(
         [
             session_result("first", (note_patch(),)),
-            RuntimeError("No conversation found with session ID: s1"),
+            ResumeUnavailable("No conversation found with session ID: s1"),
             session_result("second", session_id="s2"),
         ]
     )
@@ -2524,12 +2527,12 @@ class _Stdin:
 
 
 class _Process:
-    def __init__(self, stdout: str, returncode: int = 0) -> None:
+    def __init__(self, stdout: str, returncode: int = 0, stderr: str = "") -> None:
         import io
 
         self.stdin = _Stdin()
         self.stdout = io.StringIO(stdout)
-        self.stderr = io.StringIO("")
+        self.stderr = io.StringIO(stderr)
         self.returncode = returncode
 
     def poll(self) -> int:
@@ -2981,3 +2984,386 @@ def test_model_and_effort_options_per_provider() -> None:
     assert model_options_for("ollama", "qwen", ("llama3",))[-1] == ("qwen", "qwen")
     assert ("Max", "max") not in effort_options_for("claude", "haiku")
     assert effort_options_for("ollama", "llama3") == (("Model default", ""),)
+
+
+# --- phase 3 review fixes ----------------------------------------------------
+
+
+def test_resume_failure_after_the_session_started_fails_without_replay(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    agent = FakeAgent(
+        [
+            session_result("first"),
+            RuntimeError("Codex CLI timed out."),
+            session_result("replayed"),
+        ]
+    )
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "Shorter")
+    harness.runner.run_once()
+
+    assert len(agent.calls) == 2
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+    assert loaded.error == "Codex CLI timed out."
+    assert not any("Replayed transcript" in m.text for m in store.messages(thread.id))
+
+
+def test_resume_unavailable_on_a_later_lookup_round_is_a_plain_failure(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    lookup = AgentResult(
+        text="looking",
+        html="",
+        proposals=(),
+        card_request={"query": "", "offset": 0, "limit": 5},
+        session_id="s1",
+    )
+    agent = FakeAgent(
+        [
+            session_result("first"),
+            lookup,
+            ResumeUnavailable("No conversation found with session ID: s1"),
+            session_result("replayed"),
+        ]
+    )
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "Look it up")
+    harness.runner.run_once()
+
+    assert len(agent.calls) == 3
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+
+
+def test_a_failed_thread_with_a_stale_base_can_be_marked_stale_and_forced(
+    store: QueueStore,
+) -> None:
+    thread_id = ready_thread(store)
+    store.reply(thread_id, "more")
+    store.transition(thread_id, "queued", "running")
+    store.complete_run(thread_id, to_status="failed", error="boom")
+
+    store.mark_stale(thread_id, "The note changed.")
+
+    assert store.get_thread(thread_id).status == "stale"  # type: ignore[union-attr]
+    store.transition(thread_id, "stale", "applied")
+
+
+def test_session_is_not_stored_when_resume_is_disabled(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.set_session(thread.id, {"provider": "codex", "model": "gpt-5.5"})
+    resume_harness(store, FakeAgent([session_result()]), resume=False).runner.run_once()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "answered"
+    assert loaded.session is None
+
+
+def test_a_requeued_run_clears_the_session(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.set_session(thread.id, {"provider": "codex", "model": "gpt-5.5"})
+    harness = resume_harness(store, FakeAgent([]))
+
+    def closed(*_args: Any) -> Any:
+        raise CollectionUnavailable("The collection is closed.")
+
+    harness.runner._read_note_state = closed
+    harness.runner.run_once()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "queued"
+    assert loaded.session is None
+
+
+def test_reset_interrupted_clears_the_session(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "a")
+    store.set_session(thread.id, {"provider": "codex", "session_id": "s1"})
+    store.transition(thread.id, "queued", "running")
+    store.reset_interrupted()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "queued"
+    assert loaded.session is None
+
+
+def test_settings_and_session_changes_keep_the_queue_order(
+    store: QueueStore,
+) -> None:
+    a = store.create_thread(context(), settings(), "a")
+    b = store.create_thread(context(), settings(), "b")
+    store._set_updated_at_for_tests(a.id, 100.0)
+    store._set_updated_at_for_tests(b.id, 200.0)
+
+    store.set_settings(a.id, settings(model="gpt-5.4"))
+    store.set_session(a.id, {"provider": "codex", "session_id": "s1"})
+
+    assert store.get_thread(a.id).updated_at == 100.0  # type: ignore[union-attr]
+    assert store.next_runnable().id == a.id  # type: ignore[union-attr]
+
+
+def test_merge_thread_settings_resets_provider_specific_flags() -> None:
+    from editor_agent_pane.thread_view import merge_thread_settings
+
+    codex = settings(
+        fast_mode=True, stream_reasoning_summaries=True, project_folder="/src"
+    )
+    to_claude = merge_thread_settings(
+        codex, provider="claude", model="sonnet", reasoning_effort="", card_access="all"
+    )
+    assert to_claude["fast_mode"] is False
+    assert to_claude["stream_reasoning_summaries"] is False
+    assert to_claude["project_folder"] == "/src"
+
+    to_ollama = merge_thread_settings(
+        codex, provider="ollama", model="q", reasoning_effort="", card_access="all"
+    )
+    assert to_ollama["project_folder"] == ""
+    assert to_ollama["fast_mode"] is False
+
+    claude = settings(
+        provider="claude",
+        model="sonnet",
+        fast_mode=False,
+        stream_reasoning_summaries=False,
+    )
+    to_codex = merge_thread_settings(
+        claude,
+        provider="codex",
+        model="gpt-5.5",
+        reasoning_effort="",
+        card_access="all",
+        config={"fast_mode": True, "stream_reasoning_summaries": True},
+    )
+    assert to_codex["fast_mode"] is True
+    assert to_codex["stream_reasoning_summaries"] is True
+
+    # Same provider: the thread's own flags stay.
+    same = merge_thread_settings(
+        codex,
+        provider="codex",
+        model="gpt-5.4",
+        reasoning_effort="",
+        card_access="all",
+        config={"fast_mode": False},
+    )
+    assert same["fast_mode"] is True and same["project_folder"] == "/src"
+
+
+def test_codex_resume_with_changed_note_attaches_images(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Explain", 11)
+    agent = FakeAgent([session_result("first"), session_result("second")])
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "unchanged note")
+    harness.runner.run_once()
+    assert agent.calls[1]["resume_session_id"] == "s1"
+    assert not agent.calls[1].get("resume_images")
+
+    agent.results.append(session_result("third"))
+    harness.note_state[11] = {"mod": 200, "fields": ["唉声", "edited"], "tags": []}
+    store.reply(thread.id, "And now?")
+    harness.runner.run_once()
+    assert agent.calls[2]["resume_session_id"] == "s1"
+    assert agent.calls[2]["resume_images"] is True
+
+
+def test_claude_with_images_replays_when_the_note_changed(store: QueueStore) -> None:
+    claude = settings(provider="claude", model="sonnet", reasoning_effort="")
+    thread = store.create_thread(context(), claude, "Explain", 11)
+    agent = FakeAgent(
+        [session_result("first"), session_result("second"), session_result("third")]
+    )
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "unchanged note")
+    harness.runner.run_once()
+    assert agent.calls[1]["resume_session_id"] == "s1"
+    assert "resume_images" not in agent.calls[1]
+
+    harness.note_state[11] = {"mod": 200, "fields": ["唉声", "edited"], "tags": []}
+    store.reply(thread.id, "And now?")
+    harness.runner.run_once()
+    assert "resume_session_id" not in agent.calls[2]
+    assert agent.calls[2]["history"]
+
+
+def _run_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    *,
+    stdout: str,
+    returncode: int = 0,
+    stderr: str = "",
+    write_output: bool = True,
+    **send_options: Any,
+) -> tuple[list[str], AgentResult]:
+    import subprocess
+
+    from editor_agent_pane.claude_client import ClaudeCliAgent
+    from editor_agent_pane.codex_client import CodexCliAgent
+
+    captured: dict[str, Any] = {}
+
+    def fake_popen(command: list[str], **_kwargs: Any) -> _Process:
+        captured["command"] = command
+        if provider == "codex" and write_output:
+            output = Path(command[command.index("--output-last-message") + 1])
+            output.write_text(
+                json.dumps(
+                    {
+                        "message": "ok",
+                        "message_html": "",
+                        "patch": None,
+                        "card_request": None,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return _Process(stdout, returncode, stderr)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    agent: Any = (
+        CodexCliAgent(codex_path="/bin/codex", model="gpt-5.5", timeout_seconds=30)
+        if provider == "codex"
+        else ClaudeCliAgent(claude_path="/bin/claude", model="", timeout_seconds=30)
+    )
+    result = agent.send(
+        prompt="Shorter please",
+        snapshot=editor_snapshot(),
+        project_root="",
+        history=[],
+        **send_options,
+    )
+    return captured["command"], result
+
+
+CLAUDE_UNKNOWN_SESSION = (
+    json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "session_id": "sess-1",
+            "errors": ["No conversation found with session ID: sess-1"],
+        }
+    )
+    + "\n"
+)
+
+
+def test_claude_unknown_session_raises_resume_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ResumeUnavailable):
+        _run_cli(
+            monkeypatch,
+            "claude",
+            stdout=CLAUDE_UNKNOWN_SESSION,
+            returncode=1,
+            stderr="No conversation found with session ID: sess-1\n",
+            resume_session_id="sess-1",
+        )
+
+
+def test_claude_resume_that_started_and_then_failed_is_a_plain_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = (
+        json.dumps({"type": "system", "subtype": "init", "session_id": "sess-1"}) + "\n"
+    )
+    with pytest.raises(RuntimeError) as info:
+        _run_cli(
+            monkeypatch,
+            "claude",
+            stdout=started,
+            returncode=1,
+            stderr="API Error: rate limited\n",
+            resume_session_id="sess-1",
+        )
+    assert not isinstance(info.value, ResumeUnavailable)
+    # Without resume, an early exit is a plain error too.
+    with pytest.raises(RuntimeError) as info:
+        _run_cli(monkeypatch, "claude", stdout="", returncode=1, stderr="boom\n")
+    assert not isinstance(info.value, ResumeUnavailable)
+
+
+def test_claude_resume_exiting_before_init_raises_resume_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ResumeUnavailable):
+        _run_cli(
+            monkeypatch,
+            "claude",
+            stdout="",
+            returncode=1,
+            stderr="error: something\n",
+            resume_session_id="sess-1",
+        )
+
+
+def test_codex_unknown_thread_raises_resume_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ResumeUnavailable):
+        _run_cli(
+            monkeypatch,
+            "codex",
+            stdout="",
+            returncode=1,
+            stderr=(
+                "Error: thread/resume: thread/resume failed: no rollout found for "
+                "thread id thr-1 (code -32600)\n"
+            ),
+            write_output=False,
+            resume_session_id="thr-1",
+        )
+
+
+def test_codex_resume_that_started_and_then_failed_is_a_plain_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(RuntimeError) as info:
+        _run_cli(
+            monkeypatch,
+            "codex",
+            stdout='{"type":"thread.started","thread_id":"thr-1"}\n',
+            returncode=1,
+            stderr="stream error: rate limited\n",
+            write_output=False,
+            resume_session_id="thr-1",
+        )
+    assert not isinstance(info.value, ResumeUnavailable)
+
+
+def test_codex_resume_attaches_images_only_when_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = '{"type":"thread.started","thread_id":"thr-1"}\n'
+    command, _result = _run_cli(
+        monkeypatch, "codex", stdout=stream, resume_session_id="thr-1"
+    )
+    assert "--image" not in command
+    command, _result = _run_cli(
+        monkeypatch,
+        "codex",
+        stdout=stream,
+        resume_session_id="thr-1",
+        resume_images=True,
+    )
+    resume_at = command.index("resume")
+    at = command.index("--image")
+    assert at > resume_at and command[at + 1] == "/media/a.png"
+    assert command[-2:] == ["thr-1", "-"]
+
+
+def test_catalog_section_without_usage_or_source_notetype_lists_note_types() -> None:
+    catalog = {**BIG_CATALOG, "usage": []}
+    data = catalog_section_json(
+        catalog_prompt_section(catalog, notetype_id=None, deck_id=3, limit=2)
+    )
+    assert [d["id"] for d in data["decks"]] == [3, 4]
+    assert [n["id"] for n in data["notetypes"]] == [7, 8]

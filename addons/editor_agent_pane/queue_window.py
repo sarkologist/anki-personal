@@ -884,6 +884,7 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
                 self.settings_card_access_combo.currentData()
             ),
             deck_ids=thread_deck_ids(thread),
+            config=_config(),
         )
         service.store.set_settings(thread.id, merged)
         tooltip(

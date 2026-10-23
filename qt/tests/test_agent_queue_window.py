@@ -1060,9 +1060,7 @@ def test_a_failed_apply_anyway_returns_to_stale(
     assert _status(store, thread.id) == "stale"
 
 
-def test_apply_anyway_multi_note_passes_force_to_the_dialog(
-    qw: Any, queue: Any
-) -> None:
+def test_apply_anyway_multi_note_opens_the_dialog(qw: Any, queue: Any) -> None:
     store, _runner = queue
     thread = _stale(
         store,
@@ -1086,8 +1084,10 @@ def test_apply_anyway_multi_note_passes_force_to_the_dialog(
 
     window._apply_anyway()
 
-    [(args, kwargs)] = opened
-    assert args[0] == thread.id and kwargs == {"force": True}
+    # The dialog forces because the thread is stale when Apply checked is
+    # clicked (test_apply_anyway_applies_through_an_open_multi_dialog).
+    [(args, _kwargs)] = opened
+    assert args[0] == thread.id
 
 
 def test_closed_banner_does_not_mention_send(qw: Any, queue: Any) -> None:
@@ -1264,6 +1264,9 @@ def test_settings_row_merges_into_the_thread_settings(qw: Any, queue: Any) -> No
         "project_folder": "/src",
         "timeout_seconds": 900,
         "paths": {"codex_path": "/bin/codex"},
+        # Codex-only flags are reset on the provider switch.
+        "fast_mode": False,
+        "stream_reasoning_summaries": False,
     }
     assert stored.status == "ready"
     assert qw.tips == ["The next run of this request uses Claude sonnet."]

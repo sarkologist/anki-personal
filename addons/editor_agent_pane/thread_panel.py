@@ -700,14 +700,11 @@ class ThreadPanel:
                     thread.id, thread.status, proposal.version, [], patch.note_creates
                 )
             elif isinstance(snapshot, MultiCardSnapshot):
-                if force:
-                    self._show_multi_proposal_dialog(
-                        thread.id, snapshot, patch, proposal.version, force=True
-                    )
-                else:
-                    self._show_multi_proposal_dialog(
-                        thread.id, snapshot, patch, proposal.version
-                    )
+                # The dialog's Apply checked forces when the thread is stale
+                # at click time, so an open dialog serves Apply anyway too.
+                self._show_multi_proposal_dialog(
+                    thread.id, snapshot, patch, proposal.version
+                )
             return
         if not patch.has_note_update():
             # Only new notes: nothing in the editor to save or overwrite (in Add
@@ -828,8 +825,6 @@ class ThreadPanel:
         snapshot: MultiCardSnapshot,
         patch: MultiNotePatch,
         version: int,
-        *,
-        force: bool = False,
     ) -> None:
         if self._multi_proposal_dialog is not None:
             self._multi_proposal_dialog.raise_()
@@ -840,7 +835,7 @@ class ThreadPanel:
             snapshot=snapshot,
             patch=patch,
             apply_callback=lambda checked: self._apply_checked_multi_patch(
-                thread_id, checked, version, force=force
+                thread_id, checked, version
             ),
             discard_callback=lambda: self._discard_pending_patch(thread_id),
             create_previews=self._create_previews(patch.note_creates),
@@ -891,7 +886,8 @@ class ThreadPanel:
     ) -> bool:
         """Apply the checked notes of the current proposal; with ``version``
         (the one the dialog shows), refuse if a newer proposal replaced it.
-        ``force`` skips the base-revision check (Apply anyway)."""
+        ``force``, or a stale thread (the user was told and chose to apply
+        again: Apply anyway), skips the base-revision check."""
         found = self._current_proposal(thread_id)
         col = self._col()
         if found is None or col is None:
@@ -904,6 +900,7 @@ class ThreadPanel:
             patch, MultiNotePatch
         ):
             return False
+        force = force or thread.status == STALE
         states = self._note_states(sorted(checked_note_ids))
         reason = None if force else stale_reason(proposal.base, states)
         if reason is not None:

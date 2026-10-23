@@ -8036,6 +8036,47 @@ def test_multi_dialog_refuses_a_newer_proposal_and_is_rebuilt(
     assert len(made) == 2 and made[1].kwargs["patch"] == newer
 
 
+def test_apply_anyway_applies_through_an_open_multi_dialog(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+    thread = _browser_ready_thread(pane_runtime, store, pane)
+    del pane._show_multi_proposal_dialog  # the real one
+    made: list[_FakeProposalDialog] = []
+    monkeypatch.setattr(
+        pane_runtime.thread_panel,
+        "MultiCardProposalDialog",
+        lambda **kwargs: made.append(_FakeProposalDialog(**kwargs)) or made[-1],
+    )
+    updated: list[Any] = []
+    _patch_ui(
+        monkeypatch,
+        pane_runtime,
+        "update_notes",
+        lambda parent, notes: updated.extend(notes) or _PendingOp(notes),
+    )
+    pane._apply_pending_patch()
+    [dialog] = made
+
+    # The note is edited while the dialog is open: Apply checked refuses.
+    read = pane._read_note_state
+    pane._read_note_state = lambda ids: {
+        nid: {**state, "mod": 2, "fields": ["edited", "back"]}
+        for nid, state in read(ids).items()
+    }
+    assert dialog.kwargs["apply_callback"]({101}) is False
+    assert _status(store, thread.id) == "stale"
+    assert updated == []
+
+    # Apply anyway raises the open dialog, whose Apply checked now forces.
+    pane._apply_anyway()
+    assert len(made) == 1
+    assert dialog.kwargs["apply_callback"]({101}) is True
+    assert [note.id for note in updated] == [101]
+    assert _status(store, thread.id) == "applied"
+
+
 def test_send_restores_the_prompt_when_the_note_changes_before_it_is_stored(
     pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

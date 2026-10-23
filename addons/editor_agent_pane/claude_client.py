@@ -23,6 +23,7 @@ from .codex_client import (
     AgentPatch,
     AgentResult,
     AgentStopped,
+    ResumeUnavailable,
     _log_agent_event,
     _parse_json_object,
     _parse_stream_event,
@@ -94,6 +95,8 @@ class _ClaudeProcessResult:
     result_event: dict[str, Any] | None = None
     event_count: int = 0
     session_id: str | None = None
+    # A system/init event was seen: the session started.
+    started: bool = False
 
 
 class ClaudeCliAgent:
@@ -133,7 +136,8 @@ class ClaudeCliAgent:
         resume_session_id: str | None = None,
     ) -> AgentResult:
         """With ``resume_session_id``, continue that Claude session
-        (``--resume``) and send ``prompt`` as the only new turn."""
+        (``--resume``) and send ``prompt`` as the only new turn. Raises
+        ResumeUnavailable when the resume never started."""
         _log_agent_event(
             run_logger,
             "run_start",
@@ -206,7 +210,12 @@ class ClaudeCliAgent:
                     stderr_lines=line_count(completed.stderr),
                     stderr_preview=text_preview(completed.stderr),
                 )
-                raise RuntimeError(_format_claude_process_error(completed))
+                message = _format_claude_process_error(completed)
+                if resume_session_id and (
+                    not completed.started or _claude_unknown_session(completed)
+                ):
+                    raise ResumeUnavailable(message)
+                raise RuntimeError(message)
 
             envelope = completed.result_event
             if envelope is None:
@@ -227,6 +236,8 @@ class ClaudeCliAgent:
                     raise
 
             try:
+                if resume_session_id and _claude_unknown_session(completed):
+                    raise ResumeUnavailable(_format_claude_process_error(completed))
                 _raise_for_envelope_error(envelope)
             except Exception as exc:
                 _log_agent_event(
@@ -397,6 +408,7 @@ class ClaudeCliAgent:
         result_event: dict[str, Any] | None = None
         event_count = 0
         session_id: str | None = None
+        started = False
 
         stdout_reader = _start_reader(process.stdout, "stdout", lines)
         stderr_reader = _start_reader(process.stderr, "stderr", lines)
@@ -449,6 +461,11 @@ class ClaudeCliAgent:
                     event = _parse_stream_event(line)
                     if event is not None:
                         session_id = _claude_session_id(event) or session_id
+                        if (
+                            event.get("type") == "system"
+                            and event.get("subtype") == "init"
+                        ):
+                            started = True
                         if event.get("type") == "result":
                             result_event = event
                         else:
@@ -474,6 +491,7 @@ class ClaudeCliAgent:
                     result_event=result_event,
                     event_count=event_count,
                     session_id=session_id,
+                    started=started,
                 )
 
             if stop_requested is not None and stop_requested():
@@ -608,6 +626,19 @@ def _format_claude_timeout(
         "before the cutoff (a short gap means it was still working — raise the "
         "timeout; a long gap means it stalled)."
     )
+
+
+CLAUDE_UNKNOWN_SESSION = "no conversation found"
+
+
+def _claude_unknown_session(completed: _ClaudeProcessResult) -> bool:
+    """Did the CLI reject the resumed session id ("No conversation found with
+    session ID: …", on stderr and in the result event's ``errors``)?"""
+    errors = (completed.result_event or {}).get("errors")
+    texts = [completed.stderr]
+    if isinstance(errors, list):
+        texts.extend(str(error) for error in errors)
+    return any(CLAUDE_UNKNOWN_SESSION in text.lower() for text in texts)
 
 
 def _format_claude_process_error(completed: _ClaudeProcessResult) -> str:
