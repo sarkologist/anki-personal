@@ -20,6 +20,8 @@ from chinese_frontier.collection import (  # noqa: E402
     admit,
     ensure_model,
     initial_scope_settings,
+    needs_audit,
+    report_confusion,
     request_repair,
     snapshot,
     upgrade_presentation,
@@ -898,7 +900,7 @@ def test_existing_card_gets_character_cue_without_creating_unaffordable_sibling(
     queued = next(
         s for s in snapshot(collection, settings, {}).sources if s.word == "学生"
     )
-    assert queued.allowed_competitors == ()
+    assert queued.reported_confusions == ()
     assert len(after.cards()) == 1 and result.remaining
     assert (after.cards()[0].id, after.cards()[0].reps, after.cards()[0].ivl) == (
         old.id,
@@ -907,32 +909,15 @@ def test_existing_card_gets_character_cue_without_creating_unaffordable_sibling(
     )
 
 
-def test_generation_tries_contrast_before_character_fallback_and_logs_all_checks(
-    tmp_path: Path, lexicon: Lexicon, monkeypatch
-) -> None:
+def fake_generator(monkeypatch, lexicon: Lexicon, responses: list) -> list[str]:
     from chinese_frontier import generation
 
-    target = source("学生")
-    word = Candidate("学生有一页。", "The student has one page.", "xué shēng", "")
-    char = replace(
-        word, mode="characters", explanation="The other character identifies the word."
-    )
-    ambiguous = audit_report(target, word)
-    ambiguous["alternatives"][0].update(word="学者", fits_context=True)
-    responses = iter(
-        [
-            {"proposals": [{"card_id": 1, "candidates": [asdict(word)]}]},
-            {"reviews": [ambiguous]},
-            {"proposals": [{"card_id": 1, "candidates": []}]},
-            {"proposals": [{"card_id": 1, "candidates": [asdict(char)]}]},
-            {"reviews": [audit_report(target, char)]},
-        ]
-    )
-    prompts = []
+    replies = iter(responses)
+    prompts: list[str] = []
 
     def request(self, prompt, schema):
         prompts.append(prompt)
-        return next(responses)
+        return next(replies)
 
     monkeypatch.setattr(generation.Lexicon, "load", lambda _folder: lexicon)
     monkeypatch.setattr(
@@ -940,6 +925,29 @@ def test_generation_tries_contrast_before_character_fallback_and_logs_all_checks
     )
     monkeypatch.setattr(generation.CliGenerator, "check_login", lambda self: None)
     monkeypatch.setattr(generation.CliGenerator, "request", request)
+    return prompts
+
+
+def test_ambiguous_word_examples_never_escalate_to_contrast(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    target = source("学生")
+    word = Candidate("学生有一页。", "The student has one page.", "xué shēng", "")
+    char = replace(
+        word, mode="characters", explanation="The other character identifies the word."
+    )
+    ambiguous = audit_report(target, word)
+    ambiguous["alternatives"][0].update(word="学者", fits_context=True)
+    prompts = fake_generator(
+        monkeypatch,
+        lexicon,
+        [
+            {"proposals": [{"card_id": 1, "candidates": [asdict(word)]}]},
+            {"reviews": [ambiguous]},
+            {"proposals": [{"card_id": 1, "candidates": [asdict(char)]}]},
+            {"reviews": [audit_report(target, char)]},
+        ],
+    )
     result = generate(
         [target],
         {word: "familiar" for word in ("有", "一", "页")},
@@ -948,10 +956,78 @@ def test_generation_tries_contrast_before_character_fallback_and_logs_all_checks
         Event(),
     )
     assert result.drafts[0].candidate.mode == "characters"
-    assert 'mode="contrast"' in prompts[2] and 'mode="characters"' in prompts[3]
+    assert not any('mode="contrast"' in prompt for prompt in prompts)
+    assert 'mode="characters"' in prompts[2]
     checks = result.drafts[0].audit["checks"]
     assert checks[0]["review"]["alternatives"][0]["word"] == "学者"
     assert checks[-1]["candidate"]["mode"] == "characters"
+
+
+KNOWN_PAGE_WORDS = {w: "familiar" for w in ("这", "本", "书", "有", "一", "页")}
+
+
+def thousand_contrast() -> Candidate:
+    return replace(
+        candidate(),
+        mode="contrast",
+        explanation="百 is a hundred; 千 is a thousand.",
+        contrast=Contrast(
+            "千",
+            "这本书有一千页。",
+            "This book has one thousand pages.",
+            "qiān",
+            "thousand",
+        ),
+    )
+
+
+def test_reported_confusion_is_repaired_only_as_a_contrast_with_that_word(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    target = replace(
+        source(),
+        reported_confusions=("千",),
+        existing_cards=1,
+        existing_candidate=asdict(candidate()),
+    )
+    pair = thousand_contrast()
+    prompts = fake_generator(
+        monkeypatch,
+        lexicon,
+        [
+            {"proposals": [{"card_id": 1, "candidates": [asdict(pair)]}]},
+            {"reviews": [audit_report(target, pair)]},
+        ],
+    )
+    result = generate([target], KNOWN_PAGE_WORDS, {}, tmp_path, Event())
+    # The old single example does not answer the confusion, so it is not re-audited.
+    assert len(prompts) == 2
+    assert 'mode="contrast"' in prompts[0] and "千" in prompts[0]
+    assert result.drafts[0].candidate == pair
+
+
+def test_failed_confusion_contrast_defers_instead_of_falling_back(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    target = replace(source("学生"), reported_confusions=("学者",))
+    prompts = fake_generator(
+        monkeypatch,
+        lexicon,
+        [{"proposals": [{"card_id": 1, "candidates": []}]}],
+    )
+    result = generate([target], KNOWN_PAGE_WORDS, {}, tmp_path, Event())
+    assert len(prompts) == 1 and result.drafts == []
+    assert target.key in result.deferred
+
+
+def test_contrast_needs_a_reported_competitor(lexicon: Lexicon) -> None:
+    known = set(KNOWN_PAGE_WORDS) | {"千"}
+    with pytest.raises(ValidationError):
+        validate_candidate(thousand_contrast(), source(), known, lexicon)
+    reported = replace(source(), reported_confusions=("千",))
+    assert validate_candidate(thousand_contrast(), reported, known, lexicon).text == (
+        "<div>这本书有一{{c1::百}}页。</div><br><div>这本书有一{{c1::千}}页。</div>"
+    )
 
 
 def test_existing_note_without_current_audit_is_queued_and_audit_only_preserves_text(
@@ -1058,34 +1134,109 @@ def test_deferred_audit_is_logged_without_changing_existing_card(
     assert "competing answer" in after["Disambiguation"]
 
 
-def test_contrast_pair_has_one_card_and_labels_both_review_sides(
+def test_reported_confusion_becomes_one_labelled_contrast_card_keeping_history(
     collection: Collection, lexicon: Lexicon
 ) -> None:
     settings, _note, _card, initial = setup_sentence(collection)
-    add_word(collection, "千", established=True)
-    c = replace(
-        initial.candidate,
-        mode="contrast",
-        contrast=Contrast(
-            "千",
-            "这本书有一千页。",
-            "This book has one thousand pages.",
-            "qiān",
-            "thousand",
-        ),
+    note = collection.get_note(
+        admit(collection, settings, {}, [initial], lexicon).admitted[0]
     )
-    result = admit(
-        collection, settings, {}, [audited_draft(initial.source, c)], lexicon
-    )
-    note = collection.get_note(result.admitted[0])
-    assert len(note.cards()) == 1
     card = note.cards()[0]
+    card.type = card.queue = 2
+    card.reps, card.ivl = 6, 20
+    collection.update_card(card)
+    report_confusion(collection, note.id, "千")
+    target = next(
+        s for s in snapshot(collection, settings, {}).sources if s.word == "百"
+    )
+    assert target.reported_confusions == ("千",) and target.force_repair
+    c = thousand_contrast()
+    result = admit(collection, settings, {}, [audited_draft(target, c)], lexicon)
+    assert result.updated == [note.id]
+    after = collection.get_note(note.id)
+    assert len(after.cards()) == 1
+    card = after.cards()[0]
+    assert (card.id, card.reps, card.ivl) == (note.cards()[0].id, 6, 20)
     assert card.question().count('class="cloze"') == 2
     assert "Disambiguation" in card.question() and "Disambiguation" in card.answer()
     assert "Checked the following" not in card.answer()
     assert (
         c.translation in card.question() and c.contrast.translation in card.question()
     )
+    assert (
+        json.loads(after["Source"].replace("&quot;", '"'))["disambiguation"]["with"]
+        == "千"
+    )
+
+
+@pytest.mark.parametrize("word", ["百", "hundred", ""])
+def test_reported_confusion_must_be_another_chinese_word(
+    collection: Collection, lexicon: Lexicon, word: str
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    with pytest.raises(ValueError):
+        report_confusion(collection, note_id, word)
+
+
+def contrast_note(collection: Collection, source_extra: dict) -> tuple:
+    import html as html_module
+
+    note = collection.new_note(ensure_model(collection))
+    note["Text"] = (
+        "<div>这本书有一{{c1::百}}页。</div><br><div>这本书有一{{c1::千}}页。</div>"
+    )
+    note["Translation"] = (
+        "<div>This book has one hundred pages.</div><br>"
+        "<div>This book has one thousand pages.</div>"
+    )
+    note["Pinyin"] = "bǎi / qiān"
+    note["Target"] = "百 / 千"
+    note["Meaning"] = "百 is a hundred; 千 is a thousand."
+    note["CardKind"] = "Disambiguation"
+    note["Source"] = html_module.escape(
+        json.dumps(
+            {
+                "word": "百",
+                "definition": "bǎi - hundred",
+                "key": "k",
+                "mode": "contrast",
+                "tested_words": {"百": "bǎi - hundred", "千": "thousand"},
+                **source_extra,
+            },
+            ensure_ascii=False,
+        )
+    )
+    note.tags = ["chinese-frontier::generated", "disambiguation"]
+    collection.add_note(note, 1)
+    card = note.cards()[0]
+    card.type = card.queue = 2
+    card.reps, card.ivl = 5, 12
+    collection.update_card(card)
+    return note, card
+
+
+def test_upgrade_reverts_unreported_contrast_to_its_first_example(
+    collection: Collection,
+) -> None:
+    note, card = contrast_note(collection, {})
+    reported, _ = contrast_note(collection, {"disambiguation": {"with": "千"}})
+    upgrade_presentation(collection)
+    after = collection.get_note(note.id)
+    assert after["Text"] == "这本书有一{{c1::百}}页。"
+    assert after["Translation"] == "This book has one hundred pages."
+    assert (after["Pinyin"], after["Target"]) == ("bǎi", "百")
+    assert (after["Meaning"], after["CardKind"]) == ("bǎi - hundred", "")
+    assert "disambiguation" not in after.tags
+    source_data = json.loads(after["Source"].replace("&quot;", '"'))
+    assert source_data["mode"] == "word"
+    assert source_data["tested_words"] == {"百": "bǎi - hundred"}
+    kept = after.cards()[0]
+    assert (kept.id, kept.reps, kept.ivl) == (card.id, 5, 12)
+    assert needs_audit(dict(after.items()))
+    assert collection.get_note(reported.id)["Text"] == reported["Text"]
+    assert "disambiguation" in collection.get_note(reported.id).tags
+    assert not upgrade_presentation(collection).note
 
 
 def test_character_word_needs_all_siblings_learned_for_context(
@@ -1379,7 +1530,8 @@ def test_chinese_approved_checkpoint_survives_later_model_failure(
     monkeypatch.setattr(generation.Lexicon, "load", lambda _folder: lexicon)
     monkeypatch.setattr(generation.CliGenerator, "__init__", lambda *args: None)
     monkeypatch.setattr(generation.CliGenerator, "check_login", lambda self: None)
-    second = replace(source(), card_id=2, note_id=2, word="千")
+    # A multi-character word has a character fallback attempt left to fail.
+    second = replace(source(), card_id=2, note_id=2, word="学生")
     responses = iter(
         [
             {"proposals": [{"card_id": 1, "candidates": [candidate().__dict__]}]},
@@ -1478,13 +1630,13 @@ def test_chinese_empty_proposal_reason_guides_next_retrieval_and_is_persisted(
 
     monkeypatch.setattr(generation.CliGenerator, "request", request)
     known = {chr(0x3400 + i): "ordinary" for i in range(400)} | {"付款": "payment"}
-    result = generate([source()], known, {}, tmp_path, Event())
+    # A single-character word has no second attempt to guide.
+    target = source("学生")
+    result = generate([target], known, {}, tmp_path, Event())
     assert "付款" not in {w["word"] for w in payloads[0]["known_words"]}
     assert "付款" in {w["word"] for w in payloads[1]["known_words"]}
-    assert payloads[1]["feedback"][source().key] == "Need payment context."
-    assert (
-        json.loads(result.deferred[source().key])["reason"] == "Need payment context."
-    )
+    assert payloads[1]["feedback"][target.key] == "Need payment context."
+    assert json.loads(result.deferred[target.key])["reason"] == "Need payment context."
 
 
 METADATA = {"Source", "Dependencies", "Disambiguation"}

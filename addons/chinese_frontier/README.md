@@ -95,11 +95,20 @@ targets are deferred with backoff and retried when vocabulary changes.
 ## Daily limits and recovery
 
 Generation independently checks plausible alternative answers for every blank.
-Ambiguous examples are rewritten with fuller context, then tried as contrast pairs
-before using character clozes as a fallback. Contrast pairs hide both whole words
-with `c1`, producing one card. Character fallback assigns a separate ordinal to each
-distinct character; repeated characters share an ordinal to prevent copying.
+Ambiguous examples are rewritten with fuller context before using character clozes
+as a fallback. Character fallback assigns a separate ordinal to each distinct
+character; repeated characters share an ordinal to prevent copying.
 Single-character and repeated-only words cannot use that fallback.
+
+Contrast pairs are only made for a confusion you report, never to rescue an
+ambiguous example: a confusion is a fact about your recall, seen only in review.
+Right-click a generated card during review and choose **I answered a different
+word...**. The word is recorded in the note's `Source` field, and the note is
+regenerated in place as a pair contrasting the two words. Both whole words are
+hidden with `c1`, producing one card that keeps its history. If no clear pair passes
+review, the existing card is kept and the attempt is logged. Older contrast pairs
+made without a reported confusion are reduced to their first example once and
+re-audited.
 
 Every disambiguation card shows **Disambiguation** on both review sides. Ordinary
 multiple-cloze cards are not labeled automatically. The editor-only `Disambiguation`
