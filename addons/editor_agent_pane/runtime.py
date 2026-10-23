@@ -12,6 +12,7 @@ from typing import Any
 import aqt
 from aqt import gui_hooks
 from aqt.editor import Editor, EditorMode
+from aqt.operations import CollectionOp
 from aqt.operations.note import update_note, update_notes
 from aqt.qt import (
     QAction,
@@ -96,6 +97,7 @@ from .patches import (
     FieldSnapshot,
     MultiCardSnapshot,
     MultiNotePatch,
+    NoteCreate,
     NotePatch,
     PatchValidationError,
     SelectedCardSnapshot,
@@ -103,6 +105,7 @@ from .patches import (
     SelectedTextSnapshot,
     validate_selected_text_snapshot,
 )
+from .preview import apply_proposal_changes, create_preview
 from .queue_runner import refresh_snapshot, snapshot_note_ids
 from .queue_store import (
     APPLIED,
@@ -119,6 +122,7 @@ from .recent_folders import (
 )
 from .snapshots import Patch, Snapshot, patch_from_dict, snapshot_from_dict
 from .surface import (
+    CreatePreview,
     js_append_to_activity,
     js_append_transcript,
     js_apply_agent_proposal,
@@ -127,6 +131,7 @@ from .surface import (
     js_set_proposal,
     multi_note_patch_card_ids,
     render_activity_line,
+    render_creates_proposal,
     render_multi_note_card_proposal_diff,
     render_proposal_diff,
     selection_context_label_text,
@@ -143,6 +148,9 @@ from .thread_view import (
     SOURCE_BROWSER,
     SOURCE_BROWSER_MULTI,
     SOURCE_EDIT_CURRENT,
+    created_note_ids,
+    created_notes_fragment,
+    parse_open_note_command,
     pick_thread,
     reviewer_card_html,
     selected_text_of,
@@ -598,10 +606,12 @@ class MultiCardProposalDialog(QDialog):
         patch: MultiNotePatch,
         apply_callback: Callable[[set[int]], bool],
         discard_callback: Callable[[], None],
+        create_previews: list[CreatePreview | None] | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.snapshot = snapshot
         self.patch = patch
+        self.create_previews = create_previews
         self.apply_callback = apply_callback
         self.discard_callback = discard_callback
         self.cards = tuple(
@@ -691,6 +701,7 @@ class MultiCardProposalDialog(QDialog):
                     self.snapshot,
                     self.patch,
                     card.card_id,
+                    create_previews=self.create_previews,
                 )
             )
         )
@@ -849,6 +860,7 @@ class EditorAgentPane(QWidget):
             ],
             context=self,
         )
+        self.surface.set_bridge_command(self._on_bridge_cmd, self)
 
         self.prompt = PromptEdit(
             self._send,
@@ -1664,8 +1676,46 @@ class EditorAgentPane(QWidget):
         assert self.editor is not None
         renderer = LegacyLatexPreviewRenderer(col=self.editor.mw.col, notetype=notetype)
         self.surface.eval(
-            js_set_proposal(render_proposal_diff(snapshot, patch, renderer.render))
+            js_set_proposal(
+                render_proposal_diff(
+                    snapshot,
+                    patch,
+                    renderer.render,
+                    create_previews=self._create_previews(patch.note_creates),
+                )
+            )
         )
+
+    def _col(self) -> Any:
+        editor = getattr(self, "editor", None)
+        if editor is not None:
+            return getattr(editor.mw, "col", None)
+        browser = getattr(self, "browser", None)
+        return getattr(browser, "col", None) if browser is not None else None
+
+    def _create_previews(
+        self, creates: tuple[NoteCreate, ...]
+    ) -> list[CreatePreview | None]:
+        """Rendered cards and duplicate hits for proposed notes, at render time."""
+        if not creates:
+            return []
+        col = self._col()
+        previews: list[CreatePreview | None] = []
+        for create in creates:
+            try:
+                previews.append(create_preview(col, create) if col else None)
+            except Exception:
+                previews.append(None)
+        return previews
+
+    def _on_bridge_cmd(self, cmd: str) -> Any:
+        note_id = parse_open_note_command(cmd)
+        if note_id is None:
+            return None
+        mw = aqt.mw
+        if mw is not None:
+            aqt.dialogs.open("Browser", mw, search=(f"nid:{note_id}",))
+        return None
 
     def _set_multi_proposal(
         self,
@@ -1673,7 +1723,15 @@ class EditorAgentPane(QWidget):
         patch: MultiNotePatch,
     ) -> None:
         card_ids = multi_note_patch_card_ids(snapshot, patch)
+        previews = self._create_previews(patch.note_creates)
         if not card_ids:
+            if patch.note_creates:
+                self.surface.eval(
+                    js_set_proposal(
+                        render_creates_proposal(patch, create_previews=previews)
+                    )
+                )
+                return
             self._clear_proposal()
             self.apply_button.setEnabled(False)
             return
@@ -1683,6 +1741,7 @@ class EditorAgentPane(QWidget):
                     snapshot,
                     patch,
                     card_ids[0],
+                    create_previews=previews,
                 )
             )
         )
@@ -1740,7 +1799,7 @@ class EditorAgentPane(QWidget):
         if proposal is None or snapshot is None:
             return None
         try:
-            patch = patch_from_dict(proposal.patch)
+            patch = patch_from_dict(proposal.patch, snapshot)
         except Exception:
             return None
         return thread, proposal, snapshot, patch
@@ -1829,6 +1888,11 @@ class EditorAgentPane(QWidget):
             thread, service.store.messages(thread.id), selected
         ):
             self._append_transcript(fragment)
+        created = created_notes_fragment(
+            created_note_ids(service.store.proposals(thread.id))
+        )
+        if created is not None:
+            self._append_transcript(created)
         banner = status_fragment(thread)
         if banner is not None:
             self._append_transcript(banner)
@@ -1848,6 +1912,7 @@ class EditorAgentPane(QWidget):
         if (
             became_ready
             and isinstance(shown, MultiNotePatch)
+            and shown.note_updates
             and isinstance(snapshot, MultiCardSnapshot)
         ):
             self._show_multi_proposal_dialog(thread.id, snapshot, shown)
@@ -2069,6 +2134,7 @@ class EditorAgentPane(QWidget):
             snapshot,
             reviewer=reviewer if source == SOURCE_EDIT_CURRENT else None,
             note_mod=int(note_mod) if isinstance(note_mod, int) else None,
+            deck_id=self._default_deck_id(snapshot),
         )
         thread = service.store.create_thread(context, settings, prompt, note_id=note_id)
         if note_id is None:
@@ -2079,6 +2145,33 @@ class EditorAgentPane(QWidget):
         self._record_prompt(settings, prompt)
         service.runner.enqueue_kick()
         self._load_threads(select=thread.id)
+
+    def _default_deck_id(self, snapshot: Snapshot) -> int | None:
+        """The deck new notes default to: the source card's home deck, or the
+        Add Cards target deck."""
+        try:
+            if isinstance(snapshot, MultiCardSnapshot):
+                return next(
+                    (card.deck_id for card in snapshot.cards if card.deck_id),
+                    None,
+                )
+            editor = self.editor
+            if editor is None:
+                return None
+            if editor.card is not None:
+                return int(editor.card.current_deck_id())
+            if editor.editorMode is EditorMode.ADD_CARDS:
+                chooser = getattr(
+                    getattr(editor, "parentWindow", None), "deck_chooser", None
+                )
+                return int(chooser.selected_deck_id) if chooser is not None else None
+            note = editor.note
+            if note is not None and note.id:
+                cards = note.cards()
+                return int(cards[0].current_deck_id()) if cards else None
+        except Exception:
+            return None
+        return None
 
     def _reply_to_thread(self, thread_id: str, prompt: str, generation: int) -> None:
         if generation != self._context_generation:
@@ -2210,8 +2303,19 @@ class EditorAgentPane(QWidget):
             return
         thread, proposal, snapshot, patch = found
         if isinstance(patch, MultiNotePatch):
-            if isinstance(snapshot, MultiCardSnapshot):
+            if not patch.note_updates:
+                self._apply_changes(
+                    thread.id, thread.status, proposal.version, [], patch.note_creates
+                )
+            elif isinstance(snapshot, MultiCardSnapshot):
                 self._show_multi_proposal_dialog(thread.id, snapshot, patch)
+            return
+        if not patch.has_note_update():
+            # Only new notes: nothing in the editor to save or overwrite (in Add
+            # Cards they are added directly, not filled into the editor).
+            self._apply_changes(
+                thread.id, thread.status, proposal.version, [], patch.note_creates
+            )
             return
         if self.editor is None:
             return
@@ -2251,13 +2355,65 @@ class EditorAgentPane(QWidget):
         if reason is not None:
             showWarning(reason, parent=self)
             return
+        creates = patch.note_creates
         try:
-            apply_patch_to_editor(self.editor, patch)
+            # With new notes, the current note is saved in the same undoable op.
+            apply_patch_to_editor(self.editor, patch, save=not creates)
         except PatchValidationError as exc:
             showWarning(str(exc), parent=self)
             return
+        if creates:
+            in_add_cards = self.editor.editorMode is EditorMode.ADD_CARDS
+            self._apply_changes(
+                thread_id,
+                thread.status,
+                version,
+                [] if in_add_cards else [self.editor.note],
+                creates,
+            )
+            return
         if self._finish_thread(thread_id, thread.status, APPLIED):
             tooltip("Agent proposal applied.", parent=self)
+
+    def _apply_changes(
+        self,
+        thread_id: str,
+        from_status: str,
+        version: int,
+        updates: list[Any],
+        creates: tuple[NoteCreate, ...],
+    ) -> bool:
+        """Save ``updates`` and add ``creates`` in one undoable CollectionOp.
+
+        The thread is marked applied before the write starts, so Apply, Reply
+        and Discard are unavailable while it runs; a failed write reverts it.
+        """
+        if not self._finish_thread(thread_id, from_status, APPLIED):
+            return False
+        created: list[int] = []
+
+        def op(col: Any) -> Any:
+            return apply_proposal_changes(
+                col, updates=updates, creates=creates, created_ids=created
+            )
+
+        def on_success(_changes: Any) -> None:
+            service = self._service()
+            if created and service is not None:
+                service.store.set_proposal_result(
+                    thread_id, version, {"created_note_ids": list(created)}
+                )
+                self._broadcast_thread_changed(thread_id)
+            tooltip("Agent proposal applied.", parent=self)
+
+        def on_failure(exc: Exception) -> None:
+            self._finish_thread(thread_id, APPLIED, from_status)
+            showWarning(str(exc) or type(exc).__name__, parent=self)
+
+        CollectionOp(parent=self, op=op).success(on_success).failure(
+            on_failure
+        ).run_in_background(initiator=self)
+        return True
 
     def _show_multi_proposal_dialog(
         self,
@@ -2277,6 +2433,7 @@ class EditorAgentPane(QWidget):
                 thread_id, checked
             ),
             discard_callback=lambda: self._discard_pending_patch(thread_id),
+            create_previews=self._create_previews(patch.note_creates),
         )
         self._multi_proposal_dialog = dialog
 
@@ -2315,9 +2472,13 @@ class EditorAgentPane(QWidget):
         except PatchValidationError as exc:
             showWarning(str(exc), parent=self)
             return False
-        if not notes:
+        if not notes and not patch.note_creates:
             showWarning("No checked cards have proposed changes.", parent=self)
             return False
+        if patch.note_creates:
+            return self._apply_changes(
+                thread_id, thread.status, proposal.version, notes, patch.note_creates
+            )
 
         # Mark applied before the write starts, so Apply, Reply and Discard are
         # unavailable while it runs; a failed write reverts it.
@@ -2455,7 +2616,14 @@ def browser_multi_card_snapshot(browser: Any) -> MultiCardSnapshot:
     return MultiCardSnapshot(cards=tuple(cards), notes=tuple(notes))
 
 
-def apply_patch_to_editor(editor: Editor, patch: NotePatch) -> None:
+def apply_patch_to_editor(
+    editor: Editor, patch: NotePatch, *, save: bool = True
+) -> None:
+    """Fill the editor with the patch's update to the current note.
+
+    Outside Add Cards the note is then saved, unless ``save`` is False (the
+    caller saves it as part of a larger op).
+    """
     note = editor.note
     if note is None:
         raise PatchValidationError("No current note.")
@@ -2487,7 +2655,7 @@ def apply_patch_to_editor(editor: Editor, patch: NotePatch) -> None:
     if field_updates:
         editor.checkValid()
 
-    if editor.editorMode is not EditorMode.ADD_CARDS:
+    if save and editor.editorMode is not EditorMode.ADD_CARDS:
         update_note(parent=editor.widget, note=note).run_in_background(initiator=editor)
 
 

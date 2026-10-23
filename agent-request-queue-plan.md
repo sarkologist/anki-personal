@@ -1,7 +1,8 @@
 # Agent request queue — design and spec
 
-**Status:** phase 1 implemented on `claude/agent-queue-phase1` (see Results /
-notes). Phases at the bottom.
+**Status:** phase 1 implemented on `claude/agent-queue-phase1`; phase 2a (new
+notes, unified schema) on `claude/agent-queue-phase2`, queue window pending
+(see Results / notes). Phases at the bottom.
 
 Builds on the repo-local add-on in [addons/editor_agent_pane](addons/editor_agent_pane),
 which already has the provider clients (Codex, Claude, Ollama), the fixed JSON
@@ -472,3 +473,73 @@ Codex both failed on account/environment grounds from inside that session):
   Pre-existing editor behaviour in the hidden-window harness, related to the
   blank-webview work in editor-blank-webview-recovery-plan.md; not caused by
   this branch, but worth a separate look.
+
+**Phase 2a (2026-10-23, uncommitted on `claude/agent-queue-phase2`).** New
+notes and the unified patch schema; the queue window is phase 2b.
+
+- Schema: one `PATCH_SCHEMA` (`summary`, `note_updates`, `note_creates`,
+  `assumptions`, `questions`, all required) for Codex `--output-schema` and
+  Claude `--json-schema`; the prompt's "When proposing a patch" section
+  describes only it, plus "the user may not be watching: propose, record
+  guesses in assumptions and open points in questions". Ollama's normalizer
+  fills defaults for the unified shape and still accepts the legacy list and
+  top-level `field_updates` shapes; its repair prompt describes the new shape.
+- `patches.py`: `NoteCreate`, `NotetypeInfo`; `note_creates`/`assumptions`/
+  `questions` on `NotePatch` and `MultiNotePatch`; `has_changes()` counts
+  creates (`NotePatch.has_note_update()` is "changes the current note").
+  `validate_patch(raw, snapshot, *, notetypes, deck_ids)` dispatches on the
+  snapshot kind and accepts the legacy top-level `field_updates` shape.
+  Creates: note type exists, field names match exactly (stored in the note
+  type's order), first field non-empty after stripping HTML (media counts as
+  content), deck exists, same HTML-fragment rules, tags normalized. Single-note
+  `note_updates` has at most one entry, for the current note (`note_id` null in
+  Add Cards). `validate_note_patch`/`validate_multi_note_patch` remain as
+  wrappers.
+- `snapshots.patch_to_dict` writes the unified shape;
+  `patch_from_dict(data, snapshot)` now takes the thread's snapshot (the shape
+  no longer says single vs multi) and still reads phase-1 rows.
+- Runner: `read_catalog` (note types with field names, normal decks) via
+  `run_on_main` once per run; a "Available note types and decks as JSON"
+  prompt section lists the source note type and the default deck first,
+  marked `default`. The default deck is captured at Send as
+  `context_json.deck_id` (card's home deck, Add Cards target deck, or the first
+  selected card's deck). `base_json` lists only updated notes.
+- Store: schema v2 adds `proposals.result_json`;
+  `set_proposal_result(thread_id, version, result)` records
+  `{"created_note_ids": [...]}`, which the transcript shows as `nid:` links
+  that open the Browser.
+- Rendering: assumptions and questions above the diff; per new note the note
+  type and deck names, a field grid, and each card it would generate
+  (`col.new_note` → fields/tags → `ephemeral_card(ord)` → `question()`/
+  `answer()` → style stripped, sanitized; cloze notes use
+  `cloze_numbers_in_fields()`), falling back to the grid alone. Duplicate
+  warning from Anki's dupe search, `"dupe:<notetype id>,<first field>"`
+  (quotes and backslashes escaped), run at render time: "Possible duplicate of
+  nid … (Front: …)", first three hits. Collection access lives in `preview.py`;
+  HTML in `surface.py`.
+- Apply: `preview.apply_proposal_changes` saves updated notes and adds the new
+  ones inside one `CollectionOp` under a custom undo entry merged with
+  `merge_undo_entries`, so one Undo reverts the whole apply. The thread is
+  marked applied before the op and reverted on failure (as the multi-note
+  path). Edit Current/Browser: the editor is filled through
+  `call_after_note_saved` as before, and when the patch also creates notes the
+  current note is saved in that same op instead of by `update_note`. A
+  creates-only proposal (single or multi) applies directly: no editor fill, no
+  dialog, and in Add Cards no unsaved-note staleness check.
+
+Deviations:
+
+- Clients validate structure only (`notetypes=None, deck_ids=None` skips the
+  collection checks); the runner re-validates every patch against the catalog,
+  so the collection checks never depend on which client ran. A rejected patch
+  fails the run with "The agent's proposal was rejected: …".
+- The card preview uses `ephemeral_card` + `question()`/`answer()` rather than
+  `col.render` directly (same renderer underneath). For standard note types
+  every template is previewed, including ones whose front would render empty
+  (Anki would not generate those cards).
+- Multi-note proposals that also create notes: the review dialog shows the new
+  notes on every page and "Apply checked" applies the checked updates plus all
+  new notes.
+- If the combined op fails after the editor was filled (Edit Current, update
+  plus creates), the thread returns to ready but the editor keeps the filled
+  fields unsaved; a retry then reports the note as changed.

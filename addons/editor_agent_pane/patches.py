@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import difflib
+import html as html_module
 import re
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,6 +20,10 @@ CLIPBOARD_FRAGMENT_RE = re.compile(
     r"<!--\s*(?:StartFragment|EndFragment)\b",
     re.IGNORECASE,
 )
+HTML_TAG_RE = re.compile(r"<[^>]*>")
+MEDIA_TAG_RE = re.compile(r"<\s*(?:img|audio|video)\b", re.IGNORECASE)
+SOUND_TAG_RE = re.compile(r"\[sound:[^\]]+\]")
+NO_CHANGES = "Patch does not contain any changes."
 
 
 class PatchValidationError(ValueError):
@@ -254,15 +260,49 @@ class TagPatch:
 
 
 @dataclass(frozen=True)
+class NotetypeInfo:
+    """What validation needs to know about a note type in the collection."""
+
+    name: str
+    field_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class NoteCreate:
+    """A new note the agent proposes; fields are in the note type's order."""
+
+    notetype_id: int
+    deck_id: int
+    fields: tuple[FieldSnapshot, ...]
+    tags: tuple[str, ...] = ()
+
+    def field_names(self) -> tuple[str, ...]:
+        return tuple(field.name for field in self.fields)
+
+    def field_html(self, name: str) -> str:
+        for field_snapshot in self.fields:
+            if field_snapshot.name == name:
+                return field_snapshot.html
+        raise KeyError(name)
+
+
+@dataclass(frozen=True)
 class NotePatch:
     summary: str
     note_id: int | None
     notetype_id: int
     field_updates: dict[str, str] = field(default_factory=dict)
     tag_patch: TagPatch = field(default_factory=TagPatch)
+    note_creates: tuple[NoteCreate, ...] = ()
+    assumptions: tuple[str, ...] = ()
+    questions: tuple[str, ...] = ()
+
+    def has_note_update(self) -> bool:
+        """Does the patch change the current note (as opposed to only adding)?"""
+        return bool(self.field_updates) or self.tag_patch.has_changes()
 
     def has_changes(self) -> bool:
-        return bool(self.field_updates) or self.tag_patch.has_changes()
+        return self.has_note_update() or bool(self.note_creates)
 
 
 @dataclass(frozen=True)
@@ -280,9 +320,14 @@ class MultiNoteUpdate:
 class MultiNotePatch:
     summary: str
     note_updates: tuple[MultiNoteUpdate, ...]
+    note_creates: tuple[NoteCreate, ...] = ()
+    assumptions: tuple[str, ...] = ()
+    questions: tuple[str, ...] = ()
 
     def has_changes(self) -> bool:
-        return any(update.has_changes() for update in self.note_updates)
+        return any(update.has_changes() for update in self.note_updates) or bool(
+            self.note_creates
+        )
 
     def update_for_note(self, note_id: int) -> MultiNoteUpdate | None:
         for update in self.note_updates:
@@ -313,57 +358,230 @@ def _normalize_tags(value: Any, key: str) -> tuple[str, ...]:
     return tuple(normalized)
 
 
-def validate_note_patch(raw: dict[str, Any], snapshot: EditorSnapshot) -> NotePatch:
+Notetypes = Mapping[int, NotetypeInfo]
+
+
+def validate_patch(
+    raw: Any,
+    snapshot: EditorSnapshot | MultiCardSnapshot,
+    *,
+    notetypes: Notetypes | None,
+    deck_ids: Collection[int] | None,
+) -> NotePatch | MultiNotePatch:
+    """Validate an agent patch in the unified schema (or a legacy shape).
+
+    ``notetypes`` and ``deck_ids`` describe the collection; the caller fetches
+    them so validation stays pure. ``None`` skips the collection checks (the
+    provider clients check structure only; the queue runner checks again with
+    the collection's note types and decks).
+    """
     if not isinstance(raw, dict):
         raise PatchValidationError("Patch must be a JSON object.")
+    if isinstance(snapshot, MultiCardSnapshot):
+        return _validate_multi_patch(raw, snapshot, notetypes, deck_ids)
+    return _validate_single_patch(raw, snapshot, notetypes, deck_ids)
 
-    raw_note_id = raw.get("note_id")
-    note_id = int(raw_note_id) if raw_note_id not in (None, "") else None
-    if snapshot.note_id not in (None, 0) and note_id not in (None, snapshot.note_id):
-        raise PatchValidationError("Patch targets a different note.")
 
-    raw_notetype_id = raw.get("notetype_id", snapshot.notetype_id)
-    try:
-        notetype_id = int(raw_notetype_id)
-    except (TypeError, ValueError) as exc:
-        raise PatchValidationError("Patch notetype_id must be an integer.") from exc
-    if notetype_id != snapshot.notetype_id:
-        raise PatchValidationError("Patch targets a different note type.")
+def validate_note_patch(raw: dict[str, Any], snapshot: EditorSnapshot) -> NotePatch:
+    patch = validate_patch(raw, snapshot, notetypes=None, deck_ids=None)
+    assert isinstance(patch, NotePatch)
+    return patch
 
-    field_updates = _validate_field_updates(
-        raw.get("field_updates", []),
-        set(snapshot.field_names()),
+
+def _is_legacy_single_shape(raw: dict[str, Any]) -> bool:
+    return "note_updates" not in raw and (
+        "field_updates" in raw or "tags" in raw or "note_id" in raw
     )
 
-    raw_tags = raw.get("tags", {})
-    if raw_tags is None:
-        raw_tags = {}
-    if not isinstance(raw_tags, dict):
-        raise PatchValidationError("tags must be an object.")
 
-    raw_replace = raw_tags.get("replace")
-    replace = (
-        None if raw_replace is None else _normalize_tags(raw_replace, "tags.replace")
-    )
-    tag_patch = TagPatch(
-        replace=replace,
-        add=_normalize_tags(raw_tags.get("add"), "tags.add"),
-        remove=_normalize_tags(raw_tags.get("remove"), "tags.remove"),
-    )
+def _validate_single_patch(
+    raw: dict[str, Any],
+    snapshot: EditorSnapshot,
+    notetypes: Notetypes | None,
+    deck_ids: Collection[int] | None,
+) -> NotePatch:
+    current_note_id = snapshot.note_id or None
+    if _is_legacy_single_shape(raw):
+        raw_update: dict[str, Any] | None = raw
+    else:
+        raw_updates = raw.get("note_updates")
+        if raw_updates is None:
+            raw_updates = []
+        if not isinstance(raw_updates, list):
+            raise PatchValidationError("note_updates must be a list.")
+        if len(raw_updates) > 1:
+            raise PatchValidationError(
+                "note_updates may only contain the current note."
+            )
+        raw_update = raw_updates[0] if raw_updates else None
+        if raw_update is not None and not isinstance(raw_update, dict):
+            raise PatchValidationError("Each note update must be an object.")
 
-    summary = raw.get("summary", "")
-    if not isinstance(summary, str):
-        raise PatchValidationError("summary must be a string.")
+    note_id = current_note_id
+    notetype_id = snapshot.notetype_id
+    field_updates: dict[str, str] = {}
+    tag_patch = TagPatch()
+    if raw_update is not None:
+        raw_note_id = raw_update.get("note_id")
+        try:
+            target = int(raw_note_id) if raw_note_id not in (None, "") else None
+        except (TypeError, ValueError) as exc:
+            raise PatchValidationError("note_id must be an integer.") from exc
+        if target == 0:
+            target = None
+        if current_note_id is not None and target not in (None, current_note_id):
+            raise PatchValidationError("Patch targets a different note.")
+        if (
+            current_note_id is None
+            and target is not None
+            and not _is_legacy_single_shape(raw)
+        ):
+            raise PatchValidationError(
+                "Patch targets a different note; the current note has no id yet, "
+                "so use note_id null."
+            )
+        if _is_legacy_single_shape(raw):
+            note_id = target
+        raw_notetype_id = raw_update.get("notetype_id", snapshot.notetype_id)
+        try:
+            notetype_id = int(raw_notetype_id)
+        except (TypeError, ValueError) as exc:
+            raise PatchValidationError("Patch notetype_id must be an integer.") from exc
+        if notetype_id != snapshot.notetype_id:
+            raise PatchValidationError("Patch targets a different note type.")
+        field_updates = _validate_field_updates(
+            raw_update.get("field_updates", []),
+            set(snapshot.field_names()),
+        )
+        tag_patch = _validate_tag_patch(raw_update.get("tags", {}))
+
     patch = NotePatch(
-        summary=summary.strip() or "Proposed note update",
+        summary=_summary(raw, "Proposed note update"),
         note_id=note_id,
         notetype_id=notetype_id,
         field_updates=field_updates,
         tag_patch=tag_patch,
+        note_creates=_validate_note_creates(
+            raw.get("note_creates"), notetypes, deck_ids
+        ),
+        assumptions=_string_list(raw.get("assumptions"), "assumptions"),
+        questions=_string_list(raw.get("questions"), "questions"),
     )
     if not patch.has_changes():
-        raise PatchValidationError("Patch does not contain any changes.")
+        raise PatchValidationError(NO_CHANGES)
     return patch
+
+
+def _summary(raw: dict[str, Any], default: str) -> str:
+    summary = raw.get("summary", "")
+    if summary is None:
+        summary = ""
+    if not isinstance(summary, str):
+        raise PatchValidationError("summary must be a string.")
+    return summary.strip() or default
+
+
+def _string_list(value: Any, key: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise PatchValidationError(f"{key} must be a list of strings.")
+    return tuple(text for v in value if (text := v.strip()))
+
+
+def _validate_note_creates(
+    raw_creates: Any,
+    notetypes: Notetypes | None,
+    deck_ids: Collection[int] | None,
+) -> tuple[NoteCreate, ...]:
+    if raw_creates is None:
+        return ()
+    if not isinstance(raw_creates, list):
+        raise PatchValidationError("note_creates must be a list.")
+    creates = []
+    for index, raw_create in enumerate(raw_creates):
+        try:
+            creates.append(_validate_note_create(raw_create, notetypes, deck_ids))
+        except PatchValidationError as exc:
+            raise PatchValidationError(f"New note {index + 1}: {exc}") from exc
+    return tuple(creates)
+
+
+def _int_value(value: Any, key: str) -> int:
+    if isinstance(value, bool):
+        raise PatchValidationError(f"{key} must be an integer.")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise PatchValidationError(f"{key} must be an integer.") from exc
+
+
+def _validate_note_create(
+    raw: Any,
+    notetypes: Notetypes | None,
+    deck_ids: Collection[int] | None,
+) -> NoteCreate:
+    if not isinstance(raw, dict):
+        raise PatchValidationError("Each new note must be an object.")
+    notetype_id = _int_value(raw.get("notetype_id"), "notetype_id")
+    deck_id = _int_value(raw.get("deck_id"), "deck_id")
+    notetype = None
+    if notetypes is not None:
+        notetype = notetypes.get(notetype_id)
+        if notetype is None:
+            raise PatchValidationError(f"Unknown note type: {notetype_id}.")
+    if deck_ids is not None and deck_id not in deck_ids:
+        raise PatchValidationError(f"Unknown deck: {deck_id}.")
+
+    raw_fields = raw.get("fields")
+    if not isinstance(raw_fields, list):
+        raise PatchValidationError("fields must be a list.")
+    fields: dict[str, str] = {}
+    for raw_field in raw_fields:
+        if not isinstance(raw_field, dict):
+            raise PatchValidationError("Each field must be an object.")
+        name = raw_field.get("name")
+        value = raw_field.get("html")
+        if not isinstance(name, str) or not name:
+            raise PatchValidationError("Field name must be a string.")
+        if name in fields:
+            raise PatchValidationError(f"Duplicate field: {name}.")
+        if not isinstance(value, str):
+            raise PatchValidationError(f"Field {name} must contain html.")
+        fields[name] = _normalize_field_html(name, value)
+
+    if notetype is not None:
+        unknown = [name for name in fields if name not in notetype.field_names]
+        if unknown:
+            raise PatchValidationError(
+                f"Unknown field for note type {notetype.name}: {', '.join(unknown)}."
+            )
+        missing = [name for name in notetype.field_names if name not in fields]
+        if missing:
+            raise PatchValidationError(
+                f"New note is missing fields: {', '.join(missing)}."
+            )
+        order: tuple[str, ...] = notetype.field_names
+    else:
+        order = tuple(fields)
+    if not order:
+        raise PatchValidationError("New note has no fields.")
+    if html_is_empty(fields[order[0]]):
+        raise PatchValidationError(f"The first field ({order[0]}) must not be empty.")
+    return NoteCreate(
+        notetype_id=notetype_id,
+        deck_id=deck_id,
+        fields=tuple(FieldSnapshot(name, fields[name]) for name in order),
+        tags=_normalize_tags(raw.get("tags"), "tags"),
+    )
+
+
+def html_is_empty(value: str) -> bool:
+    """True if a field has no text or media once HTML and whitespace are gone."""
+    if MEDIA_TAG_RE.search(value) or SOUND_TAG_RE.search(value):
+        return False
+    text = html_module.unescape(HTML_TAG_RE.sub("", value))
+    return not text.replace("\xa0", " ").strip()
 
 
 def _validate_field_updates(
@@ -449,10 +667,24 @@ def validate_multi_note_patch(
     raw: dict[str, Any],
     snapshot: MultiCardSnapshot,
 ) -> MultiNotePatch:
-    if not isinstance(raw, dict):
-        raise PatchValidationError("Patch must be a JSON object.")
+    patch = validate_patch(raw, snapshot, notetypes=None, deck_ids=None)
+    assert isinstance(patch, MultiNotePatch)
+    return patch
 
+
+def _validate_multi_patch(
+    raw: dict[str, Any],
+    snapshot: MultiCardSnapshot,
+    notetypes: Notetypes | None,
+    deck_ids: Collection[int] | None,
+) -> MultiNotePatch:
+    if "field_updates" in raw and "note_updates" not in raw:
+        raise PatchValidationError(
+            "Patch must list selected-note changes in note_updates."
+        )
     raw_updates = raw.get("note_updates")
+    if raw_updates is None:
+        raw_updates = []
     if not isinstance(raw_updates, list):
         raise PatchValidationError("note_updates must be a list.")
 
@@ -496,15 +728,17 @@ def validate_multi_note_patch(
         if update.has_changes():
             updates.append(update)
 
-    summary = raw.get("summary", "")
-    if not isinstance(summary, str):
-        raise PatchValidationError("summary must be a string.")
     patch = MultiNotePatch(
-        summary=summary.strip() or "Proposed selected-card updates",
+        summary=_summary(raw, "Proposed selected-card updates"),
         note_updates=tuple(updates),
+        note_creates=_validate_note_creates(
+            raw.get("note_creates"), notetypes, deck_ids
+        ),
+        assumptions=_string_list(raw.get("assumptions"), "assumptions"),
+        questions=_string_list(raw.get("questions"), "questions"),
     )
     if not patch.has_changes():
-        raise PatchValidationError("Patch does not contain any changes.")
+        raise PatchValidationError(NO_CHANGES)
     return patch
 
 

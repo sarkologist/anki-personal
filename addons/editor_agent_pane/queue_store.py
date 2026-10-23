@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TITLE_CHARS = 60
 
 QUEUED = "queued"
@@ -59,7 +59,7 @@ PROPOSAL_SUPERSEDED = "superseded"
 PROPOSAL_APPLIED = "applied"
 PROPOSAL_DISCARDED = "discarded"
 
-_SCHEMA = """
+_SCHEMA_V1 = """
 create table threads (
     id text primary key,
     created_at real not null,
@@ -94,6 +94,8 @@ create table proposals (
     primary key (thread_id, version)
 );
 """
+# v2: what an apply produced, e.g. {"created_note_ids": [...]}.
+_MIGRATE_V2 = "alter table proposals add column result_json text"
 
 
 class QueueTransitionError(RuntimeError):
@@ -133,6 +135,7 @@ class Proposal:
     patch: dict[str, Any]
     base: dict[str, Any]
     status: str
+    result: dict[str, Any] | None = None
 
 
 def _title(prompt: str) -> str:
@@ -181,6 +184,7 @@ def _proposal(row: sqlite3.Row) -> Proposal:
         patch=json.loads(row["patch_json"]),
         base=json.loads(row["base_json"]),
         status=row["status"],
+        result=json.loads(row["result_json"]) if row["result_json"] else None,
     )
 
 
@@ -215,7 +219,9 @@ class QueueStore:
                     f"Agent queue schema {version} is newer than this add-on supports."
                 )
             if version < 1:
-                conn.executescript(_SCHEMA)
+                conn.executescript(_SCHEMA_V1)
+            if version < 2:
+                conn.execute(_MIGRATE_V2)
             conn.execute(f"pragma user_version = {SCHEMA_VERSION}")
 
     def schema_version(self) -> int:
@@ -533,6 +539,21 @@ class QueueStore:
         )
         conn.execute("update threads set updated_at = ? where id = ?", (now, thread_id))
         return int(version)
+
+    def set_proposal_result(
+        self, thread_id: str, version: int, result: dict[str, Any] | None
+    ) -> None:
+        """Record what applying a proposal produced (e.g. created note ids)."""
+        with self._tx() as conn:
+            conn.execute(
+                "update proposals set result_json = ? where thread_id = ?"
+                " and version = ?",
+                (_dumps(result) if result is not None else None, thread_id, version),
+            )
+            conn.execute(
+                "update threads set updated_at = ? where id = ?",
+                (time.time(), thread_id),
+            )
 
     def current_proposal(self, thread_id: str) -> Proposal | None:
         with self._lock:

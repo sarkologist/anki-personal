@@ -27,6 +27,7 @@ from .queue_store import (
     RUNNING,
     STALE,
     Message,
+    Proposal,
     Thread,
 )
 from .sanitize import sanitize_html
@@ -91,12 +92,16 @@ def thread_context(
     *,
     reviewer: dict[str, Any] | None = None,
     note_mod: int | None = None,
+    deck_id: int | None = None,
 ) -> dict[str, Any]:
+    """``deck_id`` is the default deck for new notes: the source card's home
+    deck, or the Add Cards target deck."""
     return {
         "source": source,
         "snapshot": snapshot_to_dict(snapshot),
         "note_mod": note_mod,
         "reviewer": reviewer,
+        "deck_id": deck_id,
     }
 
 
@@ -187,6 +192,45 @@ def status_fragment(thread: Thread) -> str | None:
             "Send starts a new request.]",
         )
     return None
+
+
+OPEN_NOTE_COMMAND = "agentOpenNote"
+
+
+def created_note_ids(proposals: Iterable[Proposal]) -> list[int]:
+    """Notes added by applying the thread's proposals, oldest first."""
+    ids: list[int] = []
+    for proposal in proposals:
+        for note_id in (proposal.result or {}).get("created_note_ids") or ():
+            ids.append(int(note_id))
+    return ids
+
+
+def created_notes_fragment(note_ids: Sequence[int]) -> str | None:
+    """Transcript links to notes an apply created (opened in the Browser)."""
+    if not note_ids:
+        return None
+    links = ", ".join(
+        f'<a href="#" onclick="pycmd(\'{OPEN_NOTE_COMMAND}:{int(note_id)}\');'
+        f'return false;">nid:{int(note_id)}</a>'
+        for note_id in note_ids
+    )
+    label = "Created note" if len(note_ids) == 1 else "Created notes"
+    return (
+        '<section class="agent-message assistant">'
+        f'<div class="agent-role">Applied</div><div class="agent-body">{label}: '
+        f"{links}</div></section>"
+    )
+
+
+def parse_open_note_command(cmd: str) -> int | None:
+    prefix = OPEN_NOTE_COMMAND + ":"
+    if not cmd.startswith(prefix):
+        return None
+    try:
+        return int(cmd[len(prefix) :])
+    except ValueError:
+        return None
 
 
 def _is_activity_summary(text: str) -> bool:

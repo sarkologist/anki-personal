@@ -43,6 +43,9 @@ from .patches import (
     MultiCardSnapshot,
     MultiNotePatch,
     NotePatch,
+    NotetypeInfo,
+    PatchValidationError,
+    validate_patch,
 )
 from .queue_store import (
     ANSWERED,
@@ -68,6 +71,9 @@ ReadCards = Callable[[CardReadScope, Any], dict[str, Any]]
 # when the note no longer exists. Raises CollectionUnavailable (as ReadCards
 # may) when the collection is closed; the run is then re-queued.
 ReadNoteState = Callable[[list[int]], dict[int, dict[str, Any] | None]]
+# {"notetypes": [{"id", "name", "fields": [str]}], "decks": [{"id", "name"}]}
+# for the whole collection; raises CollectionUnavailable like ReadNoteState.
+ReadCatalog = Callable[[], dict[str, Any]]
 MakeAgent = Callable[[dict[str, Any]], Any]
 Notify = Callable[[str], None]
 LoggerFactory = Callable[[Thread], tuple[AgentRunLogger | None, str | None]]
@@ -195,10 +201,84 @@ def snapshot_note_ids(snapshot: Snapshot) -> list[int]:
 
 
 def patch_note_ids(patch: Patch, snapshot: Snapshot) -> list[int]:
+    """The existing notes a patch changes (new notes have no base)."""
     if isinstance(patch, MultiNotePatch):
         return list(patch.affected_note_ids())
+    if not patch.has_note_update():
+        return []
     note_id = patch.note_id or getattr(snapshot, "note_id", None)
     return [note_id] if note_id else []
+
+
+def creation_defaults(
+    context: dict[str, Any], snapshot: Snapshot
+) -> tuple[int | None, int | None]:
+    """(notetype id, deck id) a new note defaults to: the source note's."""
+    deck_id = context.get("deck_id")
+    if isinstance(snapshot, MultiCardSnapshot):
+        first = snapshot.cards[0] if snapshot.cards else None
+        notetype_id = first.notetype_id if first is not None else None
+        if deck_id is None and first is not None:
+            deck_id = first.deck_id
+    else:
+        notetype_id = snapshot.notetype_id
+    return notetype_id, int(deck_id) if isinstance(deck_id, int) else None
+
+
+def _defaults_first(
+    entries: list[dict[str, Any]], default_id: int | None
+) -> list[dict[str, Any]]:
+    marked = [
+        {**entry, "default": True} if entry.get("id") == default_id else dict(entry)
+        for entry in entries
+    ]
+    return sorted(marked, key=lambda entry: not entry.get("default"))
+
+
+def catalog_prompt_section(
+    catalog: dict[str, Any],
+    *,
+    notetype_id: int | None,
+    deck_id: int | None,
+) -> str:
+    data = {
+        "notetypes": _defaults_first(list(catalog.get("notetypes") or ()), notetype_id),
+        "decks": _defaults_first(list(catalog.get("decks") or ()), deck_id),
+    }
+    return (
+        "Available note types and decks as JSON (use these ids in note_creates; "
+        "entries marked default are the source note's note type and deck, used "
+        "unless the request implies otherwise):\n"
+        + json.dumps(data, ensure_ascii=False)
+    )
+
+
+def catalog_maps(
+    catalog: dict[str, Any],
+) -> tuple[dict[int, NotetypeInfo], set[int]]:
+    notetypes = {
+        int(entry["id"]): NotetypeInfo(
+            name=str(entry.get("name", "")),
+            field_names=tuple(str(name) for name in entry.get("fields") or ()),
+        )
+        for entry in catalog.get("notetypes") or ()
+    }
+    deck_ids = {int(entry["id"]) for entry in catalog.get("decks") or ()}
+    return notetypes, deck_ids
+
+
+def validate_against_catalog(
+    patch: Patch, snapshot: Snapshot, catalog: dict[str, Any]
+) -> Patch:
+    """Re-validate a client-validated patch with the collection's note types
+    and decks (the clients check structure only)."""
+    notetypes, deck_ids = catalog_maps(catalog)
+    try:
+        return validate_patch(
+            patch_to_dict(patch), snapshot, notetypes=notetypes, deck_ids=deck_ids
+        )
+    except PatchValidationError as exc:
+        raise RuntimeError(f"The agent's proposal was rejected: {exc}") from exc
 
 
 def _refreshed_fields(
@@ -343,6 +423,7 @@ class QueueRunner:
         logger_factory: LoggerFactory | None = None,
         concurrency: int = 1,
         on_stream_event: StreamEvent | None = None,
+        read_catalog: ReadCatalog | None = None,
     ) -> None:
         self.store = store
         self._run_on_main = run_on_main
@@ -353,6 +434,7 @@ class QueueRunner:
         self._logger_factory = logger_factory
         self._concurrency = max(1, int(concurrency))
         self._on_stream_event = on_stream_event
+        self._read_catalog = read_catalog
         self._lock = threading.Lock()
         self._stops: dict[str, threading.Event] = {}
         self._wake = threading.Event()
@@ -477,11 +559,24 @@ class QueueRunner:
             else {}
         )
         snapshot = refresh_snapshot(snapshot, states)
+        read_catalog = self._read_catalog
+        catalog: dict[str, Any] | None = (
+            self._run_on_main(read_catalog) if read_catalog is not None else None
+        )
 
         current = self.store.current_proposal(thread.id)
         reviewer = thread.context.get("reviewer")
         if isinstance(reviewer, dict) and reviewer:
             prompt = prompt + "\n\n" + reviewer_prompt_section(reviewer)
+        if catalog is not None:
+            notetype_id, deck_id = creation_defaults(thread.context, snapshot)
+            prompt = (
+                prompt
+                + "\n\n"
+                + catalog_prompt_section(
+                    catalog, notetype_id=notetype_id, deck_id=deck_id
+                )
+            )
         if current is not None:
             prompt = (
                 prompt
@@ -557,6 +652,8 @@ class QueueRunner:
         patch: Patch | None = result.proposals[-1] if result.proposals else None
         if patch is not None:
             check_patch_matches_snapshot(patch, snapshot)
+            if catalog is not None:
+                patch = validate_against_catalog(patch, snapshot, catalog)
 
         # One transaction: if it fails (e.g. the store closed during shutdown)
         # the thread stays running with its user turn pending, and is re-run.
