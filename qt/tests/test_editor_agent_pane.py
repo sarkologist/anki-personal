@@ -703,7 +703,13 @@ class FakeBrowserPane(FakeVisibleWidget):
 
 def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
     package = sys.modules["editor_agent_pane"]
-    for name in ("runtime", "queue_runtime", "thread_panel", "queue_window"):
+    for name in (
+        "runtime",
+        "queue_runtime",
+        "thread_panel",
+        "queue_window",
+        "queue_badge",
+    ):
         sys.modules.pop(f"editor_agent_pane.{name}", None)
         # `from . import x` reuses the package attribute, so drop it too.
         package.__dict__.pop(name, None)
@@ -761,6 +767,7 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         editor_did_init_buttons=[],
         editor_did_load_note=[],
         state_did_change=[],
+        top_toolbar_did_init_links=[],
         profile_did_open=[],
         profile_will_close=[],
     )
@@ -788,6 +795,8 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         "QByteArray",
         "QCheckBox",
         "QComboBox",
+        "QDateTime",
+        "QDateTimeEdit",
         "QDialog",
         "QDialogButtonBox",
         "QDockWidget",
@@ -798,6 +807,7 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         "QLabel",
         "QLineEdit",
         "QMainWindow",
+        "QMenu",
         "QPlainTextEdit",
         "QPushButton",
         "QShortcut",
@@ -8701,3 +8711,108 @@ def test_send_records_the_default_deck_for_new_notes(
     add_pane._create_thread("Write one", 0)
     added = [t for t in store.list_threads() if t.id != thread.id]
     assert added[0].context["deck_id"] == 5
+
+
+# phase 3b: stale handling in the pane
+
+
+def _pane_with_stale_actions(runtime: Any, tmp_path: Path) -> Any:
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane.rerun_button = FakeButton(False)
+    pane.retry_button = FakeButton(False)
+    pane.apply_anyway_button = FakeButton(False)
+    return pane
+
+
+def test_pane_offers_rerun_apply_anyway_and_discard_on_stale(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    from editor_agent_pane.thread_view import STALE_WARNING
+
+    store, _runner = queue
+    pane = _pane_with_stale_actions(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    assert pane.apply_button.enabled is True
+    assert pane.rerun_button.enabled is True
+    assert pane.apply_anyway_button.visible is False
+    assert pane.retry_button.visible is False
+
+    store.mark_stale(thread.id, STALE_WARNING)
+    pane.on_thread_changed(thread.id)
+
+    assert pane.apply_button.enabled is False
+    assert pane.apply_anyway_button.visible and pane.apply_anyway_button.enabled
+    assert pane.rerun_button.enabled is True
+    assert pane.discard_button.enabled is True
+    shown = "".join(pane.surface.evals)
+    assert "agent-notice" in shown and "agent-error" not in shown
+
+
+def test_pane_rerun_queues_the_thread(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    from editor_agent_pane.queue_store import RERUN_MESSAGE
+    from editor_agent_pane.thread_view import STALE_WARNING
+
+    store, runner = queue
+    pane = _pane_with_stale_actions(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    store.mark_stale(thread.id, STALE_WARNING)
+    pane._load_threads()
+
+    pane._rerun_thread()
+
+    assert _status(store, thread.id) == "queued"
+    assert store.messages(thread.id)[-1].text == RERUN_MESSAGE
+    assert runner.kicks == 1
+    assert pane._thread_id == thread.id
+    assert pane.rerun_button.enabled is False
+
+
+def test_pane_apply_anyway_fills_the_editor_over_the_change(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_with_stale_actions(pane_runtime, tmp_path)
+    pane.editor.web = types.SimpleNamespace(eval=lambda _js: None)
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_note",
+        lambda **kwargs: types.SimpleNamespace(run_in_background=lambda **_kw: None),
+    )
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    pane.note_mods[123] = 101
+    pane._apply_pending_patch()  # refused: marked stale
+    assert _status(store, thread.id) == "stale"
+    pane_runtime.warnings.clear()
+
+    pane._apply_pending_patch()  # plain Apply keeps refusing
+    assert _status(store, thread.id) == "stale"
+    assert len(pane_runtime.warnings) == 1
+    pane_runtime.warnings.clear()
+
+    pane._apply_anyway()
+
+    assert pane_runtime.warnings == []
+    assert pane.editor.note.fields[1] == "<p>new back</p>"
+    assert _status(store, thread.id) == "applied"
+
+
+def test_pane_retry_is_offered_for_a_failed_thread(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, runner = queue
+    pane = _pane_with_stale_actions(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    store.reply(thread.id, "again")
+    store.transition(thread.id, "queued", "running")
+    store.complete_run(thread.id, to_status="failed", error="boom")
+    pane._load_threads()
+    assert pane.retry_button.visible and pane.retry_button.enabled
+
+    pane._retry_thread()
+
+    assert _status(store, thread.id) == "queued"
+    assert runner.kicks == 1

@@ -60,6 +60,10 @@ direct OpenAI API billing.
   a prompt for new notes: the source deck's subdecks plus the Default deck,
   and the note types used there. Any other existing deck or note type is still
   accepted. Default 30.
+- `queue_show_badge`: Whether the top toolbar shows "Agent: N ready" (requests
+  with a proposal ready, an answer, or a stale proposal, not counting deferred
+  ones), which opens the queue window. Hidden while N is 0. Default `true`;
+  takes effect the next time the toolbar is drawn.
 - `queue_shortcut`: Opens the agent queue window from anywhere in Anki (also
   Tools > Agent Queue). Default `Ctrl+Alt+Shift+Q`; takes effect on restart.
 - `queue_window_geometry`: Saved size and position of the queue window.
@@ -69,21 +73,32 @@ The **queue window** lists every request across notes: results waiting on you
 first (proposal ready, stale, answered, failed), then running and queued ones,
 newest first; applied and discarded requests are hidden unless shown with the
 checkbox. Select one to see its captured context, transcript and proposal, then
-Apply (Ctrl+Shift+A), Reply (type below and press Enter, or Ctrl+Shift+R),
-Discard with an optional reason (Ctrl+Shift+D), Open in Browser
-(Ctrl+Shift+B) or Stop a running one (Ctrl+Shift+S). A reply goes back to the
+Apply (Ctrl+Shift+A), Apply and edit (Ctrl+Shift+E: applies, then opens the
+note in the Browser), Reply (type below and press Enter, or Ctrl+Shift+R),
+Re-run (Ctrl+Shift+N: the last request again, against the note as it is now),
+Retry a failed run (Ctrl+Shift+T), Discard with an optional reason
+(Ctrl+Shift+D), Defer (Ctrl+Shift+L: for an hour, until tomorrow 08:00, until
+next Monday 08:00, or a chosen date and time), Open in Browser (Ctrl+Shift+B)
+or Stop a running one (Ctrl+Shift+S). A reply, re-run or retry goes back to the
 agent and the selection moves on; the request returns to the top when its new
-proposal is ready. The pane's **Queue** button opens the window filtered to
-the current note. Leaving the reviewer with results waiting shows a tooltip
-once per session.
+proposal is ready. Deferred requests are hidden until their time (or shown,
+marked ⏸ with the time they come back, with "Show deferred"). The **Next run**
+row changes the provider, model, effort and card access a request's next reply,
+re-run or retry uses ("Use for next run"); its other settings are kept. The
+pane's **Queue** button opens the window filtered to the current note. Leaving
+the reviewer with results waiting shows a tooltip once per session.
 
 Requests are stored per profile in `agent_queue.sqlite` in the profile folder.
 Closing the editor or switching notes does not stop a request: reopen the
 editor on the note to see its transcript and proposal. Send on a note whose
 request has finished replies to it; **New request** starts a separate one.
 Requests that were running when Anki quit run again at the next start. Before
-applying, the pane checks that the note has not changed since the agent made
-the proposal, and refuses a stale proposal. In Edit Current opened from the reviewer, a
+applying, the pane and the queue window check that the note has not changed
+since the agent made the proposal. A stale proposal is not applied: the request
+is marked stale, with the reason in its transcript, and offers **Re-run**,
+**Apply anyway** (the proposed fields and tags overwrite the note's current
+ones; Ctrl+Shift+O in the window) or **Discard**. A failed request offers
+**Retry**. In Edit Current opened from the reviewer, a
 request also records the side you were shown, the rendered question and
 answer, and the text you had selected in the reviewer, so the agent can
 resolve references like "the example in blue".

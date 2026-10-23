@@ -37,7 +37,7 @@ from aqt.qt import (
 from aqt.utils import openFolder, showWarning, tooltip
 from aqt.webview import AnkiWebView
 
-from . import queue_runtime, queue_window
+from . import queue_badge, queue_runtime, queue_window
 from .agent_log import ensure_agent_log_folder
 from .card_access import (
     CARD_ACCESS_OPTIONS,
@@ -118,6 +118,8 @@ from .surface import (
     surface_body,
 )
 from .thread_panel import (
+    APPLY_ANYWAY_LABEL,
+    APPLY_ANYWAY_TIP,
     MultiCardProposalDialog,
     PromptEdit,
     ThreadPanel,
@@ -177,6 +179,7 @@ DEFAULT_CONFIG = {
     "queue_concurrency": 1,
     "queue_notify": True,
     "queue_retention_days": 30,
+    "queue_show_badge": True,
     "queue_shortcut": queue_window.DEFAULT_SHORTCUT,
     "queue_window_geometry": "",
     "queue_window_splitter": [],
@@ -209,6 +212,7 @@ def install() -> None:
     gui_hooks.add_cards_did_add_note.append(_on_add_cards_did_add_note)
     queue_runtime.install(addon=ADDON, config=_config, panes=_all_panes)
     queue_window.install(config=_config, write_config=_write_config)
+    queue_badge.install(config=_config)
 
 
 def _all_panes() -> Iterator[Any]:
@@ -216,6 +220,7 @@ def _all_panes() -> Iterator[Any]:
     yield from list(_panes.values())
     yield from list(_browser_panes.values())
     yield from queue_window.open_windows()
+    yield queue_badge.listener()
 
 
 def _config() -> dict[str, Any]:
@@ -677,7 +682,27 @@ class EditorAgentPane(ThreadPanel, QWidget):
             self.discard_button.clicked,
             lambda _checked=False: self._discard_pending_patch(),
         )
+        self.apply_anyway_button = QPushButton(APPLY_ANYWAY_LABEL)
+        self.apply_anyway_button.setToolTip(APPLY_ANYWAY_TIP)
+        self.apply_anyway_button.setVisible(False)
+        qconnect(
+            self.apply_anyway_button.clicked,
+            lambda _checked=False: self._apply_anyway(),
+        )
+        self.rerun_button = QPushButton("Re-run")
+        self.rerun_button.setToolTip(
+            "Run the last request again against the note as it is now"
+        )
+        self.rerun_button.setEnabled(False)
+        qconnect(self.rerun_button.clicked, lambda _checked=False: self._rerun_thread())
+        self.retry_button = QPushButton("Retry")
+        self.retry_button.setToolTip("Run the failed request again")
+        self.retry_button.setVisible(False)
+        qconnect(self.retry_button.clicked, lambda _checked=False: self._retry_thread())
         action_row.addWidget(self.apply_button)
+        action_row.addWidget(self.apply_anyway_button)
+        action_row.addWidget(self.rerun_button)
+        action_row.addWidget(self.retry_button)
         action_row.addWidget(self.discard_button)
         layout.addLayout(action_row)
 
@@ -1860,19 +1885,30 @@ class EditorAgentPane(ThreadPanel, QWidget):
             )
 
     def _apply_note_update(
-        self, thread: Thread, proposal: Proposal, snapshot: Snapshot, patch: NotePatch
+        self,
+        thread: Thread,
+        proposal: Proposal,
+        snapshot: Snapshot,
+        patch: NotePatch,
+        *,
+        force: bool = False,
     ) -> None:
         """Fill the editor (after saving what was typed) rather than writing the
         note behind its back."""
         if self.editor is None:
-            super()._apply_note_update(thread, proposal, snapshot, patch)
+            super()._apply_note_update(thread, proposal, snapshot, patch, force=force)
             return
         self.editor.call_after_note_saved(
-            lambda: self._apply_patch_after_save(thread.id, proposal.version),
+            lambda: self._apply_patch_after_save(
+                thread.id, proposal.version, force=force
+            ),
             keepFocus=True,
         )
 
-    def _apply_patch_after_save(self, thread_id: str, version: int) -> None:
+    def _apply_patch_after_save(
+        self, thread_id: str, version: int, *, force: bool = False
+    ) -> None:
+        """``force`` (Apply anyway) skips the base-revision check."""
         found = self._current_proposal(thread_id)
         if found is None or self.editor is None:
             return
@@ -1887,7 +1923,11 @@ class EditorAgentPane(ThreadPanel, QWidget):
                     parent=self,
                 )
                 return
-            reason = stale_reason(proposal.base, self._note_states([thread.note_id]))
+            reason = (
+                None
+                if force
+                else stale_reason(proposal.base, self._note_states([thread.note_id]))
+            )
             if reason is not None:
                 self._refuse_stale(thread_id, reason)
                 return

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 TITLE_CHARS = 60
 
 QUEUED = "queued"
@@ -39,7 +39,7 @@ TERMINAL_STATUSES = (APPLIED, DISCARDED)
 # (-> failed) or discarded before it runs, and running -> queued is the
 # startup/shutdown reset. A failed run keeps the previous proposal current, so
 # failed -> applied applies it; applied -> ready/failed reverts an apply whose
-# collection write failed.
+# collection write failed (applied -> stale for a failed forced apply).
 TRANSITIONS: dict[str, frozenset[str]] = {
     QUEUED: frozenset({RUNNING, FAILED, DISCARDED}),
     RUNNING: frozenset({READY, ANSWERED, FAILED, QUEUED}),
@@ -47,7 +47,7 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     ANSWERED: frozenset({QUEUED, DISCARDED}),
     FAILED: frozenset({QUEUED, DISCARDED, APPLIED}),
     STALE: frozenset({QUEUED, DISCARDED, APPLIED}),
-    APPLIED: frozenset({READY, FAILED}),
+    APPLIED: frozenset({READY, FAILED, STALE}),
     DISCARDED: frozenset(),
 }
 REPLY_FROM = (READY, ANSWERED, FAILED)
@@ -99,6 +99,8 @@ create table proposals (
 """
 # v2: what an apply produced, e.g. {"created_note_ids": [...]}.
 _MIGRATE_V2 = "alter table proposals add column result_json text"
+# v3: hidden from the queue until this time (epoch seconds); status unchanged.
+_MIGRATE_V3 = "alter table threads add column deferred_until real"
 
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -123,6 +125,7 @@ class Thread:
     session: dict[str, Any] | None
     run_log_path: str | None
     error: str | None
+    deferred_until: float | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +173,7 @@ def _thread(row: sqlite3.Row) -> Thread:
         session=json.loads(row["session_json"]) if row["session_json"] else None,
         run_log_path=row["run_log_path"],
         error=row["error"],
+        deferred_until=row["deferred_until"],
     )
 
 
@@ -244,6 +248,8 @@ class QueueStore:
                             conn.execute(statement)
                 if version < 2 and not _has_column(conn, "proposals", "result_json"):
                     conn.execute(_MIGRATE_V2)
+                if version < 3 and not _has_column(conn, "threads", "deferred_until"):
+                    conn.execute(_MIGRATE_V3)
                 conn.execute(f"pragma user_version = {SCHEMA_VERSION}")
             except BaseException:
                 conn.rollback()
@@ -303,19 +309,51 @@ class QueueStore:
             ).fetchall()
         return [_thread(row) for row in rows]
 
-    def list_threads(self, statuses: Iterable[str] | None = None) -> list[Thread]:
-        sql = "select * from threads"
-        args: tuple[str, ...] = ()
+    def list_threads(
+        self,
+        statuses: Iterable[str] | None = None,
+        *,
+        include_deferred: bool = False,
+        now: float | None = None,
+    ) -> list[Thread]:
+        """Threads, oldest first; deferred ones (``deferred_until`` after
+        ``now``) only with ``include_deferred``."""
+        clauses: list[str] = []
+        args: tuple[Any, ...] = ()
         if statuses is not None:
-            args = tuple(statuses)
-            if not args:
+            wanted = tuple(statuses)
+            if not wanted:
                 return []
-            sql += f" where status in ({','.join('?' for _ in args)})"
+            clauses.append(f"status in ({','.join('?' for _ in wanted)})")
+            args += wanted
+        if not include_deferred:
+            clauses.append("(deferred_until is null or deferred_until <= ?)")
+            args += (time.time() if now is None else now,)
+        sql = "select * from threads"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
         with self._lock:
             rows = self._conn.execute(
                 sql + " order by created_at, rowid", args
             ).fetchall()
         return [_thread(row) for row in rows]
+
+    def defer(self, thread_id: str, until: float) -> None:
+        """Hide the thread from the default lists until ``until``. The status
+        and ``updated_at`` are unchanged, so it comes back where it was."""
+        self._set_deferred(thread_id, float(until))
+
+    def undefer(self, thread_id: str) -> None:
+        self._set_deferred(thread_id, None)
+
+    def _set_deferred(self, thread_id: str, until: float | None) -> None:
+        with self._tx() as conn:
+            cursor = conn.execute(
+                "update threads set deferred_until = ? where id = ?",
+                (until, thread_id),
+            )
+            if cursor.rowcount != 1:
+                raise QueueTransitionError(f"Thread {thread_id} is missing.")
 
     def _set_column(self, thread_id: str, column: str, value: Any) -> None:
         with self._tx() as conn:

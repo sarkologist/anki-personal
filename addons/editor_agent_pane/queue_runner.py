@@ -716,7 +716,9 @@ class QueueRunner:
         if self._workers:
             return
         self._stopping.clear()
-        interrupted = [t.id for t in self.store.list_threads((RUNNING,))]
+        interrupted = [
+            t.id for t in self.store.list_threads((RUNNING,), include_deferred=True)
+        ]
         self.store.reset_interrupted()
         for thread_id in interrupted:
             self._safe_notify(thread_id)

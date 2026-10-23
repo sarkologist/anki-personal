@@ -2,8 +2,9 @@
 
 **Status:** phase 1 implemented on `claude/agent-queue-phase1`; phase 2 (2a:
 new notes, unified schema; 2b: queue window) on `claude/agent-queue-phase2`;
-phase 3a (runner side: resume, staleness, retry, catalog trimming) on
-`claude/agent-queue-phase3` (see Results / notes). Phases at the bottom.
+phase 3a (runner side: resume, staleness, retry, catalog trimming) and 3b
+(UI: stale actions, retry, defer, change model, apply then edit, toolbar badge)
+on `claude/agent-queue-phase3` (see Results / notes). Phases at the bottom.
 
 Builds on the repo-local add-on in [addons/editor_agent_pane](addons/editor_agent_pane),
 which already has the provider clients (Codex, Claude, Ollama), the fixed JSON
@@ -739,8 +740,112 @@ Deviations:
   because the editor holds unsaved typing gets no "note changed" section until
   the note is saved.
 
-Not done (3b and later): the Re-run / Apply anyway / Retry / Change model
-buttons and their wiring (`store.rerun`, `store.retry`, `store.set_settings`,
-forced apply from `stale`), Defer, Apply then edit, bottom-bar badge, a
-clickable reviewer offer, rendering of the stale reason / re-run messages in the
-transcript (they currently show as an error box and an activity line).
+**Phase 3b (2026-10-23, uncommitted on `claude/agent-queue-phase3`).** The UI
+half of phase 3.
+
+- Stale handling, shared by the pane and the window (`ThreadPanel`): **Re-run**
+  (`store.rerun` → `runner.enqueue_kick()` → broadcast; enabled for
+  `RERUNNABLE_STATUSES`: stale, ready, failed), **Retry** (`store.retry`, shown
+  only for failed threads), **Apply anyway** (shown only for stale threads with
+  a current proposal; labelled "the proposed fields and tags overwrite the
+  current ones") and Discard. Plain Apply is disabled on a stale thread and
+  still refuses if invoked (shortcut): `_apply_pending_patch(force=False)` keeps
+  the base check, `force=True` skips it in all three apply paths (collection,
+  the pane's editor fill, and the multi-note dialog, which carries `force` to
+  "Apply checked"). The write is field-level: `prepare_note_update` /
+  the editor fill change only the patch's fields and tags on the current note.
+  A forced apply whose write fails returns the thread to `stale` (new store
+  edge applied → stale). In the window Re-run/Retry move the selection on like
+  Reply (`_following_thread_id`/`_after_requeue` hooks); the pane stays on the
+  thread. The buttons are optional attributes on `ThreadPanel`, so a host
+  without them does not offer the action.
+- Transcript: a system message that is a stale reason (`STALE_WARNING`,
+  `MISSING_NOTE_WARNING`) renders as a "Stale" notice (`render_notice_message`,
+  class `agent-notice`), not the Error box; `RERUN_MESSAGE`, "[Resumed session
+  …]" and "[Replayed transcript …]" render as one-line activity entries
+  (`render_activity_note`) instead of an expandable summary with nothing in it.
+  `status_fragment(thread, closed_hint=…)`: the window's applied/discarded
+  banner is "[Applied.]" / "[Discarded.]"; the pane keeps "Send starts a new
+  request.".
+- Defer: store schema v3 adds `threads.deferred_until` (real, nullable), same
+  idempotent single-transaction migration as v2 (`_MIGRATE_V3`, skipped when the
+  column exists). `store.defer(thread_id, until)` / `undefer(thread_id)` change
+  neither the status nor `updated_at` (raise `QueueTransitionError` for a
+  missing thread). `list_threads(statuses, *, include_deferred=False, now=None)`
+  leaves out rows whose `deferred_until` is after `now`; the runner's startup
+  scan passes `include_deferred=True`. Window: a **Defer** button
+  (Ctrl+Shift+L) with a menu (for an hour, until tomorrow 08:00, until next
+  week = next Monday 08:00, "Until a date and time…" via a `QDateTimeEdit`
+  dialog defaulting to tomorrow 08:00, and Undefer when the thread is
+  deferred) and a "Show deferred" checkbox beside "Show applied and
+  discarded". Deferred rows get `⏸` after the status glyph and "until 08:00" /
+  "until Thu 08:00" / "until 30 Oct 08:00" in the age column
+  (`thread_view.queue_row`, `defer_choice_time`, `until_text`, local time).
+  The reviewer-exit tooltip count and the badge exclude deferred threads.
+- Change model: the window's detail has a **Next run** row (provider, model,
+  effort, card access combos and "Use for next run"), prefilled from
+  `thread.settings` on every render. Options come from new shared helpers
+  `model_options.model_options_for(provider, model, ollama_models)` and
+  `effort_options.effort_options_for(provider, model)` (the same tables the
+  pane's form uses; Ollama offers only "Model default" effort), with the pane's
+  `effort_choice_for_options`/`effort_options_with_legacy` and
+  `CARD_ACCESS_OPTIONS`. Ollama models are discovered once per window in the
+  background (`discover_ollama_models` with the thread's `paths` or the config,
+  as the pane does). Saving calls `store.set_settings(thread_id,
+  merge_thread_settings(...))`, which overlays provider/model/effort/card
+  access on the stored dict (paths, project folder, timeouts, instructions
+  kept; an effort the model does not take falls back to default; "deck" access
+  without stored `deck_ids` takes the captured deck(s), `thread_deck_ids`),
+  and shows "The next run of this request uses Claude sonnet.". It is enabled
+  for every non-closed thread; it applies to the next reply, re-run or retry.
+- Apply then edit: **Apply and edit** (Ctrl+Shift+E) beside Apply in the window.
+  It marks the thread, and the new `ThreadPanel._after_apply(thread_id,
+  updated_ids, created_ids)` hook (called after a successful collection write,
+  single or multi-note) opens `aqt.dialogs.open("Browser", mw,
+  search=("nid:…",))` with the updated note(s), else the first created note.
+  Nothing opens after a failed or refused apply.
+- Badge: `queue_badge.py` adds "Agent: N ready" (ready + answered + stale,
+  excluding deferred) to the top toolbar through `top_toolbar_did_init_links`,
+  registering its link handler on the toolbar; it opens the queue window. At 0
+  the link is drawn with `display:none`. Updates do not redraw the toolbar
+  (`toolbar.draw()` reloads its whole page): `refresh()` runs one `eval` on
+  `mw.toolbar.web` that sets the link's text and visibility. Its listener is in
+  `runtime._all_panes()`, so every `thread_changed` fan-out refreshes it; it
+  also refreshes on `profile_did_open` and `state_did_change` (a deferral that
+  ends changes nothing in the store). `queue_runtime.thread_changed(...,
+  notify=False)` is used for defer/settings changes so they do not trigger the
+  "proposal ready" tooltip.
+- Config: `queue_show_badge` (true), documented in config.md with the new
+  window actions and the stale behaviour.
+- Tests: 44 new (512 pass, 1 skipped): store defer/undefer/migration/half
+  migration/forced-apply revert; transcript notice and activity lines; banner
+  wording; defer times and deferred row cells; settings merge and option
+  helpers; window actions per status, re-run/retry/apply anyway (single,
+  failed-write revert, multi-note force), defer + show deferred + pick +
+  offer count, settings row prefill/merge/Ollama, apply and edit (updated,
+  first created, not on plain apply, not on failure), badge text, hidden at
+  zero, live update, click, config off; pane stale buttons, re-run, plain
+  Apply refusing then Apply anyway, retry. The real window (menu, dialog,
+  combos) was smoke-built under offscreen Qt.
+
+Deviations:
+
+- "Apply then edit" opens the note in the Browser (as the brief asked), not in
+  Edit Current as the actions table says.
+- Plain Apply is disabled (not just refused) on a stale thread; Apply anyway
+  is the stale action. Re-run in the pane uses the thread's stored settings
+  (only Reply takes the pane's form).
+- Defer is allowed in any non-closed status and does not stop or delay a
+  queued run; a deferred thread whose run finishes stays hidden until its time.
+  Neither the window list nor the badge refreshes by itself when a deferral
+  ends; the badge catches up on the next state change or thread change, the
+  list on its next refresh.
+- The settings row is re-filled whenever the shown thread re-renders (e.g. its
+  run finishes), dropping unsaved choices in the row.
+- Badge visibility follows `queue_show_badge` at the next toolbar draw.
+
+Not done: a clickable reviewer offer (Anki's tooltip swallows clicks, so it
+still names the shortcut); per-thread instructions/project folder editing in
+the Next run row; live checks of the window's new actions and the badge in a
+running Anki (only offscreen construction and unit tests); Codex session resume
+was never run live (3a). Everything else listed for phase 3 is in.

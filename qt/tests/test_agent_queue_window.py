@@ -173,8 +173,21 @@ def _window(qw: Any, *, note_id: int | None = None) -> Any:
     window.prompt = FakePrompt("")
     window.prompt.setFocus = lambda: None
     window.prompt.setEnabled = lambda _enabled: None
-    for name in ("apply", "reply", "discard", "browse", "stop"):
+    window.show_deferred_checkbox = FakeCheck(False)
+    for name in (
+        "apply",
+        "apply_edit",
+        "apply_anyway",
+        "rerun",
+        "retry",
+        "reply",
+        "discard",
+        "defer",
+        "browse",
+        "stop",
+    ):
         setattr(window, f"{name}_button", FakeButton(False))
+    _with_settings_row(window)
     window.note_mods = {}
 
     def read_note_state(note_ids: list[int]) -> dict[int, Any]:
@@ -877,3 +890,571 @@ def test_leaving_the_reviewer_offers_the_queue_once_per_session(
     qw._on_profile_did_open()
     qw._on_state_did_change("overview", "review")
     assert len(qw.tips) == 2
+
+
+# phase 3b: stale handling, retry, defer, change model, apply then edit
+
+
+def _stale(store: QueueStore, **kwargs: Any) -> Any:
+    thread = _thread(store, **kwargs)
+    store.mark_stale(thread.id, STALE_WARNING)
+    return thread
+
+
+def _failed(store: QueueStore) -> Any:
+    thread = _thread(store)
+    store.reply(thread.id, "again")
+    store.transition(thread.id, "queued", "running")
+    store.complete_run(
+        thread.id, to_status="failed", messages=[("system", "boom", "")], error="boom"
+    )
+    return thread
+
+
+def _shown_buttons(window: Any) -> dict[str, bool]:
+    return {
+        name: getattr(window, f"{name}_button").visible
+        and getattr(window, f"{name}_button").enabled
+        for name in ("apply", "apply_edit", "apply_anyway", "rerun", "retry", "discard")
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (
+            "ready",
+            {"apply", "apply_edit", "rerun", "discard"},
+        ),
+        ("stale", {"apply_anyway", "rerun", "discard"}),
+        ("failed", {"apply", "apply_edit", "rerun", "retry", "discard"}),
+        ("answered", {"discard"}),
+        ("running", set()),
+    ],
+)
+def test_actions_offered_by_status(
+    qw: Any, queue: Any, status: str, expected: set[str]
+) -> None:
+    store, _runner = queue
+    if status == "stale":
+        _stale(store)
+    elif status == "failed":
+        _failed(store)
+    else:
+        _thread(store, status=status)
+    window = _window(qw)
+
+    window.refresh()
+
+    shown = {name for name, on in _shown_buttons(window).items() if on}
+    assert shown == expected
+
+
+def test_stale_reason_is_a_notice_not_an_error(qw: Any, queue: Any) -> None:
+    store, _runner = queue
+    _stale(store)
+    window = _window(qw)
+
+    window.refresh()
+
+    shown = "".join(window.surface.evals)
+    assert "agent-notice" in shown and "Stale" in shown
+    assert "agent-error" not in shown
+
+
+def test_rerun_queues_the_stale_thread_and_moves_on(qw: Any, queue: Any) -> None:
+    store, runner = queue
+    stale = _stale(store, prompt="stale")
+    other = _thread(store, prompt="other")
+    window = _window(qw)
+    window.refresh(select=stale.id)
+
+    window._rerun_thread()
+
+    assert _status(store, stale.id) == "queued"
+    assert runner.kicks == 1
+    assert window._thread_id == other.id
+
+
+def test_retry_queues_a_failed_thread(qw: Any, queue: Any) -> None:
+    store, runner = queue
+    thread = _failed(store)
+    window = _window(qw)
+    window.refresh()
+
+    window._retry_thread()
+
+    assert _status(store, thread.id) == "queued"
+    assert runner.kicks == 1
+    assert store.get_thread(thread.id).error is None  # type: ignore[union-attr]
+
+
+def test_retry_refuses_a_thread_that_is_not_failed(qw: Any, queue: Any) -> None:
+    store, runner = queue
+    thread = _thread(store)
+    window = _window(qw)
+    window.refresh()
+
+    window._retry_thread()
+
+    assert _status(store, thread.id) == "ready"
+    assert runner.kicks == 0
+    assert qw.warnings == ["Cannot retry a ready thread."]
+
+
+def test_plain_apply_on_stale_still_refuses(
+    qw: Any, queue: Any, ops: list[FakeCollectionOp]
+) -> None:
+    store, _runner = queue
+    thread = _stale(store)
+    window = _window(qw)
+    window.refresh()
+    window.note_mods[123] = 200
+
+    window._apply_pending_patch()
+
+    assert ops == []
+    assert _status(store, thread.id) == "stale"
+    assert qw.warnings == [STALE_WARNING]
+
+
+def test_apply_anyway_overwrites_the_changed_note(
+    qw: Any, queue: Any, ops: list[FakeCollectionOp]
+) -> None:
+    store, _runner = queue
+    thread = _stale(store)
+    window = _window(qw)
+    window.refresh()
+    window.note_mods[123] = 200
+    qw.runtime.aqt.mw.col.notes[123].fields[0] = "edited front"
+
+    window._apply_anyway()
+
+    assert qw.warnings == []
+    assert _status(store, thread.id) == "applied"
+    [op] = ops
+    col = types.SimpleNamespace(
+        add_custom_undo_entry=lambda _name: 1,
+        update_notes=lambda notes: setattr(col, "updated", notes),
+        merge_undo_entries=lambda _target: "changes",
+    )
+    op.finish(col)
+    [note] = col.updated
+    # Field-level: the edited Front stays, the proposed Back overwrites.
+    assert note.fields == ["edited front", "new"]
+
+
+def test_a_failed_apply_anyway_returns_to_stale(
+    qw: Any, queue: Any, ops: list[FakeCollectionOp]
+) -> None:
+    store, _runner = queue
+    thread = _stale(store)
+    window = _window(qw)
+    window.refresh()
+
+    window._apply_anyway()
+    [op] = ops
+    assert op.on_failure is not None
+    op.on_failure(RuntimeError("disk full"))
+
+    assert _status(store, thread.id) == "stale"
+
+
+def test_apply_anyway_multi_note_passes_force_to_the_dialog(
+    qw: Any, queue: Any
+) -> None:
+    store, _runner = queue
+    thread = _stale(
+        store,
+        snap=multi_snapshot(),
+        note_id=None,
+        patch=MultiNotePatch(
+            summary="s",
+            note_updates=(
+                MultiNoteUpdate(
+                    note_id=101, notetype_id=7, field_updates={"Back": "B"}
+                ),
+            ),
+        ),
+    )
+    window = _window(qw)
+    opened: list[Any] = []
+    window._show_multi_proposal_dialog = lambda *args, **kwargs: opened.append(
+        (args, kwargs)
+    )
+    window.refresh()
+
+    window._apply_anyway()
+
+    [(args, kwargs)] = opened
+    assert args[0] == thread.id and kwargs == {"force": True}
+
+
+def test_closed_banner_does_not_mention_send(qw: Any, queue: Any) -> None:
+    store, _runner = queue
+    _thread(store, status="applied")
+    window = _window(qw)
+    window.show_closed_checkbox.setChecked(True)
+
+    window.refresh()
+
+    shown = "".join(window.surface.evals)
+    assert "Applied." in shown and "Send starts" not in shown
+
+
+# defer
+
+
+def test_defer_hides_the_row_and_show_deferred_lists_it(qw: Any, queue: Any) -> None:
+    store, _runner = queue
+    first = _thread(store, prompt="first")
+    second = _thread(store, prompt="second")
+    _age(store, first.id, 10)
+    _age(store, second.id, 20)
+    window = _window(qw)
+    window.refresh()
+    assert window._thread_id == first.id
+
+    window._defer("hour")
+
+    assert _status(store, first.id) == "ready"
+    assert [t.id for t in window._rows] == [second.id]
+    assert window._thread_id == second.id
+
+    window.show_deferred_checkbox.setChecked(True)
+    window._on_filter_changed()
+    assert [t.id for t in window._rows] == [first.id, second.id]
+    assert window._cells[0][0] == "●⏸"
+    assert window._cells[0][4].startswith("until ")
+
+    window._select(first.id)
+    window._undefer()
+    assert store.get_thread(first.id).deferred_until is None  # type: ignore[union-attr]
+
+
+def test_defer_pick_time_and_cancel(qw: Any, queue: Any) -> None:
+    import time
+
+    store, _runner = queue
+    thread = _thread(store)
+    window = _window(qw)
+    window.refresh()
+
+    window._pick_defer_time = lambda: None
+    window._defer_pick()
+    assert store.get_thread(thread.id).deferred_until is None  # type: ignore[union-attr]
+
+    until = time.time() + 86400 * 3
+    window._pick_defer_time = lambda: until
+    window._defer_pick()
+    assert store.get_thread(thread.id).deferred_until == until  # type: ignore[union-attr]
+
+
+def test_offer_count_excludes_deferred(
+    qw: Any, queue: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    store, _runner = queue
+    monkeypatch.setattr(qw, "_config", lambda: {"queue_shortcut": "Q"})
+    _thread(store)
+    later = _thread(store)
+    store.defer(later.id, time.time() + 3600)
+
+    qw._on_state_did_change("overview", "review")
+
+    assert qw.tips == ["Agent queue: 1 request ready for review (Q)"]
+
+
+# change model
+
+
+class _SettingsCombo:
+    def __init__(self) -> None:
+        self.items: list[tuple[str, Any]] = []
+        self.current_index = 0
+
+    def clear(self) -> None:
+        self.items = []
+        self.current_index = 0
+
+    def addItem(self, label: str, value: Any = None) -> None:
+        self.items.append((label, value))
+
+    def setCurrentIndex(self, index: int) -> None:
+        self.current_index = index
+
+    def currentData(self) -> Any:
+        return self.items[self.current_index][1] if self.items else None
+
+    def select(self, value: Any) -> None:
+        self.current_index = [v for _l, v in self.items].index(value)
+
+    def setEnabled(self, _enabled: bool) -> None:
+        pass
+
+
+def _with_settings_row(window: Any) -> Any:
+    for name in ("provider", "model", "effort", "card_access"):
+        setattr(window, f"settings_{name}_combo", _SettingsCombo())
+    window.settings_button = FakeButton(False)
+    return window
+
+
+def test_settings_row_is_prefilled_from_the_thread(qw: Any, queue: Any) -> None:
+    store, _runner = queue
+    thread = _thread(store)
+    store.set_settings(
+        thread.id,
+        {
+            "provider": "claude",
+            "model": "haiku",
+            "reasoning_effort": "high",
+            "card_access": "deck",
+        },
+    )
+    window = _with_settings_row(_window(qw))
+
+    window.refresh()
+
+    assert window.settings_provider_combo.currentData() == "claude"
+    assert window.settings_model_combo.currentData() == "haiku"
+    assert ("Haiku", "haiku") in window.settings_model_combo.items
+    assert window.settings_effort_combo.currentData() == "high"
+    assert ("Max", "max") not in window.settings_effort_combo.items
+    assert window.settings_card_access_combo.currentData() == "deck"
+    assert window.settings_button.enabled is True
+
+
+def test_settings_row_merges_into_the_thread_settings(qw: Any, queue: Any) -> None:
+    store, _runner = queue
+    thread = _thread(store)
+    store.set_settings(
+        thread.id,
+        {
+            "provider": "codex",
+            "model": "",
+            "reasoning_effort": "",
+            "card_access": "all",
+            "deck_ids": [],
+            "project_folder": "/src",
+            "timeout_seconds": 900,
+            "paths": {"codex_path": "/bin/codex"},
+        },
+    )
+    window = _with_settings_row(_window(qw))
+    window.refresh()
+
+    window.settings_provider_combo.select("claude")
+    window._on_settings_provider_changed()
+    window.settings_model_combo.select("sonnet")
+    window._on_settings_model_changed()
+    window.settings_effort_combo.select("max")
+    window.settings_card_access_combo.select("deck")
+    window._apply_thread_settings()
+
+    stored = store.get_thread(thread.id)
+    assert stored is not None
+    assert stored.settings == {
+        "provider": "claude",
+        "model": "sonnet",
+        "reasoning_effort": "max",
+        "card_access": "deck",
+        "deck_ids": [3],
+        "project_folder": "/src",
+        "timeout_seconds": 900,
+        "paths": {"codex_path": "/bin/codex"},
+    }
+    assert stored.status == "ready"
+    assert qw.tips == ["The next run of this request uses Claude sonnet."]
+
+
+def test_settings_row_ollama_uses_discovered_models(qw: Any, queue: Any) -> None:
+    store, _runner = queue
+    _thread(store)
+    window = _with_settings_row(_window(qw))
+    discovered: list[Any] = []
+    window._discover_ollama_models = discovered.append
+    window.refresh()
+
+    window.settings_provider_combo.select("ollama")
+    window._on_settings_provider_changed()
+    assert len(discovered) == 1
+    window._set_ollama_models(("llama3", "qwen"), unavailable=False)
+
+    assert [v for _l, v in window.settings_model_combo.items] == ["llama3", "qwen"]
+    assert window.settings_effort_combo.items == [("Model default", "")]
+
+
+# apply then edit
+
+
+def test_apply_and_edit_opens_the_note_in_the_browser(
+    qw: Any, queue: Any, ops: list[FakeCollectionOp]
+) -> None:
+    store, _runner = queue
+    _thread(store)
+    window = _window(qw)
+    window.refresh()
+
+    window._apply_and_edit()
+    assert qw.dialogs == []  # not before the write succeeded
+    [op] = ops
+    col = types.SimpleNamespace(
+        add_custom_undo_entry=lambda _name: 1,
+        update_notes=lambda notes: None,
+        merge_undo_entries=lambda _target: "changes",
+    )
+    op.finish(col)
+
+    [(args, kwargs)] = qw.dialogs
+    assert args == ("Browser", qw.runtime.aqt.mw)
+    assert kwargs == {"search": ("nid:123",)}
+
+
+def test_apply_and_edit_opens_the_first_created_note(
+    qw: Any, queue: Any, ops: list[FakeCollectionOp]
+) -> None:
+    store, _runner = queue
+    patch = NotePatch(
+        summary="New",
+        note_id=123,
+        notetype_id=7,
+        note_creates=(_note_create(), _note_create()),
+    )
+    _thread(store, patch=patch)
+    window = _window(qw)
+    window.refresh()
+
+    window._apply_and_edit()
+    [op] = ops
+    ids = iter((9, 10))
+    col = types.SimpleNamespace(
+        add_custom_undo_entry=lambda _name: 1,
+        models=types.SimpleNamespace(
+            get=lambda _id: {"flds": [{"name": "Front"}, {"name": "Back"}]}
+        ),
+        new_note=lambda _notetype: _Writable(),
+        add_note=lambda note, deck_id: setattr(note, "id", next(ids)),
+        merge_undo_entries=lambda _target: "changes",
+    )
+    op.finish(col)
+
+    [(_args, kwargs)] = qw.dialogs
+    assert kwargs == {"search": ("nid:9",)}
+
+
+def test_plain_apply_does_not_open_the_browser(
+    qw: Any, queue: Any, ops: list[FakeCollectionOp]
+) -> None:
+    store, _runner = queue
+    _thread(store)
+    window = _window(qw)
+    window.refresh()
+
+    window._apply()
+    [op] = ops
+    op.finish(
+        types.SimpleNamespace(
+            add_custom_undo_entry=lambda _name: 1,
+            update_notes=lambda notes: None,
+            merge_undo_entries=lambda _target: "changes",
+        )
+    )
+
+    assert qw.dialogs == []
+
+
+def test_apply_and_edit_does_not_open_after_a_failed_write(
+    qw: Any, queue: Any, ops: list[FakeCollectionOp]
+) -> None:
+    store, _runner = queue
+    _thread(store)
+    window = _window(qw)
+    window.refresh()
+
+    window._apply_and_edit()
+    [op] = ops
+    assert op.on_failure is not None
+    op.on_failure(RuntimeError("disk full"))
+
+    assert qw.dialogs == []
+
+
+# the toolbar badge
+
+
+class _FakeToolbar:
+    def __init__(self) -> None:
+        self.link_handlers: dict[str, Any] = {}
+        self.evals: list[str] = []
+        self.web = types.SimpleNamespace(eval=self.evals.append)
+
+
+def test_badge_link_counts_results_and_hides_at_zero(
+    qw: Any, queue: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    store, _runner = queue
+    badge = qw.runtime.queue_badge
+    monkeypatch.setattr(badge, "_config", lambda: {"queue_show_badge": True})
+    toolbar = _FakeToolbar()
+    qw.runtime.aqt.mw.toolbar = toolbar
+
+    links: list[str] = []
+    badge._on_top_toolbar_did_init_links(links, toolbar)
+    [link] = links
+    assert "display:none" in link.replace(" ", "")
+    assert badge.BADGE_COMMAND in toolbar.link_handlers
+
+    _thread(store)
+    _thread(store, status="answered")
+    _stale(store)
+    _thread(store, status="running")
+    later = _thread(store)
+    store.defer(later.id, time.time() + 3600)
+    assert badge.badge_count(store) == 3
+
+    links = []
+    badge._on_top_toolbar_did_init_links(links, toolbar)
+    assert "Agent: 3 ready" in links[0]
+    assert "display:none" not in links[0].replace(" ", "")
+
+
+def test_badge_updates_on_thread_changes_and_opens_the_window(
+    qw: Any, queue: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    badge = qw.runtime.queue_badge
+    monkeypatch.setattr(badge, "_config", lambda: {"queue_show_badge": True})
+    toolbar = _FakeToolbar()
+    qw.runtime.aqt.mw.toolbar = toolbar
+    badge._on_top_toolbar_did_init_links([], toolbar)
+    assert badge.listener() in list(qw.runtime._all_panes())
+
+    thread = _thread(store)
+    badge.listener().on_thread_changed(thread.id)
+
+    assert "Agent: 1 ready" in toolbar.evals[-1]
+    opened: list[Any] = []
+    monkeypatch.setattr(qw, "open_window", lambda **kw: opened.append(kw))
+    toolbar.link_handlers[badge.BADGE_COMMAND]()
+    assert opened == [{}]
+
+
+def test_badge_is_off_when_configured_off(
+    qw: Any, queue: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    badge = qw.runtime.queue_badge
+    monkeypatch.setattr(badge, "_config", lambda: {"queue_show_badge": False})
+    toolbar = _FakeToolbar()
+    qw.runtime.aqt.mw.toolbar = toolbar
+    _thread(store)
+
+    links: list[str] = []
+    badge._on_top_toolbar_did_init_links(links, toolbar)
+    badge.listener().on_thread_changed("x")
+
+    assert links == [] and toolbar.evals == []

@@ -1961,7 +1961,7 @@ def test_v1_store_that_already_has_result_json_opens(tmp_path: Path) -> None:
     for _ in range(2):
         store = QueueStore.open(path)
         try:
-            assert store.schema_version() == 2
+            assert store.schema_version() == queue_store.SCHEMA_VERSION
         finally:
             store.close()
 
@@ -2704,3 +2704,280 @@ def test_default_make_agent_passes_persist_session() -> None:
         assert agent.persist_session is True
         agent = default_make_agent(normalize_settings(settings(provider=provider)))
         assert agent.persist_session is False
+
+
+# --- phase 3b: defer, forced-apply revert, view helpers ---------------------
+
+
+def _ready(store: QueueStore, prompt: str = "Fix back") -> Any:
+    thread = store.create_thread(context(), settings(), prompt, 11)
+    store.transition(thread.id, "queued", "running")
+    store.transition(thread.id, "running", "ready")
+    return thread
+
+
+def test_defer_hides_a_thread_until_the_time_without_changing_status(
+    store: QueueStore,
+) -> None:
+    shown = _ready(store, "shown")
+    later = _ready(store, "later")
+    before = store.get_thread(later.id)
+    assert before is not None and before.deferred_until is None
+
+    store.defer(later.id, time.time() + 3600)
+
+    deferred = store.get_thread(later.id)
+    assert deferred is not None
+    assert deferred.status == "ready"
+    assert deferred.deferred_until is not None
+    assert deferred.updated_at == before.updated_at  # age and order unchanged
+    assert [t.id for t in store.list_threads()] == [shown.id]
+    assert [t.id for t in store.list_threads(("ready",))] == [shown.id]
+    assert [t.id for t in store.list_threads(include_deferred=True)] == [
+        shown.id,
+        later.id,
+    ]
+    # Once the time has passed, it is listed again.
+    assert len(store.list_threads(now=time.time() + 7200)) == 2
+
+
+def test_undefer_lists_the_thread_again(store: QueueStore) -> None:
+    thread = _ready(store)
+    store.defer(thread.id, time.time() + 3600)
+    store.undefer(thread.id)
+    assert [t.id for t in store.list_threads()] == [thread.id]
+    assert store.get_thread(thread.id).deferred_until is None  # type: ignore[union-attr]
+
+
+def test_defer_a_missing_thread_raises(store: QueueStore) -> None:
+    with pytest.raises(QueueTransitionError):
+        store.defer("missing", time.time() + 60)
+
+
+def test_v2_store_is_migrated_to_v3(tmp_path: Path) -> None:
+    import sqlite3
+
+    from editor_agent_pane import queue_store
+
+    path = tmp_path / "v2.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(queue_store._SCHEMA_V1)
+    conn.execute(queue_store._MIGRATE_V2)
+    conn.execute("pragma user_version = 2")
+    conn.execute(
+        "insert into threads values ('t', 0, 0, 'ready', 't', null, '{}', '{}',"
+        " null, null, null)"
+    )
+    conn.commit()
+    conn.close()
+    store = QueueStore.open(path)
+    try:
+        assert store.schema_version() == 3
+        thread = store.get_thread("t")
+        assert thread is not None and thread.deferred_until is None
+        store.defer("t", time.time() + 60)
+        assert store.list_threads() == []
+    finally:
+        store.close()
+
+
+def test_v2_store_that_already_has_deferred_until_opens(tmp_path: Path) -> None:
+    """A crash between the v3 ALTER and the version bump must not brick the store."""
+    import sqlite3
+
+    from editor_agent_pane import queue_store
+
+    path = tmp_path / "half3.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(queue_store._SCHEMA_V1)
+    conn.execute(queue_store._MIGRATE_V2)
+    conn.execute(queue_store._MIGRATE_V3)
+    conn.execute("pragma user_version = 2")
+    conn.commit()
+    conn.close()
+    for _ in range(2):
+        store = QueueStore.open(path)
+        try:
+            assert store.schema_version() == 3
+        finally:
+            store.close()
+
+
+def test_a_failed_forced_apply_reverts_to_stale(store: QueueStore) -> None:
+    thread = _ready(store)
+    store.add_proposal(thread.id, {"summary": "s"}, {"notes": []})
+    store.mark_stale(thread.id, "changed")
+    store.transition(thread.id, "stale", "applied")
+
+    store.transition(thread.id, "applied", "stale")
+
+    assert store.get_thread(thread.id).status == "stale"  # type: ignore[union-attr]
+    assert store.current_proposal(thread.id) is not None
+
+
+def test_stale_reason_renders_as_a_notice_and_path_messages_as_lines(
+    store: QueueStore,
+) -> None:
+    from editor_agent_pane.queue_runner import REPLAYED_MESSAGE, RESUMED_MESSAGE
+    from editor_agent_pane.thread_view import (
+        MISSING_NOTE_WARNING,
+        STALE_WARNING,
+        transcript_fragments,
+    )
+
+    thread = _ready(store)
+    for text in (
+        STALE_WARNING,
+        MISSING_NOTE_WARNING,
+        RERUN_MESSAGE,
+        RESUMED_MESSAGE.format(session_id="abc"),
+        REPLAYED_MESSAGE.format(error="gone"),
+        "boom",
+    ):
+        store.add_message(thread.id, "system", text)
+    current = store.get_thread(thread.id)
+    assert current is not None
+
+    fragments = transcript_fragments(current, store.messages(thread.id))[1:]
+
+    stale, missing, rerun, resumed, replayed, error = fragments
+    for notice in (stale, missing):
+        assert "agent-notice" in notice and "Stale" in notice
+        assert "agent-error" not in notice
+    for line in (rerun, resumed, replayed):
+        assert "agent-activity" in line and "<details" not in line
+    assert "Re-run requested" in rerun and "abc" in resumed and "gone" in replayed
+    assert "agent-error" in error
+
+
+def test_closed_banner_wording_is_per_surface(store: QueueStore) -> None:
+    from editor_agent_pane.thread_view import status_fragment
+
+    thread = _ready(store)
+    store.transition(thread.id, "ready", "applied")
+    applied = store.get_thread(thread.id)
+    assert applied is not None
+
+    assert "Send starts a new request" in (status_fragment(applied) or "")
+    window = status_fragment(applied, closed_hint="") or ""
+    assert "[Applied.]" in window and "Send" not in window
+
+
+def test_defer_choice_times() -> None:
+    import datetime
+
+    from editor_agent_pane.thread_view import defer_choice_time
+
+    # Wednesday 2026-10-21 15:30 local time.
+    now = datetime.datetime(2026, 10, 21, 15, 30).timestamp()
+
+    def at(stamp: float) -> datetime.datetime:
+        return datetime.datetime.fromtimestamp(stamp)
+
+    assert defer_choice_time("hour", now) == now + 3600
+    assert at(defer_choice_time("tomorrow", now)) == datetime.datetime(
+        2026, 10, 22, 8, 0
+    )
+    assert at(defer_choice_time("next_week", now)) == datetime.datetime(
+        2026, 10, 26, 8, 0
+    )
+    monday = datetime.datetime(2026, 10, 26, 9, 0).timestamp()
+    assert at(defer_choice_time("next_week", monday)) == datetime.datetime(
+        2026, 11, 2, 8, 0
+    )
+    with pytest.raises(ValueError):
+        defer_choice_time("never", now)
+
+
+def test_deferred_row_shows_a_glyph_and_the_until_time(store: QueueStore) -> None:
+    import datetime
+
+    from editor_agent_pane.thread_view import queue_row
+
+    thread = _ready(store)
+    now = datetime.datetime(2026, 10, 21, 15, 30).timestamp()
+    store.defer(thread.id, datetime.datetime(2026, 10, 22, 8, 0).timestamp())
+    deferred = store.get_thread(thread.id)
+    assert deferred is not None
+
+    cells = queue_row(deferred, deck="", version=1, now=now)
+
+    assert cells[0] == "●⏸"
+    assert cells[4] == "until Thu 08:00"
+    later = queue_row(
+        deferred,
+        deck="",
+        version=1,
+        now=datetime.datetime(2026, 10, 22, 9, 0).timestamp(),
+    )
+    assert later[0] == "●"  # the deferral is over
+
+
+def test_merge_thread_settings_keeps_everything_else(store: QueueStore) -> None:
+    from editor_agent_pane.thread_view import merge_thread_settings
+
+    old = settings(
+        project_folder="/src",
+        timeout_seconds=900,
+        paths={"claude_path": "/bin/claude"},
+        reasoning_effort="high",
+    )
+
+    merged = merge_thread_settings(
+        old,
+        provider="claude",
+        model="haiku",
+        reasoning_effort="max",  # haiku stops at high
+        card_access="current",
+    )
+
+    assert merged["provider"] == "claude" and merged["model"] == "haiku"
+    assert merged["reasoning_effort"] == ""
+    assert merged["card_access"] == "current"
+    assert merged["project_folder"] == "/src"
+    assert merged["timeout_seconds"] == 900
+    assert merged["paths"] == {"claude_path": "/bin/claude"}
+    assert old["provider"] == "codex"  # not mutated
+    kept = merge_thread_settings(
+        old,
+        provider="claude",
+        model="sonnet",
+        reasoning_effort="max",
+        card_access="all",
+    )
+    assert kept["reasoning_effort"] == "max"
+
+
+def test_merge_thread_settings_fills_deck_ids_for_deck_access() -> None:
+    from editor_agent_pane.thread_view import merge_thread_settings
+
+    merged = merge_thread_settings(
+        settings(card_access="all", deck_ids=[]),
+        provider="codex",
+        model="",
+        reasoning_effort="",
+        card_access="deck",
+        deck_ids=(3,),
+    )
+    assert merged["deck_ids"] == [3]
+    kept = merge_thread_settings(
+        settings(card_access="deck", deck_ids=[5]),
+        provider="codex",
+        model="",
+        reasoning_effort="",
+        card_access="deck",
+        deck_ids=(3,),
+    )
+    assert kept["deck_ids"] == [5]
+
+
+def test_model_and_effort_options_per_provider() -> None:
+    from editor_agent_pane.effort_options import effort_options_for
+    from editor_agent_pane.model_options import model_options_for
+
+    assert ("Haiku", "haiku") in model_options_for("claude", "")
+    assert ("gpt-5.5", "gpt-5.5") in model_options_for("codex", "")
+    assert model_options_for("ollama", "", ("llama3",)) == (("llama3", "llama3"),)
+    assert model_options_for("ollama", "qwen", ("llama3",))[-1] == ("qwen", "qwen")
+    assert ("Max", "max") not in effort_options_for("claude", "haiku")
+    assert effort_options_for("ollama", "llama3") == (("Model default", ""),)

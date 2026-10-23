@@ -255,8 +255,9 @@ def _notify(thread_id: str) -> None:
         mw.taskman.run_on_main(lambda: thread_changed(thread_id))
 
 
-def thread_changed(thread_id: str, *, exclude: Any = None) -> None:
-    """Main thread: fan a thread change out to open panes, and maybe tooltip."""
+def thread_changed(thread_id: str, *, exclude: Any = None, notify: bool = True) -> None:
+    """Main thread: fan a thread change out to open panes, and maybe tooltip
+    (not with ``notify=False``, for changes that are not a run's outcome)."""
     for pane in list(_panes()):
         if pane is exclude:
             continue
@@ -265,7 +266,7 @@ def thread_changed(thread_id: str, *, exclude: Any = None) -> None:
         except Exception:
             pass
     current = _service
-    if current is None or not _config().get("queue_notify", True):
+    if current is None or not notify or not _config().get("queue_notify", True):
         return
     thread = current.store.get_thread(thread_id)
     if thread is None or thread.status not in NOTIFY_TEXT:

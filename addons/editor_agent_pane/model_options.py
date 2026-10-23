@@ -130,3 +130,20 @@ def ollama_model_option_index(
         if option_value == value:
             return index
     return 0
+
+
+def model_options_for(
+    provider: object,
+    model: object = "",
+    ollama_models: tuple[str, ...] = (),
+    *,
+    ollama_unavailable: bool = False,
+) -> tuple[tuple[str, str], ...]:
+    """The Model pulldown for ``provider``, keeping ``model`` if unlisted."""
+    value = provider_value(provider)
+    if value == PROVIDER_OLLAMA:
+        return ollama_model_options_with_legacy(
+            model, ollama_models, unavailable=ollama_unavailable
+        )
+    options = CLAUDE_MODEL_OPTIONS if value == PROVIDER_CLAUDE else MODEL_OPTIONS
+    return model_options_with_legacy(model, options)
