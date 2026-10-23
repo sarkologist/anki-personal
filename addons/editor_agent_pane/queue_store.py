@@ -51,6 +51,9 @@ TRANSITIONS: dict[str, frozenset[str]] = {
     DISCARDED: frozenset(),
 }
 REPLY_FROM = (READY, ANSWERED, FAILED)
+# Re-run the last request against the current note, without a new user turn.
+RERUN_FROM = (STALE, READY, FAILED)
+RERUN_MESSAGE = "[Re-run requested: the note changed]"
 
 MESSAGE_ROLES = ("user", "agent", "system")
 
@@ -383,14 +386,53 @@ class QueueStore:
     def reply(self, thread_id: str, text: str, html: str = "") -> None:
         """Append a user message and send the thread back to the worker."""
         with self._tx() as conn:
-            row = conn.execute(
-                "select status from threads where id = ?", (thread_id,)
-            ).fetchone()
-            status = row["status"] if row else "missing"
+            status = self._status(conn, thread_id)
             if status not in REPLY_FROM:
                 raise QueueTransitionError(f"Cannot reply to a {status} thread.")
             self._insert_message(conn, thread_id, "user", text, html)
             self._transition(conn, thread_id, status, QUEUED)
+            conn.execute("update threads set error = null where id = ?", (thread_id,))
+
+    def _status(self, conn: sqlite3.Connection, thread_id: str) -> str:
+        row = conn.execute(
+            "select status from threads where id = ?", (thread_id,)
+        ).fetchone()
+        return row["status"] if row else "missing"
+
+    def mark_stale(self, thread_id: str, reason: str) -> None:
+        """ready -> stale, recording ``reason`` as a system message, atomically.
+
+        The proposal stays current so it can still be applied (forced),
+        re-run, or discarded. Raises QueueTransitionError and writes nothing
+        unless the thread is ready.
+        """
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if status != READY:
+                raise QueueTransitionError(f"Cannot mark a {status} thread stale.")
+            self._insert_message(conn, thread_id, "system", reason, "")
+            self._transition(conn, thread_id, READY, STALE)
+
+    def rerun(self, thread_id: str) -> None:
+        """stale/ready/failed -> queued, so the worker re-runs the last request
+        against the current note. Adds RERUN_MESSAGE, which also tells the
+        runner to re-send the last user turn when none is pending."""
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if status not in RERUN_FROM:
+                raise QueueTransitionError(f"Cannot re-run a {status} thread.")
+            self._insert_message(conn, thread_id, "system", RERUN_MESSAGE, "")
+            self._transition(conn, thread_id, status, QUEUED)
+            conn.execute("update threads set error = null where id = ?", (thread_id,))
+
+    def retry(self, thread_id: str) -> None:
+        """failed -> queued without a new user message; the runner re-sends the
+        unanswered request, or the last one (queue_runner.pending_request)."""
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if status != FAILED:
+                raise QueueTransitionError(f"Cannot retry a {status} thread.")
+            self._transition(conn, thread_id, FAILED, QUEUED)
             conn.execute("update threads set error = null where id = ?", (thread_id,))
 
     def discard(self, thread_id: str, reason: str | None = None) -> None:
@@ -400,10 +442,7 @@ class QueueStore:
         in a state that can be discarded, e.g. a run started meanwhile.
         """
         with self._tx() as conn:
-            row = conn.execute(
-                "select status from threads where id = ?", (thread_id,)
-            ).fetchone()
-            status = row["status"] if row else "missing"
+            status = self._status(conn, thread_id)
             if DISCARDED not in TRANSITIONS.get(status, frozenset()):
                 raise QueueTransitionError(f"Cannot discard a {status} thread.")
             if reason:
@@ -422,12 +461,16 @@ class QueueStore:
         base: dict[str, Any] | None = None,
         drop_proposal: bool = False,
         error: str | None = None,
+        session: dict[str, Any] | None = None,
+        clear_session: bool = False,
     ) -> None:
         """Record a run's outcome in one transaction: running -> ``to_status``.
 
         ``messages`` are (role, text, html). ``proposal`` (with its ``base``)
         becomes the current proposal; ``drop_proposal`` instead supersedes the
-        current one. Nothing is written if the thread is not running.
+        current one. ``session`` replaces the stored CLI session and
+        ``clear_session`` removes it; otherwise it is kept. Nothing is written
+        if the thread is not running.
         """
         if to_status not in TRANSITIONS[RUNNING]:
             raise QueueTransitionError(
@@ -444,6 +487,11 @@ class QueueStore:
             conn.execute(
                 "update threads set error = ? where id = ?", (error, thread_id)
             )
+            if session is not None or clear_session:
+                conn.execute(
+                    "update threads set session_json = ? where id = ?",
+                    (_dumps(session) if session is not None else None, thread_id),
+                )
 
     def next_runnable(self) -> Thread | None:
         with self._lock:

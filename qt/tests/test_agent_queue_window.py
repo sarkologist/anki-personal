@@ -497,7 +497,8 @@ def test_apply_refuses_a_stale_proposal(
     window._apply_pending_patch()
 
     assert ops == []
-    assert _status(store, thread.id) == "ready"
+    assert _status(store, thread.id) == "stale"
+    assert store.messages(thread.id)[-1].text == STALE_WARNING
     assert qw.warnings == [STALE_WARNING]
 
 

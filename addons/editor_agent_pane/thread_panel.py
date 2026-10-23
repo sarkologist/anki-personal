@@ -587,6 +587,19 @@ class ThreadPanel:
         self._broadcast_thread_changed(thread_id)
         return True
 
+    def _refuse_stale(self, thread_id: str, reason: str) -> None:
+        """A proposal's base no longer holds: mark a ready thread stale (so it
+        offers re-run / apply anyway / discard) and say why."""
+        service = self._service()
+        if service is not None:
+            try:
+                service.store.mark_stale(thread_id, reason)
+            except QueueTransitionError:
+                pass
+            else:
+                self._broadcast_thread_changed(thread_id)
+        showWarning(reason, parent=self._widget())
+
     def _finish_thread(self, thread_id: str, from_status: str, to_status: str) -> bool:
         service = self._service()
         if service is None:
@@ -640,7 +653,7 @@ class ThreadPanel:
             return
         reason = stale_reason(proposal.base, self._note_states([note_id]))
         if reason is not None:
-            showWarning(reason, parent=self._widget())
+            self._refuse_stale(thread.id, reason)
             return
         try:
             note = prepare_note_update(col, note_id, patch)
@@ -793,7 +806,7 @@ class ThreadPanel:
         states = self._note_states(sorted(checked_note_ids))
         reason = stale_reason(proposal.base, states)
         if reason is not None:
-            showWarning(reason, parent=self._widget())
+            self._refuse_stale(thread_id, reason)
             return False
         current = refresh_snapshot(snapshot, states)
         assert isinstance(current, MultiCardSnapshot)

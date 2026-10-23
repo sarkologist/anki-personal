@@ -50,14 +50,24 @@ direct OpenAI API billing.
   (proposal ready, reply ready, or failed). Default `true`.
 - `queue_retention_days`: Applied and discarded requests older than this many
   days are deleted when the profile opens. Default 30.
+- `queue_resume_sessions`: Whether a reply resumes the Codex/Claude CLI session
+  of the thread's last run and sends only the new turn (plus the note, if it
+  changed), instead of replaying the whole transcript. Applies only while the
+  thread keeps the same provider and model; any resume failure falls back to a
+  replay in the same run. Runs keep their CLI sessions on disk while this is
+  on. Default `true`.
+- `queue_catalog_limit`: At most this many decks and note types are listed in
+  a prompt for new notes: the source deck's subdecks plus the Default deck,
+  and the note types used there. Any other existing deck or note type is still
+  accepted. Default 30.
 - `queue_shortcut`: Opens the agent queue window from anywhere in Anki (also
   Tools > Agent Queue). Default `Ctrl+Alt+Shift+Q`; takes effect on restart.
 - `queue_window_geometry`: Saved size and position of the queue window.
 - `queue_window_splitter`: Saved widths of the queue window's list and detail.
 
 The **queue window** lists every request across notes: results waiting on you
-first (proposal ready, answered, failed), then running and queued ones, newest
-first; applied and discarded requests are hidden unless shown with the
+first (proposal ready, stale, answered, failed), then running and queued ones,
+newest first; applied and discarded requests are hidden unless shown with the
 checkbox. Select one to see its captured context, transcript and proposal, then
 Apply (Ctrl+Shift+A), Reply (type below and press Enter, or Ctrl+Shift+R),
 Discard with an optional reason (Ctrl+Shift+D), Open in Browser

@@ -1888,6 +1888,9 @@ class EditorAgentPane(ThreadPanel, QWidget):
                 )
                 return
             reason = stale_reason(proposal.base, self._note_states([thread.note_id]))
+            if reason is not None:
+                self._refuse_stale(thread_id, reason)
+                return
         else:
             # Add Cards: no note id, so check the editor still holds the note
             # the proposal was made for, not the next one after Add.

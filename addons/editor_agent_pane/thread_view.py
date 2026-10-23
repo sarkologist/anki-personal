@@ -49,8 +49,13 @@ from .surface import (
 ACTIVE_STATUSES = (QUEUED, RUNNING)
 REPLYABLE_STATUSES = (READY, ANSWERED, FAILED)
 # A failed run leaves the previous turn's proposal current, so it can still be
-# applied.
-APPLICABLE_STATUSES = (READY, FAILED)
+# applied. A stale proposal can be applied only when forced ("Apply anyway"):
+# the base check still refuses it otherwise.
+APPLICABLE_STATUSES = (READY, FAILED, STALE)
+# Retry: a failed run is queued again without a new message.
+RETRYABLE_STATUSES = (FAILED,)
+# Re-run: the last request again, against the current note.
+RERUNNABLE_STATUSES = (STALE, READY, FAILED)
 DISCARDABLE_STATUSES = (QUEUED, READY, ANSWERED, FAILED, STALE)
 LIVE_ACTIVITY_ID = "agent-thread-live"
 STATUS_ID = "agent-thread-status"
@@ -78,8 +83,8 @@ STATUS_TEXT = {
 
 STALE_WARNING = (
     "The note changed since the agent made this proposal, so it was not "
-    "applied. Discard it, or reply to have the agent re-propose against the "
-    "current note."
+    "applied. Re-run it to have the agent re-propose against the current "
+    "note, apply it anyway, or discard it."
 )
 MISSING_NOTE_WARNING = (
     "The note this proposal was made for no longer exists. Discard the proposal."
@@ -130,7 +135,7 @@ def provider_label(thread: Thread) -> str:
 def pick_thread(threads: Sequence[Thread]) -> Thread | None:
     """The thread a note should show: newest active, else newest with a result."""
     newest_first = sorted(threads, key=lambda t: t.created_at, reverse=True)
-    for statuses in (ACTIVE_STATUSES, (READY, ANSWERED), (FAILED,)):
+    for statuses in (ACTIVE_STATUSES, (READY, STALE, ANSWERED), (FAILED,)):
         for thread in newest_first:
             if thread.status in statuses:
                 return thread
@@ -300,11 +305,11 @@ def unsaved_note_stale_reason(
 
 QUEUE_STATUS_ORDER = (
     READY,
+    STALE,
     ANSWERED,
     FAILED,
     RUNNING,
     QUEUED,
-    STALE,
     APPLIED,
     DISCARDED,
 )

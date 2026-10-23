@@ -19,6 +19,7 @@ from .codex_client import (
     CODEX_OUTPUT_SCHEMA,
     PROJECT_FOLDER_ACCESS_READ_ONLY,
     PROMPT_TEMPLATE,
+    RESUME_PROMPT_TEMPLATE,
     AgentPatch,
     AgentResult,
     AgentStopped,
@@ -92,6 +93,7 @@ class _ClaudeProcessResult:
     stderr: str
     result_event: dict[str, Any] | None = None
     event_count: int = 0
+    session_id: str | None = None
 
 
 class ClaudeCliAgent:
@@ -104,8 +106,12 @@ class ClaudeCliAgent:
         project_folder_access: str = "workspace-write",
         custom_instructions: str = "",
         reasoning_effort: str = "",
+        persist_session: bool = False,
     ) -> None:
         self.claude_path = resolve_claude_path(claude_path)
+        # Keep the session on disk (no --no-session-persistence) so a later
+        # turn can resume it.
+        self.persist_session = persist_session
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds
         self.project_folder_access = normalize_project_folder_access(
@@ -124,11 +130,15 @@ class ClaudeCliAgent:
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         run_logger: AgentRunLogger | None = None,
         stop_requested: StopRequestedCallback | None = None,
+        resume_session_id: str | None = None,
     ) -> AgentResult:
+        """With ``resume_session_id``, continue that Claude session
+        (``--resume``) and send ``prompt`` as the only new turn."""
         _log_agent_event(
             run_logger,
             "run_start",
             provider="claude",
+            resumed=resume_session_id is not None,
             model=self.model or "default",
             reasoning_effort=self.reasoning_effort or "default",
             sandbox=self.project_folder_access,
@@ -152,7 +162,7 @@ class ClaudeCliAgent:
                     error_preview=text_preview(str(exc)),
                 )
                 raise
-            command = self._command(cwd, project_root)
+            command = self._command(cwd, project_root, resume_session_id)
             _log_agent_event(
                 run_logger,
                 "cli_launch",
@@ -163,7 +173,11 @@ class ClaudeCliAgent:
             try:
                 completed = self._run(
                     command,
-                    self._prompt(prompt, snapshot, history, project_root),
+                    (
+                        RESUME_PROMPT_TEMPLATE.format(user_prompt=prompt)
+                        if resume_session_id
+                        else self._prompt(prompt, snapshot, history, project_root)
+                    ),
                     cwd=cwd,
                     event_callback=event_callback,
                     run_logger=run_logger,
@@ -275,6 +289,7 @@ class ClaudeCliAgent:
                 proposals=proposals,
                 event_count=completed.event_count,
                 card_request=data.get("card_request"),
+                session_id=_claude_session_id(envelope) or completed.session_id,
             )
 
     def _working_directory(self, project_root: str, fallback: Path) -> Path:
@@ -282,7 +297,9 @@ class ClaudeCliAgent:
             return resolve_project_root(project_root)
         return fallback
 
-    def _command(self, cwd: Path, project_root: str) -> list[str]:
+    def _command(
+        self, cwd: Path, project_root: str, resume_session_id: str | None = None
+    ) -> list[str]:
         command = [
             self.claude_path,
             "-p",
@@ -292,10 +309,12 @@ class ClaudeCliAgent:
             "--output-format",
             "stream-json",
             "--verbose",
-            "--no-session-persistence",
-            "--json-schema",
-            json.dumps(CLAUDE_OUTPUT_SCHEMA),
         ]
+        if resume_session_id:
+            command.extend(["--resume", resume_session_id])
+        elif not self.persist_session:
+            command.append("--no-session-persistence")
+        command.extend(["--json-schema", json.dumps(CLAUDE_OUTPUT_SCHEMA)])
         if self.model:
             command.extend(["--model", self.model])
         if self.reasoning_effort:
@@ -377,6 +396,7 @@ class ClaudeCliAgent:
         stderr_done = False
         result_event: dict[str, Any] | None = None
         event_count = 0
+        session_id: str | None = None
 
         stdout_reader = _start_reader(process.stdout, "stdout", lines)
         stderr_reader = _start_reader(process.stderr, "stderr", lines)
@@ -428,6 +448,7 @@ class ClaudeCliAgent:
                     stdout_chunks.append(line)
                     event = _parse_stream_event(line)
                     if event is not None:
+                        session_id = _claude_session_id(event) or session_id
                         if event.get("type") == "result":
                             result_event = event
                         else:
@@ -452,6 +473,7 @@ class ClaudeCliAgent:
                     stderr="".join(stderr_chunks),
                     result_event=result_event,
                     event_count=event_count,
+                    session_id=session_id,
                 )
 
             if stop_requested is not None and stop_requested():
@@ -499,6 +521,12 @@ def _parse_claude_envelope(text: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise RuntimeError("Claude CLI returned JSON that was not an object.")
     return parsed
+
+
+def _claude_session_id(event: dict[str, Any]) -> str | None:
+    """The session id stream-json events (system init, result) carry."""
+    session_id = event.get("session_id")
+    return session_id if isinstance(session_id, str) and session_id else None
 
 
 def _raise_for_envelope_error(envelope: dict[str, Any]) -> None:
@@ -619,4 +647,5 @@ def _claude_command_log_payload(command: list[str]) -> dict[str, Any]:
         ),
         "tools_disabled": "--tools" in command,
         "read_only": "--allowedTools" in command,
+        "resumed": "--resume" in command,
     }

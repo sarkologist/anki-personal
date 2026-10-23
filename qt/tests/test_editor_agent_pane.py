@@ -7309,7 +7309,9 @@ def test_apply_refuses_a_stale_proposal(
 
     assert pane_runtime.warnings == [STALE_WARNING]
     assert pane.editor.note.fields[1] == "<p>back</p>"
-    assert _status(store, thread.id) == "ready"
+    # Marked stale (re-run / apply anyway / discard), the reason on the thread.
+    assert _status(store, thread.id) == "stale"
+    assert store.messages(thread.id)[-1].role == "system"
 
 
 def test_apply_refuses_when_the_note_is_gone(
@@ -7326,7 +7328,9 @@ def test_apply_refuses_when_the_note_is_gone(
     pane._apply_pending_patch()
 
     assert pane_runtime.warnings == [MISSING_NOTE_WARNING]
-    assert _status(store, thread.id) == "ready"
+    # Marked stale (re-run / apply anyway / discard), the reason on the thread.
+    assert _status(store, thread.id) == "stale"
+    assert store.messages(thread.id)[-1].role == "system"
 
 
 def _add_cards_ready_thread(runtime: Any, store: QueueStore, pane: Any) -> Any:
@@ -7583,6 +7587,19 @@ def test_queue_run_on_main_blocks_worker_until_main_thread_runs_it(
     pending.pop()()
     worker.join(5)
     assert results == [threading.main_thread().name]
+
+
+def test_queue_resume_sessions_reads_the_config_live(
+    pane_runtime: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_runtime = pane_runtime.queue_runtime
+    config: dict[str, Any] = {}
+    monkeypatch.setattr(queue_runtime, "_config", lambda: config)
+    assert queue_runtime._resume_sessions() is True
+    config["queue_resume_sessions"] = False
+    assert queue_runtime._resume_sessions() is False
+    config["queue_resume_sessions"] = "nonsense"
+    assert queue_runtime._resume_sessions() is True
 
 
 def test_queue_run_on_main_raises_when_closing(pane_runtime: Any) -> None:
@@ -8198,8 +8215,24 @@ def _note_create(**overrides: Any) -> Any:
 
 def test_queue_read_catalog_lists_notetypes_and_decks(pane_runtime: Any) -> None:
     queue_runtime = pane_runtime.queue_runtime
-    queue_runtime.aqt.mw = types.SimpleNamespace(col=FakeCreateCollection())
-    assert queue_runtime.read_catalog() == {
+    col = FakeCreateCollection()
+    db = sqlite3.connect(":memory:")
+    db.execute(
+        "create table cards (id integer, nid integer, did integer, odid integer)"
+    )
+    db.execute("create table notes (id integer, mid integer)")
+    db.executemany("insert into notes values (?, ?)", [(1, 7), (2, 7), (3, 8)])
+    db.executemany(
+        "insert into cards values (?, ?, ?, ?)",
+        # Note 1 has two cards in deck 3; note 2's card is in a filtered deck
+        # (home deck 3); note 3 is in deck 1.
+        [(10, 1, 3, 0), (11, 1, 3, 0), (12, 2, 99, 3), (13, 3, 1, 0)],
+    )
+    col.db = types.SimpleNamespace(all=lambda sql: db.execute(sql).fetchall())
+    queue_runtime.aqt.mw = types.SimpleNamespace(col=col)
+    catalog = queue_runtime.read_catalog()
+    assert sorted(catalog.pop("usage")) == [[1, 8, 1], [3, 7, 2]]
+    assert catalog == {
         "notetypes": [
             {"id": 7, "name": "Basic", "fields": ["Front", "Back"]},
             {"id": 8, "name": "Cloze", "fields": ["Text", "Back Extra"]},
