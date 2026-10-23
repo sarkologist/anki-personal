@@ -24,13 +24,14 @@ from .agent_log import (
 )
 from .effort_options import effort_value
 from .patches import (
+    NO_CHANGES,
     EditorSnapshot,
     MultiCardSnapshot,
     MultiNotePatch,
     NotePatch,
     PatchValidationError,
-    validate_multi_note_patch,
-    validate_note_patch,
+    snapshot_create_defaults,
+    validate_patch,
 )
 from .sources import SourceAccessError, resolve_project_root
 
@@ -67,55 +68,23 @@ PROJECT_ACCESS_INSTRUCTIONS = {
 }
 
 
-SINGLE_NOTE_PATCH_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "summary": {"type": "string"},
-        "note_id": {"type": ["integer", "null"]},
-        "notetype_id": {"type": "integer"},
-        "field_updates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "html": {"type": "string"},
-                },
-                "required": ["name", "html"],
-                "additionalProperties": False,
-            },
+_FIELD_LIST_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "html": {"type": "string"},
         },
-        "tags": {
-            "type": "object",
-            "properties": {
-                "replace": {
-                    "type": ["array", "null"],
-                    "items": {"type": "string"},
-                },
-                "add": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-                "remove": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-            },
-            "required": ["replace", "add", "remove"],
-            "additionalProperties": False,
-        },
+        "required": ["name", "html"],
+        "additionalProperties": False,
     },
-    "required": [
-        "summary",
-        "note_id",
-        "notetype_id",
-        "field_updates",
-        "tags",
-    ],
-    "additionalProperties": False,
 }
+_STRING_LIST_SCHEMA: dict[str, Any] = {"type": "array", "items": {"type": "string"}}
 
-MULTI_NOTE_PATCH_SCHEMA: dict[str, Any] = {
+# One patch shape for every provider and context: updates to existing notes,
+# new notes, and what the agent assumed or would have asked.
+PATCH_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "summary": {"type": "string"},
@@ -124,24 +93,51 @@ MULTI_NOTE_PATCH_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "note_id": {"type": "integer"},
+                    "note_id": {"type": ["integer", "null"]},
                     "notetype_id": {"type": "integer"},
-                    "field_updates": SINGLE_NOTE_PATCH_SCHEMA["properties"][
-                        "field_updates"
-                    ],
-                    "tags": SINGLE_NOTE_PATCH_SCHEMA["properties"]["tags"],
+                    "field_updates": _FIELD_LIST_SCHEMA,
+                    "tags": {
+                        "type": "object",
+                        "properties": {
+                            "replace": {
+                                "type": ["array", "null"],
+                                "items": {"type": "string"},
+                            },
+                            "add": _STRING_LIST_SCHEMA,
+                            "remove": _STRING_LIST_SCHEMA,
+                        },
+                        "required": ["replace", "add", "remove"],
+                        "additionalProperties": False,
+                    },
                 },
-                "required": [
-                    "note_id",
-                    "notetype_id",
-                    "field_updates",
-                    "tags",
-                ],
+                "required": ["note_id", "notetype_id", "field_updates", "tags"],
                 "additionalProperties": False,
             },
         },
+        "note_creates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "notetype_id": {"type": "integer"},
+                    "deck_id": {"type": "integer"},
+                    "fields": _FIELD_LIST_SCHEMA,
+                    "tags": _STRING_LIST_SCHEMA,
+                },
+                "required": ["notetype_id", "deck_id", "fields", "tags"],
+                "additionalProperties": False,
+            },
+        },
+        "assumptions": _STRING_LIST_SCHEMA,
+        "questions": _STRING_LIST_SCHEMA,
     },
-    "required": ["summary", "note_updates"],
+    "required": [
+        "summary",
+        "note_updates",
+        "note_creates",
+        "assumptions",
+        "questions",
+    ],
     "additionalProperties": False,
 }
 
@@ -165,13 +161,7 @@ CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
         },
         "message": {"type": "string"},
         "message_html": {"type": "string"},
-        "patch": {
-            "anyOf": [
-                {"type": "null"},
-                SINGLE_NOTE_PATCH_SCHEMA,
-                MULTI_NOTE_PATCH_SCHEMA,
-            ]
-        },
+        "patch": {"anyOf": [{"type": "null"}, PATCH_SCHEMA]},
     },
     "required": ["message", "message_html", "patch", "card_request"],
     "additionalProperties": False,
@@ -204,7 +194,8 @@ Return a JSON object matching the supplied schema:
   blockquote, table, and a. Use MathJax delimiters like \\(...\\) or \\[...\\]
   for math. Do not include scripts, styles, iframes, event handlers, images, or
   javascript: links.
-- patch: null unless you are proposing changes to the current note.
+- patch: null unless you are proposing changes: edits to existing notes or
+  new notes (see "When proposing a patch").
 - card_request: null for a final answer. To inspect other cards, return an
   object with query (Anki search syntax, empty string for all permitted cards),
   offset (starting at 0), and limit (1 to 20). Use cid:123 to read a specific
@@ -225,15 +216,27 @@ Do not include hidden chain-of-thought or private scratchpad reasoning. It is
 fine to include a concise rationale or evidence summary in message and
 message_html, especially when proposing a patch.
 
+The user may not be watching this run and cannot be asked anything now.
+Make a best-effort proposal instead of asking: record what you decided without
+asking in patch.assumptions, and what you would have asked in patch.questions.
+The user answers by replying.
+
 When proposing a patch:
-- If context_json.mode is "browse_multi", target only notes listed in
-  context_json.notes and return note_updates. Each note_update edits a note
-  that may be shared by multiple selected cards.
-- Otherwise, target only the current note and return field_updates/tags at the
-  top level of patch.
-- Use exact field names from the editor context.
+- note_updates edits existing notes. If context_json.mode is "browse_multi",
+  target only notes listed in context_json.notes (a note may be shared by
+  several selected cards). Otherwise target only the current note: at most one
+  entry, with note_id set to context_json.note_id (null when the note has not
+  been added yet, mode "add").
+- note_creates adds new notes, e.g. a disambiguation or comparison card. Unless
+  the request implies otherwise, use the source note's note type and the
+  default deck (both marked default in the available note types and decks
+  section). Give every field of the note type by its exact name, in any order;
+  the first field must not be empty. Keep the source note's field conventions:
+  copy its house style (structure, formatting, notes and source lines) into the
+  new note's fields, and its relevant tags.
+- Use exact field names from the editor context or the note type.
 - Preserve HTML where appropriate.
-- Field update HTML must be an Anki field fragment only. Do not include
+- Field HTML must be an Anki field fragment only. Do not include
   StartFragment/EndFragment comments, <!doctype>, <html>, <head>, or <body>
   wrapper tags.
 - For delimiter conversions, legacy Anki LaTeX delimiters are [$]...[/$] for
@@ -244,10 +247,12 @@ When proposing a patch:
   for each changed field. Do not merely describe the change.
 - Explain briefly in message/message_html why the proposed change improves the
   note or selected cards.
-- Include tags.replace, tags.add, and tags.remove. Use null for tags.replace
-  unless you intend to replace the complete tag list.
-- If there are no field or tag changes, return patch: null instead of an empty
-  patch object.
+- In each note update include tags.replace, tags.add, and tags.remove. Use null
+  for tags.replace unless you intend to replace the complete tag list.
+- Always include summary, note_updates, note_creates, assumptions and
+  questions; use empty lists for parts you do not need.
+- If there are no edits and no new notes, return patch: null instead of an
+  empty patch object. A null patch means no change.
 - The patch will only be shown to the user; Anki applies it after approval.
 """
 
@@ -762,9 +767,15 @@ def _validate_agent_patch(
     patch_data: dict[str, Any],
     snapshot: EditorSnapshot | MultiCardSnapshot,
 ) -> AgentPatch:
-    if isinstance(snapshot, MultiCardSnapshot):
-        return validate_multi_note_patch(patch_data, snapshot)
-    return validate_note_patch(patch_data, snapshot)
+    # Structure only: the queue runner validates again against the
+    # collection's note types and decks.
+    return validate_patch(
+        patch_data,
+        snapshot,
+        notetypes=None,
+        deck_ids=None,
+        defaults=snapshot_create_defaults(snapshot),
+    )
 
 
 def _validate_optional_agent_patch(
@@ -774,7 +785,7 @@ def _validate_optional_agent_patch(
     try:
         return _validate_agent_patch(patch_data, snapshot)
     except PatchValidationError as exc:
-        if str(exc) == "Patch does not contain any changes.":
+        if str(exc) == NO_CHANGES:
             return None
         raise
 

@@ -22,5 +22,8 @@
     "splitter_sizes": [570, 80],
     "queue_concurrency": 1,
     "queue_notify": true,
-    "queue_retention_days": 30
+    "queue_retention_days": 30,
+    "queue_shortcut": "Ctrl+Alt+Shift+Q",
+    "queue_window_geometry": "",
+    "queue_window_splitter": []
 }

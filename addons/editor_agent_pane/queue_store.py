@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TITLE_CHARS = 60
 
 QUEUED = "queued"
@@ -59,7 +59,7 @@ PROPOSAL_SUPERSEDED = "superseded"
 PROPOSAL_APPLIED = "applied"
 PROPOSAL_DISCARDED = "discarded"
 
-_SCHEMA = """
+_SCHEMA_V1 = """
 create table threads (
     id text primary key,
     created_at real not null,
@@ -94,6 +94,13 @@ create table proposals (
     primary key (thread_id, version)
 );
 """
+# v2: what an apply produced, e.g. {"created_note_ids": [...]}.
+_MIGRATE_V2 = "alter table proposals add column result_json text"
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"pragma table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
 
 
 class QueueTransitionError(RuntimeError):
@@ -133,6 +140,7 @@ class Proposal:
     patch: dict[str, Any]
     base: dict[str, Any]
     status: str
+    result: dict[str, Any] | None = None
 
 
 def _title(prompt: str) -> str:
@@ -181,6 +189,7 @@ def _proposal(row: sqlite3.Row) -> Proposal:
         patch=json.loads(row["patch_json"]),
         base=json.loads(row["base_json"]),
         status=row["status"],
+        result=json.loads(row["result_json"]) if row["result_json"] else None,
     )
 
 
@@ -208,15 +217,35 @@ class QueueStore:
             yield self._conn
 
     def _migrate(self) -> None:
-        with self._tx() as conn:
+        """Bring the schema up to date in one explicit transaction.
+
+        sqlite3 runs DDL and pragmas outside its implicit transactions, so
+        without the explicit BEGIN a crash between the ALTER and the version
+        bump would leave a column that the next open tries to add again. Each
+        step also checks for what it adds, so such a half-migrated file opens.
+        """
+        with self._lock:
+            conn = self._conn
             version = conn.execute("pragma user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise RuntimeError(
                     f"Agent queue schema {version} is newer than this add-on supports."
                 )
-            if version < 1:
-                conn.executescript(_SCHEMA)
-            conn.execute(f"pragma user_version = {SCHEMA_VERSION}")
+            if version == SCHEMA_VERSION:
+                return
+            conn.execute("begin immediate")
+            try:
+                if version < 1:
+                    for statement in _SCHEMA_V1.split(";"):
+                        if statement.strip():
+                            conn.execute(statement)
+                if version < 2 and not _has_column(conn, "proposals", "result_json"):
+                    conn.execute(_MIGRATE_V2)
+                conn.execute(f"pragma user_version = {SCHEMA_VERSION}")
+            except BaseException:
+                conn.rollback()
+                raise
+            conn.commit()
 
     def schema_version(self) -> int:
         with self._lock:
@@ -363,6 +392,25 @@ class QueueStore:
             self._insert_message(conn, thread_id, "user", text, html)
             self._transition(conn, thread_id, status, QUEUED)
             conn.execute("update threads set error = null where id = ?", (thread_id,))
+
+    def discard(self, thread_id: str, reason: str | None = None) -> None:
+        """Discard a thread, recording ``reason`` as "Discarded: …", atomically.
+
+        Raises QueueTransitionError (and writes nothing) unless the thread is
+        in a state that can be discarded, e.g. a run started meanwhile.
+        """
+        with self._tx() as conn:
+            row = conn.execute(
+                "select status from threads where id = ?", (thread_id,)
+            ).fetchone()
+            status = row["status"] if row else "missing"
+            if DISCARDED not in TRANSITIONS.get(status, frozenset()):
+                raise QueueTransitionError(f"Cannot discard a {status} thread.")
+            if reason:
+                self._insert_message(
+                    conn, thread_id, "user", f"Discarded: {reason}", ""
+                )
+            self._transition(conn, thread_id, status, DISCARDED)
 
     def complete_run(
         self,
@@ -533,6 +581,21 @@ class QueueStore:
         )
         conn.execute("update threads set updated_at = ? where id = ?", (now, thread_id))
         return int(version)
+
+    def set_proposal_result(
+        self, thread_id: str, version: int, result: dict[str, Any] | None
+    ) -> None:
+        """Record what applying a proposal produced (e.g. created note ids)."""
+        with self._tx() as conn:
+            conn.execute(
+                "update proposals set result_json = ? where thread_id = ?"
+                " and version = ?",
+                (_dumps(result) if result is not None else None, thread_id, version),
+            )
+            conn.execute(
+                "update threads set updated_at = ? where id = ?",
+                (time.time(), thread_id),
+            )
 
     def current_proposal(self, thread_id: str) -> Proposal | None:
         with self._lock:

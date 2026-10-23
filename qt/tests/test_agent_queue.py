@@ -203,14 +203,22 @@ def test_snapshot_from_dict_rejects_unknown_kind() -> None:
 
 def test_note_patch_round_trips_through_json() -> None:
     patch = note_patch()
-    assert patch_from_dict(json.loads(json.dumps(patch_to_dict(patch)))) == patch
+    assert (
+        patch_from_dict(json.loads(json.dumps(patch_to_dict(patch))), editor_snapshot())
+        == patch
+    )
     replace = NotePatch(
         summary="s",
         note_id=None,
         notetype_id=7,
         tag_patch=TagPatch(replace=("a", "b")),
     )
-    assert patch_from_dict(json.loads(json.dumps(patch_to_dict(replace)))) == replace
+    assert (
+        patch_from_dict(
+            json.loads(json.dumps(patch_to_dict(replace))), editor_snapshot()
+        )
+        == replace
+    )
 
 
 def test_multi_note_patch_round_trips_through_json() -> None:
@@ -221,13 +229,18 @@ def test_multi_note_patch_round_trips_through_json() -> None:
             MultiNoteUpdate(note_id=12, notetype_id=7, tag_patch=TagPatch(add=("t",))),
         ),
     )
-    assert patch_from_dict(json.loads(json.dumps(patch_to_dict(patch)))) == patch
+    assert (
+        patch_from_dict(json.loads(json.dumps(patch_to_dict(patch))), multi_snapshot())
+        == patch
+    )
 
 
 def test_patch_dict_uses_agent_schema_shape() -> None:
     data = patch_to_dict(note_patch())
-    assert data["field_updates"] == [{"name": "Back", "html": "a sigh"}]
-    assert data["tags"] == {"replace": None, "add": ["fixed"], "remove": ["old"]}
+    [update] = data["note_updates"]
+    assert update["field_updates"] == [{"name": "Back", "html": "a sigh"}]
+    assert update["tags"] == {"replace": None, "add": ["fixed"], "remove": ["old"]}
+    assert data["note_creates"] == []
 
 
 # --- store ------------------------------------------------------------------
@@ -706,7 +719,7 @@ def test_run_with_patch_stores_proposal_and_marks_ready(store: QueueStore) -> No
     assert any(role == "system" and "took" in text for role, text in roles)
     proposal = store.current_proposal(thread.id)
     assert proposal is not None and proposal.version == 1
-    assert patch_from_dict(proposal.patch) == note_patch()
+    assert patch_from_dict(proposal.patch, editor_snapshot()) == note_patch()
     assert proposal.base == {
         "notes": [
             {
@@ -1163,3 +1176,842 @@ def test_run_results_are_not_written_when_the_store_rejects_them(
     agent = FakeAgent([result("again")])
     Harness(store, agent).runner.run_once()
     assert agent.calls[0]["prompt"].startswith("Fix back")
+
+
+# --- phase 2: unified patch schema, note creates ----------------------------
+
+from editor_agent_pane.patches import (  # noqa: E402
+    CreateDefaults,
+    NoteCreate,
+    NotetypeInfo,
+    PatchValidationError,
+    validate_patch,
+)
+
+NOTETYPES = {
+    7: NotetypeInfo(name="Basic", field_names=("Front", "Back")),
+    8: NotetypeInfo(name="Cloze", field_names=("Text", "Back Extra")),
+}
+DECK_IDS = {1, 3}
+CATALOG = {
+    "notetypes": [
+        {"id": 8, "name": "Cloze", "fields": ["Text", "Back Extra"]},
+        {"id": 7, "name": "Basic", "fields": ["Front", "Back"]},
+    ],
+    "decks": [{"id": 1, "name": "Default"}, {"id": 3, "name": "Chinese"}],
+}
+
+
+def create_raw(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "notetype_id": 7,
+        "deck_id": 3,
+        "fields": [
+            {"name": "Back", "html": "sigh vs. shout"},
+            {"name": "Front", "html": "唉声 vs 呼声"},
+        ],
+        "tags": ["chinese", " disambiguation "],
+    }
+    base.update(overrides)
+    return base
+
+
+def unified_raw(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "summary": "Disambiguate",
+        "note_updates": [],
+        "note_creates": [create_raw()],
+        "assumptions": ["Used the Basic note type"],
+        "questions": ["Should 呼声 get its own card too?"],
+    }
+    base.update(overrides)
+    return base
+
+
+def validate(raw: dict[str, Any], snapshot: Any = None) -> Any:
+    return validate_patch(
+        raw,
+        snapshot or editor_snapshot(),
+        notetypes=NOTETYPES,
+        deck_ids=DECK_IDS,
+    )
+
+
+def test_validate_patch_accepts_a_creates_only_patch() -> None:
+    patch = validate(unified_raw())
+    assert isinstance(patch, NotePatch)
+    assert patch.note_id == 11 and patch.notetype_id == 7
+    assert patch.field_updates == {} and not patch.tag_patch.has_changes()
+    assert patch.has_changes()
+    assert patch.note_creates == (
+        NoteCreate(
+            notetype_id=7,
+            deck_id=3,
+            # reordered into the note type's field order
+            fields=(
+                FieldSnapshot("Front", "唉声 vs 呼声"),
+                FieldSnapshot("Back", "sigh vs. shout"),
+            ),
+            tags=("chinese", "disambiguation"),
+        ),
+    )
+    assert patch.assumptions == ("Used the Basic note type",)
+    assert patch.questions == ("Should 呼声 get its own card too?",)
+
+
+def test_validate_patch_unified_update_of_the_current_note() -> None:
+    patch = validate(
+        unified_raw(
+            note_creates=[],
+            note_updates=[
+                {
+                    "note_id": 11,
+                    "notetype_id": 7,
+                    "field_updates": [{"name": "Back", "html": "a sigh"}],
+                    "tags": {"replace": None, "add": ["fixed"], "remove": []},
+                }
+            ],
+        )
+    )
+    assert isinstance(patch, NotePatch)
+    assert patch.field_updates == {"Back": "a sigh"}
+    assert patch.tag_patch.add == ("fixed",)
+    assert patch.note_creates == ()
+
+
+def test_validate_patch_unified_update_with_null_note_id_in_add_cards() -> None:
+    snapshot = EditorSnapshot(
+        mode="add",
+        note_id=None,
+        notetype_id=7,
+        notetype_name="Basic",
+        fields=(FieldSnapshot("Front", "x"), FieldSnapshot("Back", "")),
+        tags=(),
+    )
+    patch = validate(
+        unified_raw(
+            note_creates=[],
+            note_updates=[
+                {
+                    "note_id": None,
+                    "notetype_id": 7,
+                    "field_updates": [{"name": "Back", "html": "y"}],
+                    "tags": {"replace": None, "add": [], "remove": []},
+                }
+            ],
+        ),
+        snapshot,
+    )
+    assert isinstance(patch, NotePatch)
+    assert patch.note_id is None and patch.field_updates == {"Back": "y"}
+
+
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        ({"note_id": 12, "notetype_id": 7}, "different note"),
+        ({"note_id": 11, "notetype_id": 8}, "different note type"),
+        (
+            {
+                "note_id": 11,
+                "notetype_id": 7,
+                "field_updates": [{"name": "Nope", "html": "x"}],
+            },
+            "Unknown field: Nope",
+        ),
+    ],
+)
+def test_validate_patch_single_note_updates_target_only_the_current_note(
+    update: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(PatchValidationError, match=message):
+        validate(unified_raw(note_updates=[update]))
+
+
+def test_validate_patch_still_accepts_the_legacy_single_note_shape() -> None:
+    patch = validate(
+        {
+            "summary": "Fix",
+            "note_id": 11,
+            "notetype_id": 7,
+            "field_updates": [{"name": "Back", "html": "a sigh"}],
+            "tags": {"replace": None, "add": [], "remove": []},
+        }
+    )
+    assert isinstance(patch, NotePatch)
+    assert patch.field_updates == {"Back": "a sigh"}
+
+
+def test_validate_patch_multi_with_updates_and_creates() -> None:
+    patch = validate(
+        unified_raw(
+            note_updates=[
+                {
+                    "note_id": 12,
+                    "notetype_id": 7,
+                    "field_updates": [{"name": "Back", "html": "D!"}],
+                    "tags": {"replace": None, "add": [], "remove": []},
+                }
+            ]
+        ),
+        multi_snapshot(),
+    )
+    assert isinstance(patch, MultiNotePatch)
+    assert patch.affected_note_ids() == (12,)
+    assert len(patch.note_creates) == 1
+    assert patch.questions == ("Should 呼声 get its own card too?",)
+
+
+def test_validate_patch_multi_creates_only_is_valid() -> None:
+    patch = validate(unified_raw(), multi_snapshot())
+    assert isinstance(patch, MultiNotePatch)
+    assert patch.note_updates == () and patch.has_changes()
+
+
+def test_validate_patch_multi_rejects_unselected_notes() -> None:
+    with pytest.raises(PatchValidationError, match="not selected"):
+        validate(
+            unified_raw(note_updates=[{"note_id": 99, "notetype_id": 7}]),
+            multi_snapshot(),
+        )
+
+
+def test_validate_patch_without_changes_raises() -> None:
+    with pytest.raises(PatchValidationError, match="does not contain any changes"):
+        validate(unified_raw(note_creates=[]))
+
+
+@pytest.mark.parametrize(
+    ("create", "message"),
+    [
+        (create_raw(notetype_id=99), "Unknown note type: 99"),
+        (create_raw(deck_id=42), "Unknown deck: 42"),
+        (
+            create_raw(fields=[{"name": "Front", "html": "x"}]),
+            "missing fields: Back",
+        ),
+        (
+            create_raw(
+                fields=[
+                    {"name": "Front", "html": "x"},
+                    {"name": "Back", "html": "y"},
+                    {"name": "Notes", "html": "z"},
+                ]
+            ),
+            "Unknown field for note type Basic: Notes",
+        ),
+        (
+            create_raw(
+                fields=[
+                    {"name": "Front", "html": "x"},
+                    {"name": "Front", "html": "y"},
+                    {"name": "Back", "html": "y"},
+                ]
+            ),
+            "Duplicate field: Front",
+        ),
+        (
+            create_raw(
+                fields=[
+                    {"name": "Front", "html": "<p>&nbsp; <br></p>"},
+                    {"name": "Back", "html": "y"},
+                ]
+            ),
+            "first field \\(Front\\) must not be empty",
+        ),
+        (
+            create_raw(
+                fields=[
+                    {"name": "Front", "html": "<html><body>x</body></html>"},
+                    {"name": "Back", "html": "y"},
+                ]
+            ),
+            "document wrapper",
+        ),
+        (create_raw(tags=["two words"]), "whitespace"),
+        (create_raw(notetype_id="seven"), "notetype_id must be an integer"),
+    ],
+)
+def test_validate_patch_rejects_bad_creates(
+    create: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(PatchValidationError, match=message):
+        validate(unified_raw(note_creates=[create]))
+
+
+def test_validate_patch_first_field_may_be_only_an_image() -> None:
+    patch = validate(
+        unified_raw(
+            note_creates=[
+                create_raw(
+                    fields=[
+                        {"name": "Front", "html": '<img src="a.png">'},
+                        {"name": "Back", "html": ""},
+                    ]
+                )
+            ]
+        )
+    )
+    assert patch.note_creates[0].fields[0].html == '<img src="a.png">'
+
+
+def test_validate_patch_without_a_catalog_checks_structure_only() -> None:
+    patch = validate_patch(
+        unified_raw(note_creates=[create_raw(notetype_id=99, deck_id=42)]),
+        editor_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    )
+    assert patch.note_creates[0].notetype_id == 99
+    with pytest.raises(PatchValidationError, match="must not be empty"):
+        validate_patch(
+            unified_raw(
+                note_creates=[create_raw(fields=[{"name": "Front", "html": " "}])]
+            ),
+            editor_snapshot(),
+            notetypes=None,
+            deck_ids=None,
+        )
+
+
+def create_without_ids(**overrides: Any) -> dict[str, Any]:
+    """create_raw() without notetype_id/deck_id, unless given in overrides."""
+    raw = create_raw()
+    del raw["notetype_id"], raw["deck_id"]
+    raw.update(overrides)
+    return raw
+
+
+@pytest.mark.parametrize(
+    "create",
+    [
+        create_without_ids(),
+        create_without_ids(notetype_id=None, deck_id=None),
+        create_without_ids(notetype_id="", deck_id=""),
+    ],
+)
+def test_create_without_ids_takes_the_defaults(create: dict[str, Any]) -> None:
+    patch = validate_patch(
+        unified_raw(note_creates=[create]),
+        editor_snapshot(),
+        notetypes=NOTETYPES,
+        deck_ids=DECK_IDS,
+        defaults=CreateDefaults(notetype_id=7, deck_id=3),
+    )
+    [created] = patch.note_creates
+    assert (created.notetype_id, created.deck_id) == (7, 3)
+
+
+def test_create_accepts_numeric_string_ids() -> None:
+    patch = validate(
+        unified_raw(note_creates=[create_raw(notetype_id="7", deck_id="3")])
+    )
+    [created] = patch.note_creates
+    assert (created.notetype_id, created.deck_id) == (7, 3)
+
+
+@pytest.mark.parametrize("name", ["Cloze", "cloze"])
+def test_create_resolves_a_note_type_name(name: str) -> None:
+    create = create_raw(
+        notetype_id=name,
+        fields=[
+            {"name": "Text", "html": "{{c1::a}}"},
+            {"name": "Back Extra", "html": ""},
+        ],
+    )
+    [created] = validate(unified_raw(note_creates=[create])).note_creates
+    assert created.notetype_id == 8
+
+
+@pytest.mark.parametrize(
+    ("create", "message"),
+    [
+        (
+            create_without_ids(notetype_id=7),
+            "New note 1: no deck_id and no default deck.",
+        ),
+        (
+            create_without_ids(deck_id=3),
+            "New note 1: no notetype_id and no default note type.",
+        ),
+    ],
+)
+def test_create_without_ids_or_defaults_fails_against_the_collection(
+    create: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(PatchValidationError) as excinfo:
+        validate(unified_raw(note_creates=[create]))
+    assert str(excinfo.value) == message
+
+
+def test_structure_only_create_without_ids_falls_back_to_the_snapshot() -> None:
+    [single] = validate_patch(
+        unified_raw(note_creates=[create_without_ids()]),
+        editor_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    ).note_creates
+    assert (single.notetype_id, single.deck_id) == (7, None)
+    [multi] = validate_patch(
+        unified_raw(note_creates=[create_without_ids()]),
+        multi_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    ).note_creates
+    assert (multi.notetype_id, multi.deck_id) == (7, None)
+
+
+def test_create_without_a_deck_round_trips() -> None:
+    patch = validate_patch(
+        unified_raw(note_creates=[create_without_ids()]),
+        editor_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    )
+    data = json.loads(json.dumps(patch_to_dict(patch)))
+    assert data["note_creates"][0]["deck_id"] is None
+    assert patch_from_dict(data, editor_snapshot()) == patch
+
+
+@pytest.mark.parametrize("key", ["assumptions", "questions"])
+def test_validate_patch_rejects_non_string_notes(key: str) -> None:
+    with pytest.raises(PatchValidationError, match=key):
+        validate(unified_raw(**{key: "just one"}))
+    assert getattr(validate(unified_raw(**{key: [" ", "a "]})), key) == ("a",)
+
+
+def note_patch_with_creates() -> NotePatch:
+    return NotePatch(
+        summary="Both",
+        note_id=11,
+        notetype_id=7,
+        field_updates={"Back": "a sigh"},
+        note_creates=(
+            NoteCreate(
+                notetype_id=7,
+                deck_id=3,
+                fields=(
+                    FieldSnapshot("Front", "唉声 vs 呼声"),
+                    FieldSnapshot("Back", "b"),
+                ),
+                tags=("disambiguation",),
+            ),
+        ),
+        assumptions=("a",),
+        questions=("q",),
+    )
+
+
+def test_patch_with_creates_round_trips_in_the_schema_shape() -> None:
+    patch = note_patch_with_creates()
+    data = json.loads(json.dumps(patch_to_dict(patch)))
+    assert set(data) == {
+        "summary",
+        "note_updates",
+        "note_creates",
+        "assumptions",
+        "questions",
+    }
+    assert data["note_updates"] == [
+        {
+            "note_id": 11,
+            "notetype_id": 7,
+            "field_updates": [{"name": "Back", "html": "a sigh"}],
+            "tags": {"replace": None, "add": [], "remove": []},
+        }
+    ]
+    assert data["note_creates"] == [
+        {
+            "notetype_id": 7,
+            "deck_id": 3,
+            "fields": [
+                {"name": "Front", "html": "唉声 vs 呼声"},
+                {"name": "Back", "html": "b"},
+            ],
+            "tags": ["disambiguation"],
+        }
+    ]
+    assert data["assumptions"] == ["a"] and data["questions"] == ["q"]
+    assert patch_from_dict(data, editor_snapshot()) == patch
+    # A stored dict is valid agent output: it can be validated again.
+    assert validate(data) == patch
+
+
+def test_creates_only_patch_round_trips() -> None:
+    patch = validate(unified_raw())
+    data = json.loads(json.dumps(patch_to_dict(patch)))
+    assert data["note_updates"] == []
+    assert patch_from_dict(data, editor_snapshot()) == patch
+
+
+def test_multi_patch_with_creates_round_trips() -> None:
+    patch = validate(unified_raw(), multi_snapshot())
+    data = json.loads(json.dumps(patch_to_dict(patch)))
+    assert patch_from_dict(data, multi_snapshot()) == patch
+
+
+def test_legacy_stored_single_note_patch_still_loads() -> None:
+    legacy = {
+        "summary": "Fix back",
+        "note_id": 11,
+        "notetype_id": 7,
+        "field_updates": [{"name": "Back", "html": "a sigh"}],
+        "tags": {"replace": None, "add": ["fixed"], "remove": ["old"]},
+    }
+    assert patch_from_dict(legacy, editor_snapshot()) == note_patch()
+
+
+# --- schema and prompt -------------------------------------------------------
+
+
+def test_output_schema_is_the_unified_patch_shape() -> None:
+    from editor_agent_pane.codex_client import CODEX_OUTPUT_SCHEMA
+
+    variants = CODEX_OUTPUT_SCHEMA["properties"]["patch"]["anyOf"]
+    assert variants[0] == {"type": "null"}
+    assert len(variants) == 2
+    patch_schema = variants[1]
+    assert set(patch_schema["required"]) == {
+        "summary",
+        "note_updates",
+        "note_creates",
+        "assumptions",
+        "questions",
+    }
+    assert set(patch_schema["properties"]) == set(patch_schema["required"])
+    create = patch_schema["properties"]["note_creates"]["items"]
+    assert set(create["required"]) == {"notetype_id", "deck_id", "fields", "tags"}
+    assert create["additionalProperties"] is False
+
+
+def test_prompt_describes_creates_assumptions_and_questions() -> None:
+    from editor_agent_pane.codex_client import PROMPT_TEMPLATE
+
+    for text in ("note_creates", "assumptions", "questions", "note_updates"):
+        assert text in PROMPT_TEMPLATE
+    assert "top level of patch" not in PROMPT_TEMPLATE
+
+
+@pytest.mark.parametrize("snapshot_kind", ["editor", "multi"])
+def test_ollama_normalizer_fills_unified_defaults(snapshot_kind: str) -> None:
+    from editor_agent_pane.ollama_client import _normalize_ollama_patch_data
+
+    snapshot = editor_snapshot() if snapshot_kind == "editor" else multi_snapshot()
+    normalized = _normalize_ollama_patch_data(
+        {
+            "note_updates": [
+                {"note_id": 11, "field_updates": {"Back": "x"}},
+            ],
+            "note_creates": [
+                {"notetype_id": 7, "deck_id": 3, "fields": {"Front": "f", "Back": ""}}
+            ],
+        },
+        snapshot,
+    )
+    patch = validate(normalized, snapshot)
+    assert patch.has_changes()
+    assert patch.note_creates[0].fields[0] == FieldSnapshot("Front", "f")
+    assert patch.note_creates[0].tags == ()
+
+
+def test_ollama_normalizer_keeps_the_legacy_list_shape() -> None:
+    from editor_agent_pane.ollama_client import _normalize_ollama_patch_data
+
+    normalized = _normalize_ollama_patch_data(
+        [{"name": "Back", "html": "x"}], editor_snapshot()
+    )
+    patch = validate(normalized)
+    assert isinstance(patch, NotePatch) and patch.field_updates == {"Back": "x"}
+
+
+# --- store: proposal results ---------------------------------------------------
+
+
+def test_set_proposal_result_is_stored_on_the_proposal(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "a")
+    proposal = store.add_proposal(thread.id, {"summary": "s"}, {"notes": []})
+    assert proposal.result is None
+    store.set_proposal_result(thread.id, 1, {"created_note_ids": [5, 6]})
+    current = store.current_proposal(thread.id)
+    assert current is not None
+    assert current.result == {"created_note_ids": [5, 6]}
+
+
+def test_v1_store_is_migrated(tmp_path: Path) -> None:
+    import sqlite3
+
+    from editor_agent_pane import queue_store
+
+    path = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(queue_store._SCHEMA_V1)
+    conn.execute("pragma user_version = 1")
+    conn.execute(
+        "insert into threads values ('t', 0, 0, 'ready', 't', null, '{}', '{}',"
+        " null, null, null)"
+    )
+    conn.execute(
+        "insert into proposals values ('t', 1, 0, '{\"summary\": \"s\"}', '{}',"
+        " 'current')"
+    )
+    conn.commit()
+    conn.close()
+    store = QueueStore.open(path)
+    try:
+        assert store.schema_version() >= 2
+        proposal = store.current_proposal("t")
+        assert proposal is not None and proposal.result is None
+        store.set_proposal_result("t", 1, {"created_note_ids": [1]})
+        assert store.current_proposal("t").result == {"created_note_ids": [1]}  # type: ignore[union-attr]
+    finally:
+        store.close()
+
+
+# --- runner: creates ------------------------------------------------------------
+
+
+class CatalogHarness(Harness):
+    def __init__(self, store: QueueStore, agent: FakeAgent, **state: Any) -> None:
+        super().__init__(store, agent, **state)
+        self.catalog_reads = 0
+        self.runner._read_catalog = self.read_catalog
+
+    def read_catalog(self) -> dict[str, Any]:
+        self.catalog_reads += 1
+        return CATALOG
+
+
+def creates_context(snapshot: Any = None) -> dict[str, Any]:
+    return {**context(snapshot), "deck_id": 3}
+
+
+def creates_only_patch() -> NotePatch:
+    return validate(unified_raw())
+
+
+def test_creates_only_proposal_is_stored_ready_without_a_base(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(creates_context(), settings(), "Disambiguate", 11)
+    harness = CatalogHarness(store, FakeAgent([result("ok", (creates_only_patch(),))]))
+    harness.runner.run_once()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "ready", loaded.error
+    proposal = store.current_proposal(thread.id)
+    assert proposal is not None
+    assert proposal.base == {"notes": []}
+    assert patch_from_dict(proposal.patch, editor_snapshot()) == creates_only_patch()
+    assert proposal.patch["assumptions"] == ["Used the Basic note type"]
+    assert proposal.patch["questions"] == ["Should 呼声 get its own card too?"]
+    assert harness.catalog_reads == 1
+
+
+def test_proposal_with_update_and_create_records_only_the_update_base(
+    store: QueueStore,
+) -> None:
+    store.create_thread(creates_context(), settings(), "Both", 11)
+    patch = note_patch_with_creates()
+    harness = CatalogHarness(store, FakeAgent([result("ok", (patch,))]))
+    harness.runner.run_once()
+    [thread] = store.list_threads()
+    proposal = store.current_proposal(thread.id)
+    assert proposal is not None
+    assert [n["note_id"] for n in proposal.base["notes"]] == [11]
+
+
+@pytest.mark.parametrize(
+    ("create", "message"),
+    [
+        (create_raw(notetype_id=99), "Unknown note type: 99"),
+        (create_raw(deck_id=42), "Unknown deck: 42"),
+    ],
+)
+def test_create_for_unknown_notetype_or_deck_fails_the_run(
+    store: QueueStore, create: dict[str, Any], message: str
+) -> None:
+    # The client validated structure only; the runner checks the collection.
+    patch = validate_patch(
+        unified_raw(note_creates=[create]),
+        editor_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    )
+    thread = store.create_thread(creates_context(), settings(), "Disambiguate", 11)
+    CatalogHarness(store, FakeAgent([result("ok", (patch,))])).runner.run_once()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+    assert loaded.error is not None and message in loaded.error
+    assert store.current_proposal(thread.id) is None
+    assert message in store.messages(thread.id)[-1].text
+
+
+def test_create_without_ids_is_ready_with_the_source_notetype_and_deck(
+    store: QueueStore,
+) -> None:
+    # The client validated structure only; the runner fills the defaults.
+    patch = validate_patch(
+        unified_raw(note_creates=[create_without_ids()]),
+        editor_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    )
+    thread = store.create_thread(creates_context(), settings(), "Disambiguate", 11)
+    CatalogHarness(store, FakeAgent([result("ok", (patch,))])).runner.run_once()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "ready", loaded.error
+    proposal = store.current_proposal(thread.id)
+    assert proposal is not None
+    [created] = patch_from_dict(proposal.patch, editor_snapshot()).note_creates
+    assert (created.notetype_id, created.deck_id) == (7, 3)
+
+
+def test_prompt_lists_note_types_and_decks_with_defaults_first(
+    store: QueueStore,
+) -> None:
+    store.create_thread(creates_context(), settings(), "Disambiguate", 11)
+    agent = FakeAgent([result()])
+    CatalogHarness(store, agent).runner.run_once()
+    prompt = agent.calls[0]["prompt"]
+    marker = "Available note types and decks as JSON"
+    assert marker in prompt
+    section = json.loads(prompt.split(marker, 1)[1].split(":\n", 1)[1].split("\n")[0])
+    assert section["notetypes"][0] == {
+        "id": 7,
+        "name": "Basic",
+        "fields": ["Front", "Back"],
+        "default": True,
+    }
+    assert "default" not in section["notetypes"][1]
+    assert section["decks"][0] == {"id": 3, "name": "Chinese", "default": True}
+    assert section["decks"][1] == {"id": 1, "name": "Default"}
+
+
+def test_multi_prompt_defaults_to_the_first_selected_card(store: QueueStore) -> None:
+    store.create_thread(context(multi_snapshot()), settings(), "x")
+    agent = FakeAgent([result()])
+    CatalogHarness(
+        store,
+        agent,
+        note_state={
+            11: {"mod": 1, "fields": ["a", "b"], "tags": []},
+            12: {"mod": 1, "fields": ["c", "d"], "tags": []},
+        },
+    ).runner.run_once()
+    prompt = agent.calls[0]["prompt"]
+    section = json.loads(
+        prompt.split("Available note types and decks as JSON", 1)[1]
+        .split(":\n", 1)[1]
+        .split("\n")[0]
+    )
+    assert section["notetypes"][0]["id"] == 7
+    assert section["decks"][0]["id"] == 3
+
+
+def test_catalog_errors_requeue_when_the_collection_is_closed(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(creates_context(), settings(), "x", 11)
+    harness = CatalogHarness(store, FakeAgent([]))
+
+    def closed() -> Any:
+        raise CollectionUnavailable("closed")
+
+    harness.runner._read_catalog = closed
+    harness.runner.run_once()
+    assert store.get_thread(thread.id).status == "queued"  # type: ignore[union-attr]
+
+
+# --- review fixes -----------------------------------------------------------
+
+
+def test_v1_store_that_already_has_result_json_opens(tmp_path: Path) -> None:
+    """A crash between the v2 ALTER and the version bump must not brick the store."""
+    import sqlite3
+
+    from editor_agent_pane import queue_store
+
+    path = tmp_path / "half.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(queue_store._SCHEMA_V1)
+    conn.execute(queue_store._MIGRATE_V2)
+    conn.execute("pragma user_version = 1")
+    conn.commit()
+    conn.close()
+    for _ in range(2):
+        store = QueueStore.open(path)
+        try:
+            assert store.schema_version() == 2
+        finally:
+            store.close()
+
+
+def test_discard_records_reason_and_closes_in_one_step(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.transition(thread.id, "queued", "running")
+    store.transition(thread.id, "running", "ready")
+
+    store.discard(thread.id, "wrong pinyin")
+
+    assert store.get_thread(thread.id).status == "discarded"  # type: ignore[union-attr]
+    assert store.messages(thread.id)[-1].text == "Discarded: wrong pinyin"
+
+
+def test_discard_without_reason_adds_no_message(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.discard(thread.id)
+    assert store.get_thread(thread.id).status == "discarded"  # type: ignore[union-attr]
+    assert len(store.messages(thread.id)) == 1
+
+
+def test_discard_refuses_a_running_thread_and_writes_nothing(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.transition(thread.id, "queued", "running")
+
+    with pytest.raises(QueueTransitionError):
+        store.discard(thread.id, "too late")
+
+    assert store.get_thread(thread.id).status == "running"  # type: ignore[union-attr]
+    assert [m.text for m in store.messages(thread.id)] == ["Fix back"]
+
+
+def test_run_fails_when_the_note_was_deleted(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    agent = FakeAgent([result("ok", (note_patch(),))])
+    Harness(store, agent, note_state={11: None}).runner.run_once()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+    assert loaded.error == "The note no longer exists."
+    assert agent.calls == []
+    assert store.current_proposal(thread.id) is None
+
+
+def test_multi_run_fails_when_every_note_was_deleted(store: QueueStore) -> None:
+    thread = store.create_thread(context(multi_snapshot()), settings(), "x")
+    agent = FakeAgent([result("ok")])
+    Harness(store, agent, note_state={11: None, 12: None}).runner.run_once()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+    assert loaded.error == "The selected notes no longer exist."
+    assert agent.calls == []
+
+
+def test_multi_run_drops_deleted_notes_and_says_so(store: QueueStore) -> None:
+    thread = store.create_thread(context(multi_snapshot()), settings(), "x")
+    agent = FakeAgent([result("ok")])
+    Harness(
+        store,
+        agent,
+        note_state={11: {"mod": 1, "fields": ["a", "b"], "tags": ["x"]}, 12: None},
+    ).runner.run_once()
+
+    sent = agent.calls[0]["snapshot"]
+    assert [note.note_id for note in sent.notes] == [11]
+    assert [card.note_id for card in sent.cards] == [11]
+    assert store.get_thread(thread.id).status == "answered"  # type: ignore[union-attr]
+    system = [m.text for m in store.messages(thread.id) if m.role == "system"]
+    assert any("12" in text and "no longer exist" in text for text in system)

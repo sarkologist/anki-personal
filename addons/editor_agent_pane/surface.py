@@ -6,13 +6,15 @@ from __future__ import annotations
 import difflib
 import html
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 
 from .patches import (
     EditorSnapshot,
     MultiCardSnapshot,
     MultiNotePatch,
     MultiNoteUpdate,
+    NoteCreate,
     NotePatch,
     SelectedNoteSnapshot,
     SelectedTextSnapshot,
@@ -21,6 +23,35 @@ from .sanitize import sanitize_html
 
 PreviewRenderer = Callable[[str], str]
 SELECTION_CONTEXT_EXCERPT_MAX_CHARS = 120
+MAX_DUPLICATES_SHOWN = 3
+
+
+@dataclass(frozen=True)
+class CardPreview:
+    """One card a new note would generate, rendered and sanitized."""
+
+    name: str
+    question_html: str
+    answer_html: str
+
+
+@dataclass(frozen=True)
+class DuplicateHit:
+    note_id: int
+    first_field: str
+
+
+@dataclass(frozen=True)
+class CreatePreview:
+    """What the collection says about a proposed new note, at render time."""
+
+    notetype_name: str
+    deck_name: str
+    first_field_name: str = ""
+    cards: tuple[CardPreview, ...] = ()
+    # The first few matches, and how many notes matched in all.
+    duplicates: tuple[DuplicateHit, ...] = ()
+    duplicate_total: int = 0
 
 
 def surface_body() -> str:
@@ -154,6 +185,17 @@ def surface_body() -> str:
 .agent-empty {
     color: var(--fg-subtle, #666);
     font-style: italic;
+}
+.agent-proposal-notes {
+    margin: 0 0 10px;
+}
+.agent-proposal-notes ul {
+    margin: 2px 0 6px;
+    padding-left: 20px;
+}
+.agent-warning {
+    color: var(--accent-danger, #c62828);
+    margin: 4px 0 8px;
 }
 .agent-latex-error {
     color: var(--fg-danger, #b00020);
@@ -376,6 +418,7 @@ def render_proposal_diff(
     snapshot: EditorSnapshot,
     patch: NotePatch,
     preview_renderer: PreviewRenderer | None = None,
+    create_previews: Sequence[CreatePreview | None] | None = None,
 ) -> str:
     render_preview = preview_renderer or sanitize_html
     changes = [
@@ -389,7 +432,126 @@ def render_proposal_diff(
 <section class="agent-proposal">
     <div class="agent-role">Proposed changes</div>
     <div class="agent-proposal-summary">{html.escape(patch.summary)}</div>
+    {render_patch_notes(patch.assumptions, patch.questions)}
     {"".join(changes)}
+    {render_note_creates(patch.note_creates, create_previews, render_preview)}
+</section>
+"""
+
+
+def render_creates_proposal(
+    patch: NotePatch | MultiNotePatch,
+    preview_renderer: PreviewRenderer | None = None,
+    create_previews: Sequence[CreatePreview | None] | None = None,
+) -> str:
+    """A proposal shown by its notes and new notes only (no per-card diff)."""
+    render_preview = preview_renderer or sanitize_html
+    return f"""
+<section class="agent-proposal">
+    <div class="agent-role">Proposed changes</div>
+    <div class="agent-proposal-summary">{html.escape(patch.summary)}</div>
+    {render_patch_notes(patch.assumptions, patch.questions)}
+    {render_note_creates(patch.note_creates, create_previews, render_preview)}
+</section>
+"""
+
+
+def render_patch_notes(assumptions: Sequence[str], questions: Sequence[str]) -> str:
+    """What the agent assumed and would have asked, so it can be corrected first."""
+    parts = []
+    for title, items in (("Assumptions", assumptions), ("Questions", questions)):
+        if not items:
+            continue
+        rows = "".join(f"<li>{_escaped_text(item)}</li>" for item in items)
+        parts.append(f'<div class="agent-change-title">{title}</div><ul>{rows}</ul>')
+    if not parts:
+        return ""
+    return f'<div class="agent-proposal-notes">{"".join(parts)}</div>'
+
+
+def render_note_creates(
+    creates: Sequence[NoteCreate],
+    previews: Sequence[CreatePreview | None] | None = None,
+    render_preview: PreviewRenderer | None = None,
+) -> str:
+    render = render_preview or sanitize_html
+    previews = list(previews or ())
+    return "".join(
+        _render_note_create(
+            index,
+            create,
+            previews[index] if index < len(previews) else None,
+            render,
+        )
+        for index, create in enumerate(creates)
+    )
+
+
+def _render_note_create(
+    index: int,
+    create: NoteCreate,
+    preview: CreatePreview | None,
+    render_preview: PreviewRenderer,
+) -> str:
+    if preview is not None:
+        title = f"New note {index + 1}: {preview.notetype_name} in {preview.deck_name}"
+    else:
+        title = (
+            f"New note {index + 1}: note type {create.notetype_id} "
+            f"in deck {create.deck_id}"
+        )
+    duplicates = ""
+    if preview is not None and preview.duplicates:
+        field_name = preview.first_field_name or "first field"
+        hits = "".join(
+            '<div class="agent-warning">Possible duplicate of nid '
+            f"{hit.note_id} ({html.escape(field_name)}: "
+            f"{html.escape(hit.first_field)})</div>"
+            for hit in preview.duplicates[:MAX_DUPLICATES_SHOWN]
+        )
+        shown = min(len(preview.duplicates), MAX_DUPLICATES_SHOWN)
+        more = max(preview.duplicate_total, len(preview.duplicates)) - shown
+        if more > 0:
+            hits += f'<div class="agent-warning">and {more} more</div>'
+        duplicates = hits
+    fields = "".join(
+        f"""
+    <div class="agent-preview-pane">
+        <div class="agent-preview-heading">{html.escape(field.name)}</div>
+        <div class="agent-preview-body">{render_preview(field.html) or _empty_preview()}</div>
+    </div>"""
+        for field in create.fields
+    )
+    cards = ""
+    if preview is not None:
+        cards = "".join(
+            f"""
+<div class="agent-diff-heading">{html.escape(card.name)}</div>
+<div class="agent-preview-grid">
+    <div class="agent-preview-pane">
+        <div class="agent-preview-heading">Question</div>
+        <div class="agent-preview-body">{card.question_html or _empty_preview()}</div>
+    </div>
+    <div class="agent-preview-pane">
+        <div class="agent-preview-heading">Answer</div>
+        <div class="agent-preview-body">{card.answer_html or _empty_preview()}</div>
+    </div>
+</div>"""
+            for card in preview.cards
+        )
+    tags = (
+        f'<div class="agent-preview-heading">Tags</div>{_render_tags(create.tags)}'
+        if create.tags
+        else ""
+    )
+    return f"""
+<section class="agent-change">
+    <div class="agent-change-title">{html.escape(title)}</div>
+    {duplicates}
+    <div class="agent-preview-grid">{fields}
+    </div>
+    {tags}
+    {cards}
 </section>
 """
 
@@ -407,6 +569,7 @@ def render_multi_note_card_proposal_diff(
     patch: MultiNotePatch,
     card_id: int,
     preview_renderer: PreviewRenderer | None = None,
+    create_previews: Sequence[CreatePreview | None] | None = None,
 ) -> str:
     render_preview = preview_renderer or sanitize_html
     card = snapshot.card_by_id(card_id)
@@ -432,7 +595,9 @@ def render_multi_note_card_proposal_diff(
         - note {html.escape(str(note.note_id))}
     </div>
     <div class="agent-selection-context">{html.escape(sibling_text)}</div>
+    {render_patch_notes(patch.assumptions, patch.questions)}
     {changes}
+    {render_note_creates(patch.note_creates, create_previews, render_preview)}
 </section>
 """
 

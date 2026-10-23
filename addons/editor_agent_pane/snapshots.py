@@ -18,6 +18,7 @@ from .patches import (
     MultiCardSnapshot,
     MultiNotePatch,
     MultiNoteUpdate,
+    NoteCreate,
     NoteImageSnapshot,
     NotePatch,
     SelectedCardSnapshot,
@@ -95,36 +96,65 @@ def _selected_note_from_dict(data: dict[str, Any]) -> SelectedNoteSnapshot:
     )
 
 
-# Patches use the agent response schema's shape (field_updates as a list of
-# {name, html}, tags as {replace, add, remove}), so a stored proposal can be
-# shown back to the agent verbatim when a reply amends it.
+# Patches use the agent response schema's unified shape (note_updates with
+# field_updates as a list of {name, html} and tags as {replace, add, remove},
+# note_creates, assumptions, questions), so a stored proposal can be shown back
+# to the agent verbatim when a reply amends it. Whether it is a single-note or
+# a multi-note patch follows from the thread's snapshot.
 
 
 def patch_to_dict(patch: Patch) -> dict[str, Any]:
     if isinstance(patch, MultiNotePatch):
-        return {
-            "summary": patch.summary,
-            "note_updates": [
-                {
-                    "note_id": update.note_id,
-                    "notetype_id": update.notetype_id,
-                    "field_updates": _field_updates_to_list(update.field_updates),
-                    "tags": _tags_to_dict(update.tag_patch),
-                }
-                for update in patch.note_updates
-            ],
-        }
+        updates = [
+            _update_to_dict(
+                update.note_id,
+                update.notetype_id,
+                update.field_updates,
+                update.tag_patch,
+            )
+            for update in patch.note_updates
+        ]
+    else:
+        updates = (
+            [
+                _update_to_dict(
+                    patch.note_id,
+                    patch.notetype_id,
+                    patch.field_updates,
+                    patch.tag_patch,
+                )
+            ]
+            if patch.has_note_update()
+            else []
+        )
     return {
         "summary": patch.summary,
-        "note_id": patch.note_id,
-        "notetype_id": patch.notetype_id,
-        "field_updates": _field_updates_to_list(patch.field_updates),
-        "tags": _tags_to_dict(patch.tag_patch),
+        "note_updates": updates,
+        "note_creates": [_create_to_dict(create) for create in patch.note_creates],
+        "assumptions": list(patch.assumptions),
+        "questions": list(patch.questions),
     }
 
 
-def patch_from_dict(data: dict[str, Any]) -> Patch:
-    if "note_updates" in data:
+def patch_from_dict(data: dict[str, Any], snapshot: Snapshot) -> Patch:
+    """Rebuild a stored patch; ``snapshot`` is the thread's captured context."""
+    creates = tuple(_create_from_dict(raw) for raw in data.get("note_creates") or ())
+    assumptions = tuple(str(text) for text in data.get("assumptions") or ())
+    questions = tuple(str(text) for text in data.get("questions") or ())
+    if "note_updates" not in data:
+        # Phase 1 stored single-note patches with the update at the top level.
+        note_id = data.get("note_id")
+        return NotePatch(
+            summary=str(data["summary"]),
+            note_id=int(note_id) if note_id is not None else None,
+            notetype_id=int(data["notetype_id"]),
+            field_updates=_field_updates_from_list(data.get("field_updates") or []),
+            tag_patch=_tags_from_dict(data.get("tags") or {}),
+            note_creates=creates,
+            assumptions=assumptions,
+            questions=questions,
+        )
+    if isinstance(snapshot, MultiCardSnapshot):
         return MultiNotePatch(
             summary=str(data["summary"]),
             note_updates=tuple(
@@ -136,14 +166,63 @@ def patch_from_dict(data: dict[str, Any]) -> Patch:
                 )
                 for update in data["note_updates"]
             ),
+            note_creates=creates,
+            assumptions=assumptions,
+            questions=questions,
         )
-    note_id = data.get("note_id")
+    updates = data["note_updates"]
+    if updates:
+        update = updates[0]
+        note_id = update.get("note_id")
+        return NotePatch(
+            summary=str(data["summary"]),
+            note_id=int(note_id) if note_id is not None else None,
+            notetype_id=int(update["notetype_id"]),
+            field_updates=_field_updates_from_list(update["field_updates"]),
+            tag_patch=_tags_from_dict(update["tags"]),
+            note_creates=creates,
+            assumptions=assumptions,
+            questions=questions,
+        )
     return NotePatch(
         summary=str(data["summary"]),
-        note_id=int(note_id) if note_id is not None else None,
-        notetype_id=int(data["notetype_id"]),
-        field_updates=_field_updates_from_list(data["field_updates"]),
-        tag_patch=_tags_from_dict(data["tags"]),
+        note_id=snapshot.note_id or None,
+        notetype_id=snapshot.notetype_id,
+        note_creates=creates,
+        assumptions=assumptions,
+        questions=questions,
+    )
+
+
+def _update_to_dict(
+    note_id: int | None,
+    notetype_id: int,
+    field_updates: dict[str, str],
+    tag_patch: TagPatch,
+) -> dict[str, Any]:
+    return {
+        "note_id": note_id,
+        "notetype_id": notetype_id,
+        "field_updates": _field_updates_to_list(field_updates),
+        "tags": _tags_to_dict(tag_patch),
+    }
+
+
+def _create_to_dict(create: NoteCreate) -> dict[str, Any]:
+    return {
+        "notetype_id": create.notetype_id,
+        "deck_id": create.deck_id,
+        "fields": [{"name": f.name, "html": f.html} for f in create.fields],
+        "tags": list(create.tags),
+    }
+
+
+def _create_from_dict(raw: dict[str, Any]) -> NoteCreate:
+    return NoteCreate(
+        notetype_id=int(raw["notetype_id"]),
+        deck_id=None if raw.get("deck_id") is None else int(raw["deck_id"]),
+        fields=_fields(raw["fields"]),
+        tags=tuple(str(tag) for tag in raw.get("tags") or ()),
     )
 
 

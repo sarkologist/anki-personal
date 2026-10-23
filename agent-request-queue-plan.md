@@ -1,7 +1,8 @@
 # Agent request queue — design and spec
 
-**Status:** phase 1 implemented on `claude/agent-queue-phase1` (see Results /
-notes). Phases at the bottom.
+**Status:** phase 1 implemented on `claude/agent-queue-phase1`; phase 2 (2a:
+new notes, unified schema; 2b: queue window) on `claude/agent-queue-phase2`
+(see Results / notes). Phases at the bottom.
 
 Builds on the repo-local add-on in [addons/editor_agent_pane](addons/editor_agent_pane),
 which already has the provider clients (Codex, Claude, Ollama), the fixed JSON
@@ -168,7 +169,8 @@ ready ────► applied | discarded | stale
 stale ────► queued (re-run) | discarded | applied (forced)
 ready / answered / failed ──reply──► queued
 failed ───► applied   (a failed run keeps the previous proposal current)
-applied ──► ready | failed   (revert when the apply's collection write fails)
+applied ──► ready | failed   (revert when the apply's collection write fails
+                             before anything was written; a partial write stays applied)
 ```
 
 A run that ends without a patch supersedes the thread's current proposal (a
@@ -472,3 +474,178 @@ Codex both failed on account/environment grounds from inside that session):
   Pre-existing editor behaviour in the hidden-window harness, related to the
   blank-webview work in editor-blank-webview-recovery-plan.md; not caused by
   this branch, but worth a separate look.
+
+**Phase 2a (2026-10-23, uncommitted on `claude/agent-queue-phase2`).** New
+notes and the unified patch schema; the queue window is phase 2b.
+
+- Schema: one `PATCH_SCHEMA` (`summary`, `note_updates`, `note_creates`,
+  `assumptions`, `questions`, all required) for Codex `--output-schema` and
+  Claude `--json-schema`; the prompt's "When proposing a patch" section
+  describes only it, plus "the user may not be watching: propose, record
+  guesses in assumptions and open points in questions". Ollama's normalizer
+  fills defaults for the unified shape and still accepts the legacy list and
+  top-level `field_updates` shapes; its repair prompt describes the new shape.
+- `patches.py`: `NoteCreate`, `NotetypeInfo`; `note_creates`/`assumptions`/
+  `questions` on `NotePatch` and `MultiNotePatch`; `has_changes()` counts
+  creates (`NotePatch.has_note_update()` is "changes the current note").
+  `validate_patch(raw, snapshot, *, notetypes, deck_ids)` dispatches on the
+  snapshot kind and accepts the legacy top-level `field_updates` shape.
+  Creates: note type exists, field names match exactly (stored in the note
+  type's order), first field non-empty after stripping HTML (media counts as
+  content), deck exists, same HTML-fragment rules, tags normalized. Single-note
+  `note_updates` has at most one entry, for the current note (`note_id` null in
+  Add Cards). `validate_note_patch`/`validate_multi_note_patch` remain as
+  wrappers.
+- Create ids: a missing/null/empty `notetype_id` or `deck_id` takes
+  `CreateDefaults` (the runner passes `creation_defaults`: source note type and
+  deck); numeric strings and a note type's name (case-insensitive) are accepted;
+  structure-only (client) validation falls back to the snapshot's note type and
+  leaves the deck None; with the catalog, no default is an error ("New note 1:
+  no deck_id and no default deck."). Apply refuses a None deck.
+- `snapshots.patch_to_dict` writes the unified shape;
+  `patch_from_dict(data, snapshot)` now takes the thread's snapshot (the shape
+  no longer says single vs multi) and still reads phase-1 rows.
+- Runner: `read_catalog` (note types with field names, normal decks) via
+  `run_on_main` once per run; a "Available note types and decks as JSON"
+  prompt section lists the source note type and the default deck first,
+  marked `default`. The default deck is captured at Send as
+  `context_json.deck_id` (card's home deck, Add Cards target deck, or the first
+  selected card's deck). `base_json` lists only updated notes.
+- Store: schema v2 adds `proposals.result_json`;
+  `set_proposal_result(thread_id, version, result)` records
+  `{"created_note_ids": [...]}`, which the transcript shows as `nid:` links
+  that open the Browser.
+- Rendering: assumptions and questions above the diff; per new note the note
+  type and deck names, a field grid, and each card it would generate
+  (`col.new_note` → fields/tags → `ephemeral_card(ord)` → `question()`/
+  `answer()` → style stripped, sanitized; cloze notes use
+  `cloze_numbers_in_fields()`), falling back to the grid alone. Duplicate
+  warning from Anki's dupe search, `"dupe:<notetype id>,<first field>"`
+  (quotes and backslashes escaped), run at render time: "Possible duplicate of
+  nid … (Front: …)", first three hits. Collection access lives in `preview.py`;
+  HTML in `surface.py`.
+- Apply: `preview.apply_proposal_changes` saves updated notes and adds the new
+  ones inside one `CollectionOp` under a custom undo entry merged with
+  `merge_undo_entries`, so one Undo reverts the whole apply. The thread is
+  marked applied before the op and reverted on failure (as the multi-note
+  path). Edit Current/Browser: the editor is filled through
+  `call_after_note_saved` as before, and when the patch also creates notes the
+  current note is saved in that same op instead of by `update_note`. A
+  creates-only proposal (single or multi) applies directly: no editor fill, no
+  dialog, and in Add Cards no unsaved-note staleness check.
+
+Deviations:
+
+- Clients validate structure only (`notetypes=None, deck_ids=None` skips the
+  collection checks); the runner re-validates every patch against the catalog,
+  so the collection checks never depend on which client ran. A rejected patch
+  fails the run with "The agent's proposal was rejected: …".
+- The card preview uses `ephemeral_card` + `question()`/`answer()` rather than
+  `col.render` directly (same renderer underneath). For standard note types
+  every template is previewed, including ones whose front would render empty
+  (Anki would not generate those cards).
+- Multi-note proposals that also create notes: the review dialog shows the new
+  notes on every page and "Apply checked" applies the checked updates plus all
+  new notes.
+- If the combined op fails after the editor was filled (Edit Current, update
+  plus creates), the thread returns to ready but the editor keeps the filled
+  fields unsaved; a retry then reports the note as changed.
+
+**Phase 2b (2026-10-23, uncommitted on `claude/agent-queue-phase2`).** The
+queue window.
+
+- `thread_panel.py` (new): what the pane and the window share. `ThreadPanel` is
+  a mixin over a widget with a transcript `surface` and Apply/Discard/Stop
+  buttons: rendering the selected thread (transcript, created-note links,
+  status banner, current proposal with diff / create previews / assumptions
+  and questions), `_current_proposal`, the base-revision check, Apply (single,
+  creates-only, multi-note checkbox dialog), Discard, Stop and the `nid:` link
+  bridge command. The host supplies `editor` (or None), `browser` (or None)
+  and `_broadcast_thread_changed`; hooks `_context_fragment` (window: the
+  captured context) and `_after_thread_rendered` (pane: open the multi-card
+  review when its run finishes; window: Reply/Open in Browser buttons).
+  `PromptEdit`, `MultiCardProposalDialog` and `prepare_multi_note_updates`
+  moved there too (re-exported from `runtime`). `EditorAgentPane` is now
+  `ThreadPanel, QWidget`; its only apply-specific override is
+  `_apply_note_update`, which fills the editor after `call_after_note_saved`
+  as before. Without an editor (the window), `_apply_note_update` checks
+  `stale_reason` against the collection's note, applies the field/tag update to
+  `col.get_note` (`prepare_note_update`) and saves it with any new notes in the
+  same `apply_proposal_changes` `CollectionOp`.
+- `queue_window.py` (new): `AgentQueueWindow(ThreadPanel, QMainWindow)`, child
+  of the main window, one per main window (`open_window` re-raises it and
+  takes the new note filter). Opened from Tools > Agent Queue, the
+  application-wide `queue_shortcut` (default `Ctrl+Alt+Shift+Q`) and the
+  pane's **Queue** button (filtered to the pane's note; "Note N only" toggles
+  show-all). Left: a `QTableWidget` (status glyph, title, card excerpt, deck,
+  age, latest proposal version) with "Show applied and discarded"; right: the
+  shared panel, a reply `PromptEdit` and Apply (Ctrl+Shift+A), Reply
+  (Ctrl+Shift+R, or Enter in the box), Discard (Ctrl+Shift+D, optional reason
+  stored as a user message "Discarded: …"), Open in Browser (Ctrl+Shift+B,
+  `nid:` of the thread's note(s) plus notes its applies created), Stop
+  (Ctrl+Shift+S); Escape closes. Geometry and splitter sizes are saved to
+  `queue_window_geometry` / `queue_window_splitter` on close.
+- List order (`thread_view.queue_threads`): ready, answered, failed, running,
+  queued (then stale, applied, discarded when shown), newest `updated_at`
+  first. When the selected thread leaves the list (applied, discarded) the
+  selection moves to the row that followed it; Reply moves it to the next row
+  explicitly, and the replied thread drops to the queued group until its run
+  finishes and it sorts back to the top.
+- Live updates: `runtime._all_panes()` also yields the open window, so
+  `queue_runtime.thread_changed`/`thread_activity` reach it. A change to the
+  selected thread re-renders the detail; any other change only refreshes the
+  rows.
+- Reviewer and editors after Apply: nothing extra was needed. The op's
+  initiator is the window, so `operation_did_execute` reloads an open Edit
+  Current or Browser editor showing the note (`editor.set_note`), and the
+  reviewer marks `NOTE_TEXT` and redraws the current card when the main window
+  regains focus (`Reviewer.op_executed` / `refresh_if_needed`).
+- Offer: leaving the reviewer (`state_did_change` from `review`) with ready or
+  answered threads shows "Agent queue: N requests ready for review
+  (Ctrl+Alt+Shift+Q)" once per profile session (reset on `profile_did_open`;
+  not used up while nothing is waiting).
+- Tests: `qt/tests/test_agent_queue_window.py` (26), driving the window
+  through `_init_state` and fake widgets like the pane tests. The pane test
+  stub importer now also drops stale `editor_agent_pane` package attributes
+  (`from . import x` reuses them) and patches UI helpers in both `runtime` and
+  `thread_panel` (`_patch_ui`). The real window was also smoke-built under
+  offscreen Qt (menu action, list, selection, geometry save, reopen).
+
+Deviations:
+
+- The offer is a plain tooltip naming the shortcut, not a link: Anki's
+  `tooltip` label hides itself on any click, so a link in it cannot work.
+- Reply from the window keeps the thread's stored provider/model/settings (the
+  pane uses its form; changing them per thread is phase 3's Change model). The
+  window's reply box has no prompt history.
+- Apply from the window to a note that an open editor shows writes the
+  collection note; unsaved typing in that editor is replaced by the reload.
+  The pane's own Apply still goes through the editor.
+- An Add Cards proposal that fills the unsaved note can only be applied from
+  its Add Cards pane; the window refuses it with a message (creates-only Add
+  Cards proposals apply from the window).
+- The applied/discarded status banner still says "Send starts a new request"
+  (pane wording) in the window.
+- The window is filtered by note id; multi-card threads match any of their
+  selected notes.
+
+Review fixes (2026-10-23):
+
+- Apply builds and checks every new note (note type exists, every field name
+  present) before the first write; a write failing after an earlier one raises
+  `PartialApplyError`, which keeps the thread applied, stores the partial
+  `created_note_ids` plus `error` in `result_json` and adds a system message.
+- The multi-card dialog carries the proposal version it shows: Apply checked
+  refuses ("The proposal changed…") when it is no longer current, and
+  `on_thread_changed` closes it and reopens it on the new version.
+- `QueueStore.discard(thread_id, reason)` checks the status, adds "Discarded: …"
+  and transitions in one transaction; the pane and window warn when it refuses.
+- The v2 migration runs in one explicit transaction and skips the ALTER when
+  `proposals.result_json` already exists.
+- A run whose note was deleted fails with "The note no longer exists." before
+  the agent is called (multi: "The selected notes no longer exist." when all
+  are gone; otherwise the deleted ones are dropped from the snapshot and a
+  system message names them).
+
+Not done (phase 3 and later): Defer, Change model, Retry / re-run on stale,
+Apply then edit, session resume, bottom-bar badge, a clickable reviewer offer.

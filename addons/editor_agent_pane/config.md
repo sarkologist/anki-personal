@@ -50,6 +50,22 @@ direct OpenAI API billing.
   (proposal ready, reply ready, or failed). Default `true`.
 - `queue_retention_days`: Applied and discarded requests older than this many
   days are deleted when the profile opens. Default 30.
+- `queue_shortcut`: Opens the agent queue window from anywhere in Anki (also
+  Tools > Agent Queue). Default `Ctrl+Alt+Shift+Q`; takes effect on restart.
+- `queue_window_geometry`: Saved size and position of the queue window.
+- `queue_window_splitter`: Saved widths of the queue window's list and detail.
+
+The **queue window** lists every request across notes: results waiting on you
+first (proposal ready, answered, failed), then running and queued ones, newest
+first; applied and discarded requests are hidden unless shown with the
+checkbox. Select one to see its captured context, transcript and proposal, then
+Apply (Ctrl+Shift+A), Reply (type below and press Enter, or Ctrl+Shift+R),
+Discard with an optional reason (Ctrl+Shift+D), Open in Browser
+(Ctrl+Shift+B) or Stop a running one (Ctrl+Shift+S). A reply goes back to the
+agent and the selection moves on; the request returns to the top when its new
+proposal is ready. The pane's **Queue** button opens the window filtered to
+the current note. Leaving the reviewer with results waiting shows a tooltip
+once per session.
 
 Requests are stored per profile in `agent_queue.sqlite` in the profile folder.
 Closing the editor or switching notes does not stop a request: reopen the

@@ -702,8 +702,11 @@ class FakeBrowserPane(FakeVisibleWidget):
 
 
 def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
-    sys.modules.pop("editor_agent_pane.runtime", None)
-    sys.modules.pop("editor_agent_pane.queue_runtime", None)
+    package = sys.modules["editor_agent_pane"]
+    for name in ("runtime", "queue_runtime", "thread_panel", "queue_window"):
+        sys.modules.pop(f"editor_agent_pane.{name}", None)
+        # `from . import x` reuses the package attribute, so drop it too.
+        package.__dict__.pop(name, None)
 
     class Widget:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -757,6 +760,9 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         editor_did_init=[],
         editor_did_init_buttons=[],
         editor_did_load_note=[],
+        state_did_change=[],
+        profile_did_open=[],
+        profile_will_close=[],
     )
     aqt_module.gui_hooks = gui_hooks
     aqt_module.mw = None
@@ -772,11 +778,14 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
     note_module.update_note = lambda *args, **kwargs: None
     note_module.update_notes = lambda *args, **kwargs: None
     operations_module.note = note_module
+    operations_module.CollectionOp = lambda *args, **kwargs: None
     aqt_module.operations = operations_module
 
     qt_module = types.ModuleType("aqt.qt")
     for name in (
+        "QAbstractItemView",
         "QAction",
+        "QByteArray",
         "QCheckBox",
         "QComboBox",
         "QDialog",
@@ -784,12 +793,17 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         "QDockWidget",
         "QFormLayout",
         "QHBoxLayout",
+        "QInputDialog",
+        "QKeySequence",
         "QLabel",
         "QLineEdit",
         "QMainWindow",
         "QPlainTextEdit",
         "QPushButton",
+        "QShortcut",
         "QSplitter",
+        "QTableWidget",
+        "QTableWidgetItem",
         "QTextCursor",
         "QToolButton",
         "QTimer",
@@ -819,7 +833,19 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setitem(sys.modules, "aqt.utils", utils_module)
     monkeypatch.setitem(sys.modules, "aqt.webview", webview_module)
 
-    return importlib.import_module("editor_agent_pane.runtime")
+    runtime = importlib.import_module("editor_agent_pane.runtime")
+    # The thread rendering and apply code shared with the queue window.
+    runtime.thread_panel = importlib.import_module("editor_agent_pane.thread_panel")
+    return runtime
+
+
+def _patch_ui(
+    monkeypatch: pytest.MonkeyPatch, runtime: Any, name: str, value: Any
+) -> None:
+    """Patch a UI helper in the pane module and in the shared thread panel."""
+    for module in (runtime, runtime.thread_panel):
+        if hasattr(module, name):
+            monkeypatch.setattr(module, name, value)
 
 
 class FakeRunner:
@@ -3627,6 +3653,41 @@ def test_ollama_agent_runs_model_and_parses_patch(
     assert result.event_count == 0
 
 
+def test_ollama_agent_accepts_a_new_note_without_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A local model left notetype_id/deck_id out; the queue runner fills
+    # the source note's deck later.
+    def fake_popen(command: list[str], **_kwargs: Any) -> FakePopen:
+        return FakePopen(
+            stdout=json.dumps(
+                {
+                    "message": "Added a note.",
+                    "patch": {
+                        "summary": "New note",
+                        "note_updates": [],
+                        "note_creates": [
+                            {
+                                "notetype_id": None,
+                                "fields": [
+                                    {"name": "Front", "html": "唉声"},
+                                    {"name": "Back", "html": "sigh"},
+                                ],
+                            }
+                        ],
+                    },
+                }
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    result = OllamaCliAgent(
+        ollama_path="ollama", ollama_host="", model="qwen3:latest", timeout_seconds=300
+    ).send(prompt="add a note", snapshot=snapshot(), project_root="", history=[])
+    [create] = result.proposals[0].note_creates
+    assert (create.notetype_id, create.deck_id) == (snapshot().notetype_id, None)
+
+
 def test_ollama_agent_treats_empty_patch_as_no_proposal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4227,7 +4288,7 @@ def test_codex_agent_sends_multi_card_context_and_validates_note_patch(
     assert '"mode": "browse_multi"' in stdin
     assert '"card_id": 11' in stdin
     assert '"note_id": 101' in stdin
-    assert "return note_updates" in stdin
+    assert "note_updates edits existing notes" in stdin
     assert "attached image number" not in stdin
     assert isinstance(result.proposals[0], MultiNotePatch)
     assert result.proposals[0].note_updates[0].field_updates == {"Front": "new front"}
@@ -6628,13 +6689,15 @@ def pane_runtime(monkeypatch: pytest.MonkeyPatch) -> Any:
     runtime.saved_configs = []
     monkeypatch.setattr(runtime, "_write_config", runtime.saved_configs.append)
     runtime.warnings = []
-    monkeypatch.setattr(
+    _patch_ui(
+        monkeypatch,
         runtime,
         "showWarning",
         lambda message, parent=None: runtime.warnings.append(message),
     )
-    monkeypatch.setattr(runtime, "tooltip", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
+    _patch_ui(monkeypatch, runtime, "tooltip", lambda *args, **kwargs: None)
+    _patch_ui(
+        monkeypatch,
         runtime,
         "LegacyLatexPreviewRenderer",
         lambda **_kwargs: types.SimpleNamespace(render=sanitize_html),
@@ -7180,6 +7243,22 @@ def test_discard_marks_thread_discarded(
     assert store.current_proposal(thread.id) is None
     assert pane.apply_button.enabled is False
     assert "Discarded" in "".join(pane.surface.evals)
+
+
+def test_discard_warns_when_the_thread_started_running(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    store.reply(thread.id, "more")
+    store.transition(thread.id, "queued", "running")
+
+    pane._discard_pending_patch(thread.id)
+
+    assert _status(store, thread.id) == "running"
+    assert pane_runtime.warnings == ["Cannot discard a running thread."]
 
 
 def test_apply_updates_editor_and_marks_thread_applied(
@@ -7751,7 +7830,8 @@ def test_browser_multi_send_and_apply_through_the_store(
             self.callback(None)
 
     updated: list[Any] = []
-    monkeypatch.setattr(
+    _patch_ui(
+        monkeypatch,
         pane_runtime,
         "update_notes",
         lambda parent, notes: updated.extend(notes) or Op(notes),
@@ -7817,7 +7897,8 @@ def test_multi_apply_marks_applied_before_the_write_and_blocks_a_second_apply(
     pane = _browser_pane(pane_runtime, tmp_path)
     thread = _browser_ready_thread(pane_runtime, store, pane)
     ops: list[_PendingOp] = []
-    monkeypatch.setattr(
+    _patch_ui(
+        monkeypatch,
         pane_runtime,
         "update_notes",
         lambda parent, notes: ops.append(_PendingOp(notes)) or ops[-1],
@@ -7842,7 +7923,8 @@ def test_multi_apply_failure_reverts_to_ready(
     pane = _browser_pane(pane_runtime, tmp_path)
     thread = _browser_ready_thread(pane_runtime, store, pane)
     ops: list[_PendingOp] = []
-    monkeypatch.setattr(
+    _patch_ui(
+        monkeypatch,
         pane_runtime,
         "update_notes",
         lambda parent, notes: ops.append(_PendingOp(notes)) or ops[-1],
@@ -7858,6 +7940,75 @@ def test_multi_apply_failure_reverts_to_ready(
     assert pane.apply_button.enabled is True
 
 
+class _FakeProposalDialog:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.rejected = False
+        self.finished = None
+
+    def show(self) -> None:
+        pass
+
+    def raise_(self) -> None:
+        pass
+
+    def activateWindow(self) -> None:
+        pass
+
+    def reject(self) -> None:
+        self.rejected = True
+
+
+def test_multi_dialog_refuses_a_newer_proposal_and_is_rebuilt(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from editor_agent_pane.patches import MultiNoteUpdate
+
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+    thread = _browser_ready_thread(pane_runtime, store, pane)
+    del pane._show_multi_proposal_dialog  # the real one
+    made: list[_FakeProposalDialog] = []
+    monkeypatch.setattr(
+        pane_runtime.thread_panel,
+        "MultiCardProposalDialog",
+        lambda **kwargs: made.append(_FakeProposalDialog(**kwargs)) or made[-1],
+    )
+    _patch_ui(
+        monkeypatch,
+        pane_runtime,
+        "update_notes",
+        lambda **_kw: pytest.fail("a proposal the dialog does not show is applied"),
+    )
+    pane._apply_pending_patch()
+    [dialog] = made
+
+    # A reply finishes while the dialog is open: version 2 also changes Front.
+    store.reply(thread.id, "and the front")
+    store.transition(thread.id, "queued", "running")
+    newer = MultiNotePatch(
+        summary="s2",
+        note_updates=(
+            MultiNoteUpdate(
+                note_id=101, notetype_id=7, field_updates={"Front": "F", "Back": "B"}
+            ),
+        ),
+    )
+    store.add_proposal(
+        thread.id, patch_to_dict(newer), base_for([101], pane._read_note_state([101]))
+    )
+    store.transition(thread.id, "running", "ready")
+
+    assert dialog.kwargs["apply_callback"]({101}) is False
+    assert pane_runtime.warnings == [pane_runtime.thread_panel.PROPOSAL_CHANGED]
+    assert _status(store, thread.id) == "ready"
+
+    pane.on_thread_changed(thread.id)
+
+    assert dialog.rejected
+    assert len(made) == 2 and made[1].kwargs["patch"] == newer
+
+
 def test_send_restores_the_prompt_when_the_note_changes_before_it_is_stored(
     pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7868,7 +8019,9 @@ def test_send_restores_the_prompt_when_the_note_changes_before_it_is_stored(
         evalWithCallback=lambda _js, callback: pending.append(callback)
     )
     tips: list[str] = []
-    monkeypatch.setattr(pane_runtime, "tooltip", lambda text, **_kw: tips.append(text))
+    _patch_ui(
+        monkeypatch, pane_runtime, "tooltip", lambda text, **_kw: tips.append(text)
+    )
     pane.prompt = FakePrompt("Improve this")
 
     pane._send()
@@ -7894,7 +8047,9 @@ def test_reply_restores_the_prompt_when_the_note_changes_before_it_is_stored(
         callback
     )
     tips: list[str] = []
-    monkeypatch.setattr(pane_runtime, "tooltip", lambda text, **_kw: tips.append(text))
+    _patch_ui(
+        monkeypatch, pane_runtime, "tooltip", lambda text, **_kw: tips.append(text)
+    )
     pane.prompt = FakePrompt("Shorter")
 
     pane._send()
@@ -7906,3 +8061,610 @@ def test_reply_restores_the_prompt_when_the_note_changes_before_it_is_stored(
     assert _status(store, thread.id) == "ready"
     assert pane.prompt.text == "typed meanwhile"  # not clobbered
     assert tips == [pane_runtime.PROMPT_NOT_SENT]
+
+
+# --- phase 2: new notes ------------------------------------------------------
+
+BASIC_NOTETYPE = {
+    "id": 7,
+    "name": "Basic",
+    "type": 0,
+    "flds": [{"name": "Front"}, {"name": "Back"}],
+    "tmpls": [{"name": "Card 1", "ord": 0}, {"name": "Card 2", "ord": 1}],
+}
+CLOZE_NOTETYPE = {
+    "id": 8,
+    "name": "Cloze",
+    "type": 1,
+    "flds": [{"name": "Text"}, {"name": "Back Extra"}],
+    "tmpls": [{"name": "Cloze", "ord": 0}],
+}
+
+
+class FakeEphemeralCard:
+    def __init__(self, note: Any, ord: int) -> None:
+        self.note_ = note
+        self.ord = ord
+
+    def question(self) -> str:
+        return (
+            "<style>.card{}</style>"
+            f"<div>Q{self.ord}: {self.note_.fields[0]}</div>"
+            "<script>alert(1)</script>"
+        )
+
+    def answer(self) -> str:
+        return f"<div>A{self.ord}: {self.note_.fields[1]}</div>"
+
+
+class FakeNewNote:
+    def __init__(self, notetype: dict[str, Any]) -> None:
+        self.notetype = notetype
+        self.names = [f["name"] for f in notetype["flds"]]
+        self.fields = ["" for _ in self.names]
+        self.tags: list[str] = []
+        self.id = 0
+        self.mid = notetype["id"]
+
+    def __setitem__(self, key: str, value: str) -> None:
+        self.fields[self.names.index(key)] = value
+
+    def items(self) -> list[tuple[str, str]]:
+        return list(zip(self.names, self.fields))
+
+    def ephemeral_card(self, ord: int = 0) -> FakeEphemeralCard:
+        return FakeEphemeralCard(self, ord)
+
+    def cloze_numbers_in_fields(self) -> list[int]:
+        return [1, 3] if "{{c3::" in self.fields[0] else [1]
+
+
+class FakeCreateCollection:
+    def __init__(self, dupes: list[int] | None = None, media: Any = None) -> None:
+        self.media = media
+        self.notetypes = {7: BASIC_NOTETYPE, 8: CLOZE_NOTETYPE}
+        self.deck_names = {1: "Default", 3: "Chinese"}
+        self.dupes = dupes or []
+        self.queries: list[str] = []
+        self.added: list[tuple[Any, int]] = []
+        self.updated: list[Any] = []
+        self.undo: list[tuple[str, Any]] = []
+        self.next_id = 900
+        self.existing = {
+            501: FakeMutableNote(
+                note_id=501,
+                mid=7,
+                field_names=("Front", "Back"),
+                fields=("<b>唉声</b>", "x"),
+            )
+        }
+        self.models = types.SimpleNamespace(
+            get=self.notetypes.get,
+            all_names_and_ids=lambda: [
+                types.SimpleNamespace(id=nid, name=nt["name"])
+                for nid, nt in self.notetypes.items()
+            ],
+        )
+        self.decks = types.SimpleNamespace(
+            name=lambda deck_id: self.deck_names[deck_id],
+            all_names_and_ids=lambda include_filtered=True, **_kw: [
+                types.SimpleNamespace(id=did, name=name)
+                for did, name in self.deck_names.items()
+            ],
+        )
+
+    def new_note(self, notetype: dict[str, Any]) -> FakeNewNote:
+        return FakeNewNote(notetype)
+
+    def find_notes(self, query: str) -> list[int]:
+        self.queries.append(query)
+        return list(self.dupes)
+
+    def get_note(self, note_id: int) -> Any:
+        return self.existing[note_id]
+
+    def add_custom_undo_entry(self, name: str) -> int:
+        self.undo.append(("entry", name))
+        return 77
+
+    def merge_undo_entries(self, target: int) -> str:
+        self.undo.append(("merge", target))
+        return "changes"
+
+    def add_note(self, note: Any, deck_id: int) -> None:
+        self.next_id += 1
+        note.id = self.next_id
+        self.added.append((note, deck_id))
+
+    def update_notes(self, notes: list[Any]) -> None:
+        self.updated.extend(notes)
+
+
+def _note_create(**overrides: Any) -> Any:
+    from editor_agent_pane.patches import NoteCreate
+
+    values: dict[str, Any] = {
+        "notetype_id": 7,
+        "deck_id": 3,
+        "fields": (
+            FieldSnapshot("Front", "唉声 vs 呼声"),
+            FieldSnapshot("Back", "sigh"),
+        ),
+        "tags": ("disambiguation",),
+    }
+    values.update(overrides)
+    return NoteCreate(**values)
+
+
+def test_queue_read_catalog_lists_notetypes_and_decks(pane_runtime: Any) -> None:
+    queue_runtime = pane_runtime.queue_runtime
+    queue_runtime.aqt.mw = types.SimpleNamespace(col=FakeCreateCollection())
+    assert queue_runtime.read_catalog() == {
+        "notetypes": [
+            {"id": 7, "name": "Basic", "fields": ["Front", "Back"]},
+            {"id": 8, "name": "Cloze", "fields": ["Text", "Back Extra"]},
+        ],
+        "decks": [{"id": 1, "name": "Default"}, {"id": 3, "name": "Chinese"}],
+    }
+    from editor_agent_pane.queue_runner import CollectionUnavailable
+
+    queue_runtime.aqt.mw = types.SimpleNamespace(col=None)
+    with pytest.raises(CollectionUnavailable):
+        queue_runtime.read_catalog()
+
+
+def test_create_preview_renders_each_card_and_finds_duplicates() -> None:
+    from editor_agent_pane.preview import create_preview
+
+    col = FakeCreateCollection(dupes=[501])
+    create = _note_create(
+        fields=(FieldSnapshot("Front", 'say "唉声" \\ now'), FieldSnapshot("Back", "s"))
+    )
+    preview = create_preview(col, create)
+
+    assert preview.notetype_name == "Basic"
+    assert preview.deck_name == "Chinese"
+    assert [card.name for card in preview.cards] == ["Card 1", "Card 2"]
+    question = preview.cards[0].question_html
+    assert "Q0: say" in question
+    assert "<style" not in question and "<script" not in question
+    assert "A1: s" in preview.cards[1].answer_html
+    assert col.queries == ['"dupe:7,say \\"唉声\\" \\\\ now"']
+    assert [(d.note_id, d.first_field) for d in preview.duplicates] == [(501, "唉声")]
+    assert preview.first_field_name == "Front"
+
+
+def test_create_preview_uses_cloze_numbers_for_cloze_notes() -> None:
+    from editor_agent_pane.preview import create_preview
+
+    create = _note_create(
+        notetype_id=8,
+        fields=(
+            FieldSnapshot("Text", "{{c1::a}} {{c3::b}}"),
+            FieldSnapshot("Back Extra", ""),
+        ),
+    )
+    preview = create_preview(FakeCreateCollection(), create)
+    assert [card.name for card in preview.cards] == ["Cloze 1", "Cloze 3"]
+    assert "Q2:" in preview.cards[1].question_html
+
+
+def test_create_preview_falls_back_to_names_when_rendering_fails() -> None:
+    from editor_agent_pane.preview import create_preview
+
+    col = FakeCreateCollection()
+
+    def broken(_notetype: Any) -> Any:
+        raise RuntimeError("template error")
+
+    col.new_note = broken  # type: ignore[method-assign]
+    preview = create_preview(col, _note_create())
+    assert preview.notetype_name == "Basic"
+    assert preview.cards == ()
+
+
+def test_apply_proposal_changes_is_one_undo_step() -> None:
+    from editor_agent_pane.preview import apply_proposal_changes
+
+    col = FakeCreateCollection()
+    existing = _editor_note()
+    created: list[int] = []
+    changes = apply_proposal_changes(
+        col,
+        updates=[existing],
+        creates=[_note_create(), _note_create(deck_id=1)],
+        created_ids=created,
+    )
+    assert changes == "changes"
+    assert col.undo == [("entry", "Apply agent proposal"), ("merge", 77)]
+    assert col.updated == [existing]
+    assert [(note.fields, note.tags, deck) for note, deck in col.added] == [
+        (["唉声 vs 呼声", "sigh"], ["disambiguation"], 3),
+        (["唉声 vs 呼声", "sigh"], ["disambiguation"], 1),
+    ]
+    assert created == [901, 902]
+
+
+def test_apply_proposal_changes_refuses_a_new_note_without_a_deck() -> None:
+    from editor_agent_pane.preview import apply_proposal_changes
+
+    col = FakeCreateCollection()
+    with pytest.raises(ValueError, match="no deck"):
+        apply_proposal_changes(
+            col,
+            updates=[],
+            creates=[_note_create(deck_id=None)],
+            created_ids=[],
+        )
+    assert col.added == []
+
+
+def test_apply_proposal_changes_validates_every_new_note_before_writing() -> None:
+    from editor_agent_pane.patches import PatchValidationError
+    from editor_agent_pane.preview import apply_proposal_changes
+
+    col = FakeCreateCollection()
+    renamed = _note_create(
+        fields=(FieldSnapshot("Front", "x"), FieldSnapshot("Answer", "y"))
+    )
+    for bad in (renamed, _note_create(notetype_id=99)):
+        with pytest.raises(PatchValidationError):
+            apply_proposal_changes(
+                col,
+                updates=[_editor_note()],
+                creates=[_note_create(), bad],
+                created_ids=[],
+            )
+    assert col.updated == [] and col.added == [] and col.undo == []
+
+
+def test_apply_proposal_changes_reports_a_partial_write() -> None:
+    from editor_agent_pane.preview import PartialApplyError, apply_proposal_changes
+
+    col = FakeCreateCollection()
+    add_note = col.add_note
+
+    def flaky(note: Any, deck_id: int) -> None:
+        if col.added:
+            raise RuntimeError("disk full")
+        add_note(note, deck_id)
+
+    col.add_note = flaky  # type: ignore[method-assign]
+    created: list[int] = []
+    with pytest.raises(PartialApplyError, match="disk full"):
+        apply_proposal_changes(
+            col,
+            updates=[],
+            creates=[_note_create(), _note_create(deck_id=1)],
+            created_ids=created,
+        )
+    assert created == [901]
+    # The written part is still one undo step.
+    assert col.undo == [("entry", "Apply agent proposal"), ("merge", 77)]
+
+
+def test_render_proposal_lists_assumptions_questions_and_new_notes() -> None:
+    from editor_agent_pane.patches import NotePatch
+    from editor_agent_pane.surface import (
+        CardPreview,
+        CreatePreview,
+        DuplicateHit,
+    )
+
+    patch = NotePatch(
+        summary="Disambiguate",
+        note_id=123,
+        notetype_id=7,
+        note_creates=(_note_create(),),
+        assumptions=("Used <Basic>",),
+        questions=("Own card for 呼声?",),
+    )
+    rendered = render_proposal_diff(
+        snapshot(),
+        patch,
+        create_previews=[
+            CreatePreview(
+                notetype_name="Basic",
+                deck_name="Chinese",
+                first_field_name="Front",
+                cards=(CardPreview("Card 1", "<div>Q</div>", "<div>A</div>"),),
+                duplicates=(DuplicateHit(501, "唉声"),),
+            )
+        ],
+    )
+    assert "Assumptions" in rendered and "Used &lt;Basic&gt;" in rendered
+    assert "Questions" in rendered and "Own card for 呼声?" in rendered
+    assert rendered.index("Assumptions") < rendered.index("New note")
+    assert "New note 1: Basic in Chinese" in rendered
+    assert "唉声 vs 呼声" in rendered and "agent-preview-grid" in rendered
+    assert "Card 1" in rendered and "<div>Q</div>" in rendered
+    assert "Possible duplicate of nid 501 (Front: 唉声)" in rendered
+    assert "Field: Back" not in rendered  # no update to the current note
+
+
+def test_render_new_note_without_a_preview_shows_the_field_grid() -> None:
+    from editor_agent_pane.patches import NotePatch
+
+    patch = NotePatch(
+        summary="s", note_id=123, notetype_id=7, note_creates=(_note_create(),)
+    )
+    rendered = render_proposal_diff(snapshot(), patch)
+    assert "New note 1" in rendered and "唉声 vs 呼声" in rendered
+    assert "Assumptions" not in rendered
+
+
+def _creates_patch(**overrides: Any) -> Any:
+    from editor_agent_pane.patches import NotePatch
+
+    values: dict[str, Any] = {
+        "summary": "Disambiguate",
+        "note_id": 123,
+        "notetype_id": 7,
+        "note_creates": (_note_create(),),
+        "assumptions": ("Basic",),
+    }
+    values.update(overrides)
+    return NotePatch(**values)
+
+
+def _ready_patch_thread(runtime: Any, store: QueueStore, pane: Any, patch: Any) -> Any:
+    from editor_agent_pane.queue_runner import patch_note_ids
+    from editor_agent_pane.thread_view import thread_context
+
+    snap = runtime.editor_snapshot(pane.editor)
+    note_id = snap.note_id
+    thread = store.create_thread(
+        thread_context("browser", snap),
+        {"provider": "codex", "model": ""},
+        "Disambiguate",
+        note_id=note_id,
+    )
+    store.transition(thread.id, "queued", "running")
+    store.add_message(thread.id, "agent", "Done", "<p>Done</p>")
+    ids = patch_note_ids(patch, snap)
+    store.add_proposal(
+        thread.id, patch_to_dict(patch), base_for(ids, pane._read_note_state(ids))
+    )
+    store.transition(thread.id, "running", "ready")
+    if note_id is None:
+        pane._local_thread_ids.append(thread.id)
+    pane._load_threads(select=thread.id)
+    return thread
+
+
+class FakeCollectionOp:
+    def __init__(self, parent: Any, op: Callable[[Any], Any]) -> None:
+        self.op = op
+        self.on_success: Callable[[Any], None] | None = None
+        self.on_failure: Callable[[Exception], None] | None = None
+        self.started = False
+
+    def success(self, callback: Callable[[Any], None]) -> FakeCollectionOp:
+        self.on_success = callback
+        return self
+
+    def failure(self, callback: Callable[[Exception], None]) -> FakeCollectionOp:
+        self.on_failure = callback
+        return self
+
+    def run_in_background(self, **_kwargs: Any) -> None:
+        self.started = True
+
+    def finish(self, col: Any) -> None:
+        result = self.op(col)
+        assert self.on_success is not None
+        self.on_success(result)
+
+
+@pytest.fixture
+def collection_ops(pane_runtime: Any, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    ops: list[FakeCollectionOp] = []
+
+    def make(parent: Any, op: Callable[[Any], Any]) -> FakeCollectionOp:
+        ops.append(FakeCollectionOp(parent, op))
+        return ops[-1]
+
+    _patch_ui(monkeypatch, pane_runtime, "CollectionOp", make)
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_note",
+        lambda **_kw: pytest.fail("the current note is saved in the same op"),
+    )
+    return ops
+
+
+def test_creates_only_proposal_renders_preview_and_duplicate_warning(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.editor.mw.col = FakeCreateCollection([501], pane.editor.mw.col.media)
+    _ready_patch_thread(pane_runtime, store, pane, _creates_patch())
+
+    shown = "".join(pane.surface.evals)
+    assert "New note 1: Basic in Chinese" in shown
+    assert "Possible duplicate of nid 501" in shown
+    assert "Q0: " in shown and "A1: sigh" in shown
+    assert "Assumptions" in shown
+    assert pane.apply_button.enabled is True
+
+
+def test_apply_creates_only_adds_notes_in_one_op_and_records_ids(
+    pane_runtime: Any, queue: Any, tmp_path: Path, collection_ops: list[Any]
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    col = FakeCreateCollection(media=pane.editor.mw.col.media)
+    pane.editor.mw.col = col
+    pane.editor.web = types.SimpleNamespace(
+        eval=lambda _js: pytest.fail("editor untouched")
+    )
+    thread = _ready_patch_thread(pane_runtime, store, pane, _creates_patch())
+
+    pane._apply_pending_patch()
+
+    [op] = collection_ops
+    assert op.started
+    assert _status(store, thread.id) == "applied"  # marked before the write
+    assert pane.apply_button.enabled is False
+    op.finish(col)
+    assert [deck for _note, deck in col.added] == [3]
+    assert col.updated == []
+    assert pane_runtime.warnings == []
+    [proposal] = store.proposals(thread.id)
+    assert proposal.status == "applied"
+    assert proposal.result == {"created_note_ids": [901]}
+    shown = "".join(pane.surface.evals)
+    assert "nid:901" in shown and "agentOpenNote:901" in shown
+
+
+def test_apply_update_and_create_saves_both_in_one_op(
+    pane_runtime: Any, queue: Any, tmp_path: Path, collection_ops: list[Any]
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    col = FakeCreateCollection(media=pane.editor.mw.col.media)
+    pane.editor.mw.col = col
+    web_evals: list[str] = []
+    pane.editor.web = types.SimpleNamespace(eval=web_evals.append)
+    patch = _creates_patch(field_updates={"Back": "<p>new back</p>"})
+    thread = _ready_patch_thread(pane_runtime, store, pane, patch)
+
+    pane._apply_pending_patch()
+
+    assert pane.editor.note.fields[1] == "<p>new back</p>"
+    assert web_evals and web_evals[0].startswith("applyAgentProposal(")
+    [op] = collection_ops
+    op.finish(col)
+    assert col.updated == [pane.editor.note]
+    assert len(col.added) == 1
+    assert col.undo == [("entry", "Apply agent proposal"), ("merge", 77)]
+    assert _status(store, thread.id) == "applied"
+
+
+def test_apply_creates_failure_reverts_to_ready(
+    pane_runtime: Any, queue: Any, tmp_path: Path, collection_ops: list[Any]
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.editor.mw.col = FakeCreateCollection(media=pane.editor.mw.col.media)
+    thread = _ready_patch_thread(pane_runtime, store, pane, _creates_patch())
+
+    pane._apply_pending_patch()
+    [op] = collection_ops
+    assert op.on_failure is not None
+    op.on_failure(RuntimeError("disk full"))
+
+    assert _status(store, thread.id) == "ready"
+    assert pane_runtime.warnings == ["disk full"]
+    assert store.current_proposal(thread.id).result is None  # type: ignore[union-attr]
+    assert pane.apply_button.enabled is True
+
+
+def test_add_cards_creates_only_adds_directly_without_filling_the_editor(
+    pane_runtime: Any, queue: Any, tmp_path: Path, collection_ops: list[Any]
+) -> None:
+    store, _runner = queue
+    pane = _add_cards_pane(pane_runtime, tmp_path)
+    col = FakeCreateCollection(media=pane.editor.mw.col.media)
+    pane.editor.mw.col = col
+    pane.editor.web = types.SimpleNamespace(
+        eval=lambda _js: pytest.fail("editor untouched")
+    )
+    thread = _ready_patch_thread(
+        pane_runtime, store, pane, _creates_patch(note_id=None)
+    )
+    # Typing in the Add window since does not make a creates-only proposal stale.
+    pane.editor.note.fields[0] = "<p>typed</p>"
+
+    pane._apply_pending_patch()
+    [op] = collection_ops
+    op.finish(col)
+
+    assert pane_runtime.warnings == []
+    assert pane.editor.note.fields == ["<p>typed</p>", "<p>back</p>"]
+    assert len(col.added) == 1
+    assert _status(store, thread.id) == "applied"
+
+
+def test_multi_apply_includes_new_notes_in_the_same_op(
+    pane_runtime: Any, queue: Any, tmp_path: Path, collection_ops: list[Any]
+) -> None:
+    from editor_agent_pane.patches import MultiNoteUpdate
+
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+    col = FakeCreateCollection()
+    pane.browser.col.add_custom_undo_entry = col.add_custom_undo_entry
+    pane.browser.col.merge_undo_entries = col.merge_undo_entries
+    pane.browser.col.new_note = col.new_note
+    pane.browser.col.add_note = col.add_note
+    pane.browser.col.update_notes = col.update_notes
+    pane.browser.col.models = col.models
+    pane._create_thread("Tighten and add", 0)
+    [thread] = store.list_threads()
+    patch = MultiNotePatch(
+        summary="s",
+        note_updates=(
+            MultiNoteUpdate(note_id=101, notetype_id=7, field_updates={"Back": "B"}),
+        ),
+        note_creates=(_note_create(),),
+    )
+    store.transition(thread.id, "queued", "running")
+    store.add_proposal(
+        thread.id, patch_to_dict(patch), base_for([101], pane._read_note_state([101]))
+    )
+    store.transition(thread.id, "running", "ready")
+    pane._show_multi_proposal_dialog = lambda *_args: None
+    pane._load_threads(select=thread.id)
+
+    assert pane._apply_checked_multi_patch(thread.id, {101}) is True
+    [op] = collection_ops
+    op.finish(pane.browser.col)
+    assert [note.id for note in col.updated] == [101]
+    assert len(col.added) == 1
+    assert store.proposals(thread.id)[0].result == {"created_note_ids": [901]}
+
+
+def test_multi_creates_only_applies_without_the_dialog(
+    pane_runtime: Any, queue: Any, tmp_path: Path, collection_ops: list[Any]
+) -> None:
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+    pane._create_thread("Add one", 0)
+    [thread] = store.list_threads()
+    patch = MultiNotePatch(summary="s", note_updates=(), note_creates=(_note_create(),))
+    store.transition(thread.id, "queued", "running")
+    store.add_proposal(thread.id, patch_to_dict(patch), {"notes": []})
+    store.transition(thread.id, "running", "ready")
+    opened: list[str] = []
+    pane._show_multi_proposal_dialog = lambda thread_id, *_args: opened.append(
+        thread_id
+    )
+    pane.on_thread_changed(thread.id)
+    assert pane.apply_button.enabled is True
+
+    pane._apply_pending_patch()
+
+    assert opened == []
+    assert len(collection_ops) == 1
+    assert _status(store, thread.id) == "applied"
+
+
+def test_send_records_the_default_deck_for_new_notes(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.editor.card = types.SimpleNamespace(id=42, current_deck_id=lambda: 3)
+    pane._create_thread("Disambiguate", 0)
+    [thread] = store.list_threads()
+    assert thread.context["deck_id"] == 3
+
+    add_pane = _add_cards_pane(pane_runtime, tmp_path)
+    add_pane.editor.parentWindow = types.SimpleNamespace(
+        deck_chooser=types.SimpleNamespace(selected_deck_id=5)
+    )
+    add_pane._create_thread("Write one", 0)
+    added = [t for t in store.list_threads() if t.id != thread.id]
+    assert added[0].context["deck_id"] == 5

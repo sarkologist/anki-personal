@@ -102,6 +102,7 @@ def open_service() -> QueueService:
         logger_factory=_logger_factory,
         concurrency=int(_positive_float(config.get("queue_concurrency"), 1.0)),
         on_stream_event=_on_stream_event,
+        read_catalog=read_catalog,
     )
     _service = QueueService(store=store, runner=runner)
     runner.start()
@@ -186,6 +187,31 @@ def read_note_state(note_ids: list[int]) -> dict[int, dict[str, Any] | None]:
             "tags": list(note.tags),
         }
     return states
+
+
+def read_catalog() -> dict[str, Any]:
+    """Note types (with field names) and normal decks, for new-note proposals."""
+    mw = aqt.mw
+    if mw is None or mw.col is None:
+        raise CollectionUnavailable("The collection is closed.")
+    col: Any = mw.col
+    notetypes = []
+    for entry in col.models.all_names_and_ids():
+        notetype = col.models.get(entry.id)
+        if not notetype:
+            continue
+        notetypes.append(
+            {
+                "id": int(entry.id),
+                "name": str(entry.name),
+                "fields": [str(field["name"]) for field in notetype["flds"]],
+            }
+        )
+    decks = [
+        {"id": int(deck.id), "name": str(deck.name)}
+        for deck in col.decks.all_names_and_ids(include_filtered=False)
+    ]
+    return {"notetypes": notetypes, "decks": decks}
 
 
 def _logger_factory(_thread: Thread) -> tuple[AgentRunLogger | None, str | None]:
