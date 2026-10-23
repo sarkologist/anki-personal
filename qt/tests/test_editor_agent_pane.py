@@ -703,7 +703,13 @@ class FakeBrowserPane(FakeVisibleWidget):
 
 def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
     package = sys.modules["editor_agent_pane"]
-    for name in ("runtime", "queue_runtime", "thread_panel", "queue_window"):
+    for name in (
+        "runtime",
+        "queue_runtime",
+        "thread_panel",
+        "queue_window",
+        "queue_badge",
+    ):
         sys.modules.pop(f"editor_agent_pane.{name}", None)
         # `from . import x` reuses the package attribute, so drop it too.
         package.__dict__.pop(name, None)
@@ -761,6 +767,7 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         editor_did_init_buttons=[],
         editor_did_load_note=[],
         state_did_change=[],
+        top_toolbar_did_init_links=[],
         profile_did_open=[],
         profile_will_close=[],
     )
@@ -788,6 +795,8 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         "QByteArray",
         "QCheckBox",
         "QComboBox",
+        "QDateTime",
+        "QDateTimeEdit",
         "QDialog",
         "QDialogButtonBox",
         "QDockWidget",
@@ -798,6 +807,7 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         "QLabel",
         "QLineEdit",
         "QMainWindow",
+        "QMenu",
         "QPlainTextEdit",
         "QPushButton",
         "QShortcut",
@@ -7309,7 +7319,9 @@ def test_apply_refuses_a_stale_proposal(
 
     assert pane_runtime.warnings == [STALE_WARNING]
     assert pane.editor.note.fields[1] == "<p>back</p>"
-    assert _status(store, thread.id) == "ready"
+    # Marked stale (re-run / apply anyway / discard), the reason on the thread.
+    assert _status(store, thread.id) == "stale"
+    assert store.messages(thread.id)[-1].role == "system"
 
 
 def test_apply_refuses_when_the_note_is_gone(
@@ -7326,7 +7338,9 @@ def test_apply_refuses_when_the_note_is_gone(
     pane._apply_pending_patch()
 
     assert pane_runtime.warnings == [MISSING_NOTE_WARNING]
-    assert _status(store, thread.id) == "ready"
+    # Marked stale (re-run / apply anyway / discard), the reason on the thread.
+    assert _status(store, thread.id) == "stale"
+    assert store.messages(thread.id)[-1].role == "system"
 
 
 def _add_cards_ready_thread(runtime: Any, store: QueueStore, pane: Any) -> Any:
@@ -7583,6 +7597,19 @@ def test_queue_run_on_main_blocks_worker_until_main_thread_runs_it(
     pending.pop()()
     worker.join(5)
     assert results == [threading.main_thread().name]
+
+
+def test_queue_resume_sessions_reads_the_config_live(
+    pane_runtime: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue_runtime = pane_runtime.queue_runtime
+    config: dict[str, Any] = {}
+    monkeypatch.setattr(queue_runtime, "_config", lambda: config)
+    assert queue_runtime._resume_sessions() is True
+    config["queue_resume_sessions"] = False
+    assert queue_runtime._resume_sessions() is False
+    config["queue_resume_sessions"] = "nonsense"
+    assert queue_runtime._resume_sessions() is True
 
 
 def test_queue_run_on_main_raises_when_closing(pane_runtime: Any) -> None:
@@ -8009,6 +8036,47 @@ def test_multi_dialog_refuses_a_newer_proposal_and_is_rebuilt(
     assert len(made) == 2 and made[1].kwargs["patch"] == newer
 
 
+def test_apply_anyway_applies_through_an_open_multi_dialog(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+    thread = _browser_ready_thread(pane_runtime, store, pane)
+    del pane._show_multi_proposal_dialog  # the real one
+    made: list[_FakeProposalDialog] = []
+    monkeypatch.setattr(
+        pane_runtime.thread_panel,
+        "MultiCardProposalDialog",
+        lambda **kwargs: made.append(_FakeProposalDialog(**kwargs)) or made[-1],
+    )
+    updated: list[Any] = []
+    _patch_ui(
+        monkeypatch,
+        pane_runtime,
+        "update_notes",
+        lambda parent, notes: updated.extend(notes) or _PendingOp(notes),
+    )
+    pane._apply_pending_patch()
+    [dialog] = made
+
+    # The note is edited while the dialog is open: Apply checked refuses.
+    read = pane._read_note_state
+    pane._read_note_state = lambda ids: {
+        nid: {**state, "mod": 2, "fields": ["edited", "back"]}
+        for nid, state in read(ids).items()
+    }
+    assert dialog.kwargs["apply_callback"]({101}) is False
+    assert _status(store, thread.id) == "stale"
+    assert updated == []
+
+    # Apply anyway raises the open dialog, whose Apply checked now forces.
+    pane._apply_anyway()
+    assert len(made) == 1
+    assert dialog.kwargs["apply_callback"]({101}) is True
+    assert [note.id for note in updated] == [101]
+    assert _status(store, thread.id) == "applied"
+
+
 def test_send_restores_the_prompt_when_the_note_changes_before_it_is_stored(
     pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -8198,8 +8266,24 @@ def _note_create(**overrides: Any) -> Any:
 
 def test_queue_read_catalog_lists_notetypes_and_decks(pane_runtime: Any) -> None:
     queue_runtime = pane_runtime.queue_runtime
-    queue_runtime.aqt.mw = types.SimpleNamespace(col=FakeCreateCollection())
-    assert queue_runtime.read_catalog() == {
+    col = FakeCreateCollection()
+    db = sqlite3.connect(":memory:")
+    db.execute(
+        "create table cards (id integer, nid integer, did integer, odid integer)"
+    )
+    db.execute("create table notes (id integer, mid integer)")
+    db.executemany("insert into notes values (?, ?)", [(1, 7), (2, 7), (3, 8)])
+    db.executemany(
+        "insert into cards values (?, ?, ?, ?)",
+        # Note 1 has two cards in deck 3; note 2's card is in a filtered deck
+        # (home deck 3); note 3 is in deck 1.
+        [(10, 1, 3, 0), (11, 1, 3, 0), (12, 2, 99, 3), (13, 3, 1, 0)],
+    )
+    col.db = types.SimpleNamespace(all=lambda sql: db.execute(sql).fetchall())
+    queue_runtime.aqt.mw = types.SimpleNamespace(col=col)
+    catalog = queue_runtime.read_catalog()
+    assert sorted(catalog.pop("usage")) == [[1, 8, 1], [3, 7, 2]]
+    assert catalog == {
         "notetypes": [
             {"id": 7, "name": "Basic", "fields": ["Front", "Back"]},
             {"id": 8, "name": "Cloze", "fields": ["Text", "Back Extra"]},
@@ -8668,3 +8752,108 @@ def test_send_records_the_default_deck_for_new_notes(
     add_pane._create_thread("Write one", 0)
     added = [t for t in store.list_threads() if t.id != thread.id]
     assert added[0].context["deck_id"] == 5
+
+
+# phase 3b: stale handling in the pane
+
+
+def _pane_with_stale_actions(runtime: Any, tmp_path: Path) -> Any:
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane.rerun_button = FakeButton(False)
+    pane.retry_button = FakeButton(False)
+    pane.apply_anyway_button = FakeButton(False)
+    return pane
+
+
+def test_pane_offers_rerun_apply_anyway_and_discard_on_stale(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    from editor_agent_pane.thread_view import STALE_WARNING
+
+    store, _runner = queue
+    pane = _pane_with_stale_actions(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    assert pane.apply_button.enabled is True
+    assert pane.rerun_button.enabled is True
+    assert pane.apply_anyway_button.visible is False
+    assert pane.retry_button.visible is False
+
+    store.mark_stale(thread.id, STALE_WARNING)
+    pane.on_thread_changed(thread.id)
+
+    assert pane.apply_button.enabled is False
+    assert pane.apply_anyway_button.visible and pane.apply_anyway_button.enabled
+    assert pane.rerun_button.enabled is True
+    assert pane.discard_button.enabled is True
+    shown = "".join(pane.surface.evals)
+    assert "agent-notice" in shown and "agent-error" not in shown
+
+
+def test_pane_rerun_queues_the_thread(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    from editor_agent_pane.queue_store import RERUN_MESSAGE
+    from editor_agent_pane.thread_view import STALE_WARNING
+
+    store, runner = queue
+    pane = _pane_with_stale_actions(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    store.mark_stale(thread.id, STALE_WARNING)
+    pane._load_threads()
+
+    pane._rerun_thread()
+
+    assert _status(store, thread.id) == "queued"
+    assert store.messages(thread.id)[-1].text == RERUN_MESSAGE
+    assert runner.kicks == 1
+    assert pane._thread_id == thread.id
+    assert pane.rerun_button.enabled is False
+
+
+def test_pane_apply_anyway_fills_the_editor_over_the_change(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    pane = _pane_with_stale_actions(pane_runtime, tmp_path)
+    pane.editor.web = types.SimpleNamespace(eval=lambda _js: None)
+    monkeypatch.setattr(
+        pane_runtime,
+        "update_note",
+        lambda **kwargs: types.SimpleNamespace(run_in_background=lambda **_kw: None),
+    )
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    pane.note_mods[123] = 101
+    pane._apply_pending_patch()  # refused: marked stale
+    assert _status(store, thread.id) == "stale"
+    pane_runtime.warnings.clear()
+
+    pane._apply_pending_patch()  # plain Apply keeps refusing
+    assert _status(store, thread.id) == "stale"
+    assert len(pane_runtime.warnings) == 1
+    pane_runtime.warnings.clear()
+
+    pane._apply_anyway()
+
+    assert pane_runtime.warnings == []
+    assert pane.editor.note.fields[1] == "<p>new back</p>"
+    assert _status(store, thread.id) == "applied"
+
+
+def test_pane_retry_is_offered_for_a_failed_thread(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, runner = queue
+    pane = _pane_with_stale_actions(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    store.reply(thread.id, "again")
+    store.transition(thread.id, "queued", "running")
+    store.complete_run(thread.id, to_status="failed", error="boom")
+    pane._load_threads()
+    assert pane.retry_button.visible and pane.retry_button.enabled
+
+    pane._retry_thread()
+
+    assert _status(store, thread.id) == "queued"
+    assert runner.kicks == 1

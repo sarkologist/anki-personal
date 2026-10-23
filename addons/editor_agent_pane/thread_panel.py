@@ -53,6 +53,7 @@ from .preview import PartialApplyError, apply_proposal_changes, create_preview
 from .queue_runner import refresh_snapshot, snapshot_note_ids
 from .queue_store import (
     APPLIED,
+    STALE,
     Proposal,
     QueueTransitionError,
     Thread,
@@ -77,6 +78,9 @@ from .thread_view import (
     APPLICABLE_STATUSES,
     DISCARDABLE_STATUSES,
     LIVE_ACTIVITY_ID,
+    PANE_CLOSED_HINT,
+    RERUNNABLE_STATUSES,
+    RETRYABLE_STATUSES,
     created_note_ids,
     created_notes_fragment,
     parse_open_note_command,
@@ -302,6 +306,11 @@ NOT_ADDED_YET = (
     "This proposal changes a note that has not been added yet. Apply it from "
     "the Add Cards window it was requested in."
 )
+APPLY_ANYWAY_LABEL = "Apply anyway"
+APPLY_ANYWAY_TIP = (
+    "Apply the proposal although the note changed since it was made: the "
+    "proposed fields and tags overwrite the current ones"
+)
 
 
 class ThreadPanel:
@@ -313,6 +322,12 @@ class ThreadPanel:
     apply_button: Any
     discard_button: Any
     stop_button: Any
+    # Optional: a host without them simply does not offer the action.
+    apply_anyway_button: Any = None
+    rerun_button: Any = None
+    retry_button: Any = None
+    # Follows "[Applied." / "[Discarded." in the status banner.
+    _closed_hint = PANE_CLOSED_HINT
     _thread_id: str | None
     _last_rendered: tuple[str, str] | None
     _activity_id: str | None
@@ -336,6 +351,18 @@ class ThreadPanel:
         shown: Patch | None,
     ) -> None:
         pass
+
+    def _after_apply(
+        self, thread_id: str, updated_ids: list[int], created_ids: list[int]
+    ) -> None:
+        """Called once an apply's collection write succeeded."""
+
+    def _following_thread_id(self, thread_id: str) -> str | None:
+        """Where the selection goes after the thread is queued again (window)."""
+        return None
+
+    def _after_requeue(self, thread_id: str, following: str | None) -> None:
+        self._broadcast_thread_changed(thread_id)
 
     def _append_transcript(self, fragment: str) -> None:
         self.surface.eval(js_append_transcript(fragment))
@@ -501,6 +528,7 @@ class ThreadPanel:
             self.apply_button.setEnabled(False)
             self.stop_button.setEnabled(False)
             self.discard_button.setEnabled(False)
+            self._update_requeue_actions(None, False)
             self._after_thread_rendered(None, None, None, None)
             return
         previous = self._last_rendered
@@ -519,17 +547,35 @@ class ThreadPanel:
         )
         if created is not None:
             self._append_transcript(created)
-        banner = status_fragment(thread)
+        banner = status_fragment(thread, closed_hint=self._closed_hint)
         if banner is not None:
             self._append_transcript(banner)
             if thread.status in ACTIVE_STATUSES:
                 self._activity_id = LIVE_ACTIVITY_ID
                 self._activity_open = True
         shown = self._show_proposal(thread, snapshot)
-        self.apply_button.setEnabled(shown is not None)
+        # A stale proposal is applied only through Apply anyway.
+        self.apply_button.setEnabled(shown is not None and thread.status != STALE)
         self.stop_button.setEnabled(thread.status in ACTIVE_STATUSES)
         self.discard_button.setEnabled(thread.status in DISCARDABLE_STATUSES)
+        self._update_requeue_actions(thread, shown is not None)
         self._after_thread_rendered(thread, previous, snapshot, shown)
+
+    def _update_requeue_actions(
+        self, thread: Thread | None, has_proposal: bool
+    ) -> None:
+        """Re-run, Retry and Apply anyway, for the hosts that have them."""
+        status = thread.status if thread is not None else None
+        if self.rerun_button is not None:
+            self.rerun_button.setEnabled(status in RERUNNABLE_STATUSES)
+        if self.retry_button is not None:
+            retryable = status in RETRYABLE_STATUSES
+            self.retry_button.setVisible(retryable)
+            self.retry_button.setEnabled(retryable)
+        if self.apply_anyway_button is not None:
+            stale = status == STALE and has_proposal
+            self.apply_anyway_button.setVisible(stale)
+            self.apply_anyway_button.setEnabled(stale)
 
     def _show_proposal(self, thread: Thread, snapshot: Snapshot | None) -> Patch | None:
         found = self._current_proposal(thread.id)
@@ -587,6 +633,41 @@ class ThreadPanel:
         self._broadcast_thread_changed(thread_id)
         return True
 
+    def _rerun_thread(self) -> None:
+        """Run the last request again against the current note."""
+        self._requeue(lambda store, thread_id: store.rerun(thread_id))
+
+    def _retry_thread(self) -> None:
+        """Queue a failed run again, with the same request."""
+        self._requeue(lambda store, thread_id: store.retry(thread_id))
+
+    def _requeue(self, action: Callable[[Any, str], None]) -> None:
+        service = self._service()
+        thread = self._selected_thread()
+        if service is None or thread is None:
+            return
+        following = self._following_thread_id(thread.id)
+        try:
+            action(service.store, thread.id)
+        except QueueTransitionError as exc:
+            showWarning(str(exc), parent=self._widget())
+            return
+        service.runner.enqueue_kick()
+        self._after_requeue(thread.id, following)
+
+    def _refuse_stale(self, thread_id: str, reason: str) -> None:
+        """A proposal's base no longer holds: mark a ready thread stale (so it
+        offers re-run / apply anyway / discard) and say why."""
+        service = self._service()
+        if service is not None:
+            try:
+                service.store.mark_stale(thread_id, reason)
+            except QueueTransitionError:
+                pass
+            else:
+                self._broadcast_thread_changed(thread_id)
+        showWarning(reason, parent=self._widget())
+
     def _finish_thread(self, thread_id: str, from_status: str, to_status: str) -> bool:
         service = self._service()
         if service is None:
@@ -599,7 +680,16 @@ class ThreadPanel:
         self._broadcast_thread_changed(thread_id)
         return True
 
-    def _apply_pending_patch(self) -> None:
+    def _apply_anyway(self) -> None:
+        """Apply a stale proposal over the note's changes (field-level)."""
+        thread = self._selected_thread()
+        if thread is None or thread.status != STALE:
+            return
+        self._apply_pending_patch(force=True)
+
+    def _apply_pending_patch(self, force: bool = False) -> None:
+        """Apply the shown proposal; ``force`` skips the base-revision check
+        (Apply anyway on a stale proposal)."""
         found = self._current_proposal()
         if found is None:
             return
@@ -610,6 +700,8 @@ class ThreadPanel:
                     thread.id, thread.status, proposal.version, [], patch.note_creates
                 )
             elif isinstance(snapshot, MultiCardSnapshot):
+                # The dialog's Apply checked forces when the thread is stale
+                # at click time, so an open dialog serves Apply anyway too.
                 self._show_multi_proposal_dialog(
                     thread.id, snapshot, patch, proposal.version
                 )
@@ -621,10 +713,16 @@ class ThreadPanel:
                 thread.id, thread.status, proposal.version, [], patch.note_creates
             )
             return
-        self._apply_note_update(thread, proposal, snapshot, patch)
+        self._apply_note_update(thread, proposal, snapshot, patch, force=force)
 
     def _apply_note_update(
-        self, thread: Thread, proposal: Proposal, snapshot: Snapshot, patch: NotePatch
+        self,
+        thread: Thread,
+        proposal: Proposal,
+        snapshot: Snapshot,
+        patch: NotePatch,
+        *,
+        force: bool = False,
     ) -> None:
         """Apply a proposal that changes its source note, through the collection.
 
@@ -638,9 +736,11 @@ class ThreadPanel:
         if note_id is None:
             showWarning(NOT_ADDED_YET, parent=self._widget())
             return
-        reason = stale_reason(proposal.base, self._note_states([note_id]))
+        reason = (
+            None if force else stale_reason(proposal.base, self._note_states([note_id]))
+        )
         if reason is not None:
-            showWarning(reason, parent=self._widget())
+            self._refuse_stale(thread.id, reason)
             return
         try:
             note = prepare_note_update(col, note_id, patch)
@@ -684,6 +784,9 @@ class ThreadPanel:
                 )
                 self._broadcast_thread_changed(thread_id)
             tooltip("Agent proposal applied.", parent=self._widget())
+            self._after_apply(
+                thread_id, [int(note.id) for note in updates], list(created)
+            )
 
         def on_failure(exc: Exception) -> None:
             message = str(exc) or type(exc).__name__
@@ -774,10 +877,17 @@ class ThreadPanel:
             )
 
     def _apply_checked_multi_patch(
-        self, thread_id: str, checked_note_ids: set[int], version: int | None = None
+        self,
+        thread_id: str,
+        checked_note_ids: set[int],
+        version: int | None = None,
+        *,
+        force: bool = False,
     ) -> bool:
         """Apply the checked notes of the current proposal; with ``version``
-        (the one the dialog shows), refuse if a newer proposal replaced it."""
+        (the one the dialog shows), refuse if a newer proposal replaced it.
+        ``force``, or a stale thread (the user was told and chose to apply
+        again: Apply anyway), skips the base-revision check."""
         found = self._current_proposal(thread_id)
         col = self._col()
         if found is None or col is None:
@@ -790,10 +900,11 @@ class ThreadPanel:
             patch, MultiNotePatch
         ):
             return False
+        force = force or thread.status == STALE
         states = self._note_states(sorted(checked_note_ids))
-        reason = stale_reason(proposal.base, states)
+        reason = None if force else stale_reason(proposal.base, states)
         if reason is not None:
-            showWarning(reason, parent=self._widget())
+            self._refuse_stale(thread_id, reason)
             return False
         current = refresh_snapshot(snapshot, states)
         assert isinstance(current, MultiCardSnapshot)
@@ -825,6 +936,7 @@ class ThreadPanel:
 
         def on_success(_changes: Any) -> None:
             tooltip("Agent proposal applied.", parent=self._widget())
+            self._after_apply(thread_id, [int(note.id) for note in notes], [])
 
         def on_failure(exc: Exception) -> None:
             self._finish_thread(thread_id, APPLIED, from_status)

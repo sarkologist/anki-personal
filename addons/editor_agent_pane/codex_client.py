@@ -257,6 +257,17 @@ When proposing a patch:
 """
 
 
+# A resumed CLI session already holds the instructions, the editor context and
+# the earlier turns; only the new turn is sent.
+RESUME_PROMPT_TEMPLATE = """Continuing this Anki editor conversation. Your earlier
+instructions, the editor context and the response format still apply: return
+a JSON object matching the supplied schema, as before.
+
+User request:
+{user_prompt}
+"""
+
+
 AgentPatch = NotePatch | MultiNotePatch
 
 
@@ -267,6 +278,9 @@ class AgentResult:
     proposals: tuple[AgentPatch, ...]
     event_count: int = 0
     card_request: Any = None
+    # The provider CLI's session for this run (Claude session_id, Codex
+    # thread_id), for resuming it on the next turn; None for Ollama.
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -276,6 +290,7 @@ class _CodexProcessResult:
     stdout: str
     stderr: str
     event_count: int
+    session_id: str | None = None
 
 
 CodexEventCallback = Callable[[dict[str, Any]], None]
@@ -284,6 +299,16 @@ StopRequestedCallback = Callable[[], bool]
 
 class AgentStopped(RuntimeError):
     pass
+
+
+class ResumeUnavailable(RuntimeError):
+    """A resume that never started: the CLI does not know the session, or it
+    exited before starting it. Nothing ran, so replaying instead is safe."""
+
+
+# Codex's error for an unknown thread id (codex-cli 0.159.3: "thread/resume
+# failed: no rollout found for thread id <id>").
+CODEX_UNKNOWN_THREAD = "no rollout found"
 
 
 class CodexCliAgent:
@@ -298,8 +323,11 @@ class CodexCliAgent:
         fast_mode: bool = False,
         reasoning_effort: str = "",
         stream_reasoning_summaries: bool = True,
+        persist_session: bool = False,
     ) -> None:
         self.codex_path = resolve_codex_path(codex_path)
+        # Keep the session on disk (no --ephemeral) so a later turn can resume it.
+        self.persist_session = persist_session
         self.model = model.strip()
         self.reasoning_effort = effort_value(reasoning_effort)
         self.timeout_seconds = timeout_seconds
@@ -320,11 +348,19 @@ class CodexCliAgent:
         event_callback: CodexEventCallback | None = None,
         run_logger: AgentRunLogger | None = None,
         stop_requested: StopRequestedCallback | None = None,
+        resume_session_id: str | None = None,
+        resume_images: bool = False,
     ) -> AgentResult:
+        """With ``resume_session_id``, continue that Codex session
+        (``codex exec resume``) and send ``prompt`` as the only new turn;
+        ``resume_images`` attaches the note's images to that turn too (the
+        note changed since the session saw them). Raises ResumeUnavailable
+        when the resume never started."""
         _log_agent_event(
             run_logger,
             "run_start",
             model=self.model or "default",
+            resumed=resume_session_id is not None,
             reasoning_effort=self.reasoning_effort or "default",
             sandbox=self.project_folder_access,
             timeout_seconds=self.timeout_seconds,
@@ -357,6 +393,8 @@ class CodexCliAgent:
                 schema_path,
                 output_path,
                 snapshot.image_paths(),
+                resume_session_id=resume_session_id,
+                resume_images=resume_images,
             )
             _log_agent_event(
                 run_logger,
@@ -368,7 +406,11 @@ class CodexCliAgent:
             try:
                 completed = self._run(
                     command,
-                    self._prompt(prompt, snapshot, history),
+                    (
+                        RESUME_PROMPT_TEMPLATE.format(user_prompt=prompt)
+                        if resume_session_id
+                        else self._prompt(prompt, snapshot, history)
+                    ),
                     event_callback=event_callback,
                     run_logger=run_logger,
                     stop_requested=stop_requested,
@@ -397,7 +439,13 @@ class CodexCliAgent:
                     stderr_lines=line_count(completed.stderr),
                     stderr_preview=text_preview(completed.stderr),
                 )
-                raise RuntimeError(_format_codex_error(completed))
+                message = _format_codex_error(completed)
+                if resume_session_id and (
+                    completed.session_id is None
+                    or CODEX_UNKNOWN_THREAD in completed.stderr.lower()
+                ):
+                    raise ResumeUnavailable(message)
+                raise RuntimeError(message)
             if not output_path.exists():
                 _log_agent_event(
                     run_logger,
@@ -462,6 +510,7 @@ class CodexCliAgent:
                 proposals=proposals,
                 event_count=completed.event_count,
                 card_request=data.get("card_request"),
+                session_id=completed.session_id,
             )
 
     def _working_directory(self, project_root: str, fallback: Path) -> Path:
@@ -475,14 +524,25 @@ class CodexCliAgent:
         schema_path: Path,
         output_path: Path,
         image_paths: tuple[str, ...],
+        *,
+        resume_session_id: str | None = None,
+        resume_images: bool = False,
     ) -> list[str]:
+        if resume_session_id:
+            return self._resume_command(
+                cwd,
+                schema_path,
+                output_path,
+                resume_session_id,
+                image_paths if resume_images else (),
+            )
         command = [
             self.codex_path,
             "exec",
             "--sandbox",
             self.project_folder_access,
             "--skip-git-repo-check",
-            "--ephemeral",
+            *([] if self.persist_session else ["--ephemeral"]),
             "--color",
             "never",
             "-c",
@@ -505,6 +565,51 @@ class CodexCliAgent:
         if self.model:
             command.extend(["--model", self.model])
         command.append("-")
+        return command
+
+    def _resume_command(
+        self,
+        cwd: Path,
+        schema_path: Path,
+        output_path: Path,
+        session_id: str,
+        image_paths: tuple[str, ...] = (),
+    ) -> list[str]:
+        # `codex exec resume` takes no --sandbox/--cd/--color of its own: they
+        # go on `exec` before the subcommand, and the sandbox is repeated as a
+        # config override. Images are in the session already; ``image_paths``
+        # re-attaches them when the note changed since.
+        command = [
+            self.codex_path,
+            "exec",
+            "--sandbox",
+            self.project_folder_access,
+            "--skip-git-repo-check",
+            "--color",
+            "never",
+            "--cd",
+            str(cwd),
+            "resume",
+            "-c",
+            f'sandbox_mode="{self.project_folder_access}"',
+            "-c",
+            _model_reasoning_summary_config(
+                self.model,
+                self.stream_reasoning_summaries,
+            ),
+            *_reasoning_effort_config_args(self.reasoning_effort),
+            *_fast_mode_config_args(self.fast_mode),
+            "--json",
+            "--output-schema",
+            str(schema_path),
+            "--output-last-message",
+            str(output_path),
+        ]
+        for path in image_paths:
+            command.extend(["--image", path])
+        if self.model:
+            command.extend(["--model", self.model])
+        command.extend([session_id, "-"])
         return command
 
     def _prompt(
@@ -562,6 +667,7 @@ class CodexCliAgent:
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
         event_count = 0
+        session_id: str | None = None
         stdout_done = False
         stderr_done = False
 
@@ -602,6 +708,10 @@ class CodexCliAgent:
                     stdout_chunks.append(line)
                     if event := _parse_stream_event(line):
                         event_count += 1
+                        if event.get("type") == "thread.started" and isinstance(
+                            event.get("thread_id"), str
+                        ):
+                            session_id = event["thread_id"]
                         _log_agent_event(
                             run_logger,
                             "stream_event",
@@ -625,6 +735,7 @@ class CodexCliAgent:
                     stdout="".join(stdout_chunks),
                     stderr="".join(stderr_chunks),
                     event_count=event_count,
+                    session_id=session_id,
                 )
 
             if stop_requested is not None and stop_requested():

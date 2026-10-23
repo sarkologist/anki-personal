@@ -5,7 +5,8 @@
 
 No Qt: everything that touches the collection or the GUI is injected, so the
 add-on wires in ``taskman.run_on_main`` and tests pass synchronous stand-ins.
-Phase 1 replays the stored transcript on every run (no CLI session resume).
+Each run either resumes the thread's CLI session with only the new turn, or
+replays the stored transcript (see agent-request-queue-plan.md, "Replies").
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from .card_access import CardReadScope, normalize_card_access, send_with_card_re
 from .codex_client import (
     AgentResult,
     AgentStopped,
+    ResumeUnavailable,
     normalize_project_folder_access,
 )
 from .effort_options import (
@@ -148,7 +150,8 @@ def normalize_settings(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def default_make_agent(settings: dict[str, Any]) -> Any:
-    """Build the provider client for normalised ``settings``."""
+    """Build the provider client for normalised ``settings``; the runner adds
+    ``persist_session`` (keep CLI sessions on disk so they can be resumed)."""
     paths = settings.get("paths", {})
     provider = settings["provider"]
     if provider == PROVIDER_OLLAMA:
@@ -171,6 +174,7 @@ def default_make_agent(settings: dict[str, Any]) -> Any:
             project_folder_access=settings["project_folder_access"],
             custom_instructions=settings["custom_instructions"],
             reasoning_effort=settings["reasoning_effort"],
+            persist_session=bool(settings.get("persist_session")),
         )
     from .codex_client import CodexCliAgent
 
@@ -183,6 +187,7 @@ def default_make_agent(settings: dict[str, Any]) -> Any:
         fast_mode=settings["fast_mode"],
         reasoning_effort=settings["reasoning_effort"],
         stream_reasoning_summaries=settings["stream_reasoning_summaries"],
+        persist_session=bool(settings.get("persist_session")),
     )
 
 
@@ -226,6 +231,11 @@ def creation_defaults(
     return notetype_id, int(deck_id) if isinstance(deck_id, int) else None
 
 
+DEFAULT_CATALOG_LIMIT = 30
+# Anki's own "Default" deck, listed beside the source deck's subtree.
+ANKI_DEFAULT_DECK_ID = 1
+
+
 def _defaults_first(
     entries: list[dict[str, Any]], default_id: int | None
 ) -> list[dict[str, Any]]:
@@ -236,20 +246,109 @@ def _defaults_first(
     return sorted(marked, key=lambda entry: not entry.get("default"))
 
 
+def _deck_subtree(
+    decks: list[dict[str, Any]], deck_id: int | None
+) -> list[dict[str, Any]]:
+    """The deck and its subdecks (by "::" name), the deck first."""
+    root = next((deck for deck in decks if deck.get("id") == deck_id), None)
+    if root is None:
+        return []
+    prefix = str(root.get("name", "")) + "::"
+    children = sorted(
+        (deck for deck in decks if str(deck.get("name", "")).startswith(prefix)),
+        key=lambda deck: str(deck.get("name", "")),
+    )
+    return [root, *children]
+
+
+def trim_catalog(
+    catalog: dict[str, Any],
+    *,
+    notetype_id: int | None,
+    deck_id: int | None,
+    limit: int = DEFAULT_CATALOG_LIMIT,
+) -> dict[str, Any]:
+    """What the prompt lists: the source deck's subtree plus Anki's Default
+    deck, and the note types used in those decks (most used first) plus the
+    source note type; defaults first and marked, each list capped at
+    ``limit``. Without a source deck or usage counts (or when that leaves no
+    note type), every deck / note type up to the cap. Validation still uses
+    the whole catalog."""
+    limit = max(1, int(limit))
+    decks = list(catalog.get("decks") or ())
+    notetypes = list(catalog.get("notetypes") or ())
+    subtree = _deck_subtree(decks, deck_id)
+    if subtree:
+        listed_decks = list(subtree)
+        anki_default = next(
+            (deck for deck in decks if deck.get("id") == ANKI_DEFAULT_DECK_ID), None
+        )
+        if anki_default is not None and anki_default not in listed_decks:
+            listed_decks.append(anki_default)
+    else:
+        listed_decks = decks
+    usage = catalog.get("usage")
+    if subtree and isinstance(usage, list):
+        subtree_ids = {deck.get("id") for deck in subtree}
+        counts: dict[int, int] = {}
+        for row in usage:
+            try:
+                row_deck, row_notetype, notes = (int(value) for value in row)
+            except (TypeError, ValueError):
+                continue
+            if row_deck in subtree_ids:
+                counts[row_notetype] = counts.get(row_notetype, 0) + notes
+        listed_notetypes = sorted(
+            (
+                entry
+                for entry in notetypes
+                if entry.get("id") in counts or entry.get("id") == notetype_id
+            ),
+            key=lambda entry: (
+                entry.get("id") != notetype_id,
+                -counts.get(int(entry.get("id") or 0), 0),
+                str(entry.get("name", "")),
+            ),
+        )
+        if not listed_notetypes:
+            # Nothing used in the subtree and no source note type: list the
+            # first ones of the whole catalog rather than none.
+            listed_notetypes = notetypes
+    else:
+        listed_notetypes = notetypes
+    shown_decks = _defaults_first(listed_decks, deck_id)[:limit]
+    shown_notetypes = _defaults_first(listed_notetypes, notetype_id)[:limit]
+    return {
+        "notetypes": shown_notetypes,
+        "decks": shown_decks,
+        "omitted_notetypes": len(notetypes) - len(shown_notetypes),
+        "omitted_decks": len(decks) - len(shown_decks),
+    }
+
+
 def catalog_prompt_section(
     catalog: dict[str, Any],
     *,
     notetype_id: int | None,
     deck_id: int | None,
+    limit: int = DEFAULT_CATALOG_LIMIT,
 ) -> str:
-    data = {
-        "notetypes": _defaults_first(list(catalog.get("notetypes") or ()), notetype_id),
-        "decks": _defaults_first(list(catalog.get("decks") or ()), deck_id),
-    }
+    trimmed = trim_catalog(
+        catalog, notetype_id=notetype_id, deck_id=deck_id, limit=limit
+    )
+    data = {"notetypes": trimmed["notetypes"], "decks": trimmed["decks"]}
+    omitted = ""
+    if trimmed["omitted_decks"] or trimmed["omitted_notetypes"]:
+        omitted = (
+            "; only those nearest the source note are listed "
+            f"({trimmed['omitted_decks']} decks and "
+            f"{trimmed['omitted_notetypes']} note types omitted), and any other "
+            "existing deck or note type id is accepted too"
+        )
     return (
         "Available note types and decks as JSON (use these ids in note_creates; "
         "entries marked default are the source note's note type and deck, used "
-        "unless the request implies otherwise):\n"
+        f"unless the request implies otherwise{omitted}):\n"
         + json.dumps(data, ensure_ascii=False)
     )
 
@@ -405,6 +504,132 @@ def replay_history(
     return history, "\n\n".join(pending)
 
 
+def pending_request(messages: list[Any]) -> tuple[list[tuple[str, str]], str]:
+    """``replay_history``, plus re-sending the last request on a retry/re-run.
+
+    A thread queued again without a new user turn (``QueueStore.retry`` or
+    ``rerun`` after its request was answered) ends with a system message (the
+    failure, or RERUN_MESSAGE); it re-sends the last user turn. A thread whose
+    last message is the agent's answer has nothing to run.
+    """
+    history, prompt = replay_history(messages)
+    if prompt.strip() or not messages or messages[-1].role != "system":
+        return history, prompt
+    for message in reversed(messages):
+        if message.role == "user":
+            return history, message.text
+    return history, ""
+
+
+def note_mods(states: dict[int, dict[str, Any] | None]) -> dict[str, int | None]:
+    """The notes' ``mod`` at run time, as stored in session_json."""
+    return {
+        str(note_id): (state.get("mod") if state is not None else None)
+        for note_id, state in states.items()
+    }
+
+
+def notes_changed_since(
+    session: dict[str, Any], states: dict[int, dict[str, Any] | None]
+) -> bool:
+    """Has any note changed since the session's last run saw it?"""
+    seen = session.get("note_mods")
+    if not isinstance(seen, dict):
+        return bool(states)
+    return any(seen.get(key, -1) != mod for key, mod in note_mods(states).items())
+
+
+def base_changed(
+    base: dict[str, Any], states: dict[int, dict[str, Any] | None]
+) -> bool:
+    """Does a proposal's base no longer match the notes (see stale_reason)?"""
+    current = {
+        entry["note_id"]: entry
+        for entry in base_for(
+            [
+                entry.get("note_id")
+                for entry in base.get("notes") or ()
+                if entry.get("note_id") in states
+            ],
+            states,
+        )["notes"]
+    }
+    for entry in base.get("notes") or ():
+        now = current.get(entry.get("note_id"))
+        if now is None:
+            continue
+        if now["mod"] is None or (now["mod"], now["hash"]) != (
+            entry.get("mod"),
+            entry.get("hash"),
+        ):
+            return True
+    return False
+
+
+def note_state_prompt_section(snapshot: Snapshot) -> str:
+    return (
+        "Current note state as JSON (the note changed since your last turn; "
+        "this replaces what you saw before):\n"
+        + json.dumps(snapshot.as_tool_result(), ensure_ascii=False)
+    )
+
+
+def stale_prompt_section(
+    version: int, patch: dict[str, Any], snapshot: Snapshot
+) -> str:
+    return (
+        f"The note changed since your proposal (version {version}): it was "
+        "edited after you proposed, so the proposal no longer applies cleanly. "
+        "Re-propose against the current note content below: return the complete "
+        "patch for the current content (a null patch if nothing is needed any "
+        "more).\nCurrent note content as JSON:\n"
+        + json.dumps(snapshot.as_tool_result(), ensure_ascii=False)
+        + "\nYour previous proposal as JSON:\n"
+        + json.dumps(patch, ensure_ascii=False)
+    )
+
+
+def session_for(
+    settings: dict[str, Any],
+    session_id: str | None,
+    states: dict[int, dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    return {
+        "provider": settings["provider"],
+        "model": settings["model"],
+        "session_id": session_id,
+        "note_mods": note_mods(states),
+    }
+
+
+def resumable_session_id(
+    session: dict[str, Any] | None, settings: dict[str, Any]
+) -> str | None:
+    """The session to resume, if it was made by the thread's current provider
+    and model (Ollama has none)."""
+    if not session or settings["provider"] == PROVIDER_OLLAMA:
+        return None
+    if session.get("provider") != settings["provider"]:
+        return None
+    if str(session.get("model") or "") != settings["model"]:
+        return None
+    session_id = session.get("session_id")
+    return str(session_id) if session_id else None
+
+
+RESUMED_MESSAGE = "[Resumed session {session_id}]"
+REPLAYED_MESSAGE = "[Replayed transcript (resume failed: {error})]"
+RESUME_FAILED_ACTIVITY_LINE = "[resume] Session resume failed; replaying the transcript"
+RESUME_ERROR_CHARS = 200
+
+
+def _one_line(text: str, limit: int = RESUME_ERROR_CHARS) -> str:
+    clean = " ".join(text.split())
+    return clean if len(clean) <= limit else clean[: limit - 1] + "…"
+
+
 def proposal_prompt_section(version: int, patch: dict[str, Any]) -> str:
     return (
         f"Current proposal (version {version}) as JSON. The user has not applied "
@@ -467,6 +692,8 @@ class QueueRunner:
         concurrency: int = 1,
         on_stream_event: StreamEvent | None = None,
         read_catalog: ReadCatalog | None = None,
+        resume_sessions: bool | Callable[[], bool] = False,
+        catalog_limit: int = DEFAULT_CATALOG_LIMIT,
     ) -> None:
         self.store = store
         self._run_on_main = run_on_main
@@ -478,6 +705,8 @@ class QueueRunner:
         self._concurrency = max(1, int(concurrency))
         self._on_stream_event = on_stream_event
         self._read_catalog = read_catalog
+        self._resume_sessions = resume_sessions
+        self._catalog_limit = catalog_limit
         self._lock = threading.Lock()
         self._stops: dict[str, threading.Event] = {}
         self._wake = threading.Event()
@@ -493,7 +722,9 @@ class QueueRunner:
         if self._workers:
             return
         self._stopping.clear()
-        interrupted = [t.id for t in self.store.list_threads((RUNNING,))]
+        interrupted = [
+            t.id for t in self.store.list_threads((RUNNING,), include_deferred=True)
+        ]
         self.store.reset_interrupted()
         for thread_id in interrupted:
             self._safe_notify(thread_id)
@@ -589,10 +820,17 @@ class QueueRunner:
         self._safe_notify(thread.id)
         return thread.id
 
+    def _resume_enabled(self) -> bool:
+        option = self._resume_sessions
+        try:
+            return bool(option() if callable(option) else option)
+        except Exception:
+            return False
+
     def _run(self, thread: Thread, stop_event: threading.Event) -> None:
         settings = normalize_settings(thread.settings)
         snapshot = snapshot_from_dict(thread.context["snapshot"])
-        history, prompt = replay_history(self.store.messages(thread.id))
+        history, prompt = pending_request(self.store.messages(thread.id))
         if not prompt.strip():
             raise RuntimeError(NO_PENDING_REQUEST)
         note_ids = snapshot_note_ids(snapshot)
@@ -609,24 +847,54 @@ class QueueRunner:
         )
 
         current = self.store.current_proposal(thread.id)
+        stale = current is not None and base_changed(current.base, states)
+        stale_section = (
+            stale_prompt_section(current.version, current.patch, snapshot)
+            if current is not None and stale
+            else None
+        )
+
+        # Replay: the whole context, rebuilt from the store.
+        replay_prompt = prompt
         reviewer = thread.context.get("reviewer")
         if isinstance(reviewer, dict) and reviewer:
-            prompt = prompt + "\n\n" + reviewer_prompt_section(reviewer)
+            replay_prompt += "\n\n" + reviewer_prompt_section(reviewer)
         if catalog is not None:
             notetype_id, deck_id = creation_defaults(thread.context, snapshot)
-            prompt = (
-                prompt
-                + "\n\n"
-                + catalog_prompt_section(
-                    catalog, notetype_id=notetype_id, deck_id=deck_id
-                )
+            replay_prompt += "\n\n" + catalog_prompt_section(
+                catalog,
+                notetype_id=notetype_id,
+                deck_id=deck_id,
+                limit=self._catalog_limit,
             )
-        if current is not None:
-            prompt = (
-                prompt
-                + "\n\n"
-                + proposal_prompt_section(current.version, current.patch)
+        if stale_section is not None:
+            replay_prompt += "\n\n" + stale_section
+        elif current is not None:
+            replay_prompt += "\n\n" + proposal_prompt_section(
+                current.version, current.patch
             )
+
+        # Resume: the CLI session already holds the context, the reviewer
+        # context (immutable), the catalog and its own proposal; send only
+        # the new turn and what changed in the collection since.
+        resume_enabled = self._resume_enabled()
+        resume_id = (
+            resumable_session_id(thread.session, settings) if resume_enabled else None
+        )
+        delta_prompt = prompt
+        if stale_section is not None:
+            delta_prompt += "\n\n" + stale_section
+        elif thread.session is not None and notes_changed_since(thread.session, states):
+            delta_prompt += "\n\n" + note_state_prompt_section(snapshot)
+        note_resent = delta_prompt != prompt
+        resume_extra: dict[str, Any] = {}
+        if note_resent and snapshot.image_paths():
+            if settings["provider"] == PROVIDER_CODEX:
+                # The note changed: its images may have too.
+                resume_extra["resume_images"] = True
+            else:
+                # Claude runs attach no images; replay sends the current list.
+                resume_id = None
 
         logger, log_path = (
             self._logger_factory(thread) if self._logger_factory else (None, None)
@@ -635,15 +903,17 @@ class QueueRunner:
             self.store.set_run_log_path(thread.id, log_path)
 
         provider = settings["provider"]
-        activity: ClaudeActivityRenderer | CodexActivityRenderer | None
-        if provider == PROVIDER_CLAUDE:
-            activity = ClaudeActivityRenderer()
-        elif provider == PROVIDER_CODEX:
-            activity = CodexActivityRenderer(
-                stream_reasoning_summaries=settings["stream_reasoning_summaries"]
-            )
-        else:
-            activity = None
+
+        def new_activity() -> ClaudeActivityRenderer | CodexActivityRenderer | None:
+            if provider == PROVIDER_CLAUDE:
+                return ClaudeActivityRenderer()
+            if provider == PROVIDER_CODEX:
+                return CodexActivityRenderer(
+                    stream_reasoning_summaries=settings["stream_reasoning_summaries"]
+                )
+            return None
+
+        activities = [new_activity()]
         scope = CardReadScope(settings["card_access"], tuple(settings["deck_ids"]))
 
         def stream(line: str) -> None:
@@ -652,6 +922,7 @@ class QueueRunner:
                 self._safe(lambda: on_stream_event(thread.id, line))
 
         def record(event: dict[str, Any]) -> None:
+            activity = activities[-1]
             assert activity is not None
             line = activity.record(event)
             if line is not None:
@@ -663,12 +934,12 @@ class QueueRunner:
             stream(CARD_READ_ACTIVITY_LINE)
             return self._run_on_main(lambda: self._read_cards(scope, request))
 
-        agent = self._make_agent(settings)
-        started = time.monotonic()
-        try:
-            result: AgentResult = send_with_card_reads(
+        agent = self._make_agent({**settings, "persist_session": resume_enabled})
+
+        def send(text: str, turns: list[tuple[str, str]], **extra: Any) -> AgentResult:
+            return send_with_card_reads(
                 agent.send,
-                prompt=prompt,
+                prompt=text,
                 scope=scope,
                 read=read,
                 stop_requested=stop_event.is_set,
@@ -676,16 +947,41 @@ class QueueRunner:
                 project_root=(
                     "" if provider == PROVIDER_OLLAMA else settings["project_folder"]
                 ),
-                history=history,
-                event_callback=record if activity is not None else None,
+                history=turns,
+                event_callback=record if activities[-1] is not None else None,
                 run_logger=logger,
+                **extra,
             )
+
+        path_message: str | None = None
+        started = time.monotonic()
+        try:
+            if resume_id is not None:
+                try:
+                    result = send(
+                        delta_prompt, [], resume_session_id=resume_id, **resume_extra
+                    )
+                    path_message = RESUMED_MESSAGE.format(session_id=resume_id)
+                except ResumeUnavailable as exc:
+                    # The resume never started (unknown session, or the CLI
+                    # exited before starting it): replay in the same run.
+                    # Anything later is a normal failure, so side effects and
+                    # cost are not repeated.
+                    path_message = REPLAYED_MESSAGE.format(
+                        error=_one_line(str(exc) or type(exc).__name__)
+                    )
+                    stream(RESUME_FAILED_ACTIVITY_LINE)
+                    activities.append(new_activity())
+                    result = send(replay_prompt, history)
+            else:
+                result = send(replay_prompt, history)
         except AgentStopped:
             if self._stopping.is_set():
                 raise _ShuttingDown() from None
             raise
         elapsed = time.monotonic() - started
 
+        activity = activities[-1]
         summary = summary_with_elapsed(
             activity.compact_summary()
             if activity is not None
@@ -708,12 +1004,17 @@ class QueueRunner:
         # One transaction: if it fails (e.g. the store closed during shutdown)
         # the thread stays running with its user turn pending, and is re-run.
         # A run without a patch drops the proposal it was shown (see
-        # proposal_prompt_section).
+        # proposal_prompt_section). The session is replaced by this run's (or
+        # cleared when the provider reported none, or sessions are not kept).
+        session = (
+            session_for(settings, result.session_id, states) if resume_enabled else None
+        )
         self.store.complete_run(
             thread.id,
             to_status=READY if patch is not None else ANSWERED,
             messages=[
                 *([("system", dropped_notes_message(dropped), "")] if dropped else []),
+                *([("system", path_message, "")] if path_message else []),
                 ("system", summary, ""),
                 ("agent", result.text, result.html),
             ],
@@ -724,11 +1025,18 @@ class QueueRunner:
                 else None
             ),
             drop_proposal=patch is None,
+            session=session,
+            clear_session=session is None,
         )
 
     def _requeue(self, thread_id: str) -> None:
         self._requeued = True
-        self._safe(lambda: self.store.complete_run(thread_id, to_status=QUEUED))
+        # The interrupted turn may have reached the CLI session; replay it.
+        self._safe(
+            lambda: self.store.complete_run(
+                thread_id, to_status=QUEUED, clear_session=True
+            )
+        )
 
     def _fail(self, thread_id: str, message: str, error: str) -> None:
         """Fail the run; a proposal from an earlier turn stays current."""
@@ -738,6 +1046,9 @@ class QueueRunner:
                 to_status=FAILED,
                 messages=[("system", message, "")],
                 error=error,
+                # The failed turn may have reached the CLI session; the next
+                # run replays from the store instead of resuming it.
+                clear_session=True,
             )
         )
 

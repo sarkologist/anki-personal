@@ -1,8 +1,10 @@
 # Agent request queue — design and spec
 
 **Status:** phase 1 implemented on `claude/agent-queue-phase1`; phase 2 (2a:
-new notes, unified schema; 2b: queue window) on `claude/agent-queue-phase2`
-(see Results / notes). Phases at the bottom.
+new notes, unified schema; 2b: queue window) on `claude/agent-queue-phase2`;
+phase 3a (runner side: resume, staleness, retry, catalog trimming) and 3b
+(UI: stale actions, retry, defer, change model, apply then edit, toolbar badge)
+on `claude/agent-queue-phase3` (see Results / notes). Phases at the bottom.
 
 Builds on the repo-local add-on in [addons/editor_agent_pane](addons/editor_agent_pane),
 which already has the provider clients (Codex, Claude, Ollama), the fixed JSON
@@ -169,6 +171,7 @@ ready ────► applied | discarded | stale
 stale ────► queued (re-run) | discarded | applied (forced)
 ready / answered / failed ──reply──► queued
 failed ───► applied   (a failed run keeps the previous proposal current)
+failed ───► stale     (its proposal's base changed; then applied (forced))
 applied ──► ready | failed   (revert when the apply's collection write fails
                              before anything was written; a partial write stays applied)
 ```
@@ -212,9 +215,13 @@ Policy: **replay is the baseline and resume is an optimisation on top.**
    the user's reply, and the current note state if `note_mod` changed since
    the last run (the resumed session still believes the note looks the way
    it did).
-3. If the resume fails for any reason (unknown session, CLI error, Ollama,
-   provider or model changed), the runner falls back to replay in the same
-   run, transparently. The transcript message records which path was taken.
+3. If the resume cannot be used (Ollama, provider or model changed) the
+   runner replays; if the resume never started (unknown session, or the CLI
+   exited before starting it) it falls back to replay in the same run,
+   transparently. A failure after the resumed turn started (timeout, API
+   error, bad response) is a normal failure, not a replay, so side effects
+   and cost are not repeated. The transcript message records which path was
+   taken.
 4. Replay always builds from the store, never from the CLI's session files,
    so the two cannot disagree about what the user saw.
 
@@ -647,5 +654,241 @@ Review fixes (2026-10-23):
   are gone; otherwise the deleted ones are dropped from the snapshot and a
   system message names them).
 
-Not done (phase 3 and later): Defer, Change model, Retry / re-run on stale,
-Apply then edit, session resume, bottom-bar badge, a clickable reviewer offer.
+**Phase 3a (2026-10-23, uncommitted on `claude/agent-queue-phase3`).** The
+runner side of phase 3; the UI (buttons, Defer, badge, Apply then edit) is 3b.
+
+- Sessions: `AgentResult.session_id` (Claude: `session_id` of the stream-json
+  init/result events; Codex: `thread_id` of `thread.started`; Ollama: None).
+  Every successful run stores `session_json = {provider, model, session_id,
+  note_mods}` through `complete_run(session=…)` in the run's transaction
+  (`note_mods`: `{"<nid>": mod}` the run saw); a run without a session id clears
+  it, and a failed run clears it too (`clear_session=True`), so the turn after a
+  failure always replays.
+- Resume (`queue_resume_sessions`, default true, read live from the config):
+  when the thread's session has the current provider and model (never Ollama),
+  the client is called with `resume_session_id` and the delta prompt only: the
+  pending user turn(s), plus "Current note state as JSON" when a note's `mod`
+  differs from `note_mods`, plus the stale section (below). The reviewer context
+  (immutable), the catalog and the current-proposal section are not resent; the
+  card-access section is, as on every round. `ClaudeCliAgent.send(…,
+  resume_session_id)` adds `--resume <id>`; `CodexCliAgent.send(…,
+  resume_session_id)` runs `codex exec --sandbox … --skip-git-repo-check --color
+  never --cd <cwd> resume -c sandbox_mode="…" [-c …] --json --output-schema …
+  --output-last-message … [--model m] <id> -` (resume itself accepts no
+  `--sandbox/--cd/--color`; checked against codex-cli 0.159.3), and both send
+  `RESUME_PROMPT_TEMPLATE` (the new turn plus "earlier instructions, context and
+  response format still apply") instead of the full template. Any exception
+  from the resumed send except a stop/closed collection falls back to a replay
+  in the same `run_once`; the transcript gets "[Resumed session <id>]" or
+  "[Replayed transcript (resume failed: <error>)]" (bracketed, so the pane
+  shows it as an activity line), and the activity summary is the replay's.
+- Persistence: resuming needs the sessions on disk, so while
+  `queue_resume_sessions` is on the runner builds clients with
+  `persist_session=True` (Claude drops `--no-session-persistence`, Codex drops
+  `--ephemeral`). Live check (Claude 2.1.301, haiku): a persisted run, then a
+  `--resume` from a different temp cwd, recalled the first turn; an unknown id
+  exits 1 with "No conversation found", which triggers the fallback. Codex
+  resume could not be run live (the account rejects every model in this
+  environment); the flag layout was checked with `codex exec resume` against a
+  real and an unknown thread id.
+- Staleness: `QueueStore.mark_stale(thread_id, reason)` (ready -> stale, reason
+  as a system message, proposal stays current), `rerun(thread_id)`
+  (stale/ready/failed -> queued, adds `RERUN_MESSAGE` "[Re-run requested: the
+  note changed]", clears the error), `retry(thread_id)` (failed -> queued, no
+  message). `ThreadPanel._refuse_stale` replaces the stale warning in the three
+  apply paths (window/collection, multi-note, and the pane's editor path for
+  notes with an id): it marks the thread stale, broadcasts, then warns.
+  `thread_view`: `APPLICABLE_STATUSES` includes `stale` (for the forced apply;
+  the base check still refuses a plain Apply), `RETRYABLE_STATUSES`,
+  `RERUNNABLE_STATUSES`; `REPLYABLE_STATUSES` excludes `stale`; stale sorts right
+  after ready in the queue list and counts as a result in `pick_thread`.
+- Runner on any queued thread with a current proposal: `base_changed(base,
+  states)` against the collection; if it changed, the prompt gets "The note
+  changed since your proposal (version n)…" with the current note
+  (`snapshot.as_tool_result()`) and the previous patch, replacing the
+  current-proposal section on replay and also sent on the resume delta (then
+  without a separate note-state section). `pending_request` re-sends the last
+  user turn when no user turn is pending and the transcript ends with a system
+  message (a retry after a failure, or a re-run after an answered turn); a
+  thread ending with the agent's answer still fails with `NO_PENDING_REQUEST`.
+- Catalog trimming: `read_catalog` also returns `usage` (`[deck, note type,
+  notes]` per home deck, one grouped query over cards/notes on the main
+  thread). `catalog_prompt_section(…, limit)` (`trim_catalog`) lists the source
+  deck and its `::` subdecks plus Anki's Default deck (id 1), and the note types
+  used in that subtree (most notes first) plus the source note type, defaults
+  first, each capped at `queue_catalog_limit` (30); the header says how many were
+  omitted and that any other existing id is accepted. Without a source deck or
+  usage data it lists everything up to the cap. `validate_against_catalog`
+  still uses the full catalog.
+- Config: `queue_resume_sessions` (true), `queue_catalog_limit` (30).
+- Tests: 43 new (store transitions and session column, resume/delta/fallback
+  and ineligible cases, stale re-run on both paths, retry, catalog trimming,
+  Claude/Codex resume commands and session ids, live config read); three
+  existing apply tests now expect `stale` instead of `ready`.
+
+Deviations:
+
+- `session_json` also carries `note_mods`, the per-note `mod` the session last
+  saw, which is what "note changed since the last run" compares against
+  (`base_json` only exists for runs with a proposal).
+- "Default deck" in the trimmed catalog is Anki's Default deck (id 1), beside
+  the source deck's subtree (which already includes the deck marked default).
+- A failed run clears the session rather than keeping it: a failed resumed
+  turn (e.g. a rejected patch) is already inside the CLI session, so resuming
+  it would show the agent a turn the store never recorded.
+- With resume on, card-lookup rounds resume the same session again with the
+  full delta plus the lookup results so far (Claude and Codex keep the id), so
+  the session holds each round; replay rounds each start a fresh persisted
+  session, and the last one is stored. Persisted sessions accumulate in the
+  CLIs' own session folders (Claude: one project folder per temp cwd).
+- A re-run compares against the collection: a proposal marked stale only
+  because the editor holds unsaved typing gets no "note changed" section until
+  the note is saved.
+
+**Phase 3b (2026-10-23, uncommitted on `claude/agent-queue-phase3`).** The UI
+half of phase 3.
+
+- Stale handling, shared by the pane and the window (`ThreadPanel`): **Re-run**
+  (`store.rerun` → `runner.enqueue_kick()` → broadcast; enabled for
+  `RERUNNABLE_STATUSES`: stale, ready, failed), **Retry** (`store.retry`, shown
+  only for failed threads), **Apply anyway** (shown only for stale threads with
+  a current proposal; labelled "the proposed fields and tags overwrite the
+  current ones") and Discard. Plain Apply is disabled on a stale thread and
+  still refuses if invoked (shortcut): `_apply_pending_patch(force=False)` keeps
+  the base check, `force=True` skips it in all three apply paths (collection,
+  the pane's editor fill, and the multi-note dialog, which carries `force` to
+  "Apply checked"). The write is field-level: `prepare_note_update` /
+  the editor fill change only the patch's fields and tags on the current note.
+  A forced apply whose write fails returns the thread to `stale` (new store
+  edge applied → stale). In the window Re-run/Retry move the selection on like
+  Reply (`_following_thread_id`/`_after_requeue` hooks); the pane stays on the
+  thread. The buttons are optional attributes on `ThreadPanel`, so a host
+  without them does not offer the action.
+- Transcript: a system message that is a stale reason (`STALE_WARNING`,
+  `MISSING_NOTE_WARNING`) renders as a "Stale" notice (`render_notice_message`,
+  class `agent-notice`), not the Error box; `RERUN_MESSAGE`, "[Resumed session
+  …]" and "[Replayed transcript …]" render as one-line activity entries
+  (`render_activity_note`) instead of an expandable summary with nothing in it.
+  `status_fragment(thread, closed_hint=…)`: the window's applied/discarded
+  banner is "[Applied.]" / "[Discarded.]"; the pane keeps "Send starts a new
+  request.".
+- Defer: store schema v3 adds `threads.deferred_until` (real, nullable), same
+  idempotent single-transaction migration as v2 (`_MIGRATE_V3`, skipped when the
+  column exists). `store.defer(thread_id, until)` / `undefer(thread_id)` change
+  neither the status nor `updated_at` (raise `QueueTransitionError` for a
+  missing thread). `list_threads(statuses, *, include_deferred=False, now=None)`
+  leaves out rows whose `deferred_until` is after `now`; the runner's startup
+  scan passes `include_deferred=True`. Window: a **Defer** button
+  (Ctrl+Shift+L) with a menu (for an hour, until tomorrow 08:00, until next
+  week = next Monday 08:00, "Until a date and time…" via a `QDateTimeEdit`
+  dialog defaulting to tomorrow 08:00, and Undefer when the thread is
+  deferred) and a "Show deferred" checkbox beside "Show applied and
+  discarded". Deferred rows get `⏸` after the status glyph and "until 08:00" /
+  "until Thu 08:00" / "until 30 Oct 08:00" in the age column
+  (`thread_view.queue_row`, `defer_choice_time`, `until_text`, local time).
+  The reviewer-exit tooltip count and the badge exclude deferred threads.
+- Change model: the window's detail has a **Next run** row (provider, model,
+  effort, card access combos and "Use for next run"), prefilled from
+  `thread.settings` on every render. Options come from new shared helpers
+  `model_options.model_options_for(provider, model, ollama_models)` and
+  `effort_options.effort_options_for(provider, model)` (the same tables the
+  pane's form uses; Ollama offers only "Model default" effort), with the pane's
+  `effort_choice_for_options`/`effort_options_with_legacy` and
+  `CARD_ACCESS_OPTIONS`. Ollama models are discovered once per window in the
+  background (`discover_ollama_models` with the thread's `paths` or the config,
+  as the pane does). Saving calls `store.set_settings(thread_id,
+  merge_thread_settings(...))`, which overlays provider/model/effort/card
+  access on the stored dict (paths, project folder, timeouts, instructions
+  kept; an effort the model does not take falls back to default; "deck" access
+  without stored `deck_ids` takes the captured deck(s), `thread_deck_ids`),
+  and shows "The next run of this request uses Claude sonnet.". It is enabled
+  for every non-closed thread; it applies to the next reply, re-run or retry.
+- Apply then edit: **Apply and edit** (Ctrl+Shift+E) beside Apply in the window.
+  It marks the thread, and the new `ThreadPanel._after_apply(thread_id,
+  updated_ids, created_ids)` hook (called after a successful collection write,
+  single or multi-note) opens `aqt.dialogs.open("Browser", mw,
+  search=("nid:…",))` with the updated note(s), else the first created note.
+  Nothing opens after a failed or refused apply.
+- Badge: `queue_badge.py` adds "Agent: N ready" (ready + answered + stale,
+  excluding deferred) to the top toolbar through `top_toolbar_did_init_links`,
+  registering its link handler on the toolbar; it opens the queue window. At 0
+  the link is drawn with `display:none`. Updates do not redraw the toolbar
+  (`toolbar.draw()` reloads its whole page): `refresh()` runs one `eval` on
+  `mw.toolbar.web` that sets the link's text and visibility. Its listener is in
+  `runtime._all_panes()`, so every `thread_changed` fan-out refreshes it; it
+  also refreshes on `profile_did_open` and `state_did_change` (a deferral that
+  ends changes nothing in the store). `queue_runtime.thread_changed(...,
+  notify=False)` is used for defer/settings changes so they do not trigger the
+  "proposal ready" tooltip.
+- Config: `queue_show_badge` (true), documented in config.md with the new
+  window actions and the stale behaviour.
+- Tests: 44 new (512 pass, 1 skipped): store defer/undefer/migration/half
+  migration/forced-apply revert; transcript notice and activity lines; banner
+  wording; defer times and deferred row cells; settings merge and option
+  helpers; window actions per status, re-run/retry/apply anyway (single,
+  failed-write revert, multi-note force), defer + show deferred + pick +
+  offer count, settings row prefill/merge/Ollama, apply and edit (updated,
+  first created, not on plain apply, not on failure), badge text, hidden at
+  zero, live update, click, config off; pane stale buttons, re-run, plain
+  Apply refusing then Apply anyway, retry. The real window (menu, dialog,
+  combos) was smoke-built under offscreen Qt.
+
+Deviations:
+
+- "Apply then edit" opens the note in the Browser (as the brief asked), not in
+  Edit Current as the actions table says.
+- Plain Apply is disabled (not just refused) on a stale thread; Apply anyway
+  is the stale action. Re-run in the pane uses the thread's stored settings
+  (only Reply takes the pane's form).
+- Defer is allowed in any non-closed status and does not stop or delay a
+  queued run; a deferred thread whose run finishes stays hidden until its time.
+  Neither the window list nor the badge refreshes by itself when a deferral
+  ends; the badge catches up on the next state change or thread change, the
+  list on its next refresh.
+- The settings row is re-filled whenever the shown thread re-renders (e.g. its
+  run finishes), dropping unsaved choices in the row.
+- Badge visibility follows `queue_show_badge` at the next toolbar draw.
+
+Not done: a clickable reviewer offer (Anki's tooltip swallows clicks, so it
+still names the shortcut); per-thread instructions/project folder editing in
+the Next run row; live checks of the window's new actions and the badge in a
+running Anki (only offscreen construction and unit tests); Codex session resume
+was never run live (3a). Everything else listed for phase 3 is in.
+
+**Phase 3 review fixes (2026-10-23, uncommitted on `claude/agent-queue-phase3`).**
+
+- Replay fallback only when the resume never started: the clients raise
+  `ResumeUnavailable` (a `RuntimeError`, in `codex_client`) when a resumed run
+  exits non-zero before starting (Claude: no `system/init` event; Codex: no
+  `thread.started`) or the CLI names the session unknown (Claude "No
+  conversation found", on stderr and in the result event's `errors`; Codex
+  "no rollout found for thread id", stderr, checked with `codex exec resume
+  <bogus-uuid>` on codex-cli 0.159.3). The runner catches only that; a
+  timeout, lookup limit, parse/schema failure or API error after the turn
+  started fails the run. `send_with_card_reads` turns a `ResumeUnavailable`
+  on a later lookup round into a plain error.
+- Apply anyway with the multi-card dialog already open: the dialog no longer
+  carries `force`; `_apply_checked_multi_patch` forces when the thread is
+  stale at click time, so the raised dialog applies.
+- A failed thread whose proposal base changed can be marked stale (store
+  edge failed -> stale; `mark_stale` accepts ready or failed), then
+  force-applied.
+- With `queue_resume_sessions` off, runs store no session (cleared).
+- A requeued run (closed collection, shutdown) and `reset_interrupted` clear
+  the session, so the interrupted turn is replayed.
+- `set_settings` / `set_session` leave `updated_at` alone, so changing a
+  thread's settings does not move it in the queue.
+- `merge_thread_settings(…, config=)`: a provider change resets `fast_mode`
+  and `stream_reasoning_summaries` (Codex: from the add-on config; others:
+  off) and clears `project_folder` for Ollama, as the pane does.
+- Images on resumed turns: when the delta resends the note (note state or
+  stale section) and the note has images, Codex resumes with
+  `resume_images=True` (`--image` after `resume`); Claude replays instead of
+  resuming.
+- Catalog: a source deck with no usage rows and no source note type lists
+  the first note types of the full catalog (up to the cap) instead of none.
+- Tests: 17 new (16 in test_agent_queue.py, 1 pane dialog test); two window
+  tests updated (dialog no longer gets `force`; a provider switch now adds
+  the reset flags), two store tests updated (failed is no longer refused by
+  `mark_stale`; the fallback test raises `ResumeUnavailable`). 529 pass, 1
+  skipped.

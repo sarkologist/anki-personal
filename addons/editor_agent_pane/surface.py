@@ -110,6 +110,14 @@ def surface_body() -> str:
     font-family: ui-monospace, Menlo, Consolas, monospace;
     margin-top: 6px;
 }
+.agent-notice .agent-role {
+    color: var(--accent-note, #b26b00);
+}
+.agent-notice .agent-body {
+    border-left: 3px solid var(--accent-note, #b26b00);
+    padding-left: 8px;
+    white-space: pre-wrap;
+}
 .agent-error .agent-body {
     color: var(--fg-danger, #b00020);
     white-space: pre-wrap;
@@ -375,6 +383,22 @@ def render_assistant_message(message_html: str, fallback_text: str) -> str:
 
 def render_error_message(error: str) -> str:
     return _message("Error", _escaped_text(error), css_class="agent-error")
+
+
+def render_notice_message(label: str, text: str) -> str:
+    """A labelled notice in the transcript that is not an error (e.g. why a
+    proposal went stale)."""
+    return _message(label, _escaped_text(text), css_class="agent-notice")
+
+
+def render_activity_note(text: str, *, role: str = "Codex") -> str:
+    """A one-line activity entry with nothing to expand."""
+    return f"""
+<section class="agent-activity agent-activity-compact">
+    <div class="agent-role">{html.escape(role)}</div>
+    <div class="agent-body"><div>{html.escape(text.strip())}</div></div>
+</section>
+"""
 
 
 def render_activity_start(

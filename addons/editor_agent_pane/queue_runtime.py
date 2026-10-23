@@ -28,6 +28,7 @@ from .card_access import CardReadScope, read_cards
 from .codex_client import AgentStopped
 from .queue_runner import (
     CANCELLED,
+    DEFAULT_CATALOG_LIMIT,
     CollectionUnavailable,
     QueueRunner,
     default_make_agent,
@@ -103,6 +104,10 @@ def open_service() -> QueueService:
         concurrency=int(_positive_float(config.get("queue_concurrency"), 1.0)),
         on_stream_event=_on_stream_event,
         read_catalog=read_catalog,
+        resume_sessions=_resume_sessions,
+        catalog_limit=int(
+            _positive_float(config.get("queue_catalog_limit"), DEFAULT_CATALOG_LIMIT)
+        ),
     )
     _service = QueueService(store=store, runner=runner)
     runner.start()
@@ -121,6 +126,12 @@ def close_service() -> None:
     _closing.set()
     current.runner.join()
     current.store.close()
+
+
+def _resume_sessions() -> bool:
+    """Read live, so toggling queue_resume_sessions applies to the next run."""
+    value = _config().get("queue_resume_sessions", True)
+    return value if isinstance(value, bool) else True
 
 
 def _positive_float(value: Any, default: float) -> float:
@@ -189,8 +200,17 @@ def read_note_state(note_ids: list[int]) -> dict[int, dict[str, Any] | None]:
     return states
 
 
+# Notes per (home deck, note type), for trimming the catalog in the prompt.
+_USAGE_SQL = (
+    "select (case when c.odid != 0 then c.odid else c.did end) as deck,"
+    " n.mid, count(distinct n.id) from cards c join notes n on n.id = c.nid"
+    " group by deck, n.mid"
+)
+
+
 def read_catalog() -> dict[str, Any]:
-    """Note types (with field names) and normal decks, for new-note proposals."""
+    """Note types (with field names), normal decks and how many notes of each
+    note type each deck holds, for new-note proposals."""
     mw = aqt.mw
     if mw is None or mw.col is None:
         raise CollectionUnavailable("The collection is closed.")
@@ -211,7 +231,10 @@ def read_catalog() -> dict[str, Any]:
         {"id": int(deck.id), "name": str(deck.name)}
         for deck in col.decks.all_names_and_ids(include_filtered=False)
     ]
-    return {"notetypes": notetypes, "decks": decks}
+    usage = [
+        [int(deck), int(mid), int(count)] for deck, mid, count in col.db.all(_USAGE_SQL)
+    ]
+    return {"notetypes": notetypes, "decks": decks, "usage": usage}
 
 
 def _logger_factory(_thread: Thread) -> tuple[AgentRunLogger | None, str | None]:
@@ -232,8 +255,9 @@ def _notify(thread_id: str) -> None:
         mw.taskman.run_on_main(lambda: thread_changed(thread_id))
 
 
-def thread_changed(thread_id: str, *, exclude: Any = None) -> None:
-    """Main thread: fan a thread change out to open panes, and maybe tooltip."""
+def thread_changed(thread_id: str, *, exclude: Any = None, notify: bool = True) -> None:
+    """Main thread: fan a thread change out to open panes, and maybe tooltip
+    (not with ``notify=False``, for changes that are not a run's outcome)."""
     for pane in list(_panes()):
         if pane is exclude:
             continue
@@ -242,7 +266,7 @@ def thread_changed(thread_id: str, *, exclude: Any = None) -> None:
         except Exception:
             pass
     current = _service
-    if current is None or not _config().get("queue_notify", True):
+    if current is None or not notify or not _config().get("queue_notify", True):
         return
     thread = current.store.get_thread(thread_id)
     if thread is None or thread.status not in NOTIFY_TEXT:

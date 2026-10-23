@@ -18,7 +18,11 @@ if str(ADDONS) not in sys.path:
     sys.path.insert(0, str(ADDONS))
 
 from editor_agent_pane.card_access import CardReadScope  # noqa: E402
-from editor_agent_pane.codex_client import AgentResult, AgentStopped  # noqa: E402
+from editor_agent_pane.codex_client import (  # noqa: E402
+    AgentResult,
+    AgentStopped,
+    ResumeUnavailable,
+)
 from editor_agent_pane.patches import (  # noqa: E402
     EditorSnapshot,
     FieldSnapshot,
@@ -36,10 +40,12 @@ from editor_agent_pane.queue_runner import (  # noqa: E402
     NO_PENDING_REQUEST,
     CollectionUnavailable,
     QueueRunner,
+    catalog_prompt_section,
     normalize_settings,
     note_state_hash,
 )
 from editor_agent_pane.queue_store import (  # noqa: E402
+    RERUN_MESSAGE,
     QueueStore,
     QueueTransitionError,
 )
@@ -48,6 +54,11 @@ from editor_agent_pane.snapshots import (  # noqa: E402
     patch_to_dict,
     snapshot_from_dict,
     snapshot_to_dict,
+)
+from editor_agent_pane.thread_view import (  # noqa: E402
+    APPLICABLE_STATUSES,
+    DISCARDABLE_STATUSES,
+    REPLYABLE_STATUSES,
 )
 
 # --- fixtures ---------------------------------------------------------------
@@ -657,7 +668,13 @@ class FakeAgent:
 
 
 class Harness:
-    def __init__(self, store: QueueStore, agent: FakeAgent, **state: Any) -> None:
+    def __init__(
+        self,
+        store: QueueStore,
+        agent: FakeAgent,
+        runner_options: dict[str, Any] | None = None,
+        **state: Any,
+    ) -> None:
         self.store = store
         self.agent = agent
         self.notified: list[str] = []
@@ -680,6 +697,7 @@ class Harness:
             on_stream_event=lambda thread_id, line: self.streamed.append(
                 (thread_id, line)
             ),
+            **(runner_options or {}),
         )
 
     def run_on_main(self, fn: Any) -> Any:
@@ -1771,8 +1789,14 @@ def test_v1_store_is_migrated(tmp_path: Path) -> None:
 
 
 class CatalogHarness(Harness):
-    def __init__(self, store: QueueStore, agent: FakeAgent, **state: Any) -> None:
-        super().__init__(store, agent, **state)
+    def __init__(
+        self,
+        store: QueueStore,
+        agent: FakeAgent,
+        runner_options: dict[str, Any] | None = None,
+        **state: Any,
+    ) -> None:
+        super().__init__(store, agent, runner_options, **state)
         self.catalog_reads = 0
         self.runner._read_catalog = self.read_catalog
 
@@ -1941,7 +1965,7 @@ def test_v1_store_that_already_has_result_json_opens(tmp_path: Path) -> None:
     for _ in range(2):
         store = QueueStore.open(path)
         try:
-            assert store.schema_version() == 2
+            assert store.schema_version() == queue_store.SCHEMA_VERSION
         finally:
             store.close()
 
@@ -2015,3 +2039,1331 @@ def test_multi_run_drops_deleted_notes_and_says_so(store: QueueStore) -> None:
     assert store.get_thread(thread.id).status == "answered"  # type: ignore[union-attr]
     system = [m.text for m in store.messages(thread.id) if m.role == "system"]
     assert any("12" in text and "no longer exist" in text for text in system)
+
+
+# --- phase 3: staleness, re-run, retry --------------------------------------
+
+
+def ready_thread(store: QueueStore) -> str:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.transition(thread.id, "queued", "running")
+    store.complete_run(
+        thread.id,
+        to_status="ready",
+        messages=[("agent", "first", "")],
+        proposal=patch_to_dict(note_patch()),
+        base={"notes": []},
+    )
+    return thread.id
+
+
+def test_mark_stale_moves_ready_to_stale_with_the_reason(store: QueueStore) -> None:
+    thread_id = ready_thread(store)
+    store.mark_stale(thread_id, "The note changed.")
+    loaded = store.get_thread(thread_id)
+    assert loaded is not None and loaded.status == "stale"
+    last = store.messages(thread_id)[-1]
+    assert (last.role, last.text) == ("system", "The note changed.")
+    # The proposal stays current, for a forced apply.
+    assert store.current_proposal(thread_id) is not None
+
+
+@pytest.mark.parametrize("status", ["queued", "answered", "stale"])
+def test_mark_stale_refuses_other_statuses_and_writes_nothing(
+    store: QueueStore, status: str
+) -> None:
+    thread = store.create_thread(context(), settings(), "p", 11)
+    path = {
+        "queued": (),
+        "answered": ("running", "answered"),
+        "stale": ("running", "ready", "stale"),
+    }[status]
+    current = "queued"
+    for target in path:
+        store.transition(thread.id, current, target)
+        current = target
+    before = len(store.messages(thread.id))
+    with pytest.raises(QueueTransitionError):
+        store.mark_stale(thread.id, "x")
+    assert len(store.messages(thread.id)) == before
+
+
+@pytest.mark.parametrize("status", ["stale", "ready", "failed"])
+def test_rerun_requeues_with_a_system_message(store: QueueStore, status: str) -> None:
+    thread_id = ready_thread(store)
+    if status == "stale":
+        store.mark_stale(thread_id, "changed")
+    elif status == "failed":
+        store.transition(thread_id, "ready", "queued")
+        store.transition(thread_id, "queued", "running")
+        store.complete_run(thread_id, to_status="failed", error="boom")
+    store.rerun(thread_id)
+    loaded = store.get_thread(thread_id)
+    assert loaded is not None and loaded.status == "queued"
+    assert loaded.error is None
+    last = store.messages(thread_id)[-1]
+    assert last.role == "system" and RERUN_MESSAGE in last.text
+
+
+def test_rerun_refuses_answered_threads(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "p", 11)
+    store.transition(thread.id, "queued", "running")
+    store.transition(thread.id, "running", "answered")
+    with pytest.raises(QueueTransitionError):
+        store.rerun(thread.id)
+
+
+def test_stale_can_be_applied_or_discarded(store: QueueStore) -> None:
+    applied = ready_thread(store)
+    store.mark_stale(applied, "changed")
+    store.transition(applied, "stale", "applied")
+    assert [p.status for p in store.proposals(applied)] == ["applied"]
+    discarded = ready_thread(store)
+    store.mark_stale(discarded, "changed")
+    store.discard(discarded)
+    assert store.get_thread(discarded).status == "discarded"  # type: ignore[union-attr]
+
+
+def test_stale_cannot_be_replied_to(store: QueueStore) -> None:
+    thread_id = ready_thread(store)
+    store.mark_stale(thread_id, "changed")
+    with pytest.raises(QueueTransitionError):
+        store.reply(thread_id, "hi")
+
+
+def test_retry_requeues_a_failed_thread_without_a_message(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.transition(thread.id, "queued", "running")
+    store.complete_run(
+        thread.id, to_status="failed", messages=[("system", "boom", "")], error="boom"
+    )
+    before = len(store.messages(thread.id))
+    store.retry(thread.id)
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "queued" and loaded.error is None
+    assert len(store.messages(thread.id)) == before
+
+
+def test_retry_refuses_non_failed_threads(store: QueueStore) -> None:
+    thread_id = ready_thread(store)
+    with pytest.raises(QueueTransitionError):
+        store.retry(thread_id)
+
+
+def test_complete_run_records_or_clears_the_session(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "p", 11)
+    store.transition(thread.id, "queued", "running")
+    session = {"provider": "claude", "model": "m", "session_id": "s1"}
+    store.complete_run(thread.id, to_status="answered", session=session)
+    assert store.get_thread(thread.id).session == session  # type: ignore[union-attr]
+    store.reply(thread.id, "again")
+    store.transition(thread.id, "queued", "running")
+    store.complete_run(thread.id, to_status="failed", error="x")
+    # Without session/clear_session the stored session is kept.
+    assert store.get_thread(thread.id).session == session  # type: ignore[union-attr]
+    store.retry(thread.id)
+    store.transition(thread.id, "queued", "running")
+    store.complete_run(thread.id, to_status="failed", clear_session=True)
+    assert store.get_thread(thread.id).session is None  # type: ignore[union-attr]
+
+
+def test_thread_view_statuses_for_stale() -> None:
+    assert "stale" in APPLICABLE_STATUSES
+    assert "stale" not in REPLYABLE_STATUSES
+    assert "stale" in DISCARDABLE_STATUSES
+
+
+# --- phase 3: runner sessions ------------------------------------------------
+
+
+def session_result(
+    text: str = "done", proposals: tuple = (), session_id: str | None = "s1"
+) -> AgentResult:
+    return result(text, proposals, session_id=session_id)
+
+
+def resume_harness(
+    store: QueueStore, agent: FakeAgent, *, resume: bool = True, **state: Any
+) -> Harness:
+    return Harness(store, agent, {"resume_sessions": resume}, **state)
+
+
+def test_run_records_the_session_with_provider_model_and_note_mods(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    resume_harness(store, FakeAgent([session_result("ok")])).runner.run_once()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None
+    assert loaded.session == {
+        "provider": "codex",
+        "model": "gpt-5.5",
+        "session_id": "s1",
+        "note_mods": {"11": 100},
+    }
+
+
+def test_run_without_a_session_id_stores_none(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.set_session(thread.id, {"provider": "codex", "model": "gpt-5.5"})
+    resume_harness(
+        store, FakeAgent([session_result(session_id=None)])
+    ).runner.run_once()
+    assert store.get_thread(thread.id).session is None  # type: ignore[union-attr]
+
+
+def test_agents_are_made_with_persist_session_when_resume_is_on(
+    store: QueueStore,
+) -> None:
+    store.create_thread(context(), settings(), "a", 11)
+    store.create_thread(context(), settings(), "b", 11)
+    on = resume_harness(store, FakeAgent([session_result()]))
+    on.runner.run_once()
+    off = resume_harness(store, FakeAgent([session_result()]), resume=False)
+    off.runner.run_once()
+    assert on.made_with[0]["persist_session"] is True
+    assert off.made_with[0]["persist_session"] is False
+
+
+def reviewer_context() -> dict[str, Any]:
+    return {
+        **creates_context(),
+        "reviewer": {
+            "side": "answer",
+            "question_html": "<p>q</p>",
+            "answer_html": "<p>a</p>",
+            "selection": "sel",
+        },
+    }
+
+
+def test_reply_resumes_the_session_with_only_the_delta(store: QueueStore) -> None:
+    thread = store.create_thread(reviewer_context(), settings(), "Fix back", 11)
+    agent = FakeAgent(
+        [
+            session_result("first", (note_patch(),)),
+            session_result("second", (note_patch(),)),
+        ]
+    )
+    harness = CatalogHarness(store, agent, {"resume_sessions": True})
+    harness.runner.run_once()
+    store.reply(thread.id, "Shorter please")
+    harness.runner.run_once()
+
+    call = agent.calls[1]
+    assert call["resume_session_id"] == "s1"
+    assert call["history"] == []
+    assert call["prompt"].startswith("Shorter please")
+    for absent in (
+        "Fix back",
+        "Reviewer context as JSON",
+        "Available note types and decks",
+        "Current proposal (version",
+        "Current note state",
+    ):
+        assert absent not in call["prompt"], absent
+    assert "resume_session_id" not in agent.calls[0]
+    messages = [m.text for m in store.messages(thread.id) if m.role == "system"]
+    assert any("Resumed session s1" in text for text in messages)
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "ready"
+    assert len(store.proposals(thread.id)) == 2
+
+
+def test_resume_delta_includes_the_note_when_it_changed(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Explain", 11)
+    agent = FakeAgent([session_result("first"), session_result("second")])
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    harness.note_state[11] = {"mod": 200, "fields": ["唉声", "edited"], "tags": []}
+    store.reply(thread.id, "And now?")
+    harness.runner.run_once()
+
+    prompt = agent.calls[1]["prompt"]
+    assert agent.calls[1]["resume_session_id"] == "s1"
+    assert "Current note state" in prompt
+    assert "edited" in prompt
+
+
+def test_failed_resume_falls_back_to_replay_in_the_same_run(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    agent = FakeAgent(
+        [
+            session_result("first", (note_patch(),)),
+            ResumeUnavailable("No conversation found with session ID: s1"),
+            session_result("second", session_id="s2"),
+        ]
+    )
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "Shorter")
+    harness.runner.run_once()
+
+    resumed, replayed = agent.calls[1], agent.calls[2]
+    assert resumed["resume_session_id"] == "s1"
+    assert "resume_session_id" not in replayed
+    assert replayed["history"] == [("Fix back", "first")]
+    assert "Current proposal (version 1) as JSON" in replayed["prompt"]
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "answered"
+    assert loaded.session is not None and loaded.session["session_id"] == "s2"
+    system = [m.text for m in store.messages(thread.id) if m.role == "system"]
+    assert any(
+        "Replayed transcript (resume failed: No conversation found" in text
+        for text in system
+    )
+
+
+def test_resume_stop_is_not_retried_as_replay(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    agent = FakeAgent([session_result("first"), AgentStopped("stopped")])
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "more")
+    harness.runner.run_once()
+    assert len(agent.calls) == 2
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+
+
+@pytest.mark.parametrize("change", ["model", "provider", "disabled", "ollama"])
+def test_no_resume_when_ineligible(store: QueueStore, change: str) -> None:
+    initial = (
+        settings(provider="ollama", model="q") if change == "ollama" else settings()
+    )
+    thread = store.create_thread(context(), initial, "Fix back", 11)
+    agent = FakeAgent([session_result("first"), session_result("second")])
+    harness = resume_harness(store, agent, resume=change != "disabled")
+    harness.runner.run_once()
+    if change == "model":
+        store.set_settings(thread.id, settings(model="gpt-5.4"))
+    elif change == "provider":
+        store.set_settings(thread.id, settings(provider="claude", model="gpt-5.5"))
+    store.reply(thread.id, "again")
+    harness.runner.run_once()
+    assert "resume_session_id" not in agent.calls[1]
+    assert agent.calls[1]["history"] == [("Fix back", "first")]
+
+
+def test_failed_run_clears_the_session(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    agent = FakeAgent([session_result("first"), RuntimeError("a"), RuntimeError("b")])
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "more")
+    harness.runner.run_once()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+    assert loaded.session is None
+
+
+# --- phase 3: stale re-run and retry in the runner ---------------------------
+
+
+def test_rerun_of_a_stale_proposal_sends_the_current_note(store: QueueStore) -> None:
+    agent = FakeAgent(
+        [
+            session_result("first", (note_patch(),)),
+            session_result("again", (note_patch(),)),
+        ]
+    )
+    harness = Harness(store, agent)
+    thread_id = ready_thread_with_proposal(store, harness)
+    harness.note_state[11] = {"mod": 300, "fields": ["唉声", "hand edit"], "tags": []}
+    store.mark_stale(thread_id, "changed")
+    store.rerun(thread_id)
+    harness.runner.run_once()
+
+    call = agent.calls[1]
+    assert call["prompt"].startswith("Fix back")
+    assert "The note changed since your proposal" in call["prompt"]
+    assert "hand edit" in call["prompt"]
+    assert json.dumps(patch_to_dict(note_patch()), ensure_ascii=False) in call["prompt"]
+    assert "Current proposal (version 1) as JSON" not in call["prompt"]
+    loaded = store.get_thread(thread_id)
+    assert loaded is not None and loaded.status == "ready"
+    proposal = store.current_proposal(thread_id)
+    assert proposal is not None and proposal.version == 2
+    assert proposal.base["notes"][0]["mod"] == 300
+
+
+def test_stale_rerun_on_a_resumed_session_also_sends_the_note(
+    store: QueueStore,
+) -> None:
+    agent = FakeAgent(
+        [
+            session_result("first", (note_patch(),)),
+            session_result("again", (note_patch(),)),
+        ]
+    )
+    harness = resume_harness(store, agent)
+    thread_id = ready_thread_with_proposal(store, harness)
+    harness.note_state[11] = {"mod": 300, "fields": ["唉声", "hand edit"], "tags": []}
+    store.mark_stale(thread_id, "changed")
+    store.rerun(thread_id)
+    harness.runner.run_once()
+    call = agent.calls[1]
+    assert call["resume_session_id"] == "s1"
+    assert "The note changed since your proposal" in call["prompt"]
+    assert "hand edit" in call["prompt"]
+    # The stale section already carries the note; no second copy.
+    assert "Current note state" not in call["prompt"]
+
+
+def test_retry_resends_the_unanswered_request(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    agent = FakeAgent([RuntimeError("cli died"), result("ok")])
+    harness = Harness(store, agent)
+    harness.runner.run_once()
+    store.retry(thread.id)
+    harness.runner.run_once()
+    assert agent.calls[1]["prompt"].startswith("Fix back")
+    assert store.get_thread(thread.id).status == "answered"  # type: ignore[union-attr]
+
+
+def test_retry_after_a_failure_with_no_pending_turn_resends_the_last_request(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.transition(thread.id, "queued", "running")
+    store.complete_run(
+        thread.id,
+        to_status="failed",
+        messages=[("agent", "an answer", ""), ("system", "boom", "")],
+        error="boom",
+    )
+    store.retry(thread.id)
+    agent = FakeAgent([result("ok")])
+    Harness(store, agent).runner.run_once()
+    assert agent.calls[0]["prompt"].startswith("Fix back")
+    assert agent.calls[0]["history"] == [("Fix back", "an answer")]
+
+
+# --- phase 3: catalog trimming -----------------------------------------------
+
+
+BIG_CATALOG = {
+    "notetypes": [
+        {"id": 7, "name": "Basic", "fields": ["Front", "Back"]},
+        {"id": 8, "name": "Cloze", "fields": ["Text", "Back Extra"]},
+        {"id": 9, "name": "Vocab", "fields": ["Word", "Meaning"]},
+        {"id": 10, "name": "Unused", "fields": ["A"]},
+    ],
+    "decks": [
+        {"id": 1, "name": "Default"},
+        {"id": 3, "name": "Chinese"},
+        {"id": 4, "name": "Chinese::HSK1"},
+        {"id": 5, "name": "Chinese::HSK2"},
+        {"id": 6, "name": "Chinesey"},
+        {"id": 20, "name": "Math"},
+    ],
+    # (deck id, note type id, notes)
+    "usage": [[4, 9, 50], [5, 8, 3], [3, 9, 2], [20, 10, 99]],
+}
+
+
+def catalog_section_json(text: str) -> dict[str, Any]:
+    return json.loads(text.split(":\n", 1)[1].split("\n", 1)[0])
+
+
+def test_catalog_section_lists_the_source_subtree_and_its_note_types() -> None:
+    text = catalog_prompt_section(BIG_CATALOG, notetype_id=7, deck_id=3)
+    data = catalog_section_json(text)
+    assert [d["id"] for d in data["decks"]] == [3, 4, 5, 1]
+    assert data["decks"][0]["default"] is True
+    # The source note type first, then by use in the subtree.
+    assert [n["id"] for n in data["notetypes"]] == [7, 9, 8]
+    assert "omitted" in text
+
+
+def test_catalog_section_is_capped() -> None:
+    text = catalog_prompt_section(BIG_CATALOG, notetype_id=7, deck_id=3, limit=2)
+    data = catalog_section_json(text)
+    assert [d["id"] for d in data["decks"]] == [3, 4]
+    assert [n["id"] for n in data["notetypes"]] == [7, 9]
+
+
+def test_catalog_section_without_a_default_deck_lists_decks_up_to_the_cap() -> None:
+    data = catalog_section_json(
+        catalog_prompt_section(BIG_CATALOG, notetype_id=None, deck_id=None, limit=3)
+    )
+    assert len(data["decks"]) == 3
+    assert len(data["notetypes"]) == 3
+
+
+def test_runner_validates_creates_against_the_full_catalog(store: QueueStore) -> None:
+    # Deck 20 (Math) is not listed in the trimmed prompt section but exists.
+    patch = validate_patch(
+        unified_raw(note_creates=[create_raw(deck_id=20)]),
+        editor_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    )
+    thread = store.create_thread(creates_context(), settings(), "x", 11)
+    agent = FakeAgent([result("ok", (patch,))])
+    harness = CatalogHarness(store, agent, {"catalog_limit": 30})
+    harness.runner._read_catalog = lambda: BIG_CATALOG
+    harness.runner.run_once()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "ready", loaded.error
+    assert '"Math"' not in agent.calls[0]["prompt"]
+
+
+# --- phase 3: client sessions ------------------------------------------------
+
+
+class _Stdin:
+    def __init__(self) -> None:
+        self.text = ""
+
+    def write(self, text: str) -> int:
+        self.text += text
+        return len(text)
+
+    def close(self) -> None:
+        pass
+
+
+class _Process:
+    def __init__(self, stdout: str, returncode: int = 0, stderr: str = "") -> None:
+        import io
+
+        self.stdin = _Stdin()
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
+        self.returncode = returncode
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
+
+
+def _claude_stream(session_id: str) -> str:
+    events = [
+        {"type": "system", "subtype": "init", "session_id": session_id},
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "session_id": session_id,
+            "result": "Done.",
+            "structured_output": {
+                "message": "ok",
+                "message_html": "<p>ok</p>",
+                "patch": None,
+                "card_request": None,
+            },
+        },
+    ]
+    return "".join(json.dumps(event) + "\n" for event in events)
+
+
+def run_claude(
+    monkeypatch: pytest.MonkeyPatch, **options: Any
+) -> tuple[list[str], str, AgentResult]:
+    import subprocess
+
+    from editor_agent_pane.claude_client import ClaudeCliAgent
+
+    captured: dict[str, Any] = {}
+
+    def fake_popen(command: list[str], **_kwargs: Any) -> _Process:
+        captured["command"] = command
+        captured["process"] = _Process(_claude_stream("sess-9"))
+        return captured["process"]
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    resume = options.pop("resume_session_id", None)
+    agent = ClaudeCliAgent(
+        claude_path="/bin/claude", model="", timeout_seconds=30, **options
+    )
+    result = agent.send(
+        prompt="Shorter please",
+        snapshot=editor_snapshot(),
+        project_root="",
+        history=[("Fix back", "first")],
+        resume_session_id=resume,
+    )
+    return captured["command"], captured["process"].stdin.text, result
+
+
+def test_claude_records_the_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    command, stdin, result = run_claude(monkeypatch)
+    assert result.session_id == "sess-9"
+    assert "--no-session-persistence" in command
+    assert "--resume" not in command
+    assert "Current editor context is JSON" in stdin
+
+
+def test_claude_persisted_session_keeps_the_session_on_disk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command, _stdin, _result = run_claude(monkeypatch, persist_session=True)
+    assert "--no-session-persistence" not in command
+
+
+def test_claude_resume_sends_only_the_new_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    command, stdin, result = run_claude(monkeypatch, resume_session_id="sess-1")
+    assert command[command.index("--resume") + 1] == "sess-1"
+    assert "--no-session-persistence" not in command
+    assert "--json-schema" in command
+    assert "Shorter please" in stdin
+    assert "Current editor context is JSON" not in stdin
+    assert "Fix back" not in stdin
+    assert result.session_id == "sess-9"
+
+
+def run_codex(
+    monkeypatch: pytest.MonkeyPatch, **options: Any
+) -> tuple[list[str], str, AgentResult]:
+    import subprocess
+
+    from editor_agent_pane.codex_client import CodexCliAgent
+
+    captured: dict[str, Any] = {}
+
+    def fake_popen(command: list[str], **_kwargs: Any) -> _Process:
+        captured["command"] = command
+        output = Path(command[command.index("--output-last-message") + 1])
+        output.write_text(
+            json.dumps(
+                {
+                    "message": "ok",
+                    "message_html": "<p>ok</p>",
+                    "patch": None,
+                    "card_request": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        captured["process"] = _Process(
+            '{"type":"thread.started","thread_id":"thr-7"}\n{"type":"turn.started"}\n'
+        )
+        return captured["process"]
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    resume = options.pop("resume_session_id", None)
+    agent = CodexCliAgent(
+        codex_path="/bin/codex", model="gpt-5.5", timeout_seconds=30, **options
+    )
+    result = agent.send(
+        prompt="Shorter please",
+        snapshot=editor_snapshot(),
+        project_root="",
+        history=[("Fix back", "first")],
+        resume_session_id=resume,
+    )
+    return captured["command"], captured["process"].stdin.text, result
+
+
+def test_codex_records_the_thread_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    command, stdin, result = run_codex(monkeypatch)
+    assert result.session_id == "thr-7"
+    assert "--ephemeral" in command
+    assert "resume" not in command
+    assert "Current editor context is JSON" in stdin
+
+
+def test_codex_persisted_session_is_not_ephemeral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command, _stdin, _result = run_codex(monkeypatch, persist_session=True)
+    assert "--ephemeral" not in command
+
+
+def test_codex_resume_uses_exec_resume_with_only_the_new_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command, stdin, result = run_codex(
+        monkeypatch, resume_session_id="thr-1", project_folder_access="read-only"
+    )
+    assert command[:2] == ["/bin/codex", "exec"]
+    resume_at = command.index("resume")
+    # exec-level options go before the subcommand ...
+    assert command.index("--sandbox") < resume_at
+    assert command.index("--cd") < resume_at
+    # ... resume's own after it, then the session id and stdin.
+    for flag in ("--json", "--output-schema", "--output-last-message", "--model"):
+        assert command.index(flag) > resume_at, flag
+    assert 'sandbox_mode="read-only"' in command
+    assert command[-2:] == ["thr-1", "-"]
+    assert "--ephemeral" not in command
+    assert "Shorter please" in stdin
+    assert "Current editor context is JSON" not in stdin
+    assert result.session_id == "thr-7"
+
+
+def test_default_make_agent_passes_persist_session() -> None:
+    from editor_agent_pane.queue_runner import default_make_agent
+
+    for provider in ("codex", "claude"):
+        agent = default_make_agent(
+            {**normalize_settings(settings(provider=provider)), "persist_session": True}
+        )
+        assert agent.persist_session is True
+        agent = default_make_agent(normalize_settings(settings(provider=provider)))
+        assert agent.persist_session is False
+
+
+# --- phase 3b: defer, forced-apply revert, view helpers ---------------------
+
+
+def _ready(store: QueueStore, prompt: str = "Fix back") -> Any:
+    thread = store.create_thread(context(), settings(), prompt, 11)
+    store.transition(thread.id, "queued", "running")
+    store.transition(thread.id, "running", "ready")
+    return thread
+
+
+def test_defer_hides_a_thread_until_the_time_without_changing_status(
+    store: QueueStore,
+) -> None:
+    shown = _ready(store, "shown")
+    later = _ready(store, "later")
+    before = store.get_thread(later.id)
+    assert before is not None and before.deferred_until is None
+
+    store.defer(later.id, time.time() + 3600)
+
+    deferred = store.get_thread(later.id)
+    assert deferred is not None
+    assert deferred.status == "ready"
+    assert deferred.deferred_until is not None
+    assert deferred.updated_at == before.updated_at  # age and order unchanged
+    assert [t.id for t in store.list_threads()] == [shown.id]
+    assert [t.id for t in store.list_threads(("ready",))] == [shown.id]
+    assert [t.id for t in store.list_threads(include_deferred=True)] == [
+        shown.id,
+        later.id,
+    ]
+    # Once the time has passed, it is listed again.
+    assert len(store.list_threads(now=time.time() + 7200)) == 2
+
+
+def test_undefer_lists_the_thread_again(store: QueueStore) -> None:
+    thread = _ready(store)
+    store.defer(thread.id, time.time() + 3600)
+    store.undefer(thread.id)
+    assert [t.id for t in store.list_threads()] == [thread.id]
+    assert store.get_thread(thread.id).deferred_until is None  # type: ignore[union-attr]
+
+
+def test_defer_a_missing_thread_raises(store: QueueStore) -> None:
+    with pytest.raises(QueueTransitionError):
+        store.defer("missing", time.time() + 60)
+
+
+def test_v2_store_is_migrated_to_v3(tmp_path: Path) -> None:
+    import sqlite3
+
+    from editor_agent_pane import queue_store
+
+    path = tmp_path / "v2.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(queue_store._SCHEMA_V1)
+    conn.execute(queue_store._MIGRATE_V2)
+    conn.execute("pragma user_version = 2")
+    conn.execute(
+        "insert into threads values ('t', 0, 0, 'ready', 't', null, '{}', '{}',"
+        " null, null, null)"
+    )
+    conn.commit()
+    conn.close()
+    store = QueueStore.open(path)
+    try:
+        assert store.schema_version() == 3
+        thread = store.get_thread("t")
+        assert thread is not None and thread.deferred_until is None
+        store.defer("t", time.time() + 60)
+        assert store.list_threads() == []
+    finally:
+        store.close()
+
+
+def test_v2_store_that_already_has_deferred_until_opens(tmp_path: Path) -> None:
+    """A crash between the v3 ALTER and the version bump must not brick the store."""
+    import sqlite3
+
+    from editor_agent_pane import queue_store
+
+    path = tmp_path / "half3.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(queue_store._SCHEMA_V1)
+    conn.execute(queue_store._MIGRATE_V2)
+    conn.execute(queue_store._MIGRATE_V3)
+    conn.execute("pragma user_version = 2")
+    conn.commit()
+    conn.close()
+    for _ in range(2):
+        store = QueueStore.open(path)
+        try:
+            assert store.schema_version() == 3
+        finally:
+            store.close()
+
+
+def test_a_failed_forced_apply_reverts_to_stale(store: QueueStore) -> None:
+    thread = _ready(store)
+    store.add_proposal(thread.id, {"summary": "s"}, {"notes": []})
+    store.mark_stale(thread.id, "changed")
+    store.transition(thread.id, "stale", "applied")
+
+    store.transition(thread.id, "applied", "stale")
+
+    assert store.get_thread(thread.id).status == "stale"  # type: ignore[union-attr]
+    assert store.current_proposal(thread.id) is not None
+
+
+def test_stale_reason_renders_as_a_notice_and_path_messages_as_lines(
+    store: QueueStore,
+) -> None:
+    from editor_agent_pane.queue_runner import REPLAYED_MESSAGE, RESUMED_MESSAGE
+    from editor_agent_pane.thread_view import (
+        MISSING_NOTE_WARNING,
+        STALE_WARNING,
+        transcript_fragments,
+    )
+
+    thread = _ready(store)
+    for text in (
+        STALE_WARNING,
+        MISSING_NOTE_WARNING,
+        RERUN_MESSAGE,
+        RESUMED_MESSAGE.format(session_id="abc"),
+        REPLAYED_MESSAGE.format(error="gone"),
+        "boom",
+    ):
+        store.add_message(thread.id, "system", text)
+    current = store.get_thread(thread.id)
+    assert current is not None
+
+    fragments = transcript_fragments(current, store.messages(thread.id))[1:]
+
+    stale, missing, rerun, resumed, replayed, error = fragments
+    for notice in (stale, missing):
+        assert "agent-notice" in notice and "Stale" in notice
+        assert "agent-error" not in notice
+    for line in (rerun, resumed, replayed):
+        assert "agent-activity" in line and "<details" not in line
+    assert "Re-run requested" in rerun and "abc" in resumed and "gone" in replayed
+    assert "agent-error" in error
+
+
+def test_closed_banner_wording_is_per_surface(store: QueueStore) -> None:
+    from editor_agent_pane.thread_view import status_fragment
+
+    thread = _ready(store)
+    store.transition(thread.id, "ready", "applied")
+    applied = store.get_thread(thread.id)
+    assert applied is not None
+
+    assert "Send starts a new request" in (status_fragment(applied) or "")
+    window = status_fragment(applied, closed_hint="") or ""
+    assert "[Applied.]" in window and "Send" not in window
+
+
+def test_defer_choice_times() -> None:
+    import datetime
+
+    from editor_agent_pane.thread_view import defer_choice_time
+
+    # Wednesday 2026-10-21 15:30 local time.
+    now = datetime.datetime(2026, 10, 21, 15, 30).timestamp()
+
+    def at(stamp: float) -> datetime.datetime:
+        return datetime.datetime.fromtimestamp(stamp)
+
+    assert defer_choice_time("hour", now) == now + 3600
+    assert at(defer_choice_time("tomorrow", now)) == datetime.datetime(
+        2026, 10, 22, 8, 0
+    )
+    assert at(defer_choice_time("next_week", now)) == datetime.datetime(
+        2026, 10, 26, 8, 0
+    )
+    monday = datetime.datetime(2026, 10, 26, 9, 0).timestamp()
+    assert at(defer_choice_time("next_week", monday)) == datetime.datetime(
+        2026, 11, 2, 8, 0
+    )
+    with pytest.raises(ValueError):
+        defer_choice_time("never", now)
+
+
+def test_deferred_row_shows_a_glyph_and_the_until_time(store: QueueStore) -> None:
+    import datetime
+
+    from editor_agent_pane.thread_view import queue_row
+
+    thread = _ready(store)
+    now = datetime.datetime(2026, 10, 21, 15, 30).timestamp()
+    store.defer(thread.id, datetime.datetime(2026, 10, 22, 8, 0).timestamp())
+    deferred = store.get_thread(thread.id)
+    assert deferred is not None
+
+    cells = queue_row(deferred, deck="", version=1, now=now)
+
+    assert cells[0] == "●⏸"
+    assert cells[4] == "until Thu 08:00"
+    later = queue_row(
+        deferred,
+        deck="",
+        version=1,
+        now=datetime.datetime(2026, 10, 22, 9, 0).timestamp(),
+    )
+    assert later[0] == "●"  # the deferral is over
+
+
+def test_merge_thread_settings_keeps_everything_else(store: QueueStore) -> None:
+    from editor_agent_pane.thread_view import merge_thread_settings
+
+    old = settings(
+        project_folder="/src",
+        timeout_seconds=900,
+        paths={"claude_path": "/bin/claude"},
+        reasoning_effort="high",
+    )
+
+    merged = merge_thread_settings(
+        old,
+        provider="claude",
+        model="haiku",
+        reasoning_effort="max",  # haiku stops at high
+        card_access="current",
+    )
+
+    assert merged["provider"] == "claude" and merged["model"] == "haiku"
+    assert merged["reasoning_effort"] == ""
+    assert merged["card_access"] == "current"
+    assert merged["project_folder"] == "/src"
+    assert merged["timeout_seconds"] == 900
+    assert merged["paths"] == {"claude_path": "/bin/claude"}
+    assert old["provider"] == "codex"  # not mutated
+    kept = merge_thread_settings(
+        old,
+        provider="claude",
+        model="sonnet",
+        reasoning_effort="max",
+        card_access="all",
+    )
+    assert kept["reasoning_effort"] == "max"
+
+
+def test_merge_thread_settings_fills_deck_ids_for_deck_access() -> None:
+    from editor_agent_pane.thread_view import merge_thread_settings
+
+    merged = merge_thread_settings(
+        settings(card_access="all", deck_ids=[]),
+        provider="codex",
+        model="",
+        reasoning_effort="",
+        card_access="deck",
+        deck_ids=(3,),
+    )
+    assert merged["deck_ids"] == [3]
+    kept = merge_thread_settings(
+        settings(card_access="deck", deck_ids=[5]),
+        provider="codex",
+        model="",
+        reasoning_effort="",
+        card_access="deck",
+        deck_ids=(3,),
+    )
+    assert kept["deck_ids"] == [5]
+
+
+def test_model_and_effort_options_per_provider() -> None:
+    from editor_agent_pane.effort_options import effort_options_for
+    from editor_agent_pane.model_options import model_options_for
+
+    assert ("Haiku", "haiku") in model_options_for("claude", "")
+    assert ("gpt-5.5", "gpt-5.5") in model_options_for("codex", "")
+    assert model_options_for("ollama", "", ("llama3",)) == (("llama3", "llama3"),)
+    assert model_options_for("ollama", "qwen", ("llama3",))[-1] == ("qwen", "qwen")
+    assert ("Max", "max") not in effort_options_for("claude", "haiku")
+    assert effort_options_for("ollama", "llama3") == (("Model default", ""),)
+
+
+# --- phase 3 review fixes ----------------------------------------------------
+
+
+def test_resume_failure_after_the_session_started_fails_without_replay(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    agent = FakeAgent(
+        [
+            session_result("first"),
+            RuntimeError("Codex CLI timed out."),
+            session_result("replayed"),
+        ]
+    )
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "Shorter")
+    harness.runner.run_once()
+
+    assert len(agent.calls) == 2
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+    assert loaded.error == "Codex CLI timed out."
+    assert not any("Replayed transcript" in m.text for m in store.messages(thread.id))
+
+
+def test_resume_unavailable_on_a_later_lookup_round_is_a_plain_failure(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    lookup = AgentResult(
+        text="looking",
+        html="",
+        proposals=(),
+        card_request={"query": "", "offset": 0, "limit": 5},
+        session_id="s1",
+    )
+    agent = FakeAgent(
+        [
+            session_result("first"),
+            lookup,
+            ResumeUnavailable("No conversation found with session ID: s1"),
+            session_result("replayed"),
+        ]
+    )
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "Look it up")
+    harness.runner.run_once()
+
+    assert len(agent.calls) == 3
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+
+
+def test_a_failed_thread_with_a_stale_base_can_be_marked_stale_and_forced(
+    store: QueueStore,
+) -> None:
+    thread_id = ready_thread(store)
+    store.reply(thread_id, "more")
+    store.transition(thread_id, "queued", "running")
+    store.complete_run(thread_id, to_status="failed", error="boom")
+
+    store.mark_stale(thread_id, "The note changed.")
+
+    assert store.get_thread(thread_id).status == "stale"  # type: ignore[union-attr]
+    store.transition(thread_id, "stale", "applied")
+
+
+def test_session_is_not_stored_when_resume_is_disabled(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.set_session(thread.id, {"provider": "codex", "model": "gpt-5.5"})
+    resume_harness(store, FakeAgent([session_result()]), resume=False).runner.run_once()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "answered"
+    assert loaded.session is None
+
+
+def test_a_requeued_run_clears_the_session(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.set_session(thread.id, {"provider": "codex", "model": "gpt-5.5"})
+    harness = resume_harness(store, FakeAgent([]))
+
+    def closed(*_args: Any) -> Any:
+        raise CollectionUnavailable("The collection is closed.")
+
+    harness.runner._read_note_state = closed
+    harness.runner.run_once()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "queued"
+    assert loaded.session is None
+
+
+def test_reset_interrupted_clears_the_session(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "a")
+    store.set_session(thread.id, {"provider": "codex", "session_id": "s1"})
+    store.transition(thread.id, "queued", "running")
+    store.reset_interrupted()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "queued"
+    assert loaded.session is None
+
+
+def test_settings_and_session_changes_keep_the_queue_order(
+    store: QueueStore,
+) -> None:
+    a = store.create_thread(context(), settings(), "a")
+    b = store.create_thread(context(), settings(), "b")
+    store._set_updated_at_for_tests(a.id, 100.0)
+    store._set_updated_at_for_tests(b.id, 200.0)
+
+    store.set_settings(a.id, settings(model="gpt-5.4"))
+    store.set_session(a.id, {"provider": "codex", "session_id": "s1"})
+
+    assert store.get_thread(a.id).updated_at == 100.0  # type: ignore[union-attr]
+    assert store.next_runnable().id == a.id  # type: ignore[union-attr]
+
+
+def test_merge_thread_settings_resets_provider_specific_flags() -> None:
+    from editor_agent_pane.thread_view import merge_thread_settings
+
+    codex = settings(
+        fast_mode=True, stream_reasoning_summaries=True, project_folder="/src"
+    )
+    to_claude = merge_thread_settings(
+        codex, provider="claude", model="sonnet", reasoning_effort="", card_access="all"
+    )
+    assert to_claude["fast_mode"] is False
+    assert to_claude["stream_reasoning_summaries"] is False
+    assert to_claude["project_folder"] == "/src"
+
+    to_ollama = merge_thread_settings(
+        codex, provider="ollama", model="q", reasoning_effort="", card_access="all"
+    )
+    assert to_ollama["project_folder"] == ""
+    assert to_ollama["fast_mode"] is False
+
+    claude = settings(
+        provider="claude",
+        model="sonnet",
+        fast_mode=False,
+        stream_reasoning_summaries=False,
+    )
+    to_codex = merge_thread_settings(
+        claude,
+        provider="codex",
+        model="gpt-5.5",
+        reasoning_effort="",
+        card_access="all",
+        config={"fast_mode": True, "stream_reasoning_summaries": True},
+    )
+    assert to_codex["fast_mode"] is True
+    assert to_codex["stream_reasoning_summaries"] is True
+
+    # Same provider: the thread's own flags stay.
+    same = merge_thread_settings(
+        codex,
+        provider="codex",
+        model="gpt-5.4",
+        reasoning_effort="",
+        card_access="all",
+        config={"fast_mode": False},
+    )
+    assert same["fast_mode"] is True and same["project_folder"] == "/src"
+
+
+def test_codex_resume_with_changed_note_attaches_images(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Explain", 11)
+    agent = FakeAgent([session_result("first"), session_result("second")])
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "unchanged note")
+    harness.runner.run_once()
+    assert agent.calls[1]["resume_session_id"] == "s1"
+    assert not agent.calls[1].get("resume_images")
+
+    agent.results.append(session_result("third"))
+    harness.note_state[11] = {"mod": 200, "fields": ["唉声", "edited"], "tags": []}
+    store.reply(thread.id, "And now?")
+    harness.runner.run_once()
+    assert agent.calls[2]["resume_session_id"] == "s1"
+    assert agent.calls[2]["resume_images"] is True
+
+
+def test_claude_with_images_replays_when_the_note_changed(store: QueueStore) -> None:
+    claude = settings(provider="claude", model="sonnet", reasoning_effort="")
+    thread = store.create_thread(context(), claude, "Explain", 11)
+    agent = FakeAgent(
+        [session_result("first"), session_result("second"), session_result("third")]
+    )
+    harness = resume_harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "unchanged note")
+    harness.runner.run_once()
+    assert agent.calls[1]["resume_session_id"] == "s1"
+    assert "resume_images" not in agent.calls[1]
+
+    harness.note_state[11] = {"mod": 200, "fields": ["唉声", "edited"], "tags": []}
+    store.reply(thread.id, "And now?")
+    harness.runner.run_once()
+    assert "resume_session_id" not in agent.calls[2]
+    assert agent.calls[2]["history"]
+
+
+def _run_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    *,
+    stdout: str,
+    returncode: int = 0,
+    stderr: str = "",
+    write_output: bool = True,
+    **send_options: Any,
+) -> tuple[list[str], AgentResult]:
+    import subprocess
+
+    from editor_agent_pane.claude_client import ClaudeCliAgent
+    from editor_agent_pane.codex_client import CodexCliAgent
+
+    captured: dict[str, Any] = {}
+
+    def fake_popen(command: list[str], **_kwargs: Any) -> _Process:
+        captured["command"] = command
+        if provider == "codex" and write_output:
+            output = Path(command[command.index("--output-last-message") + 1])
+            output.write_text(
+                json.dumps(
+                    {
+                        "message": "ok",
+                        "message_html": "",
+                        "patch": None,
+                        "card_request": None,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return _Process(stdout, returncode, stderr)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    agent: Any = (
+        CodexCliAgent(codex_path="/bin/codex", model="gpt-5.5", timeout_seconds=30)
+        if provider == "codex"
+        else ClaudeCliAgent(claude_path="/bin/claude", model="", timeout_seconds=30)
+    )
+    result = agent.send(
+        prompt="Shorter please",
+        snapshot=editor_snapshot(),
+        project_root="",
+        history=[],
+        **send_options,
+    )
+    return captured["command"], result
+
+
+CLAUDE_UNKNOWN_SESSION = (
+    json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "session_id": "sess-1",
+            "errors": ["No conversation found with session ID: sess-1"],
+        }
+    )
+    + "\n"
+)
+
+
+def test_claude_unknown_session_raises_resume_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ResumeUnavailable):
+        _run_cli(
+            monkeypatch,
+            "claude",
+            stdout=CLAUDE_UNKNOWN_SESSION,
+            returncode=1,
+            stderr="No conversation found with session ID: sess-1\n",
+            resume_session_id="sess-1",
+        )
+
+
+def test_claude_resume_that_started_and_then_failed_is_a_plain_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = (
+        json.dumps({"type": "system", "subtype": "init", "session_id": "sess-1"}) + "\n"
+    )
+    with pytest.raises(RuntimeError) as info:
+        _run_cli(
+            monkeypatch,
+            "claude",
+            stdout=started,
+            returncode=1,
+            stderr="API Error: rate limited\n",
+            resume_session_id="sess-1",
+        )
+    assert not isinstance(info.value, ResumeUnavailable)
+    # Without resume, an early exit is a plain error too.
+    with pytest.raises(RuntimeError) as info:
+        _run_cli(monkeypatch, "claude", stdout="", returncode=1, stderr="boom\n")
+    assert not isinstance(info.value, ResumeUnavailable)
+
+
+def test_claude_resume_exiting_before_init_raises_resume_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ResumeUnavailable):
+        _run_cli(
+            monkeypatch,
+            "claude",
+            stdout="",
+            returncode=1,
+            stderr="error: something\n",
+            resume_session_id="sess-1",
+        )
+
+
+def test_codex_unknown_thread_raises_resume_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ResumeUnavailable):
+        _run_cli(
+            monkeypatch,
+            "codex",
+            stdout="",
+            returncode=1,
+            stderr=(
+                "Error: thread/resume: thread/resume failed: no rollout found for "
+                "thread id thr-1 (code -32600)\n"
+            ),
+            write_output=False,
+            resume_session_id="thr-1",
+        )
+
+
+def test_codex_resume_that_started_and_then_failed_is_a_plain_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(RuntimeError) as info:
+        _run_cli(
+            monkeypatch,
+            "codex",
+            stdout='{"type":"thread.started","thread_id":"thr-1"}\n',
+            returncode=1,
+            stderr="stream error: rate limited\n",
+            write_output=False,
+            resume_session_id="thr-1",
+        )
+    assert not isinstance(info.value, ResumeUnavailable)
+
+
+def test_codex_resume_attaches_images_only_when_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = '{"type":"thread.started","thread_id":"thr-1"}\n'
+    command, _result = _run_cli(
+        monkeypatch, "codex", stdout=stream, resume_session_id="thr-1"
+    )
+    assert "--image" not in command
+    command, _result = _run_cli(
+        monkeypatch,
+        "codex",
+        stdout=stream,
+        resume_session_id="thr-1",
+        resume_images=True,
+    )
+    resume_at = command.index("resume")
+    at = command.index("--image")
+    assert at > resume_at and command[at + 1] == "/media/a.png"
+    assert command[-2:] == ["thr-1", "-"]
+
+
+def test_catalog_section_without_usage_or_source_notetype_lists_note_types() -> None:
+    catalog = {**BIG_CATALOG, "usage": []}
+    data = catalog_section_json(
+        catalog_prompt_section(catalog, notetype_id=None, deck_id=3, limit=2)
+    )
+    assert [d["id"] for d in data["decks"]] == [3, 4]
+    assert [n["id"] for n in data["notetypes"]] == [7, 8]

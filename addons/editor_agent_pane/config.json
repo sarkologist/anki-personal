@@ -23,6 +23,9 @@
     "queue_concurrency": 1,
     "queue_notify": true,
     "queue_retention_days": 30,
+    "queue_resume_sessions": true,
+    "queue_catalog_limit": 30,
+    "queue_show_badge": true,
     "queue_shortcut": "Ctrl+Alt+Shift+Q",
     "queue_window_geometry": "",
     "queue_window_splitter": []

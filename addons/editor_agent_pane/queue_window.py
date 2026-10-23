@@ -6,14 +6,18 @@
 A thread list on the left and the selected thread on the right. The detail
 is the same ``ThreadPanel`` the editor pane uses, without an editor, so Apply
 writes notes through the collection (with the base-revision check) and
-Discard/Stop behave exactly as in the pane. Reply sends the thread back to
-the worker and moves on; it never waits for the run.
+Discard/Stop behave exactly as in the pane. Reply, Re-run and Retry send the
+thread back to the worker and move on; they never wait for the run. Defer
+hides a thread until a chosen time, the settings row changes the provider,
+model, effort and card access of its next run, and Apply and edit opens the
+applied note in the Browser afterwards.
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from concurrent.futures import Future
 from typing import Any
 
 import aqt
@@ -23,10 +27,17 @@ from aqt.qt import (
     QAction,
     QByteArray,
     QCheckBox,
+    QComboBox,
+    QDateTime,
+    QDateTimeEdit,
+    QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
     QInputDialog,
     QKeySequence,
+    QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QShortcut,
     QSplitter,
@@ -41,17 +52,45 @@ from aqt.utils import showWarning, tooltip
 from aqt.webview import AnkiWebView
 
 from . import queue_runtime
-from .queue_store import ANSWERED, READY, QueueTransitionError, Thread
+from .card_access import CARD_ACCESS_OPTIONS, normalize_card_access
+from .effort_options import (
+    effort_choice_for_options,
+    effort_option_index,
+    effort_options_for,
+    effort_options_with_legacy,
+)
+from .model_options import (
+    PROVIDER_OLLAMA,
+    PROVIDER_OPTIONS,
+    model_options_for,
+    provider_value,
+)
+from .ollama_client import discover_ollama_models, ollama_model_names
+from .queue_store import ANSWERED, READY, STALE, QueueTransitionError, Thread
 from .surface import surface_body
-from .thread_panel import PromptEdit, ThreadPanel
+from .thread_panel import (
+    APPLY_ANYWAY_LABEL,
+    APPLY_ANYWAY_TIP,
+    PromptEdit,
+    ThreadPanel,
+)
 from .thread_view import (
+    CLOSED_STATUSES,
+    DEFER_CHOICES,
+    DEFER_TOMORROW,
+    PROVIDER_LABELS,
     REPLYABLE_STATUSES,
     captured_context_fragment,
     created_note_ids,
+    defer_choice_time,
+    is_deferred,
+    merge_thread_settings,
     neighbour_id,
     queue_row,
     queue_threads,
+    thread_deck_ids,
     thread_note_ids,
+    until_text,
 )
 
 DEFAULT_SHORTCUT = "Ctrl+Alt+Shift+Q"
@@ -62,11 +101,18 @@ WINDOW_TITLE = "Agent Queue"
 QUEUE_NOT_OPEN = "The agent queue is not open yet."
 SHORTCUTS = {
     "apply": "Ctrl+Shift+A",
+    "apply_edit": "Ctrl+Shift+E",
+    "apply_anyway": "Ctrl+Shift+O",
+    "rerun": "Ctrl+Shift+N",
+    "retry": "Ctrl+Shift+T",
     "reply": "Ctrl+Shift+R",
     "discard": "Ctrl+Shift+D",
+    "defer": "Ctrl+Shift+L",
     "browse": "Ctrl+Shift+B",
     "stop": "Ctrl+Shift+S",
 }
+SETTINGS_SAVED = "The next run of this request uses {provider} {model}."
+SELECT_OLLAMA_MODEL = "Select an Ollama model first."
 
 ConfigGetter = Callable[[], dict[str, Any]]
 ConfigWriter = Callable[[dict[str, Any]], None]
@@ -156,6 +202,7 @@ def _on_state_did_change(new_state: str, old_state: str) -> None:
     service = queue_runtime.service()
     if service is None:
         return
+    # Deferred threads are not counted (list_threads leaves them out).
     count = len(service.store.list_threads((READY, ANSWERED)))
     if not count:
         return
@@ -166,6 +213,9 @@ def _on_state_did_change(new_state: str, old_state: str) -> None:
 
 
 class AgentQueueWindow(ThreadPanel, QMainWindow):
+    # Applied/discarded threads cannot be continued from the window.
+    _closed_hint = ""
+
     def __init__(self, mw: Any, *, note_id: int | None = None) -> None:
         QMainWindow.__init__(self, mw, Qt.WindowType.Window)
         self._init_state(mw, note_id=note_id)
@@ -188,6 +238,13 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
         self._cells: list[tuple[str, ...]] = []
         self._rendered_id: str | None = None
         self._populating = False
+        # The thread whose successful apply opens the Browser (Apply and edit).
+        self._edit_after_apply: str | None = None
+        self._settings_thread: Thread | None = None
+        self._filling_settings = False
+        self._ollama_models: tuple[str, ...] = ()
+        self._ollama_unavailable = False
+        self._ollama_discovered = False
 
     # layout
 
@@ -199,10 +256,13 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
         filters = QHBoxLayout()
         self.note_only_checkbox = QCheckBox("This note only")
         self.show_closed_checkbox = QCheckBox("Show applied and discarded")
+        self.show_deferred_checkbox = QCheckBox("Show deferred")
         qconnect(self.note_only_checkbox.toggled, self._on_filter_changed)
         qconnect(self.show_closed_checkbox.toggled, self._on_filter_changed)
+        qconnect(self.show_deferred_checkbox.toggled, self._on_filter_changed)
         filters.addWidget(self.note_only_checkbox)
         filters.addWidget(self.show_closed_checkbox)
+        filters.addWidget(self.show_deferred_checkbox)
         filters.addStretch(1)
         left_layout.addLayout(filters)
 
@@ -240,18 +300,43 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
         self.prompt.setPlaceholderText("Reply (Enter sends; the agent runs it next)")
         self.prompt.setMaximumHeight(90)
         right_layout.addWidget(self.prompt)
+        right_layout.addLayout(self._build_settings_row())
 
         buttons = QHBoxLayout()
-        self.apply_button = self._button("apply", "Apply", self._apply_pending_patch)
+        self.apply_button = self._button("apply", "Apply", self._apply)
+        self.apply_edit_button = self._button(
+            "apply_edit", "Apply and edit", self._apply_and_edit
+        )
+        self.apply_anyway_button = self._button(
+            "apply_anyway", APPLY_ANYWAY_LABEL, self._apply_anyway
+        )
+        self.apply_anyway_button.setToolTip(
+            f"{APPLY_ANYWAY_TIP} ({SHORTCUTS['apply_anyway']})"
+        )
+        self.apply_anyway_button.setVisible(False)
+        self.rerun_button = self._button("rerun", "Re-run", self._rerun_thread)
+        self.retry_button = self._button("retry", "Retry", self._retry_thread)
+        self.retry_button.setVisible(False)
         self.reply_button = self._button("reply", "Reply", self._reply)
         self.discard_button = self._button("discard", "Discard", self._discard)
+        self.defer_button = self._button("defer", "Defer", lambda: None)
+        self.defer_button.setMenu(self._build_defer_menu())
         self.browse_button = self._button(
             "browse", "Open in Browser", self._open_in_browser
         )
         self.stop_button = self._button("stop", "Stop", self._stop_running_agent)
-        for button in (self.apply_button, self.reply_button, self.discard_button):
+        for button in (
+            self.apply_button,
+            self.apply_edit_button,
+            self.apply_anyway_button,
+            self.rerun_button,
+            self.retry_button,
+            self.reply_button,
+            self.discard_button,
+            self.defer_button,
+            self.browse_button,
+        ):
             buttons.addWidget(button)
-        buttons.addWidget(self.browse_button)
         buttons.addStretch(1)
         buttons.addWidget(self.stop_button)
         right_layout.addLayout(buttons)
@@ -263,6 +348,61 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
         self.setCentralWidget(self.splitter)
         close = QShortcut(QKeySequence("Escape"), self)
         qconnect(close.activated, self.close)
+
+    def _build_settings_row(self) -> QHBoxLayout:
+        """Provider, model, effort and card access for the thread's next run."""
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Next run:"))
+        self.settings_provider_combo = QComboBox()
+        self.settings_model_combo = QComboBox()
+        self.settings_effort_combo = QComboBox()
+        self.settings_card_access_combo = QComboBox()
+        self.settings_provider_combo.setToolTip("Provider")
+        self.settings_model_combo.setToolTip("Model")
+        self.settings_effort_combo.setToolTip("Reasoning effort")
+        self.settings_card_access_combo.setToolTip("Card access")
+        qconnect(
+            self.settings_provider_combo.currentIndexChanged,
+            self._on_settings_provider_changed,
+        )
+        qconnect(
+            self.settings_model_combo.currentIndexChanged,
+            self._on_settings_model_changed,
+        )
+        for combo in (
+            self.settings_provider_combo,
+            self.settings_model_combo,
+            self.settings_effort_combo,
+            self.settings_card_access_combo,
+        ):
+            row.addWidget(combo)
+        self.settings_button = QPushButton("Use for next run")
+        self.settings_button.setToolTip(
+            "Save these settings for this request's next reply, re-run or retry"
+        )
+        self.settings_button.setEnabled(False)
+        qconnect(
+            self.settings_button.clicked,
+            lambda _checked=False: self._apply_thread_settings(),
+        )
+        row.addWidget(self.settings_button)
+        row.addStretch(1)
+        return row
+
+    def _build_defer_menu(self) -> QMenu:
+        menu = QMenu(self)
+        for label, choice in DEFER_CHOICES:
+            action = menu.addAction(label)
+            qconnect(
+                action.triggered,
+                lambda _checked=False, choice=choice: self._defer(choice),
+            )
+        pick = menu.addAction("Until a date and time…")
+        qconnect(pick.triggered, lambda _checked=False: self._defer_pick())
+        menu.addSeparator()
+        self._undefer_action = menu.addAction("Undefer")
+        qconnect(self._undefer_action.triggered, lambda _checked=False: self._undefer())
+        return menu
 
     def _button(self, name: str, label: str, slot: Callable[[], None]) -> QPushButton:
         button = QPushButton(label)
@@ -335,7 +475,9 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
             else None
         )
         return queue_threads(
-            service.store.list_threads(),
+            service.store.list_threads(
+                include_deferred=self.show_deferred_checkbox.isChecked()
+            ),
             include_closed=self.show_closed_checkbox.isChecked(),
             note_id=note_id,
         )
@@ -454,11 +596,40 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
     ) -> None:
         replyable = thread is not None and thread.status in REPLYABLE_STATUSES
         self.reply_button.setEnabled(replyable)
+        self.apply_edit_button.setEnabled(
+            thread is not None and shown is not None and thread.status != STALE
+        )
+        open_thread = thread is not None and thread.status not in CLOSED_STATUSES
+        self.defer_button.setEnabled(open_thread)
+        undefer = getattr(self, "_undefer_action", None)
+        if undefer is not None:
+            undefer.setEnabled(thread is not None and is_deferred(thread, time.time()))
         self.browse_button.setEnabled(bool(self._note_ids(thread)))
+        self._load_thread_settings(thread)
 
     def _broadcast_thread_changed(self, thread_id: str) -> None:
         self.refresh(select=thread_id, render=True)
         queue_runtime.thread_changed(thread_id, exclude=self)
+
+    def _following_thread_id(self, thread_id: str) -> str | None:
+        return neighbour_id([row.id for row in self._rows], thread_id)
+
+    def _after_requeue(self, thread_id: str, following: str | None) -> None:
+        # The thread waits in the queue; move on to the next one meanwhile.
+        self.refresh(select=following or thread_id, render=True)
+        queue_runtime.thread_changed(thread_id, exclude=self)
+
+    def _after_apply(
+        self, thread_id: str, updated_ids: list[int], created_ids: list[int]
+    ) -> None:
+        """Apply and edit: open the applied (or first created) note."""
+        if self._edit_after_apply != thread_id:
+            return
+        self._edit_after_apply = None
+        note_ids = updated_ids or created_ids[:1]
+        if note_ids:
+            search = "nid:" + ",".join(str(note_id) for note_id in note_ids)
+            aqt.dialogs.open("Browser", self.mw, search=(search,))
 
     def on_thread_changed(self, thread_id: str) -> None:
         """Called by the queue's fan-out (runs finishing, pane actions...)."""
@@ -479,7 +650,7 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
         if thread.status not in REPLYABLE_STATUSES:
             showWarning("This request is still running or already closed.", parent=self)
             return
-        following = neighbour_id([row.id for row in self._rows], thread.id)
+        following = self._following_thread_id(thread.id)
         try:
             service.store.reply(thread.id, text)
         except QueueTransitionError as exc:
@@ -487,9 +658,244 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
             return
         self.prompt.clear()
         service.runner.enqueue_kick()
-        # The thread waits in the queue; move on to the next one meanwhile.
-        self.refresh(select=following or thread.id, render=True)
-        queue_runtime.thread_changed(thread.id, exclude=self)
+        self._after_requeue(thread.id, following)
+
+    def _apply(self) -> None:
+        self._edit_after_apply = None
+        self._apply_pending_patch()
+
+    def _apply_and_edit(self) -> None:
+        """Apply, then open the note in the Browser for manual touch-ups."""
+        self._edit_after_apply = self._thread_id
+        self._apply_pending_patch()
+
+    def _apply_anyway(self) -> None:
+        self._edit_after_apply = None
+        super()._apply_anyway()
+
+    # defer
+
+    def _defer(self, choice: str) -> None:
+        self._defer_until(defer_choice_time(choice, time.time()))
+
+    def _defer_pick(self) -> None:
+        until = self._pick_defer_time()
+        if until is not None:
+            self._defer_until(until)
+
+    def _pick_defer_time(self) -> float | None:
+        """A date and time from a small dialog, or None if cancelled."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Defer until")
+        layout = QVBoxLayout()
+        dialog.setLayout(layout)
+        edit = QDateTimeEdit(
+            QDateTime.fromSecsSinceEpoch(
+                int(defer_choice_time(DEFER_TOMORROW, time.time()))
+            )
+        )
+        edit.setCalendarPopup(True)
+        edit.setMinimumDateTime(QDateTime.currentDateTime())
+        layout.addWidget(edit)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        qconnect(buttons.accepted, dialog.accept)
+        qconnect(buttons.rejected, dialog.reject)
+        layout.addWidget(buttons)
+        if not dialog.exec():  # Rejected is 0
+            return None
+        return float(edit.dateTime().toSecsSinceEpoch())
+
+    def _defer_until(self, until: float) -> None:
+        service = self._service()
+        thread = self._selected_thread()
+        if service is None or thread is None:
+            return
+        try:
+            service.store.defer(thread.id, until)
+        except QueueTransitionError as exc:
+            showWarning(str(exc), parent=self)
+            return
+        tooltip(f"Deferred {until_text(until, time.time())}.", parent=self)
+        # Hidden unless deferred threads are shown: the selection moves on.
+        self.refresh(render=True)
+        queue_runtime.thread_changed(thread.id, exclude=self, notify=False)
+
+    def _undefer(self) -> None:
+        service = self._service()
+        thread = self._selected_thread()
+        if service is None or thread is None:
+            return
+        try:
+            service.store.undefer(thread.id)
+        except QueueTransitionError as exc:
+            showWarning(str(exc), parent=self)
+            return
+        self.refresh(select=thread.id, render=True)
+        queue_runtime.thread_changed(thread.id, exclude=self, notify=False)
+
+    # change model
+
+    def _load_thread_settings(self, thread: Thread | None) -> None:
+        """Prefill the settings row from the shown thread's settings."""
+        self._settings_thread = thread
+        if thread is None:
+            self.settings_button.setEnabled(False)
+            return
+        settings = thread.settings
+        provider = provider_value(settings.get("provider"))
+        self._filling_settings = True
+        try:
+            combo = self.settings_provider_combo
+            combo.clear()
+            for label, value in PROVIDER_OPTIONS:
+                combo.addItem(label, value)
+            combo.setCurrentIndex(
+                [value for _label, value in PROVIDER_OPTIONS].index(provider)
+            )
+            self._fill_models(str(settings.get("model") or ""))
+            self._fill_efforts(str(settings.get("reasoning_effort") or ""))
+            access = normalize_card_access(settings.get("card_access"))
+            combo = self.settings_card_access_combo
+            combo.clear()
+            for label, value in CARD_ACCESS_OPTIONS:
+                combo.addItem(label, value)
+            combo.setCurrentIndex(
+                [value for _label, value in CARD_ACCESS_OPTIONS].index(access)
+            )
+        finally:
+            self._filling_settings = False
+        self.settings_button.setEnabled(thread.status not in CLOSED_STATUSES)
+        if provider == PROVIDER_OLLAMA:
+            self._ensure_ollama_models(settings)
+
+    def _settings_provider(self) -> str:
+        return provider_value(self.settings_provider_combo.currentData())
+
+    def _fill_models(self, model: str) -> None:
+        options = model_options_for(
+            self._settings_provider(),
+            model,
+            self._ollama_models,
+            ollama_unavailable=self._ollama_unavailable,
+        )
+        combo = self.settings_model_combo
+        filling, self._filling_settings = self._filling_settings, True
+        try:
+            combo.clear()
+            for label, value in options:
+                combo.addItem(label, value)
+            values = [value for _label, value in options]
+            combo.setCurrentIndex(values.index(model) if model in values else 0)
+        finally:
+            self._filling_settings = filling
+
+    def _fill_efforts(self, effort: str) -> None:
+        options = effort_options_for(
+            self._settings_provider(),
+            str(self.settings_model_combo.currentData() or ""),
+        )
+        effort = effort_choice_for_options(effort, options)
+        combo = self.settings_effort_combo
+        filling, self._filling_settings = self._filling_settings, True
+        try:
+            combo.clear()
+            for label, value in effort_options_with_legacy(effort, options):
+                combo.addItem(label, value)
+            combo.setCurrentIndex(effort_option_index(effort, options))
+        finally:
+            self._filling_settings = filling
+
+    def _on_settings_provider_changed(self, _index: int = 0) -> None:
+        if self._filling_settings:
+            return
+        thread = self._settings_thread
+        provider = self._settings_provider()
+        same = (
+            thread is not None
+            and provider_value(thread.settings.get("provider")) == provider
+        )
+        model = str(thread.settings.get("model") or "") if same and thread else ""
+        effort = str(self.settings_effort_combo.currentData() or "")
+        self._fill_models(model)
+        self._fill_efforts(effort)
+        if provider == PROVIDER_OLLAMA and thread is not None:
+            self._ensure_ollama_models(thread.settings)
+
+    def _on_settings_model_changed(self, _index: int = 0) -> None:
+        if self._filling_settings:
+            return
+        self._fill_efforts(str(self.settings_effort_combo.currentData() or ""))
+
+    def _ensure_ollama_models(self, settings: dict[str, Any]) -> None:
+        if not self._ollama_discovered:
+            self._ollama_discovered = True
+            self._discover_ollama_models(settings)
+
+    def _discover_ollama_models(self, settings: dict[str, Any]) -> None:
+        """Installed Ollama models, in the background (as the pane does)."""
+        paths = settings.get("paths") if isinstance(settings.get("paths"), dict) else {}
+        config = _config()
+        ollama_path = str(paths.get("ollama_path") or config.get("ollama_path") or "")
+        ollama_host = str(paths.get("ollama_host") or config.get("ollama_host") or "")
+
+        def task() -> tuple[tuple[str, ...], bool]:
+            try:
+                models = discover_ollama_models(
+                    ollama_path=ollama_path, ollama_host=ollama_host
+                )
+            except Exception:
+                return (), True
+            return ollama_model_names(models), False
+
+        def on_done(future: Future) -> None:
+            models, unavailable = future.result()
+            self._set_ollama_models(models, unavailable=unavailable)
+
+        self.mw.taskman.run_in_background(task, on_done, uses_collection=False)
+
+    def _set_ollama_models(self, models: tuple[str, ...], *, unavailable: bool) -> None:
+        self._ollama_models = tuple(models)
+        self._ollama_unavailable = unavailable
+        if self._settings_provider() != PROVIDER_OLLAMA:
+            return
+        effort = str(self.settings_effort_combo.currentData() or "")
+        self._fill_models(str(self.settings_model_combo.currentData() or ""))
+        self._fill_efforts(effort)
+
+    def _apply_thread_settings(self) -> None:
+        """Store the row's settings (merged over the thread's) for its next run."""
+        service = self._service()
+        thread = self._selected_thread()
+        if service is None or thread is None:
+            return
+        provider = self._settings_provider()
+        model = str(self.settings_model_combo.currentData() or "")
+        if provider == PROVIDER_OLLAMA and not model:
+            showWarning(SELECT_OLLAMA_MODEL, parent=self)
+            return
+        merged = merge_thread_settings(
+            thread.settings,
+            provider=provider,
+            model=model,
+            reasoning_effort=str(self.settings_effort_combo.currentData() or ""),
+            card_access=normalize_card_access(
+                self.settings_card_access_combo.currentData()
+            ),
+            deck_ids=thread_deck_ids(thread),
+            config=_config(),
+        )
+        service.store.set_settings(thread.id, merged)
+        tooltip(
+            SETTINGS_SAVED.format(
+                provider=PROVIDER_LABELS.get(provider, provider),
+                model=model or "(default model)",
+            ),
+            parent=self,
+        )
+        self.refresh(select=thread.id, render=True)
+        queue_runtime.thread_changed(thread.id, exclude=self, notify=False)
 
     def _ask_discard_reason(self) -> str | None:
         """An optional reason, or None if the user cancelled."""

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 TITLE_CHARS = 60
 
 QUEUED = "queued"
@@ -38,19 +38,23 @@ TERMINAL_STATUSES = (APPLIED, DISCARDED)
 # answered/failed threads can be discarded, a queued thread can be cancelled
 # (-> failed) or discarded before it runs, and running -> queued is the
 # startup/shutdown reset. A failed run keeps the previous proposal current, so
-# failed -> applied applies it; applied -> ready/failed reverts an apply whose
-# collection write failed.
+# failed -> applied applies it (failed -> stale when its base changed, for a
+# forced apply); applied -> ready/failed reverts an apply whose
+# collection write failed (applied -> stale for a failed forced apply).
 TRANSITIONS: dict[str, frozenset[str]] = {
     QUEUED: frozenset({RUNNING, FAILED, DISCARDED}),
     RUNNING: frozenset({READY, ANSWERED, FAILED, QUEUED}),
     READY: frozenset({APPLIED, DISCARDED, STALE, QUEUED}),
     ANSWERED: frozenset({QUEUED, DISCARDED}),
-    FAILED: frozenset({QUEUED, DISCARDED, APPLIED}),
+    FAILED: frozenset({QUEUED, DISCARDED, APPLIED, STALE}),
     STALE: frozenset({QUEUED, DISCARDED, APPLIED}),
-    APPLIED: frozenset({READY, FAILED}),
+    APPLIED: frozenset({READY, FAILED, STALE}),
     DISCARDED: frozenset(),
 }
 REPLY_FROM = (READY, ANSWERED, FAILED)
+# Re-run the last request against the current note, without a new user turn.
+RERUN_FROM = (STALE, READY, FAILED)
+RERUN_MESSAGE = "[Re-run requested: the note changed]"
 
 MESSAGE_ROLES = ("user", "agent", "system")
 
@@ -96,6 +100,8 @@ create table proposals (
 """
 # v2: what an apply produced, e.g. {"created_note_ids": [...]}.
 _MIGRATE_V2 = "alter table proposals add column result_json text"
+# v3: hidden from the queue until this time (epoch seconds); status unchanged.
+_MIGRATE_V3 = "alter table threads add column deferred_until real"
 
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -120,6 +126,7 @@ class Thread:
     session: dict[str, Any] | None
     run_log_path: str | None
     error: str | None
+    deferred_until: float | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +174,7 @@ def _thread(row: sqlite3.Row) -> Thread:
         session=json.loads(row["session_json"]) if row["session_json"] else None,
         run_log_path=row["run_log_path"],
         error=row["error"],
+        deferred_until=row["deferred_until"],
     )
 
 
@@ -241,6 +249,8 @@ class QueueStore:
                             conn.execute(statement)
                 if version < 2 and not _has_column(conn, "proposals", "result_json"):
                     conn.execute(_MIGRATE_V2)
+                if version < 3 and not _has_column(conn, "threads", "deferred_until"):
+                    conn.execute(_MIGRATE_V3)
                 conn.execute(f"pragma user_version = {SCHEMA_VERSION}")
             except BaseException:
                 conn.rollback()
@@ -300,37 +310,80 @@ class QueueStore:
             ).fetchall()
         return [_thread(row) for row in rows]
 
-    def list_threads(self, statuses: Iterable[str] | None = None) -> list[Thread]:
-        sql = "select * from threads"
-        args: tuple[str, ...] = ()
+    def list_threads(
+        self,
+        statuses: Iterable[str] | None = None,
+        *,
+        include_deferred: bool = False,
+        now: float | None = None,
+    ) -> list[Thread]:
+        """Threads, oldest first; deferred ones (``deferred_until`` after
+        ``now``) only with ``include_deferred``."""
+        clauses: list[str] = []
+        args: tuple[Any, ...] = ()
         if statuses is not None:
-            args = tuple(statuses)
-            if not args:
+            wanted = tuple(statuses)
+            if not wanted:
                 return []
-            sql += f" where status in ({','.join('?' for _ in args)})"
+            clauses.append(f"status in ({','.join('?' for _ in wanted)})")
+            args += wanted
+        if not include_deferred:
+            clauses.append("(deferred_until is null or deferred_until <= ?)")
+            args += (time.time() if now is None else now,)
+        sql = "select * from threads"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
         with self._lock:
             rows = self._conn.execute(
                 sql + " order by created_at, rowid", args
             ).fetchall()
         return [_thread(row) for row in rows]
 
-    def _set_column(self, thread_id: str, column: str, value: Any) -> None:
+    def defer(self, thread_id: str, until: float) -> None:
+        """Hide the thread from the default lists until ``until``. The status
+        and ``updated_at`` are unchanged, so it comes back where it was."""
+        self._set_deferred(thread_id, float(until))
+
+    def undefer(self, thread_id: str) -> None:
+        self._set_deferred(thread_id, None)
+
+    def _set_deferred(self, thread_id: str, until: float | None) -> None:
         with self._tx() as conn:
-            conn.execute(
-                f"update threads set {column} = ?, updated_at = ? where id = ?",
-                (value, time.time(), thread_id),
+            cursor = conn.execute(
+                "update threads set deferred_until = ? where id = ?",
+                (until, thread_id),
             )
+            if cursor.rowcount != 1:
+                raise QueueTransitionError(f"Thread {thread_id} is missing.")
+
+    def _set_column(
+        self, thread_id: str, column: str, value: Any, *, touch: bool = True
+    ) -> None:
+        """``touch=False`` keeps ``updated_at``, which orders the queue."""
+        with self._tx() as conn:
+            if touch:
+                conn.execute(
+                    f"update threads set {column} = ?, updated_at = ? where id = ?",
+                    (value, time.time(), thread_id),
+                )
+            else:
+                conn.execute(
+                    f"update threads set {column} = ? where id = ?", (value, thread_id)
+                )
 
     def set_error(self, thread_id: str, error: str | None) -> None:
         self._set_column(thread_id, "error", error)
 
     def set_settings(self, thread_id: str, settings: dict[str, Any]) -> None:
         """Replace the settings used for the thread's next run."""
-        self._set_column(thread_id, "settings_json", _dumps(settings))
+        self._set_column(thread_id, "settings_json", _dumps(settings), touch=False)
 
     def set_session(self, thread_id: str, session: dict[str, Any] | None) -> None:
         self._set_column(
-            thread_id, "session_json", _dumps(session) if session is not None else None
+            thread_id,
+            "session_json",
+            _dumps(session) if session is not None else None,
+            touch=False,
         )
 
     def set_run_log_path(self, thread_id: str, path: str | None) -> None:
@@ -383,14 +436,55 @@ class QueueStore:
     def reply(self, thread_id: str, text: str, html: str = "") -> None:
         """Append a user message and send the thread back to the worker."""
         with self._tx() as conn:
-            row = conn.execute(
-                "select status from threads where id = ?", (thread_id,)
-            ).fetchone()
-            status = row["status"] if row else "missing"
+            status = self._status(conn, thread_id)
             if status not in REPLY_FROM:
                 raise QueueTransitionError(f"Cannot reply to a {status} thread.")
             self._insert_message(conn, thread_id, "user", text, html)
             self._transition(conn, thread_id, status, QUEUED)
+            conn.execute("update threads set error = null where id = ?", (thread_id,))
+
+    def _status(self, conn: sqlite3.Connection, thread_id: str) -> str:
+        row = conn.execute(
+            "select status from threads where id = ?", (thread_id,)
+        ).fetchone()
+        return row["status"] if row else "missing"
+
+    def mark_stale(self, thread_id: str, reason: str) -> None:
+        """ready/failed -> stale, recording ``reason`` as a system message,
+        atomically.
+
+        The proposal stays current so it can still be applied (forced),
+        re-run, or discarded (a failed run keeps the previous proposal
+        current). Raises QueueTransitionError and writes nothing unless the
+        thread is ready or failed.
+        """
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if status not in (READY, FAILED):
+                raise QueueTransitionError(f"Cannot mark a {status} thread stale.")
+            self._insert_message(conn, thread_id, "system", reason, "")
+            self._transition(conn, thread_id, status, STALE)
+
+    def rerun(self, thread_id: str) -> None:
+        """stale/ready/failed -> queued, so the worker re-runs the last request
+        against the current note. Adds RERUN_MESSAGE, which also tells the
+        runner to re-send the last user turn when none is pending."""
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if status not in RERUN_FROM:
+                raise QueueTransitionError(f"Cannot re-run a {status} thread.")
+            self._insert_message(conn, thread_id, "system", RERUN_MESSAGE, "")
+            self._transition(conn, thread_id, status, QUEUED)
+            conn.execute("update threads set error = null where id = ?", (thread_id,))
+
+    def retry(self, thread_id: str) -> None:
+        """failed -> queued without a new user message; the runner re-sends the
+        unanswered request, or the last one (queue_runner.pending_request)."""
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if status != FAILED:
+                raise QueueTransitionError(f"Cannot retry a {status} thread.")
+            self._transition(conn, thread_id, FAILED, QUEUED)
             conn.execute("update threads set error = null where id = ?", (thread_id,))
 
     def discard(self, thread_id: str, reason: str | None = None) -> None:
@@ -400,10 +494,7 @@ class QueueStore:
         in a state that can be discarded, e.g. a run started meanwhile.
         """
         with self._tx() as conn:
-            row = conn.execute(
-                "select status from threads where id = ?", (thread_id,)
-            ).fetchone()
-            status = row["status"] if row else "missing"
+            status = self._status(conn, thread_id)
             if DISCARDED not in TRANSITIONS.get(status, frozenset()):
                 raise QueueTransitionError(f"Cannot discard a {status} thread.")
             if reason:
@@ -422,12 +513,16 @@ class QueueStore:
         base: dict[str, Any] | None = None,
         drop_proposal: bool = False,
         error: str | None = None,
+        session: dict[str, Any] | None = None,
+        clear_session: bool = False,
     ) -> None:
         """Record a run's outcome in one transaction: running -> ``to_status``.
 
         ``messages`` are (role, text, html). ``proposal`` (with its ``base``)
         becomes the current proposal; ``drop_proposal`` instead supersedes the
-        current one. Nothing is written if the thread is not running.
+        current one. ``session`` replaces the stored CLI session and
+        ``clear_session`` removes it; otherwise it is kept. Nothing is written
+        if the thread is not running.
         """
         if to_status not in TRANSITIONS[RUNNING]:
             raise QueueTransitionError(
@@ -444,6 +539,11 @@ class QueueStore:
             conn.execute(
                 "update threads set error = ? where id = ?", (error, thread_id)
             )
+            if session is not None or clear_session:
+                conn.execute(
+                    "update threads set session_json = ? where id = ?",
+                    (_dumps(session) if session is not None else None, thread_id),
+                )
 
     def next_runnable(self) -> Thread | None:
         with self._lock:
@@ -465,8 +565,10 @@ class QueueStore:
 
     def reset_interrupted(self) -> int:
         with self._tx() as conn:
+            # An interrupted run may have reached its CLI session; replay it.
             cursor = conn.execute(
-                "update threads set status = ? where status = ?", (QUEUED, RUNNING)
+                "update threads set status = ?, session_json = null where status = ?",
+                (QUEUED, RUNNING),
             )
             return cursor.rowcount
 

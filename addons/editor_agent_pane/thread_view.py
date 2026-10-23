@@ -10,19 +10,26 @@ into surface HTML fragments and decide which thread a note shows.
 
 from __future__ import annotations
 
+import datetime
 import html
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
-from .model_options import PROVIDER_CLAUDE, PROVIDER_CODEX, PROVIDER_OLLAMA
+from .effort_options import effort_options_for, effort_supported_by_options
+from .model_options import (
+    PROVIDER_CLAUDE,
+    PROVIDER_CODEX,
+    PROVIDER_OLLAMA,
+    provider_value,
+)
 from .patches import (
     HTML_TAG_RE,
     EditorSnapshot,
     MultiCardSnapshot,
     SelectedTextSnapshot,
 )
-from .queue_runner import note_state_hash
+from .queue_runner import REPLAYED_MESSAGE, RESUMED_MESSAGE, note_state_hash
 from .queue_store import (
     ANSWERED,
     APPLIED,
@@ -30,6 +37,7 @@ from .queue_store import (
     FAILED,
     QUEUED,
     READY,
+    RERUN_MESSAGE,
     RUNNING,
     STALE,
     Message,
@@ -39,18 +47,25 @@ from .queue_store import (
 from .sanitize import sanitize_html
 from .snapshots import MULTI_KIND, Snapshot, snapshot_to_dict
 from .surface import (
+    render_activity_note,
     render_activity_start,
     render_activity_summary,
     render_assistant_message,
     render_error_message,
+    render_notice_message,
     render_user_message,
 )
 
 ACTIVE_STATUSES = (QUEUED, RUNNING)
 REPLYABLE_STATUSES = (READY, ANSWERED, FAILED)
 # A failed run leaves the previous turn's proposal current, so it can still be
-# applied.
-APPLICABLE_STATUSES = (READY, FAILED)
+# applied. A stale proposal can be applied only when forced ("Apply anyway"):
+# the base check still refuses it otherwise.
+APPLICABLE_STATUSES = (READY, FAILED, STALE)
+# Retry: a failed run is queued again without a new message.
+RETRYABLE_STATUSES = (FAILED,)
+# Re-run: the last request again, against the current note.
+RERUNNABLE_STATUSES = (STALE, READY, FAILED)
 DISCARDABLE_STATUSES = (QUEUED, READY, ANSWERED, FAILED, STALE)
 LIVE_ACTIVITY_ID = "agent-thread-live"
 STATUS_ID = "agent-thread-status"
@@ -78,11 +93,21 @@ STATUS_TEXT = {
 
 STALE_WARNING = (
     "The note changed since the agent made this proposal, so it was not "
-    "applied. Discard it, or reply to have the agent re-propose against the "
-    "current note."
+    "applied. Re-run it to have the agent re-propose against the current "
+    "note, apply it anyway, or discard it."
 )
 MISSING_NOTE_WARNING = (
     "The note this proposal was made for no longer exists. Discard the proposal."
+)
+# Why a proposal went stale (stored by mark_stale as a system message): shown
+# as a notice, not as an error.
+STALE_REASONS = (STALE_WARNING, MISSING_NOTE_WARNING)
+STALE_NOTICE_LABEL = "Stale"
+# System messages that record what a run did, shown as one activity line.
+ACTIVITY_LINE_PREFIXES = (
+    RERUN_MESSAGE,
+    RESUMED_MESSAGE.split("{", 1)[0],
+    REPLAYED_MESSAGE.split("{", 1)[0],
 )
 
 # context_json layout (see agent-request-queue-plan.md, "Captured context").
@@ -130,7 +155,7 @@ def provider_label(thread: Thread) -> str:
 def pick_thread(threads: Sequence[Thread]) -> Thread | None:
     """The thread a note should show: newest active, else newest with a result."""
     newest_first = sorted(threads, key=lambda t: t.created_at, reverse=True)
-    for statuses in (ACTIVE_STATUSES, (READY, ANSWERED), (FAILED,)):
+    for statuses in (ACTIVE_STATUSES, (READY, STALE, ANSWERED), (FAILED,)):
         for thread in newest_first:
             if thread.status in statuses:
                 return thread
@@ -164,6 +189,12 @@ def transcript_fragments(
         elif message.role == "agent":
             if message.text or message.html:
                 fragments.append(render_assistant_message(message.html, message.text))
+        elif message.text.strip() in STALE_REASONS:
+            fragments.append(
+                render_notice_message(STALE_NOTICE_LABEL, message.text.strip())
+            )
+        elif message.text.strip().startswith(ACTIVITY_LINE_PREFIXES):
+            fragments.append(render_activity_note(message.text, role=role))
         elif _is_activity_summary(message.text):
             fragments.append(
                 render_activity_summary(
@@ -175,8 +206,14 @@ def transcript_fragments(
     return fragments
 
 
-def status_fragment(thread: Thread) -> str | None:
-    """A banner for a thread that is not waiting on the user."""
+PANE_CLOSED_HINT = "Send starts a new request."
+
+
+def status_fragment(
+    thread: Thread, *, closed_hint: str = PANE_CLOSED_HINT
+) -> str | None:
+    """A banner for a thread that is not waiting on the user. ``closed_hint``
+    follows "Applied." / "Discarded." (the pane says how to start over)."""
     role = provider_label(thread)
     if thread.status == QUEUED:
         return render_activity_start(
@@ -194,8 +231,15 @@ def status_fragment(thread: Thread) -> str | None:
         return render_activity_start(
             STATUS_ID,
             role="Thread",
-            status=f"[{STATUS_TEXT[thread.status].capitalize()}. "
-            "Send starts a new request.]",
+            status=" ".join(
+                part
+                for part in (
+                    f"[{STATUS_TEXT[thread.status].capitalize()}.",
+                    closed_hint,
+                )
+                if part
+            )
+            + "]",
         )
     return None
 
@@ -300,11 +344,11 @@ def unsaved_note_stale_reason(
 
 QUEUE_STATUS_ORDER = (
     READY,
+    STALE,
     ANSWERED,
     FAILED,
     RUNNING,
     QUEUED,
-    STALE,
     APPLIED,
     DISCARDED,
 )
@@ -400,18 +444,130 @@ def age_text(seconds: float) -> str:
     return "now"
 
 
+DEFERRED_GLYPH = "⏸"
+
+
+def is_deferred(thread: Thread, now: float) -> bool:
+    return thread.deferred_until is not None and thread.deferred_until > now
+
+
+def until_text(until: float, now: float) -> str:
+    """ "until 08:00" today, "until Thu 08:00" within a week, else a date."""
+    when = datetime.datetime.fromtimestamp(until)
+    today = datetime.datetime.fromtimestamp(now).date()
+    if when.date() == today:
+        return when.strftime("until %H:%M")
+    if (when.date() - today).days < 7:
+        return when.strftime("until %a %H:%M")
+    return when.strftime("until %d %b %H:%M")
+
+
 def queue_row(
     thread: Thread, *, deck: str, version: int | None, now: float
 ) -> tuple[str, str, str, str, str, str]:
-    """Cells: status glyph, title, card excerpt, deck, age, proposal version."""
+    """Cells: status glyph, title, card excerpt, deck, age, proposal version.
+
+    A deferred thread gets DEFERRED_GLYPH and the time it comes back as its age.
+    """
+    deferred = is_deferred(thread, now)
+    glyph = STATUS_GLYPHS.get(thread.status, "?")
     return (
-        STATUS_GLYPHS.get(thread.status, "?"),
+        glyph + DEFERRED_GLYPH if deferred else glyph,
         thread.title or "(untitled)",
         card_excerpt(thread),
         deck,
-        age_text(now - thread.updated_at),
+        (
+            until_text(float(thread.deferred_until or 0), now)
+            if deferred
+            else age_text(now - thread.updated_at)
+        ),
         f"v{version}" if version else "",
     )
+
+
+DEFER_HOUR = "hour"
+DEFER_TOMORROW = "tomorrow"
+DEFER_NEXT_WEEK = "next_week"
+DEFER_MORNING_HOUR = 8
+DEFER_CHOICES = (
+    ("For an hour", DEFER_HOUR),
+    ("Until tomorrow 08:00", DEFER_TOMORROW),
+    ("Until next week (Monday 08:00)", DEFER_NEXT_WEEK),
+)
+
+
+def defer_choice_time(choice: str, now: float) -> float:
+    """When a Defer menu choice ends, in local time."""
+    if choice == DEFER_HOUR:
+        return now + 3600
+    today = datetime.datetime.fromtimestamp(now).date()
+    if choice == DEFER_TOMORROW:
+        day = today + datetime.timedelta(days=1)
+    elif choice == DEFER_NEXT_WEEK:
+        day = today + datetime.timedelta(days=7 - today.weekday())
+    else:
+        raise ValueError(f"Unknown defer choice: {choice!r}.")
+    return datetime.datetime.combine(day, datetime.time(DEFER_MORNING_HOUR)).timestamp()
+
+
+def thread_deck_ids(thread: Thread) -> tuple[int, ...]:
+    """Decks "Other cards in deck" reads for a thread: its captured default
+    deck, or the selected cards' decks."""
+    snapshot = thread.context.get("snapshot") or {}
+    if snapshot.get("kind") == MULTI_KIND:
+        return tuple(
+            sorted(
+                {
+                    int(card["deck_id"])
+                    for card in snapshot.get("cards") or ()
+                    if card.get("deck_id") is not None
+                }
+            )
+        )
+    deck_id = thread.context.get("deck_id")
+    return (int(deck_id),) if deck_id is not None else ()
+
+
+def merge_thread_settings(
+    settings: dict[str, Any],
+    *,
+    provider: str,
+    model: str,
+    reasoning_effort: str,
+    card_access: str,
+    deck_ids: Sequence[int] = (),
+    config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """``settings`` with a new provider/model/effort/card access for the next
+    run; paths, project folder, timeouts and the rest are kept. An effort the
+    model does not take falls back to the default; "deck" access without
+    stored decks takes ``deck_ids``. A provider change resets the
+    provider-specific flags as the pane sets them: Codex's fast mode and
+    reasoning summaries from ``config`` (the add-on config), off for the
+    others, and no project folder for Ollama."""
+    provider = provider_value(provider)
+    model = str(model).strip()
+    merged = dict(settings)
+    if provider != provider_value(settings.get("provider")):
+        config = config or {}
+        is_codex = provider == PROVIDER_CODEX
+        fast_mode = config.get("fast_mode", False)
+        summaries = config.get("stream_reasoning_summaries", True)
+        merged["fast_mode"] = is_codex and fast_mode is True
+        merged["stream_reasoning_summaries"] = is_codex and summaries is not False
+        if provider == PROVIDER_OLLAMA:
+            merged["project_folder"] = ""
+    merged.update(
+        provider=provider,
+        model=model,
+        reasoning_effort=effort_supported_by_options(
+            reasoning_effort, effort_options_for(provider, model)
+        ),
+        card_access=card_access,
+    )
+    if card_access == "deck" and not merged.get("deck_ids"):
+        merged["deck_ids"] = list(deck_ids)
+    return merged
 
 
 SOURCE_LABELS = {
