@@ -2352,6 +2352,14 @@
     "repository": "https://github.com/mbrubeck/rust-debug-unreachable"
   },
   {
+    "authors": null,
+    "description": "Rust friendly bindings to *nix APIs",
+    "license": "MIT",
+    "license_file": null,
+    "name": "nix",
+    "repository": "https://github.com/nix-rust/nix"
+  },
+  {
     "authors": "contact@geoffroycouprie.com",
     "description": "A byte-oriented, zero-copy, parser combinators library",
     "license": "MIT",
@@ -4080,6 +4088,14 @@
     "repository": "https://github.com/kardeiz/type-map"
   },
   {
+    "authors": "Chip Senkbeil <chip@senkbeil.org>",
+    "description": "Provides typed variants of Path and PathBuf for Unix and Windows",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "typed-path",
+    "repository": "https://github.com/chipsenkbeil/typed-path"
+  },
+  {
     "authors": "Paho Lurie-Gregg <paho@paholg.com>|Andre Bogus <bogusandre@gmail.com>",
     "description": "Typenum is a Rust library for type-level numbers evaluated at     compile time. It currently supports bits, unsigned integers, and signed     integers. It also provides a type-level array of type-level numbers, but its     implementation is incomplete.",
     "license": "Apache-2.0 OR MIT",
@@ -5109,7 +5125,7 @@
     "license": "MIT",
     "license_file": null,
     "name": "zip",
-    "repository": "https://github.com/zip-rs/zip2.git"
+    "repository": "https://github.com/zip-rs/zip2"
   },
   {
     "authors": null,

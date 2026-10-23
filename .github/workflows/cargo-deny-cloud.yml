@@ -1,4 +1,4 @@
-name: Repair cargo-deny with Codex Web
+name: Repair cargo-deny with Claude
 
 on:
   workflow_run:
@@ -18,6 +18,8 @@ concurrency:
 
 permissions:
   contents: read
+  # Lets the job's GITHUB_TOKEN dispatch cargo-deny-agent.yml.
+  actions: write
 
 jobs:
   repair:
@@ -36,46 +38,20 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: '22'
-
-      - name: Install pinned cloud CLI
-        run: npm install --global @openai/codex@0.153.4
-
       - name: Test controller gates
         run: python3 -m unittest discover -s .github/scripts/tests
 
       - name: Repair, independently review, validate, and merge
         env:
-          CODEX_REPAIR_APP_ID: ${{ vars.CODEX_REPAIR_APP_ID }}
-          CODEX_REPAIR_APP_PRIVATE_KEY: ${{ secrets.CODEX_REPAIR_APP_PRIVATE_KEY }}
-          CODEX_AUTH_CHECK_ONLY: ${{ inputs.auth_only == true && 'true' || 'false' }}
-          CODEX_AUTH_JSON: ${{ secrets.CODEX_CLOUD_AUTH_JSON }}
-          CODEX_CLOUD_ENV_ID: 6aafb234eb488191ad79c7c7cf35b709
-          CODEX_HOME: ${{ runner.temp }}/cargo-deny-codex-auth
+          CARGO_DENY_APP_ID: ${{ vars.CARGO_DENY_APP_ID }}
+          CARGO_DENY_APP_PRIVATE_KEY: ${{ secrets.CARGO_DENY_APP_PRIVATE_KEY }}
+          AGENT_DISPATCH_TOKEN: ${{ github.token }}
+          AUTH_CHECK_ONLY: ${{ inputs.auth_only == true && 'true' || 'false' }}
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-          for name in ('CODEX_REPAIR_APP_ID', 'CODEX_REPAIR_APP_PRIVATE_KEY', 'CODEX_AUTH_JSON'):
-              if not os.environ.get(name):
-                  raise SystemExit(f'Missing required credential: {name}. See docs/cargo-deny-cloud.md.')
-          auth = json.loads(os.environ['CODEX_AUTH_JSON'])
-          if not isinstance(auth.get('tokens'), dict) or not auth['tokens'].get('refresh_token'):
-              raise SystemExit('Codex Web requires a ChatGPT CLI login, not an API key.')
-          directory = Path(os.environ['CODEX_HOME'])
-          directory.mkdir(mode=0o700)
-          target = directory / 'auth.json'
-          target.touch(mode=0o600)
-          target.write_text(json.dumps(auth))
-          PY
-          unset CODEX_AUTH_JSON
+          for name in CARGO_DENY_APP_ID CARGO_DENY_APP_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required credential: $name. See docs/cargo-deny-cloud.md."
+              exit 1
+            fi
+          done
           python3 .github/scripts/cargo_deny_cloud.py
-
-      - name: Remove ephemeral Codex login
-        if: always()
-        env:
-          CODEX_AUTH_DIR: ${{ runner.temp }}/cargo-deny-codex-auth
-        run: rm -rf -- "$CODEX_AUTH_DIR"
