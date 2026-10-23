@@ -698,6 +698,22 @@ def _revert_unreported_contrast(note: Any) -> bool:
     return True
 
 
+def _is_character_cue(note: Any) -> bool:
+    if note["CardKind"] == "Disambiguation · character recall":
+        return True
+    data = _json_field(note["Source"])
+    if data.get("mode") == "characters":
+        return True
+    word = data.get("word")
+    try:
+        return (
+            isinstance(word, str)
+            and existing_candidate(dict(note.items()), word).mode == "characters"
+        )
+    except ValidationError:
+        return False
+
+
 def upgrade_presentation(col: Collection) -> OpChanges:
     if col.models.by_name(MODEL_NAME) is None:
         return OpChanges()
@@ -711,14 +727,24 @@ def upgrade_presentation(col: Collection) -> OpChanges:
             lambda m: "{{c" + m[1] + "::" + m[2].split("::", 1)[0] + "}}", note["Text"]
         )
         kind = note["CardKind"]
-        if kind in (
-            "Disambiguation · contrast pair",
-            "Disambiguation · character recall",
-        ) or (not kind and "disambiguation" in note.tags):
+        tags = note.tags
+        if _is_character_cue(note):
+            # A visible character is a cue, not a confusion; it needs no label.
+            kind = ""
+            tags = [tag for tag in tags if tag != "disambiguation"]
+        elif kind == "Disambiguation · contrast pair" or (
+            not kind and "disambiguation" in tags
+        ):
             kind = "Disambiguation"
-        if reverted or text != note["Text"] or kind != note["CardKind"]:
+        if (
+            reverted
+            or text != note["Text"]
+            or kind != note["CardKind"]
+            or tags != note.tags
+        ):
             note["Text"] = text
             note["CardKind"] = kind
+            note.tags = tags
             notes.append(note)
     if notes:
         col.update_notes(notes)
@@ -988,7 +1014,8 @@ def _admit(
             _write_candidate_fields(
                 note, source, valid, rendered_text, current.evidence, bool(repair_id)
             )
-        kind = "Disambiguation" if valid.candidate.mode != "word" else ""
+        # Only a pair answering a reported confusion is labelled; cues are not.
+        kind = "Disambiguation" if valid.candidate.mode == "contrast" else ""
         note["CardKind"] = kind
         audit.update(
             status="pending" if staged_character else "applied",
@@ -1008,7 +1035,8 @@ def _admit(
                 f"chinese-frontier::source::{source.card_id}",
             ]
         )
-        if kind and "disambiguation" not in note.tags:
+        note.tags = [tag for tag in note.tags if tag != "disambiguation"]
+        if kind:
             note.tags.append("disambiguation")
         if repair_id:
             col.update_note(note)
