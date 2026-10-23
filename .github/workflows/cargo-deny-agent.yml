@@ -74,6 +74,7 @@ jobs:
       # repository settings ignored. --safe-mode: CLAUDE.md and other customizations
       # off. dontAsk: anything not pre-approved is denied. Output is kept off the log.
       - name: Run Claude
+        id: claude
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           AGENT_PROMPT: ${{ inputs.prompt }}
@@ -88,6 +89,10 @@ jobs:
             --output-format json \
             --json-schema "$(cat "$RUNNER_TEMP/schema.json")" \
             < /dev/null > "$RUNNER_TEMP/claude.json"
+
+      - name: Summarise Claude failure
+        if: failure() && steps.claude.outcome == 'failure'
+        run: python3 .github/scripts/cargo_deny_agent.py summary "$RUNNER_TEMP/claude.json"
 
       - name: Apply answer
         run: >-
