@@ -32,7 +32,7 @@ from aqt.qt import (
     QVBoxLayout,
     qconnect,
 )
-from aqt.utils import showInfo, tooltip
+from aqt.utils import getOnlyText, showInfo, tooltip
 
 from .collection import (
     SETTINGS_KEY,
@@ -40,6 +40,7 @@ from .collection import (
     Snapshot,
     admit,
     initial_scope_settings,
+    report_confusion,
     request_repair,
     snapshot,
     upgrade_presentation,
@@ -554,6 +555,24 @@ class Controller:
             )
 
         qconnect(action.triggered, replace)
+        confused = menu.addAction("I answered a different word...")
+
+        def report() -> None:
+            if not mw:
+                return
+            word = getOnlyText(
+                "Which Chinese word did you answer? It will be contrasted with this one.",
+                parent=mw,
+            ).strip()
+            if not word:
+                return
+            CollectionOp(
+                parent=mw, op=lambda col: report_confusion(col, note_id, word)
+            ).success(lambda _result: self.tick(force=True)).run_in_background(
+                initiator=self
+            )
+
+        qconnect(confused.triggered, report)
 
     def settings_dialog(self) -> None:
         if not mw or not mw.col:

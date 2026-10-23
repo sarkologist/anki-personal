@@ -212,6 +212,14 @@ def existing_candidate(fields: dict[str, str], word: str) -> Candidate:
     )
 
 
+def reported_confusions(fields: dict[str, str]) -> tuple[str, ...]:
+    """Words the learner answered instead, recorded in the Source metadata."""
+    reported = _json_field(fields.get("Source", "")).get("disambiguation", {})
+    words = reported.get("with", ()) if isinstance(reported, dict) else ()
+    words = (words,) if isinstance(words, str) else words
+    return tuple(dict.fromkeys(w for w in words if isinstance(w, str) and is_word(w)))
+
+
 def needs_audit(fields: dict[str, str]) -> bool:
     audit = _json_field(fields.get("Disambiguation", ""))
     return (
@@ -261,16 +269,12 @@ def _repair_source(col: Collection, source: Source, note_id: int) -> Source:
         existing_candidate=previous_candidate,
         existing_fingerprint=presentation_fingerprint(fields),
         existing_cards=len(old_note.cards()),
-        allowed_competitors=tuple(
-            dict.fromkeys(
-                w
-                for m in CLOZE.finditer(old_note["Text"])
-                if previous_candidate
-                and previous_candidate["mode"] == "contrast"
-                and is_word(w := m[2].split("::", 1)[0])
-                and w != source.word
-            )
-        ),
+        # A one-card pair cannot replace character siblings without removing one.
+        reported_confusions=tuple(
+            w for w in reported_confusions(fields) if w != source.word
+        )
+        if len(old_note.cards()) <= 1
+        else (),
         force_repair=REPAIR_TAG in old_note.tags,
     )
 
@@ -663,6 +667,37 @@ def ensure_model(col: Collection) -> dict[str, Any]:
     return stored
 
 
+def _revert_unreported_contrast(note: Any) -> bool:
+    """Contrast pairs once papered over ambiguous examples. Without a reported
+    confusion, keep only the first example; the changed card is then re-audited."""
+    fields = dict(note.items())
+    data = _json_field(note["Source"])
+    word = data.get("word")
+    if not isinstance(word, str) or reported_confusions(fields):
+        return False
+    try:
+        candidate = existing_candidate(fields, word)
+    except ValidationError:
+        return False
+    if candidate.mode != "contrast" or candidate.sentence.count(word) != 1:
+        return False
+    note["Text"] = html.escape(candidate.sentence).replace(
+        word, "{{c1::" + word + "}}", 1
+    )
+    note["Translation"] = html.escape(candidate.translation)
+    note["Pinyin"] = html.escape(candidate.pinyin)
+    note["Target"] = word
+    note["Meaning"] = html.escape(str(data.get("definition", "")))
+    note["CardKind"] = ""
+    data["mode"] = "word"
+    tested = data.get("tested_words")
+    if isinstance(tested, dict):
+        data["tested_words"] = {k: v for k, v in tested.items() if k == word}
+    note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
+    note.tags = [tag for tag in note.tags if tag != "disambiguation"]
+    return True
+
+
 def upgrade_presentation(col: Collection) -> OpChanges:
     if col.models.by_name(MODEL_NAME) is None:
         return OpChanges()
@@ -671,6 +706,7 @@ def upgrade_presentation(col: Collection) -> OpChanges:
     notes = []
     for nid in col.find_notes(f'"note:{MODEL_NAME}" tag:{GENERATED_TAG}'):
         note = col.get_note(nid)
+        reverted = _revert_unreported_contrast(note)
         text = CLOZE.sub(
             lambda m: "{{c" + m[1] + "::" + m[2].split("::", 1)[0] + "}}", note["Text"]
         )
@@ -680,7 +716,7 @@ def upgrade_presentation(col: Collection) -> OpChanges:
             "Disambiguation · character recall",
         ) or (not kind and "disambiguation" in note.tags):
             kind = "Disambiguation"
-        if text != note["Text"] or kind != note["CardKind"]:
+        if reverted or text != note["Text"] or kind != note["CardKind"]:
             note["Text"] = text
             note["CardKind"] = kind
             notes.append(note)
@@ -705,6 +741,34 @@ def request_repair(col: Collection, note_id: int) -> OpChanges:
         raise ValueError(
             "Only generated Chinese Frontier notes can be replaced automatically"
         )
+    if REPAIR_TAG not in note.tags:
+        note.tags.append(REPAIR_TAG)
+    return col.update_note(note)
+
+
+def report_confusion(col: Collection, note_id: int, word: str) -> OpChanges:
+    """Record the word the learner answered instead; the repair contrasts the two."""
+    note = col.get_note(NoteId(note_id))
+    if GENERATED_TAG not in note.tags or note.note_type()["name"] != MODEL_NAME:
+        raise ValueError("Only generated Chinese Frontier notes can record a confusion")
+    if len(note.cards()) > 1:
+        raise ValueError(
+            "This note already has character cards; a contrast pair would remove one"
+        )
+    word = word.strip()
+    data = _json_field(note["Source"])
+    if not is_word(word) or word == data.get("word"):
+        raise ValueError("Enter the other Chinese word you answered")
+    words = tuple(dict.fromkeys((*reported_confusions(dict(note.items())), word)))
+    previous = data.get("disambiguation")
+    previous = previous if isinstance(previous, dict) else {}
+    data["disambiguation"] = {
+        **previous,
+        "with": words[0] if len(words) == 1 else list(words),
+        "feedback": "Learner answered " + ", ".join(words) + ".",
+        "previous_text": previous.get("previous_text", note["Text"]),
+    }
+    note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
     if REPAIR_TAG not in note.tags:
         note.tags.append(REPAIR_TAG)
     return col.update_note(note)

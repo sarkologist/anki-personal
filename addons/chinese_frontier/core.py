@@ -92,7 +92,8 @@ class Source:
     existing_candidate: dict[str, Any] | None = None
     existing_fingerprint: str = ""
     existing_cards: int = 0
-    allowed_competitors: tuple[str, ...] = ()
+    # Words the learner answered instead; the only words a contrast pair may test.
+    reported_confusions: tuple[str, ...] = ()
     force_repair: bool = False
 
     @property
@@ -107,7 +108,7 @@ class Source:
             "definition": self.definition,
             "avoid_sentence": self.avoid_sentence,
             "existing_candidate": self.existing_candidate,
-            "allowed_competitors": self.allowed_competitors,
+            "reported_confusions": self.reported_confusions,
         }
 
 
@@ -229,8 +230,8 @@ def validate_candidate(
         other = candidate.contrast
         if other is None or other.word == source.word or not is_word(other.word):
             raise ValidationError("A different whole-word contrast is required")
-        if other.word not in known and other.word not in source.allowed_competitors:
-            raise ValidationError("Contrast word has no familiar-card evidence")
+        if other.word not in source.reported_confusions:
+            raise ValidationError("Contrast pairs only answer a reported confusion")
         other_source = Source(0, 0, 0, other.word, other.definition, "contrast")
         other_valid = validate_candidate(
             Candidate(other.sentence, other.translation, other.pinyin, ""),
@@ -253,6 +254,8 @@ def validate_candidate(
         dependencies = tuple(dict.fromkeys((*dependencies, *other_valid.dependencies)))
     elif candidate.contrast is not None:
         raise ValidationError("Only contrast mode may contain a second example")
+    elif source.reported_confusions:
+        raise ValidationError("A reported confusion needs a contrast pair")
     return Validated(candidate, text, dependencies, translation, count)
 
 
