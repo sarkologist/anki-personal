@@ -114,6 +114,31 @@ class Explanation(unittest.TestCase):
         self.assertIn("needs a minor bump", stream.getvalue())
 
 
+class FailureSummary(unittest.TestCase):
+    def test_error_fields_shown_answer_hidden(self):
+        error = {
+            "is_error": True,
+            "subtype": "success",
+            "api_error_status": 401,
+            "num_turns": 1,
+            "result": "Invalid bearer token",
+        }
+        text = m.failure_summary(json.dumps(error))
+        self.assertIn("401", text)
+        self.assertIn("Invalid bearer token", text)
+        answered = output({"upgrades": []}) | {"result": "private reasoning"}
+        self.assertNotIn("private reasoning", m.failure_summary(json.dumps(answered)))
+
+    def test_error_cannot_start_workflow_command_line(self):
+        error = {"is_error": True, "result": "x\n::stop-commands::abc"}
+        for line in m.failure_summary(json.dumps(error)).splitlines():
+            self.assertFalse(line.startswith("::"))
+
+    def test_non_json_output(self):
+        self.assertIn("not JSON", m.failure_summary("Error: unknown option"))
+        self.assertIn("no output", m.failure_summary(""))
+
+
 class Schemas(unittest.TestCase):
     def test_schemas_are_json(self):
         for mode in ("repair", "review"):

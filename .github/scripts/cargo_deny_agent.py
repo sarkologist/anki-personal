@@ -153,8 +153,37 @@ def apply(mode, result_path, head, base, patch_path):
         )
 
 
+def failure_summary(raw):
+    """Diagnostic fields of a failed Claude run, without its answer text."""
+    if not raw.strip():
+        return "Claude produced no output (see the step's stderr)."
+    try:
+        result = json.loads(raw)
+    except ValueError:
+        return f"Claude output is not JSON: {raw[:300]!r}"
+    fields = [
+        "subtype",
+        "is_error",
+        "api_error_status",
+        "terminal_reason",
+        "stop_reason",
+        "num_turns",
+    ]
+    lines = [f"{field}: {result.get(field)}" for field in fields]
+    denials = result.get("permission_denials") or []
+    lines.append(f"denied tools: {[d.get('tool_name') for d in denials]}")
+    # On error, result is the error message rather than Claude's answer.
+    if result.get("is_error"):
+        # repr() keeps it on one line, so it cannot inject ::workflow-commands.
+        lines.append(f"error: {str(result.get('result'))[:500]!r}")
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "schema":
         print(schema(sys.argv[2]))
+    elif sys.argv[1] == "summary":
+        path = Path(sys.argv[2])
+        print(failure_summary(path.read_text() if path.exists() else ""))
     else:
         apply(*sys.argv[2:])

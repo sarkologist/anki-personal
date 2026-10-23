@@ -74,6 +74,7 @@ jobs:
       # repository settings ignored. --safe-mode: CLAUDE.md and other customizations
       # off. dontAsk: anything not pre-approved is denied. Output is kept off the log.
       - name: Run Claude
+        id: claude
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           AGENT_PROMPT: ${{ inputs.prompt }}
@@ -90,9 +91,14 @@ jobs:
             < /dev/null > "$RUNNER_TEMP/claude.json"
 
       - name: Apply answer
+        id: apply
         run: >-
           python3 .github/scripts/cargo_deny_agent.py apply
           "$MODE" "$RUNNER_TEMP/claude.json" "$COMMIT" "$BASE" "$RUNNER_TEMP/agent.patch"
+
+      - name: Summarise Claude failure
+        if: failure() && (steps.claude.outcome == 'failure' || steps.apply.outcome == 'failure')
+        run: python3 .github/scripts/cargo_deny_agent.py summary "$RUNNER_TEMP/claude.json"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
