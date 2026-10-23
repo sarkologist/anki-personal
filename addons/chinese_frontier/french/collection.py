@@ -220,6 +220,48 @@ def refresh_conjugation_tables(
     return col.merge_undo_entries(undo) if undo is not None else OpChanges()
 
 
+def card_kind(mode: str, target_kind: str) -> str:
+    # A visible stem is a cue, not a confusion, so it is labelled like a word.
+    if mode == "contrast":
+        return "Disambiguation"
+    return "Conjugation" if target_kind == "conjugation" else ""
+
+
+def drop_cue_labels(col: Collection, skip: AbstractSet[int] = frozenset()) -> OpChanges:
+    """Unlabel cards admitted while every fallback was called Disambiguation."""
+    model = col.models.by_name(MODEL)
+    if not model:
+        return OpChanges()
+    undo = None
+    for nid in col.models.nids(model["id"]):
+        if nid in skip:
+            # A queued regeneration fingerprints the current hash; leave it intact.
+            continue
+        note = col.get_note(nid)
+        values = {name: note[name] for name in note.keys()}
+        data = json_field(values["Source"])
+        target = data.get("target")
+        mode = data.get("mode")
+        if TAG not in note.tags or mode == "contrast" or not isinstance(target, dict):
+            continue
+        kind = values["CardKind"]
+        if kind == "Disambiguation":
+            kind = card_kind(str(mode), str(target.get("kind", "")))
+        tags = [t for t in note.tags if t != "disambiguation"]
+        if kind == values["CardKind"] and tags == note.tags:
+            continue
+        if undo is None:
+            undo = col.add_custom_undo_entry("Unlabel French stem cards")
+        unchanged = data.get("presentation_hash") == presentation_hash(values)
+        note["CardKind"] = values["CardKind"] = kind
+        note.tags = tags
+        if unchanged:
+            data["presentation_hash"] = presentation_hash(values)
+            note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
+        col.update_note(note)
+    return col.merge_undo_entries(undo) if undo is not None else OpChanges()
+
+
 def request_repair(col: Collection, note_id: int) -> OpChanges:
     note = col.get_note(note_id)
     if TAG not in note.tags or note.note_type()["name"] != MODEL:
@@ -633,11 +675,7 @@ def admit(
             "constructions": list(c.constructions),
         }
         audit = {**draft.audit, "status": "applied"}
-        kind = (
-            "Disambiguation"
-            if c.mode != "word"
-            else ("Conjugation" if draft.target.kind == "conjugation" else "")
-        )
+        kind = card_kind(c.mode, draft.target.kind)
         values = {
             "Text": valid.text,
             "Translation": valid.translation,
@@ -662,7 +700,7 @@ def admit(
         for name, value in values.items():
             note[name] = value
         note.tags = (
-            [t for t in note.tags if t != REPAIR_TAG]
+            [t for t in note.tags if t not in (REPAIR_TAG, "disambiguation")]
             if draft.repair_note
             else [
                 TAG,
@@ -670,7 +708,7 @@ def admit(
                 "french-frontier::" + draft.target.kind,
             ]
         )
-        if c.mode != "word":
+        if kind == "Disambiguation":
             note.tags.append("disambiguation")
         if draft.repair_note:
             col.update_note(note)

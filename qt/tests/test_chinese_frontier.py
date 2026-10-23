@@ -1335,10 +1335,14 @@ def test_character_word_needs_all_siblings_learned_for_context(
 
 
 @pytest.mark.parametrize(
-    "old_label", ["Disambiguation · contrast pair", "Disambiguation · character recall"]
+    "old_label,label",
+    [
+        ("Disambiguation · contrast pair", "Disambiguation"),
+        ("Disambiguation · character recall", ""),
+    ],
 )
 def test_existing_disambiguation_labels_are_shortened(
-    collection: Collection, old_label: str
+    collection: Collection, old_label: str, label: str
 ) -> None:
     note = collection.new_note(ensure_model(collection))
     note["Text"] = "{{c1::推}}辞。"
@@ -1348,10 +1352,44 @@ def test_existing_disambiguation_labels_are_shortened(
     cid = note.cards()[0].id
     upgrade_presentation(collection)
     updated = collection.get_note(note.id)
-    assert updated["CardKind"] == "Disambiguation"
+    assert updated["CardKind"] == label
     assert updated.cards()[0].id == cid
     assert old_label not in updated.cards()[0].question()
     assert old_label not in updated.cards()[0].answer()
+
+
+def test_character_cue_cards_are_not_labelled_disambiguation(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, target, c = student_target(collection)
+    draft = audited_draft(target, replace(c, mode="characters"))
+    note = collection.get_note(
+        admit(collection, settings, {}, [draft], lexicon).admitted[0]
+    )
+    assert note["CardKind"] == "" and "disambiguation" not in note.tags
+    assert all("Disambiguation" not in card.question() for card in note.cards())
+
+
+def test_upgrade_drops_the_label_from_existing_character_cue_cards(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, target, c = student_target(collection)
+    draft = audited_draft(target, replace(c, mode="characters"))
+    note = collection.get_note(
+        admit(collection, settings, {}, [draft], lexicon).admitted[0]
+    )
+    note["CardKind"] = "Disambiguation"
+    note.tags.append("disambiguation")
+    collection.update_note(note)
+    cards = [(card.id, card.reps, card.ivl) for card in note.cards()]
+    reported, _ = contrast_note(collection, {"disambiguation": {"with": "千"}})
+    upgrade_presentation(collection)
+    after = collection.get_note(note.id)
+    assert after["CardKind"] == "" and "disambiguation" not in after.tags
+    assert [(card.id, card.reps, card.ivl) for card in after.cards()] == cards
+    assert not needs_audit(dict(after.items()))
+    assert collection.get_note(reported.id)["CardKind"] == "Disambiguation"
+    assert not upgrade_presentation(collection).note
 
 
 @pytest.fixture

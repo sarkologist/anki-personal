@@ -38,6 +38,7 @@ from .collection import (
     SETTINGS,
     Admission,
     admit,
+    drop_cue_labels,
     refresh_conjugation_tables,
     request_repair,
     snapshot,
@@ -277,10 +278,14 @@ class Controller:
                 if isinstance(d, dict) and isinstance(d.get("repair_note"), int)
             }
 
-            CollectionOp(
-                parent=mw,
-                op=lambda col: refresh_conjugation_tables(col, lexicon, queued),
-            ).success(refreshed).failure(unrefreshed).run_in_background(initiator=self)
+            def refresh(col: Any) -> OpChanges:
+                changes = drop_cue_labels(col, queued)
+                changes.MergeFrom(refresh_conjugation_tables(col, lexicon, queued))
+                return changes
+
+            CollectionOp(parent=mw, op=refresh).success(refreshed).failure(
+                unrefreshed
+            ).run_in_background(initiator=self)
             return
         QueryOp(
             parent=mw,

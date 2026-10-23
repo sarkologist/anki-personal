@@ -2952,3 +2952,151 @@ def test_corrupt_paradigm_cache_does_not_block_loading(tmp_path):
     )
     (tmp_path / "paradigms-v1.json").write_text(json.dumps({"version": 1}))
     assert Lexicon.load(tmp_path).paradigms == {}
+
+
+def admitted_french_note(collection, c):
+    from chinese_frontier.french.collection import SETTINGS, admit
+    from chinese_frontier.french.generation import Draft, candidate_hash
+
+    settings = {"enabled": True, "deck_id": 1}
+    collection.set_config(SETTINGS, settings)
+    for word in ("je", "le", "train", "regarde", "parle"):
+        add_cloze(collection, "{{c1::" + word + "}}", learned=True)
+    t = target()
+    review = {
+        "approved": True,
+        "context_checks": context_checks(),
+        "reason": "clear",
+        "search_summary": "Checked rent",
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": c.mode == "word",
+                "reason": "rent differs",
+            }
+        ],
+    }
+    audit = {
+        "policy": POLICY,
+        "target_key": t.key,
+        "fingerprint": candidate_hash(c),
+        "review": review,
+    }
+    result = admit(collection, settings, {}, [Draft(t, c, audit)], dictionary())
+    return settings, collection.get_note(result.admitted[0])
+
+
+def test_stem_cue_card_is_not_labelled_disambiguation(collection):
+    from dataclasses import replace
+
+    _settings, note = admitted_french_note(
+        collection, replace(candidate(), mode="stem", explanation="empr")
+    )
+    assert note["CardKind"] == "" and "disambiguation" not in note.tags
+    assert "Disambiguation" not in note.cards()[0].question()
+
+
+def test_existing_stem_cards_lose_the_label_without_regeneration(collection):
+    import html
+    import json
+    from dataclasses import replace
+
+    from chinese_frontier.french.collection import (
+        drop_cue_labels,
+        presentation_hash,
+        snapshot,
+    )
+
+    settings, note = admitted_french_note(
+        collection, replace(candidate(), mode="stem", explanation="empr")
+    )
+    # Reshape into a stem note admitted before cue cards stopped being labelled.
+    note["CardKind"] = "Disambiguation"
+    note.tags.append("disambiguation")
+    metadata = json.loads(html.unescape(note["Source"]))
+    metadata["presentation_hash"] = presentation_hash(
+        {name: note[name] for name in note.keys()}
+    )
+    note["Source"] = html.escape(json.dumps(metadata, ensure_ascii=False))
+    collection.update_note(note)
+    cards = collection.db.all("select * from cards where nid=?", note.id)
+
+    drop_cue_labels(collection, {note.id})
+    assert collection.get_note(note.id)["CardKind"] == "Disambiguation"
+    drop_cue_labels(collection)
+    after = collection.get_note(note.id)
+    assert after["CardKind"] == "" and "disambiguation" not in after.tags
+    assert collection.db.all("select * from cards where nid=?", note.id) == cards
+    # The relabel is not mistaken for a hand edit that needs regeneration.
+    assert not snapshot(collection, settings, {}, dictionary()).repairs
+    mod = after.mod
+    drop_cue_labels(collection)
+    assert collection.get_note(note.id).mod == mod
+
+
+def test_stale_labels_are_cleared_from_any_non_contrast_note(collection):
+    import html
+    import json
+
+    from chinese_frontier.french.collection import drop_cue_labels, presentation_hash
+
+    _settings, note = admitted_french_note(collection, candidate())
+    note.tags.append("disambiguation")
+    collection.update_note(note)
+    drop_cue_labels(collection)
+    assert "disambiguation" not in collection.get_note(note.id).tags
+
+    # A label the user typed on a stem card is theirs, not a migration leftover.
+    metadata = json.loads(html.unescape(note["Source"]))
+    metadata["mode"] = "stem"
+    note = collection.get_note(note.id)
+    note["CardKind"] = "Mine"
+    metadata["presentation_hash"] = presentation_hash(
+        {name: note[name] for name in note.keys()}
+    )
+    note["Source"] = html.escape(json.dumps(metadata, ensure_ascii=False))
+    collection.update_note(note)
+    drop_cue_labels(collection)
+    assert collection.get_note(note.id)["CardKind"] == "Mine"
+
+
+def test_repair_drops_a_stale_disambiguation_tag(collection):
+    from dataclasses import replace
+
+    from chinese_frontier.french.collection import admit, request_repair, snapshot
+    from chinese_frontier.french.generation import Draft, candidate_hash
+
+    settings, note = admitted_french_note(
+        collection, replace(candidate(), mode="stem", explanation="empr")
+    )
+    note.tags.append("disambiguation")
+    collection.update_note(note)
+    request_repair(collection, note.id)
+    repair = snapshot(collection, settings, {}, dictionary()).repairs
+    ((key, (nid, fingerprint, t)),) = repair.items()
+    c = candidate()
+    audit = {
+        "policy": POLICY,
+        "target_key": t.key,
+        "fingerprint": candidate_hash(c),
+        "review": {
+            "approved": True,
+            "context_checks": context_checks(),
+            "reason": "clear",
+            "search_summary": "Checked rent",
+            "alternatives": [
+                {
+                    "example": 0,
+                    "answer": "loue",
+                    "fits_context": False,
+                    "fits_cloze": True,
+                    "reason": "rent differs",
+                }
+            ],
+        },
+    }
+    draft = Draft(t, c, audit, repair_note=nid, old_fingerprint=fingerprint)
+    assert admit(collection, settings, {}, [draft], dictionary()).admitted == [nid]
+    assert "disambiguation" not in collection.get_note(nid).tags
