@@ -23,11 +23,26 @@ UNDO_NAME = "Apply agent proposal"
 DUPLICATE_EXCERPT_CHARS = 80
 
 
+class PartialApplyError(RuntimeError):
+    """A write failed after earlier writes of the same apply were committed."""
+
+
 def new_note_for(col: Any, create: NoteCreate) -> Any:
-    """An unsaved note of the proposed note type with the proposed content."""
+    """An unsaved note of the proposed note type with the proposed content.
+
+    Raises PatchValidationError if the note type or one of the fields is gone
+    (deleted or renamed since the proposal was validated).
+    """
     notetype = col.models.get(create.notetype_id)
     if not notetype:
         raise PatchValidationError(f"Note type {create.notetype_id} no longer exists.")
+    names = {str(field.get("name")) for field in notetype.get("flds") or ()}
+    for field in create.fields:
+        if field.name not in names:
+            raise PatchValidationError(
+                f"Note type {notetype.get('name') or create.notetype_id} has no"
+                f" field {field.name}."
+            )
     note = col.new_note(notetype)
     for field in create.fields:
         note[field.name] = field.html
@@ -134,16 +149,34 @@ def apply_proposal_changes(
 ) -> Any:
     """Save updated notes and add new ones as a single undo step.
 
-    The ids of the added notes are appended to ``created_ids``.
+    Every new note is built and checked before the first write, so a proposal
+    that no longer fits the collection fails with nothing written. The ids of
+    the added notes are appended to ``created_ids``. A write that fails after
+    an earlier one was committed raises PartialApplyError (the written part
+    stays one undo step).
     """
-    target = col.add_custom_undo_entry(UNDO_NAME)
-    if updates:
-        col.update_notes(list(updates))
     for create in creates:
         if create.deck_id is None:
             raise ValueError("A new note has no deck to be added to.")
-    for create in creates:
-        note = new_note_for(col, create)
-        col.add_note(note, create.deck_id)
-        created_ids.append(int(note.id))
+    new_notes = [(new_note_for(col, create), create.deck_id) for create in creates]
+    target = col.add_custom_undo_entry(UNDO_NAME)
+    wrote = False
+    try:
+        if updates:
+            col.update_notes(list(updates))
+            wrote = True
+        for note, deck_id in new_notes:
+            col.add_note(note, deck_id)
+            wrote = True
+            created_ids.append(int(note.id))
+    except Exception as exc:
+        if not wrote:
+            raise
+        try:
+            col.merge_undo_entries(target)
+        except Exception:
+            pass
+        raise PartialApplyError(
+            f"The proposal was only partly applied: {exc or type(exc).__name__}"
+        ) from exc
     return col.merge_undo_entries(target)

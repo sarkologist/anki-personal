@@ -462,6 +462,7 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
 
     def on_thread_changed(self, thread_id: str) -> None:
         """Called by the queue's fan-out (runs finishing, pane actions...)."""
+        self._sync_multi_proposal_dialog(thread_id)
         self.refresh(render=thread_id == self._thread_id)
 
     # actions
@@ -505,9 +506,8 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
         reason = self._ask_discard_reason()
         if reason is None:
             return
-        if reason:
-            service.store.add_message(thread.id, "user", f"Discarded: {reason}")
-        self._discard_pending_patch(thread.id)
+        # Re-checked by the store: a run may have started while the dialog was open.
+        self._discard_pending_patch(thread.id, reason)
 
     def _note_ids(self, thread: Thread | None) -> list[int]:
         service = self._service()

@@ -98,6 +98,11 @@ create table proposals (
 _MIGRATE_V2 = "alter table proposals add column result_json text"
 
 
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"pragma table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
 class QueueTransitionError(RuntimeError):
     """An illegal state change, or the thread was not in the expected state."""
 
@@ -212,17 +217,35 @@ class QueueStore:
             yield self._conn
 
     def _migrate(self) -> None:
-        with self._tx() as conn:
+        """Bring the schema up to date in one explicit transaction.
+
+        sqlite3 runs DDL and pragmas outside its implicit transactions, so
+        without the explicit BEGIN a crash between the ALTER and the version
+        bump would leave a column that the next open tries to add again. Each
+        step also checks for what it adds, so such a half-migrated file opens.
+        """
+        with self._lock:
+            conn = self._conn
             version = conn.execute("pragma user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise RuntimeError(
                     f"Agent queue schema {version} is newer than this add-on supports."
                 )
-            if version < 1:
-                conn.executescript(_SCHEMA_V1)
-            if version < 2:
-                conn.execute(_MIGRATE_V2)
-            conn.execute(f"pragma user_version = {SCHEMA_VERSION}")
+            if version == SCHEMA_VERSION:
+                return
+            conn.execute("begin immediate")
+            try:
+                if version < 1:
+                    for statement in _SCHEMA_V1.split(";"):
+                        if statement.strip():
+                            conn.execute(statement)
+                if version < 2 and not _has_column(conn, "proposals", "result_json"):
+                    conn.execute(_MIGRATE_V2)
+                conn.execute(f"pragma user_version = {SCHEMA_VERSION}")
+            except BaseException:
+                conn.rollback()
+                raise
+            conn.commit()
 
     def schema_version(self) -> int:
         with self._lock:
@@ -369,6 +392,25 @@ class QueueStore:
             self._insert_message(conn, thread_id, "user", text, html)
             self._transition(conn, thread_id, status, QUEUED)
             conn.execute("update threads set error = null where id = ?", (thread_id,))
+
+    def discard(self, thread_id: str, reason: str | None = None) -> None:
+        """Discard a thread, recording ``reason`` as "Discarded: …", atomically.
+
+        Raises QueueTransitionError (and writes nothing) unless the thread is
+        in a state that can be discarded, e.g. a run started meanwhile.
+        """
+        with self._tx() as conn:
+            row = conn.execute(
+                "select status from threads where id = ?", (thread_id,)
+            ).fetchone()
+            status = row["status"] if row else "missing"
+            if DISCARDED not in TRANSITIONS.get(status, frozenset()):
+                raise QueueTransitionError(f"Cannot discard a {status} thread.")
+            if reason:
+                self._insert_message(
+                    conn, thread_id, "user", f"Discarded: {reason}", ""
+                )
+            self._transition(conn, thread_id, status, DISCARDED)
 
     def complete_run(
         self,

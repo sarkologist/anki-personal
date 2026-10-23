@@ -169,7 +169,8 @@ ready ────► applied | discarded | stale
 stale ────► queued (re-run) | discarded | applied (forced)
 ready / answered / failed ──reply──► queued
 failed ───► applied   (a failed run keeps the previous proposal current)
-applied ──► ready | failed   (revert when the apply's collection write fails)
+applied ──► ready | failed   (revert when the apply's collection write fails
+                             before anything was written; a partial write stays applied)
 ```
 
 A run that ends without a patch supersedes the thread's current proposal (a
@@ -628,6 +629,23 @@ Deviations:
 - The window is filtered by note id; multi-card threads match any of their
   selected notes.
 
+Review fixes (2026-10-23):
+
+- Apply builds and checks every new note (note type exists, every field name
+  present) before the first write; a write failing after an earlier one raises
+  `PartialApplyError`, which keeps the thread applied, stores the partial
+  `created_note_ids` plus `error` in `result_json` and adds a system message.
+- The multi-card dialog carries the proposal version it shows: Apply checked
+  refuses ("The proposal changed…") when it is no longer current, and
+  `on_thread_changed` closes it and reopens it on the new version.
+- `QueueStore.discard(thread_id, reason)` checks the status, adds "Discarded: …"
+  and transitions in one transaction; the pane and window warn when it refuses.
+- The v2 migration runs in one explicit transaction and skips the ALTER when
+  `proposals.result_json` already exists.
+- A run whose note was deleted fails with "The note no longer exists." before
+  the agent is called (multi: "The selected notes no longer exist." when all
+  are gone; otherwise the deleted ones are dropped from the snapshot and a
+  system message names them).
+
 Not done (phase 3 and later): Defer, Change model, Retry / re-run on stale,
 Apply then edit, session resume, bottom-bar badge, a clickable reviewer offer.
-

@@ -537,7 +537,9 @@ def test_apply_creates_only_adds_the_notes(
     col = types.SimpleNamespace(
         add_custom_undo_entry=lambda _name: 1,
         update_notes=lambda notes: pytest.fail("no updates"),
-        models=types.SimpleNamespace(get=lambda _id: {"flds": []}),
+        models=types.SimpleNamespace(
+            get=lambda _id: {"flds": [{"name": "Front"}, {"name": "Back"}]}
+        ),
         new_note=lambda _notetype: _Writable(),
         add_note=lambda note, deck_id: added.append(deck_id) or setattr(note, "id", 9),
         merge_undo_entries=lambda _target: "changes",
@@ -546,6 +548,55 @@ def test_apply_creates_only_adds_the_notes(
     assert added == [3]
     proposal = store.proposals(thread.id)[-1]
     assert proposal.result == {"created_note_ids": [9]}
+
+
+def test_apply_partial_failure_keeps_applied_and_records_what_was_added(
+    qw: Any, queue: Any, ops: list[FakeCollectionOp]
+) -> None:
+    store, _runner = queue
+    patch = NotePatch(
+        summary="New",
+        note_id=123,
+        notetype_id=7,
+        note_creates=(_note_create(), _note_create(deck_id=1)),
+    )
+    thread = _thread(store, patch=patch)
+    window = _window(qw)
+    window.refresh()
+
+    window._apply_pending_patch()
+    [op] = ops
+    added: list[int] = []
+
+    def add_note(note: Any, deck_id: int) -> None:
+        if added:
+            raise RuntimeError("disk full")
+        added.append(deck_id)
+        note.id = 9
+
+    col = types.SimpleNamespace(
+        add_custom_undo_entry=lambda _name: 1,
+        models=types.SimpleNamespace(
+            get=lambda _id: {"flds": [{"name": "Front"}, {"name": "Back"}]}
+        ),
+        new_note=lambda _notetype: _Writable(),
+        add_note=add_note,
+        merge_undo_entries=lambda _target: "changes",
+    )
+    with pytest.raises(Exception) as raised:
+        op.op(col)
+    assert op.on_failure is not None
+    op.on_failure(raised.value)
+
+    assert (
+        _status(store, thread.id) == "applied"
+    )  # not reverted: a re-Apply would duplicate
+    proposal = store.proposals(thread.id)[-1]
+    assert proposal.result is not None
+    assert proposal.result["created_note_ids"] == [9]
+    assert "disk full" in proposal.result["error"]
+    assert "disk full" in store.messages(thread.id)[-1].text
+    assert len(qw.warnings) == 1 and "disk full" in qw.warnings[0]
 
 
 class _Writable:
@@ -671,6 +722,31 @@ def test_discard_cancelled_or_without_reason(qw: Any, queue: Any) -> None:
     window._discard()
     assert _status(store, thread.id) == "discarded"
     assert len(store.messages(thread.id)) == messages
+
+
+def test_discard_refuses_a_thread_that_started_running_meanwhile(
+    qw: Any, queue: Any
+) -> None:
+    store, _runner = queue
+    thread = _thread(store)
+    window = _window(qw)
+    window.refresh()
+    messages = len(store.messages(thread.id))
+
+    def reason() -> str:
+        # A reply elsewhere re-queues it and the worker claims it while the
+        # reason dialog is open.
+        store.reply(thread.id, "more")
+        store.transition(thread.id, "queued", "running")
+        return "wrong pinyin"
+
+    window._ask_discard_reason = reason
+    window._discard()
+
+    assert _status(store, thread.id) == "running"
+    assert len(store.messages(thread.id)) == messages + 1  # only the reply
+    assert all("Discarded" not in m.text for m in store.messages(thread.id))
+    assert qw.warnings == ["Cannot discard a running thread."]
 
 
 def test_open_in_browser_searches_the_threads_notes(qw: Any, queue: Any) -> None:

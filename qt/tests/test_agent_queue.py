@@ -1920,3 +1920,98 @@ def test_catalog_errors_requeue_when_the_collection_is_closed(
     harness.runner._read_catalog = closed
     harness.runner.run_once()
     assert store.get_thread(thread.id).status == "queued"  # type: ignore[union-attr]
+
+
+# --- review fixes -----------------------------------------------------------
+
+
+def test_v1_store_that_already_has_result_json_opens(tmp_path: Path) -> None:
+    """A crash between the v2 ALTER and the version bump must not brick the store."""
+    import sqlite3
+
+    from editor_agent_pane import queue_store
+
+    path = tmp_path / "half.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(queue_store._SCHEMA_V1)
+    conn.execute(queue_store._MIGRATE_V2)
+    conn.execute("pragma user_version = 1")
+    conn.commit()
+    conn.close()
+    for _ in range(2):
+        store = QueueStore.open(path)
+        try:
+            assert store.schema_version() == 2
+        finally:
+            store.close()
+
+
+def test_discard_records_reason_and_closes_in_one_step(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.transition(thread.id, "queued", "running")
+    store.transition(thread.id, "running", "ready")
+
+    store.discard(thread.id, "wrong pinyin")
+
+    assert store.get_thread(thread.id).status == "discarded"  # type: ignore[union-attr]
+    assert store.messages(thread.id)[-1].text == "Discarded: wrong pinyin"
+
+
+def test_discard_without_reason_adds_no_message(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.discard(thread.id)
+    assert store.get_thread(thread.id).status == "discarded"  # type: ignore[union-attr]
+    assert len(store.messages(thread.id)) == 1
+
+
+def test_discard_refuses_a_running_thread_and_writes_nothing(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    store.transition(thread.id, "queued", "running")
+
+    with pytest.raises(QueueTransitionError):
+        store.discard(thread.id, "too late")
+
+    assert store.get_thread(thread.id).status == "running"  # type: ignore[union-attr]
+    assert [m.text for m in store.messages(thread.id)] == ["Fix back"]
+
+
+def test_run_fails_when_the_note_was_deleted(store: QueueStore) -> None:
+    thread = store.create_thread(context(), settings(), "Fix back", 11)
+    agent = FakeAgent([result("ok", (note_patch(),))])
+    Harness(store, agent, note_state={11: None}).runner.run_once()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+    assert loaded.error == "The note no longer exists."
+    assert agent.calls == []
+    assert store.current_proposal(thread.id) is None
+
+
+def test_multi_run_fails_when_every_note_was_deleted(store: QueueStore) -> None:
+    thread = store.create_thread(context(multi_snapshot()), settings(), "x")
+    agent = FakeAgent([result("ok")])
+    Harness(store, agent, note_state={11: None, 12: None}).runner.run_once()
+
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "failed"
+    assert loaded.error == "The selected notes no longer exist."
+    assert agent.calls == []
+
+
+def test_multi_run_drops_deleted_notes_and_says_so(store: QueueStore) -> None:
+    thread = store.create_thread(context(multi_snapshot()), settings(), "x")
+    agent = FakeAgent([result("ok")])
+    Harness(
+        store,
+        agent,
+        note_state={11: {"mod": 1, "fields": ["a", "b"], "tags": ["x"]}, 12: None},
+    ).runner.run_once()
+
+    sent = agent.calls[0]["snapshot"]
+    assert [note.note_id for note in sent.notes] == [11]
+    assert [card.note_id for card in sent.cards] == [11]
+    assert store.get_thread(thread.id).status == "answered"  # type: ignore[union-attr]
+    system = [m.text for m in store.messages(thread.id) if m.role == "system"]
+    assert any("12" in text and "no longer exist" in text for text in system)

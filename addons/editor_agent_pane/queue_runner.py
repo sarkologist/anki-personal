@@ -331,6 +331,40 @@ def refresh_snapshot(
     )
 
 
+NOTE_DELETED = "The note no longer exists."
+NOTES_DELETED = "The selected notes no longer exist."
+
+
+def drop_deleted_notes(
+    snapshot: Snapshot, states: dict[int, dict[str, Any] | None]
+) -> tuple[Snapshot, list[int]]:
+    """The snapshot without notes deleted since it was captured, and their ids.
+
+    A note counts as deleted when ``states`` maps it to None. Raises when
+    nothing is left to run against (the thread's note, or every selected note).
+    """
+    deleted = [
+        note_id
+        for note_id in snapshot_note_ids(snapshot)
+        if note_id in states and states[note_id] is None
+    ]
+    if not deleted:
+        return snapshot, []
+    if not isinstance(snapshot, MultiCardSnapshot):
+        raise RuntimeError(NOTE_DELETED)
+    gone = set(deleted)
+    notes = tuple(note for note in snapshot.notes if note.note_id not in gone)
+    if not notes:
+        raise RuntimeError(NOTES_DELETED)
+    cards = tuple(card for card in snapshot.cards if card.note_id not in gone)
+    return replace(snapshot, notes=notes, cards=cards), deleted
+
+
+def dropped_notes_message(note_ids: list[int]) -> str:
+    ids = ", ".join(str(note_id) for note_id in note_ids)
+    return f"Left out notes that no longer exist: nid {ids}."
+
+
 def base_for(
     note_ids: list[int], states: dict[int, dict[str, Any] | None]
 ) -> dict[str, Any]:
@@ -567,6 +601,7 @@ class QueueRunner:
             if note_ids
             else {}
         )
+        snapshot, dropped = drop_deleted_notes(snapshot, states)
         snapshot = refresh_snapshot(snapshot, states)
         read_catalog = self._read_catalog
         catalog: dict[str, Any] | None = (
@@ -678,6 +713,7 @@ class QueueRunner:
             thread.id,
             to_status=READY if patch is not None else ANSWERED,
             messages=[
+                *([("system", dropped_notes_message(dropped), "")] if dropped else []),
                 ("system", summary, ""),
                 ("agent", result.text, result.html),
             ],

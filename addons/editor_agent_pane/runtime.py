@@ -1504,6 +1504,7 @@ class EditorAgentPane(ThreadPanel, QWidget):
 
     def on_thread_changed(self, thread_id: str) -> None:
         """A thread changed in the store (run progress, apply, discard...)."""
+        self._sync_multi_proposal_dialog(thread_id)
         if thread_id == self._thread_id:
             self._load_threads(select=thread_id)
             return
@@ -1842,13 +1843,21 @@ class EditorAgentPane(ThreadPanel, QWidget):
             and previous[0] == thread.id
             and previous[1] in ACTIVE_STATUSES
         )
+        if not (became_ready and isinstance(shown, MultiNotePatch)):
+            return
+        # Patch and version from one read, so the dialog knows what it shows.
+        found = self._current_proposal(thread.id)
+        if found is None:
+            return
+        _thread, proposal, found_snapshot, patch = found
         if (
-            became_ready
-            and isinstance(shown, MultiNotePatch)
-            and shown.note_updates
-            and isinstance(snapshot, MultiCardSnapshot)
+            isinstance(patch, MultiNotePatch)
+            and patch.note_updates
+            and isinstance(found_snapshot, MultiCardSnapshot)
         ):
-            self._show_multi_proposal_dialog(thread.id, snapshot, shown)
+            self._show_multi_proposal_dialog(
+                thread.id, found_snapshot, patch, proposal.version
+            )
 
     def _apply_note_update(
         self, thread: Thread, proposal: Proposal, snapshot: Snapshot, patch: NotePatch

@@ -49,11 +49,10 @@ from .patches import (
     PatchValidationError,
     SelectedCardSnapshot,
 )
-from .preview import apply_proposal_changes, create_preview
+from .preview import PartialApplyError, apply_proposal_changes, create_preview
 from .queue_runner import refresh_snapshot, snapshot_note_ids
 from .queue_store import (
     APPLIED,
-    DISCARDED,
     Proposal,
     QueueTransitionError,
     Thread,
@@ -169,7 +168,7 @@ class MultiCardProposalDialog(QDialog):
         snapshot: MultiCardSnapshot,
         patch: MultiNotePatch,
         apply_callback: Callable[[set[int]], bool],
-        discard_callback: Callable[[], None],
+        discard_callback: Callable[[], object],
         create_previews: list[CreatePreview | None] | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
@@ -296,6 +295,9 @@ class MultiCardProposalDialog(QDialog):
         self.reject()
 
 
+PROPOSAL_CHANGED = (
+    "The proposal changed while this window was open. Review the new version."
+)
 NOT_ADDED_YET = (
     "This proposal changes a note that has not been added yet. Apply it from "
     "the Add Cards window it was requested in."
@@ -316,6 +318,8 @@ class ThreadPanel:
     _activity_id: str | None
     _activity_open: bool
     _multi_proposal_dialog: MultiCardProposalDialog | None
+    # (thread id, proposal version) the open multi-card dialog shows.
+    _multi_proposal_key: tuple[str, int] | None = None
 
     def _broadcast_thread_changed(self, thread_id: str) -> None:
         raise NotImplementedError
@@ -566,15 +570,22 @@ class ThreadPanel:
         self.stop_button.setEnabled(False)
         self._append_activity_line("[status] stopping agent")
 
-    def _discard_pending_patch(self, thread_id: str | None = None) -> None:
+    def _discard_pending_patch(
+        self, thread_id: str | None = None, reason: str | None = None
+    ) -> bool:
+        """Discard the thread (with an optional reason), or warn if it can no
+        longer be discarded (e.g. a run started meanwhile)."""
         service = self._service()
         thread_id = thread_id or self._thread_id
         if service is None or thread_id is None:
-            return
-        thread = service.store.get_thread(thread_id)
-        if thread is None or thread.status not in DISCARDABLE_STATUSES:
-            return
-        self._finish_thread(thread_id, thread.status, DISCARDED)
+            return False
+        try:
+            service.store.discard(thread_id, reason)
+        except QueueTransitionError as exc:
+            showWarning(str(exc), parent=self._widget())
+            return False
+        self._broadcast_thread_changed(thread_id)
+        return True
 
     def _finish_thread(self, thread_id: str, from_status: str, to_status: str) -> bool:
         service = self._service()
@@ -599,7 +610,9 @@ class ThreadPanel:
                     thread.id, thread.status, proposal.version, [], patch.note_creates
                 )
             elif isinstance(snapshot, MultiCardSnapshot):
-                self._show_multi_proposal_dialog(thread.id, snapshot, patch)
+                self._show_multi_proposal_dialog(
+                    thread.id, snapshot, patch, proposal.version
+                )
             return
         if not patch.has_note_update():
             # Only new notes: nothing in the editor to save or overwrite (in Add
@@ -673,19 +686,42 @@ class ThreadPanel:
             tooltip("Agent proposal applied.", parent=self._widget())
 
         def on_failure(exc: Exception) -> None:
-            self._finish_thread(thread_id, APPLIED, from_status)
-            showWarning(str(exc) or type(exc).__name__, parent=self._widget())
+            message = str(exc) or type(exc).__name__
+            if isinstance(exc, PartialApplyError):
+                # Something was written: stay applied (a re-Apply would add the
+                # same notes again) and keep what was added.
+                self._record_partial_apply(thread_id, version, created, message)
+            else:
+                self._finish_thread(thread_id, APPLIED, from_status)
+            showWarning(message, parent=self._widget())
 
         CollectionOp(parent=self._widget(), op=op).success(on_success).failure(
             on_failure
         ).run_in_background(initiator=self)
         return True
 
+    def _record_partial_apply(
+        self, thread_id: str, version: int, created: list[int], message: str
+    ) -> None:
+        service = self._service()
+        if service is None:
+            return
+        service.store.set_proposal_result(
+            thread_id, version, {"created_note_ids": list(created), "error": message}
+        )
+        service.store.add_message(
+            thread_id,
+            "system",
+            f"{message}. What was written stays; Undo reverts it.",
+        )
+        self._broadcast_thread_changed(thread_id)
+
     def _show_multi_proposal_dialog(
         self,
         thread_id: str,
         snapshot: MultiCardSnapshot,
         patch: MultiNotePatch,
+        version: int,
     ) -> None:
         if self._multi_proposal_dialog is not None:
             self._multi_proposal_dialog.raise_()
@@ -696,27 +732,60 @@ class ThreadPanel:
             snapshot=snapshot,
             patch=patch,
             apply_callback=lambda checked: self._apply_checked_multi_patch(
-                thread_id, checked
+                thread_id, checked, version
             ),
             discard_callback=lambda: self._discard_pending_patch(thread_id),
             create_previews=self._create_previews(patch.note_creates),
         )
         self._multi_proposal_dialog = dialog
+        self._multi_proposal_key = (thread_id, version)
 
         def on_finished(_result: int) -> None:
-            self._multi_proposal_dialog = None
+            if self._multi_proposal_dialog is dialog:
+                self._multi_proposal_dialog = None
+                self._multi_proposal_key = None
 
         qconnect(dialog.finished, on_finished)
         dialog.show()
 
+    def _sync_multi_proposal_dialog(self, thread_id: str) -> None:
+        """Close the multi-card dialog when its proposal is no longer current,
+        and reopen it on the thread's new proposal if there is one."""
+        dialog = self._multi_proposal_dialog
+        key = self._multi_proposal_key
+        if dialog is None or key is None or key[0] != thread_id:
+            return
+        found = self._current_proposal(thread_id)
+        if found is not None and found[1].version == key[1]:
+            return
+        self._multi_proposal_dialog = None
+        self._multi_proposal_key = None
+        dialog.reject()
+        if found is None:
+            return
+        _thread, proposal, snapshot, patch = found
+        if (
+            isinstance(patch, MultiNotePatch)
+            and patch.note_updates
+            and isinstance(snapshot, MultiCardSnapshot)
+        ):
+            self._show_multi_proposal_dialog(
+                thread_id, snapshot, patch, proposal.version
+            )
+
     def _apply_checked_multi_patch(
-        self, thread_id: str, checked_note_ids: set[int]
+        self, thread_id: str, checked_note_ids: set[int], version: int | None = None
     ) -> bool:
+        """Apply the checked notes of the current proposal; with ``version``
+        (the one the dialog shows), refuse if a newer proposal replaced it."""
         found = self._current_proposal(thread_id)
         col = self._col()
         if found is None or col is None:
             return False
         thread, proposal, snapshot, patch = found
+        if version is not None and proposal.version != version:
+            showWarning(PROPOSAL_CHANGED, parent=self._widget())
+            return False
         if not isinstance(snapshot, MultiCardSnapshot) or not isinstance(
             patch, MultiNotePatch
         ):

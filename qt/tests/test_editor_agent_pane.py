@@ -7245,6 +7245,22 @@ def test_discard_marks_thread_discarded(
     assert "Discarded" in "".join(pane.surface.evals)
 
 
+def test_discard_warns_when_the_thread_started_running(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    thread = _ready_thread(pane_runtime, store, pane)
+    pane._load_threads()
+    store.reply(thread.id, "more")
+    store.transition(thread.id, "queued", "running")
+
+    pane._discard_pending_patch(thread.id)
+
+    assert _status(store, thread.id) == "running"
+    assert pane_runtime.warnings == ["Cannot discard a running thread."]
+
+
 def test_apply_updates_editor_and_marks_thread_applied(
     pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7924,6 +7940,75 @@ def test_multi_apply_failure_reverts_to_ready(
     assert pane.apply_button.enabled is True
 
 
+class _FakeProposalDialog:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.rejected = False
+        self.finished = None
+
+    def show(self) -> None:
+        pass
+
+    def raise_(self) -> None:
+        pass
+
+    def activateWindow(self) -> None:
+        pass
+
+    def reject(self) -> None:
+        self.rejected = True
+
+
+def test_multi_dialog_refuses_a_newer_proposal_and_is_rebuilt(
+    pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from editor_agent_pane.patches import MultiNoteUpdate
+
+    store, _runner = queue
+    pane = _browser_pane(pane_runtime, tmp_path)
+    thread = _browser_ready_thread(pane_runtime, store, pane)
+    del pane._show_multi_proposal_dialog  # the real one
+    made: list[_FakeProposalDialog] = []
+    monkeypatch.setattr(
+        pane_runtime.thread_panel,
+        "MultiCardProposalDialog",
+        lambda **kwargs: made.append(_FakeProposalDialog(**kwargs)) or made[-1],
+    )
+    _patch_ui(
+        monkeypatch,
+        pane_runtime,
+        "update_notes",
+        lambda **_kw: pytest.fail("a proposal the dialog does not show is applied"),
+    )
+    pane._apply_pending_patch()
+    [dialog] = made
+
+    # A reply finishes while the dialog is open: version 2 also changes Front.
+    store.reply(thread.id, "and the front")
+    store.transition(thread.id, "queued", "running")
+    newer = MultiNotePatch(
+        summary="s2",
+        note_updates=(
+            MultiNoteUpdate(
+                note_id=101, notetype_id=7, field_updates={"Front": "F", "Back": "B"}
+            ),
+        ),
+    )
+    store.add_proposal(
+        thread.id, patch_to_dict(newer), base_for([101], pane._read_note_state([101]))
+    )
+    store.transition(thread.id, "running", "ready")
+
+    assert dialog.kwargs["apply_callback"]({101}) is False
+    assert pane_runtime.warnings == [pane_runtime.thread_panel.PROPOSAL_CHANGED]
+    assert _status(store, thread.id) == "ready"
+
+    pane.on_thread_changed(thread.id)
+
+    assert dialog.rejected
+    assert len(made) == 2 and made[1].kwargs["patch"] == newer
+
+
 def test_send_restores_the_prompt_when_the_note_changes_before_it_is_stored(
     pane_runtime: Any, queue: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -8212,6 +8297,50 @@ def test_apply_proposal_changes_refuses_a_new_note_without_a_deck() -> None:
             created_ids=[],
         )
     assert col.added == []
+
+
+def test_apply_proposal_changes_validates_every_new_note_before_writing() -> None:
+    from editor_agent_pane.patches import PatchValidationError
+    from editor_agent_pane.preview import apply_proposal_changes
+
+    col = FakeCreateCollection()
+    renamed = _note_create(
+        fields=(FieldSnapshot("Front", "x"), FieldSnapshot("Answer", "y"))
+    )
+    for bad in (renamed, _note_create(notetype_id=99)):
+        with pytest.raises(PatchValidationError):
+            apply_proposal_changes(
+                col,
+                updates=[_editor_note()],
+                creates=[_note_create(), bad],
+                created_ids=[],
+            )
+    assert col.updated == [] and col.added == [] and col.undo == []
+
+
+def test_apply_proposal_changes_reports_a_partial_write() -> None:
+    from editor_agent_pane.preview import PartialApplyError, apply_proposal_changes
+
+    col = FakeCreateCollection()
+    add_note = col.add_note
+
+    def flaky(note: Any, deck_id: int) -> None:
+        if col.added:
+            raise RuntimeError("disk full")
+        add_note(note, deck_id)
+
+    col.add_note = flaky  # type: ignore[method-assign]
+    created: list[int] = []
+    with pytest.raises(PartialApplyError, match="disk full"):
+        apply_proposal_changes(
+            col,
+            updates=[],
+            creates=[_note_create(), _note_create(deck_id=1)],
+            created_ids=created,
+        )
+    assert created == [901]
+    # The written part is still one undo step.
+    assert col.undo == [("entry", "Apply agent proposal"), ("merge", 77)]
 
 
 def test_render_proposal_lists_assumptions_questions_and_new_notes() -> None:
