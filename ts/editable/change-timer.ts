@@ -15,19 +15,18 @@ export class ChangeTimer {
         this.value = setTimeout(this.fireImmediately, delay) as any;
     }
 
+    /** Discard the pending action, if any, without running it. */
     clear(): void {
         if (this.value) {
             clearTimeout(this.value);
             this.value = null;
         }
+        this.action = null;
     }
 
     fireImmediately(): void {
-        if (this.action) {
-            this.action();
-            this.action = null;
-        }
-
+        const action = this.action;
         this.clear();
+        action?.();
     }
 }
