@@ -702,8 +702,11 @@ class FakeBrowserPane(FakeVisibleWidget):
 
 
 def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
-    sys.modules.pop("editor_agent_pane.runtime", None)
-    sys.modules.pop("editor_agent_pane.queue_runtime", None)
+    package = sys.modules["editor_agent_pane"]
+    for name in ("runtime", "queue_runtime", "thread_panel", "queue_window"):
+        sys.modules.pop(f"editor_agent_pane.{name}", None)
+        # `from . import x` reuses the package attribute, so drop it too.
+        package.__dict__.pop(name, None)
 
     class Widget:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -757,6 +760,9 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         editor_did_init=[],
         editor_did_init_buttons=[],
         editor_did_load_note=[],
+        state_did_change=[],
+        profile_did_open=[],
+        profile_will_close=[],
     )
     aqt_module.gui_hooks = gui_hooks
     aqt_module.mw = None
@@ -777,7 +783,9 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     qt_module = types.ModuleType("aqt.qt")
     for name in (
+        "QAbstractItemView",
         "QAction",
+        "QByteArray",
         "QCheckBox",
         "QComboBox",
         "QDialog",
@@ -785,12 +793,17 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
         "QDockWidget",
         "QFormLayout",
         "QHBoxLayout",
+        "QInputDialog",
+        "QKeySequence",
         "QLabel",
         "QLineEdit",
         "QMainWindow",
         "QPlainTextEdit",
         "QPushButton",
+        "QShortcut",
         "QSplitter",
+        "QTableWidget",
+        "QTableWidgetItem",
         "QTextCursor",
         "QToolButton",
         "QTimer",
@@ -820,7 +833,19 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setitem(sys.modules, "aqt.utils", utils_module)
     monkeypatch.setitem(sys.modules, "aqt.webview", webview_module)
 
-    return importlib.import_module("editor_agent_pane.runtime")
+    runtime = importlib.import_module("editor_agent_pane.runtime")
+    # The thread rendering and apply code shared with the queue window.
+    runtime.thread_panel = importlib.import_module("editor_agent_pane.thread_panel")
+    return runtime
+
+
+def _patch_ui(
+    monkeypatch: pytest.MonkeyPatch, runtime: Any, name: str, value: Any
+) -> None:
+    """Patch a UI helper in the pane module and in the shared thread panel."""
+    for module in (runtime, runtime.thread_panel):
+        if hasattr(module, name):
+            monkeypatch.setattr(module, name, value)
 
 
 class FakeRunner:
@@ -6629,13 +6654,15 @@ def pane_runtime(monkeypatch: pytest.MonkeyPatch) -> Any:
     runtime.saved_configs = []
     monkeypatch.setattr(runtime, "_write_config", runtime.saved_configs.append)
     runtime.warnings = []
-    monkeypatch.setattr(
+    _patch_ui(
+        monkeypatch,
         runtime,
         "showWarning",
         lambda message, parent=None: runtime.warnings.append(message),
     )
-    monkeypatch.setattr(runtime, "tooltip", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
+    _patch_ui(monkeypatch, runtime, "tooltip", lambda *args, **kwargs: None)
+    _patch_ui(
+        monkeypatch,
         runtime,
         "LegacyLatexPreviewRenderer",
         lambda **_kwargs: types.SimpleNamespace(render=sanitize_html),
@@ -7752,7 +7779,8 @@ def test_browser_multi_send_and_apply_through_the_store(
             self.callback(None)
 
     updated: list[Any] = []
-    monkeypatch.setattr(
+    _patch_ui(
+        monkeypatch,
         pane_runtime,
         "update_notes",
         lambda parent, notes: updated.extend(notes) or Op(notes),
@@ -7818,7 +7846,8 @@ def test_multi_apply_marks_applied_before_the_write_and_blocks_a_second_apply(
     pane = _browser_pane(pane_runtime, tmp_path)
     thread = _browser_ready_thread(pane_runtime, store, pane)
     ops: list[_PendingOp] = []
-    monkeypatch.setattr(
+    _patch_ui(
+        monkeypatch,
         pane_runtime,
         "update_notes",
         lambda parent, notes: ops.append(_PendingOp(notes)) or ops[-1],
@@ -7843,7 +7872,8 @@ def test_multi_apply_failure_reverts_to_ready(
     pane = _browser_pane(pane_runtime, tmp_path)
     thread = _browser_ready_thread(pane_runtime, store, pane)
     ops: list[_PendingOp] = []
-    monkeypatch.setattr(
+    _patch_ui(
+        monkeypatch,
         pane_runtime,
         "update_notes",
         lambda parent, notes: ops.append(_PendingOp(notes)) or ops[-1],
@@ -7869,7 +7899,9 @@ def test_send_restores_the_prompt_when_the_note_changes_before_it_is_stored(
         evalWithCallback=lambda _js, callback: pending.append(callback)
     )
     tips: list[str] = []
-    monkeypatch.setattr(pane_runtime, "tooltip", lambda text, **_kw: tips.append(text))
+    _patch_ui(
+        monkeypatch, pane_runtime, "tooltip", lambda text, **_kw: tips.append(text)
+    )
     pane.prompt = FakePrompt("Improve this")
 
     pane._send()
@@ -7895,7 +7927,9 @@ def test_reply_restores_the_prompt_when_the_note_changes_before_it_is_stored(
         callback
     )
     tips: list[str] = []
-    monkeypatch.setattr(pane_runtime, "tooltip", lambda text, **_kw: tips.append(text))
+    _patch_ui(
+        monkeypatch, pane_runtime, "tooltip", lambda text, **_kw: tips.append(text)
+    )
     pane.prompt = FakePrompt("Shorter")
 
     pane._send()
@@ -8252,7 +8286,7 @@ def collection_ops(pane_runtime: Any, monkeypatch: pytest.MonkeyPatch) -> list[A
         ops.append(FakeCollectionOp(parent, op))
         return ops[-1]
 
-    monkeypatch.setattr(pane_runtime, "CollectionOp", make)
+    _patch_ui(monkeypatch, pane_runtime, "CollectionOp", make)
     monkeypatch.setattr(
         pane_runtime,
         "update_note",

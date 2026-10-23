@@ -1,7 +1,7 @@
 # Agent request queue — design and spec
 
-**Status:** phase 1 implemented on `claude/agent-queue-phase1`; phase 2a (new
-notes, unified schema) on `claude/agent-queue-phase2`, queue window pending
+**Status:** phase 1 implemented on `claude/agent-queue-phase1`; phase 2 (2a:
+new notes, unified schema; 2b: queue window) on `claude/agent-queue-phase2`
 (see Results / notes). Phases at the bottom.
 
 Builds on the repo-local add-on in [addons/editor_agent_pane](addons/editor_agent_pane),
@@ -543,3 +543,85 @@ Deviations:
 - If the combined op fails after the editor was filled (Edit Current, update
   plus creates), the thread returns to ready but the editor keeps the filled
   fields unsaved; a retry then reports the note as changed.
+
+**Phase 2b (2026-10-23, uncommitted on `claude/agent-queue-phase2`).** The
+queue window.
+
+- `thread_panel.py` (new): what the pane and the window share. `ThreadPanel` is
+  a mixin over a widget with a transcript `surface` and Apply/Discard/Stop
+  buttons: rendering the selected thread (transcript, created-note links,
+  status banner, current proposal with diff / create previews / assumptions
+  and questions), `_current_proposal`, the base-revision check, Apply (single,
+  creates-only, multi-note checkbox dialog), Discard, Stop and the `nid:` link
+  bridge command. The host supplies `editor` (or None), `browser` (or None)
+  and `_broadcast_thread_changed`; hooks `_context_fragment` (window: the
+  captured context) and `_after_thread_rendered` (pane: open the multi-card
+  review when its run finishes; window: Reply/Open in Browser buttons).
+  `PromptEdit`, `MultiCardProposalDialog` and `prepare_multi_note_updates`
+  moved there too (re-exported from `runtime`). `EditorAgentPane` is now
+  `ThreadPanel, QWidget`; its only apply-specific override is
+  `_apply_note_update`, which fills the editor after `call_after_note_saved`
+  as before. Without an editor (the window), `_apply_note_update` checks
+  `stale_reason` against the collection's note, applies the field/tag update to
+  `col.get_note` (`prepare_note_update`) and saves it with any new notes in the
+  same `apply_proposal_changes` `CollectionOp`.
+- `queue_window.py` (new): `AgentQueueWindow(ThreadPanel, QMainWindow)`, child
+  of the main window, one per main window (`open_window` re-raises it and
+  takes the new note filter). Opened from Tools > Agent Queue, the
+  application-wide `queue_shortcut` (default `Ctrl+Alt+Shift+Q`) and the
+  pane's **Queue** button (filtered to the pane's note; "Note N only" toggles
+  show-all). Left: a `QTableWidget` (status glyph, title, card excerpt, deck,
+  age, latest proposal version) with "Show applied and discarded"; right: the
+  shared panel, a reply `PromptEdit` and Apply (Ctrl+Shift+A), Reply
+  (Ctrl+Shift+R, or Enter in the box), Discard (Ctrl+Shift+D, optional reason
+  stored as a user message "Discarded: …"), Open in Browser (Ctrl+Shift+B,
+  `nid:` of the thread's note(s) plus notes its applies created), Stop
+  (Ctrl+Shift+S); Escape closes. Geometry and splitter sizes are saved to
+  `queue_window_geometry` / `queue_window_splitter` on close.
+- List order (`thread_view.queue_threads`): ready, answered, failed, running,
+  queued (then stale, applied, discarded when shown), newest `updated_at`
+  first. When the selected thread leaves the list (applied, discarded) the
+  selection moves to the row that followed it; Reply moves it to the next row
+  explicitly, and the replied thread drops to the queued group until its run
+  finishes and it sorts back to the top.
+- Live updates: `runtime._all_panes()` also yields the open window, so
+  `queue_runtime.thread_changed`/`thread_activity` reach it. A change to the
+  selected thread re-renders the detail; any other change only refreshes the
+  rows.
+- Reviewer and editors after Apply: nothing extra was needed. The op's
+  initiator is the window, so `operation_did_execute` reloads an open Edit
+  Current or Browser editor showing the note (`editor.set_note`), and the
+  reviewer marks `NOTE_TEXT` and redraws the current card when the main window
+  regains focus (`Reviewer.op_executed` / `refresh_if_needed`).
+- Offer: leaving the reviewer (`state_did_change` from `review`) with ready or
+  answered threads shows "Agent queue: N requests ready for review
+  (Ctrl+Alt+Shift+Q)" once per profile session (reset on `profile_did_open`;
+  not used up while nothing is waiting).
+- Tests: `qt/tests/test_agent_queue_window.py` (26), driving the window
+  through `_init_state` and fake widgets like the pane tests. The pane test
+  stub importer now also drops stale `editor_agent_pane` package attributes
+  (`from . import x` reuses them) and patches UI helpers in both `runtime` and
+  `thread_panel` (`_patch_ui`). The real window was also smoke-built under
+  offscreen Qt (menu action, list, selection, geometry save, reopen).
+
+Deviations:
+
+- The offer is a plain tooltip naming the shortcut, not a link: Anki's
+  `tooltip` label hides itself on any click, so a link in it cannot work.
+- Reply from the window keeps the thread's stored provider/model/settings (the
+  pane uses its form; changing them per thread is phase 3's Change model). The
+  window's reply box has no prompt history.
+- Apply from the window to a note that an open editor shows writes the
+  collection note; unsaved typing in that editor is replaced by the reload.
+  The pane's own Apply still goes through the editor.
+- An Add Cards proposal that fills the unsaved note can only be applied from
+  its Add Cards pane; the window refuses it with a message (creates-only Add
+  Cards proposals apply from the window).
+- The applied/discarded status banner still says "Send starts a new request"
+  (pane wording) in the window.
+- The window is filtered by note id; multi-card threads match any of their
+  selected notes.
+
+Not done (phase 3 and later): Defer, Change model, Retry / re-run on stale,
+Apply then edit, session resume, bottom-bar badge, a clickable reviewer offer.
+
