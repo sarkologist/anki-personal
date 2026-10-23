@@ -254,6 +254,8 @@ def validate_candidate(
         dependencies = tuple(dict.fromkeys((*dependencies, *other_valid.dependencies)))
     elif candidate.contrast is not None:
         raise ValidationError("Only contrast mode may contain a second example")
+    elif source.reported_confusions:
+        raise ValidationError("A reported confusion needs a contrast pair")
     return Validated(candidate, text, dependencies, translation, count)
 
 

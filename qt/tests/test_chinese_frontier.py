@@ -1179,6 +1179,64 @@ def test_reported_confusion_must_be_another_chinese_word(
         report_confusion(collection, note_id, word)
 
 
+def test_draft_written_before_a_report_cannot_clear_the_confusion(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    request_repair(collection, note_id)
+    stale = audited_draft(
+        snapshot(collection, settings, {}).sources[0], candidate("这本书有百页。")
+    )
+    report_confusion(collection, note_id, "千")
+    result = admit(collection, settings, {}, [stale], lexicon)
+    assert result.updated == [] and result.rejected
+    assert "chinese-frontier::repair" in collection.get_note(note_id).tags
+
+
+def test_confusion_on_character_cards_does_not_block_their_repair(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    import html as html_module
+
+    settings, target, c = student_target(collection)
+    note = collection.get_note(
+        admit(
+            collection,
+            settings,
+            {},
+            [audited_draft(target, replace(c, mode="characters"))],
+            lexicon,
+        ).admitted[0]
+    )
+    assert len(note.cards()) == 2
+    data = json.loads(html_module.unescape(note["Source"]))
+    data["disambiguation"] = {"with": "学者"}
+    note["Source"] = html_module.escape(json.dumps(data, ensure_ascii=False))
+    collection.update_note(note)
+    request_repair(collection, note.id)
+    queued = next(
+        s for s in snapshot(collection, settings, {}).sources if s.word == "学生"
+    )
+    # A pair would remove a sibling card, so the note keeps its character repair.
+    assert queued.reported_confusions == ()
+
+
+def test_second_reported_confusion_keeps_the_first(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    original = collection.get_note(note_id)["Text"]
+    report_confusion(collection, note_id, "千")
+    report_confusion(collection, note_id, "万")
+    report_confusion(collection, note_id, "千")
+    target = snapshot(collection, settings, {}).sources[0]
+    assert target.reported_confusions == ("千", "万")
+    data = json.loads(collection.get_note(note_id)["Source"].replace("&quot;", '"'))
+    assert data["disambiguation"]["previous_text"] == original
+
+
 def contrast_note(collection: Collection, source_extra: dict) -> tuple:
     import html as html_module
 

@@ -269,9 +269,12 @@ def _repair_source(col: Collection, source: Source, note_id: int) -> Source:
         existing_candidate=previous_candidate,
         existing_fingerprint=presentation_fingerprint(fields),
         existing_cards=len(old_note.cards()),
+        # A one-card pair cannot replace character siblings without removing one.
         reported_confusions=tuple(
             w for w in reported_confusions(fields) if w != source.word
-        ),
+        )
+        if len(old_note.cards()) <= 1
+        else (),
         force_repair=REPAIR_TAG in old_note.tags,
     )
 
@@ -756,10 +759,14 @@ def report_confusion(col: Collection, note_id: int, word: str) -> OpChanges:
     data = _json_field(note["Source"])
     if not is_word(word) or word == data.get("word"):
         raise ValueError("Enter the other Chinese word you answered")
+    words = tuple(dict.fromkeys((*reported_confusions(dict(note.items())), word)))
+    previous = data.get("disambiguation")
+    previous = previous if isinstance(previous, dict) else {}
     data["disambiguation"] = {
-        "with": word,
-        "feedback": f"Learner answered {word}.",
-        "previous_text": note["Text"],
+        **previous,
+        "with": words[0] if len(words) == 1 else list(words),
+        "feedback": "Learner answered " + ", ".join(words) + ".",
+        "previous_text": previous.get("previous_text", note["Text"]),
     }
     note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
     if REPAIR_TAG not in note.tags:
