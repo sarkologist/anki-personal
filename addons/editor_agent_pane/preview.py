@@ -140,6 +140,9 @@ def apply_proposal_changes(
     if updates:
         col.update_notes(list(updates))
     for create in creates:
+        if create.deck_id is None:
+            raise ValueError("A new note has no deck to be added to.")
+    for create in creates:
         note = new_note_for(col, create)
         col.add_note(note, create.deck_id)
         created_ids.append(int(note.id))

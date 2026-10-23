@@ -39,6 +39,7 @@ from .model_options import (
     provider_value,
 )
 from .patches import (
+    CreateDefaults,
     FieldSnapshot,
     MultiCardSnapshot,
     MultiNotePatch,
@@ -268,14 +269,22 @@ def catalog_maps(
 
 
 def validate_against_catalog(
-    patch: Patch, snapshot: Snapshot, catalog: dict[str, Any]
+    patch: Patch,
+    snapshot: Snapshot,
+    catalog: dict[str, Any],
+    defaults: CreateDefaults | None = None,
 ) -> Patch:
     """Re-validate a client-validated patch with the collection's note types
-    and decks (the clients check structure only)."""
+    and decks (the clients check structure only). A new note without a
+    notetype_id/deck_id takes ``defaults`` (see creation_defaults)."""
     notetypes, deck_ids = catalog_maps(catalog)
     try:
         return validate_patch(
-            patch_to_dict(patch), snapshot, notetypes=notetypes, deck_ids=deck_ids
+            patch_to_dict(patch),
+            snapshot,
+            notetypes=notetypes,
+            deck_ids=deck_ids,
+            defaults=defaults,
         )
     except PatchValidationError as exc:
         raise RuntimeError(f"The agent's proposal was rejected: {exc}") from exc
@@ -653,7 +662,13 @@ class QueueRunner:
         if patch is not None:
             check_patch_matches_snapshot(patch, snapshot)
             if catalog is not None:
-                patch = validate_against_catalog(patch, snapshot, catalog)
+                notetype_id, deck_id = creation_defaults(thread.context, snapshot)
+                patch = validate_against_catalog(
+                    patch,
+                    snapshot,
+                    catalog,
+                    CreateDefaults(notetype_id=notetype_id, deck_id=deck_id),
+                )
 
         # One transaction: if it fails (e.g. the store closed during shutdown)
         # the thread stays running with its user turn pending, and is re-run.

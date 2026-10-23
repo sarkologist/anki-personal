@@ -3653,6 +3653,41 @@ def test_ollama_agent_runs_model_and_parses_patch(
     assert result.event_count == 0
 
 
+def test_ollama_agent_accepts_a_new_note_without_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A local model left notetype_id/deck_id out; the queue runner fills
+    # the source note's deck later.
+    def fake_popen(command: list[str], **_kwargs: Any) -> FakePopen:
+        return FakePopen(
+            stdout=json.dumps(
+                {
+                    "message": "Added a note.",
+                    "patch": {
+                        "summary": "New note",
+                        "note_updates": [],
+                        "note_creates": [
+                            {
+                                "notetype_id": None,
+                                "fields": [
+                                    {"name": "Front", "html": "唉声"},
+                                    {"name": "Back", "html": "sigh"},
+                                ],
+                            }
+                        ],
+                    },
+                }
+            )
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    result = OllamaCliAgent(
+        ollama_path="ollama", ollama_host="", model="qwen3:latest", timeout_seconds=300
+    ).send(prompt="add a note", snapshot=snapshot(), project_root="", history=[])
+    [create] = result.proposals[0].note_creates
+    assert (create.notetype_id, create.deck_id) == (snapshot().notetype_id, None)
+
+
 def test_ollama_agent_treats_empty_patch_as_no_proposal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8163,6 +8198,20 @@ def test_apply_proposal_changes_is_one_undo_step() -> None:
         (["唉声 vs 呼声", "sigh"], ["disambiguation"], 1),
     ]
     assert created == [901, 902]
+
+
+def test_apply_proposal_changes_refuses_a_new_note_without_a_deck() -> None:
+    from editor_agent_pane.preview import apply_proposal_changes
+
+    col = FakeCreateCollection()
+    with pytest.raises(ValueError, match="no deck"):
+        apply_proposal_changes(
+            col,
+            updates=[],
+            creates=[_note_create(deck_id=None)],
+            created_ids=[],
+        )
+    assert col.added == []
 
 
 def test_render_proposal_lists_assumptions_questions_and_new_notes() -> None:

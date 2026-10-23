@@ -220,7 +220,7 @@ def _create_to_dict(create: NoteCreate) -> dict[str, Any]:
 def _create_from_dict(raw: dict[str, Any]) -> NoteCreate:
     return NoteCreate(
         notetype_id=int(raw["notetype_id"]),
-        deck_id=int(raw["deck_id"]),
+        deck_id=None if raw.get("deck_id") is None else int(raw["deck_id"]),
         fields=_fields(raw["fields"]),
         tags=tuple(str(tag) for tag in raw.get("tags") or ()),
     )

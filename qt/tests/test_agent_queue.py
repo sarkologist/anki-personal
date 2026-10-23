@@ -1181,6 +1181,7 @@ def test_run_results_are_not_written_when_the_store_rejects_them(
 # --- phase 2: unified patch schema, note creates ----------------------------
 
 from editor_agent_pane.patches import (  # noqa: E402
+    CreateDefaults,
     NoteCreate,
     NotetypeInfo,
     PatchValidationError,
@@ -1473,6 +1474,105 @@ def test_validate_patch_without_a_catalog_checks_structure_only() -> None:
         )
 
 
+def create_without_ids(**overrides: Any) -> dict[str, Any]:
+    """create_raw() without notetype_id/deck_id, unless given in overrides."""
+    raw = create_raw()
+    del raw["notetype_id"], raw["deck_id"]
+    raw.update(overrides)
+    return raw
+
+
+@pytest.mark.parametrize(
+    "create",
+    [
+        create_without_ids(),
+        create_without_ids(notetype_id=None, deck_id=None),
+        create_without_ids(notetype_id="", deck_id=""),
+    ],
+)
+def test_create_without_ids_takes_the_defaults(create: dict[str, Any]) -> None:
+    patch = validate_patch(
+        unified_raw(note_creates=[create]),
+        editor_snapshot(),
+        notetypes=NOTETYPES,
+        deck_ids=DECK_IDS,
+        defaults=CreateDefaults(notetype_id=7, deck_id=3),
+    )
+    [created] = patch.note_creates
+    assert (created.notetype_id, created.deck_id) == (7, 3)
+
+
+def test_create_accepts_numeric_string_ids() -> None:
+    patch = validate(
+        unified_raw(note_creates=[create_raw(notetype_id="7", deck_id="3")])
+    )
+    [created] = patch.note_creates
+    assert (created.notetype_id, created.deck_id) == (7, 3)
+
+
+@pytest.mark.parametrize("name", ["Cloze", "cloze"])
+def test_create_resolves_a_note_type_name(name: str) -> None:
+    create = create_raw(
+        notetype_id=name,
+        fields=[
+            {"name": "Text", "html": "{{c1::a}}"},
+            {"name": "Back Extra", "html": ""},
+        ],
+    )
+    [created] = validate(unified_raw(note_creates=[create])).note_creates
+    assert created.notetype_id == 8
+
+
+@pytest.mark.parametrize(
+    ("create", "message"),
+    [
+        (
+            create_without_ids(notetype_id=7),
+            "New note 1: no deck_id and no default deck.",
+        ),
+        (
+            create_without_ids(deck_id=3),
+            "New note 1: no notetype_id and no default note type.",
+        ),
+    ],
+)
+def test_create_without_ids_or_defaults_fails_against_the_collection(
+    create: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(PatchValidationError) as excinfo:
+        validate(unified_raw(note_creates=[create]))
+    assert str(excinfo.value) == message
+
+
+def test_structure_only_create_without_ids_falls_back_to_the_snapshot() -> None:
+    [single] = validate_patch(
+        unified_raw(note_creates=[create_without_ids()]),
+        editor_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    ).note_creates
+    assert (single.notetype_id, single.deck_id) == (7, None)
+    [multi] = validate_patch(
+        unified_raw(note_creates=[create_without_ids()]),
+        multi_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    ).note_creates
+    assert (multi.notetype_id, multi.deck_id) == (7, None)
+
+
+def test_create_without_a_deck_round_trips() -> None:
+    patch = validate_patch(
+        unified_raw(note_creates=[create_without_ids()]),
+        editor_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    )
+    data = json.loads(json.dumps(patch_to_dict(patch)))
+    assert data["note_creates"][0]["deck_id"] is None
+    assert patch_from_dict(data, editor_snapshot()) == patch
+
+
 @pytest.mark.parametrize("key", ["assumptions", "questions"])
 def test_validate_patch_rejects_non_string_notes(key: str) -> None:
     with pytest.raises(PatchValidationError, match=key):
@@ -1744,6 +1844,26 @@ def test_create_for_unknown_notetype_or_deck_fails_the_run(
     assert loaded.error is not None and message in loaded.error
     assert store.current_proposal(thread.id) is None
     assert message in store.messages(thread.id)[-1].text
+
+
+def test_create_without_ids_is_ready_with_the_source_notetype_and_deck(
+    store: QueueStore,
+) -> None:
+    # The client validated structure only; the runner fills the defaults.
+    patch = validate_patch(
+        unified_raw(note_creates=[create_without_ids()]),
+        editor_snapshot(),
+        notetypes=None,
+        deck_ids=None,
+    )
+    thread = store.create_thread(creates_context(), settings(), "Disambiguate", 11)
+    CatalogHarness(store, FakeAgent([result("ok", (patch,))])).runner.run_once()
+    loaded = store.get_thread(thread.id)
+    assert loaded is not None and loaded.status == "ready", loaded.error
+    proposal = store.current_proposal(thread.id)
+    assert proposal is not None
+    [created] = patch_from_dict(proposal.patch, editor_snapshot()).note_creates
+    assert (created.notetype_id, created.deck_id) == (7, 3)
 
 
 def test_prompt_lists_note_types_and_decks_with_defaults_first(

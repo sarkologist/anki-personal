@@ -268,11 +268,37 @@ class NotetypeInfo:
 
 
 @dataclass(frozen=True)
+class CreateDefaults:
+    """What a new note's missing notetype_id/deck_id default to: the source
+    note's note type and deck."""
+
+    notetype_id: int | None = None
+    deck_id: int | None = None
+
+
+def snapshot_create_defaults(
+    snapshot: EditorSnapshot | MultiCardSnapshot,
+) -> CreateDefaults:
+    """The note type a new note defaults to, from the snapshot alone.
+
+    The deck is left to the queue runner, which knows the source deck.
+    """
+    if isinstance(snapshot, MultiCardSnapshot):
+        first = snapshot.cards[0] if snapshot.cards else None
+        return CreateDefaults(notetype_id=first.notetype_id if first else None)
+    return CreateDefaults(notetype_id=snapshot.notetype_id)
+
+
+@dataclass(frozen=True)
 class NoteCreate:
-    """A new note the agent proposes; fields are in the note type's order."""
+    """A new note the agent proposes; fields are in the note type's order.
+
+    ``deck_id`` is None only before the queue runner has validated it against
+    the collection (structure-only validation in the provider clients).
+    """
 
     notetype_id: int
-    deck_id: int
+    deck_id: int | None
     fields: tuple[FieldSnapshot, ...]
     tags: tuple[str, ...] = ()
 
@@ -367,6 +393,7 @@ def validate_patch(
     *,
     notetypes: Notetypes | None,
     deck_ids: Collection[int] | None,
+    defaults: CreateDefaults | None = None,
 ) -> NotePatch | MultiNotePatch:
     """Validate an agent patch in the unified schema (or a legacy shape).
 
@@ -374,12 +401,19 @@ def validate_patch(
     them so validation stays pure. ``None`` skips the collection checks (the
     provider clients check structure only; the queue runner checks again with
     the collection's note types and decks).
+
+    A new note's missing notetype_id/deck_id take ``defaults``. Without a
+    default, structure-only validation falls back to the snapshot's note type
+    and leaves the deck None; with a collection map it is an error.
     """
     if not isinstance(raw, dict):
         raise PatchValidationError("Patch must be a JSON object.")
+    resolver = _CreateIdResolver(
+        snapshot, notetypes, deck_ids, defaults or CreateDefaults()
+    )
     if isinstance(snapshot, MultiCardSnapshot):
-        return _validate_multi_patch(raw, snapshot, notetypes, deck_ids)
-    return _validate_single_patch(raw, snapshot, notetypes, deck_ids)
+        return _validate_multi_patch(raw, snapshot, resolver)
+    return _validate_single_patch(raw, snapshot, resolver)
 
 
 def validate_note_patch(raw: dict[str, Any], snapshot: EditorSnapshot) -> NotePatch:
@@ -397,8 +431,7 @@ def _is_legacy_single_shape(raw: dict[str, Any]) -> bool:
 def _validate_single_patch(
     raw: dict[str, Any],
     snapshot: EditorSnapshot,
-    notetypes: Notetypes | None,
-    deck_ids: Collection[int] | None,
+    resolver: _CreateIdResolver,
 ) -> NotePatch:
     current_note_id = snapshot.note_id or None
     if _is_legacy_single_shape(raw):
@@ -461,9 +494,7 @@ def _validate_single_patch(
         notetype_id=notetype_id,
         field_updates=field_updates,
         tag_patch=tag_patch,
-        note_creates=_validate_note_creates(
-            raw.get("note_creates"), notetypes, deck_ids
-        ),
+        note_creates=_validate_note_creates(raw.get("note_creates"), resolver),
         assumptions=_string_list(raw.get("assumptions"), "assumptions"),
         questions=_string_list(raw.get("questions"), "questions"),
     )
@@ -490,9 +521,7 @@ def _string_list(value: Any, key: str) -> tuple[str, ...]:
 
 
 def _validate_note_creates(
-    raw_creates: Any,
-    notetypes: Notetypes | None,
-    deck_ids: Collection[int] | None,
+    raw_creates: Any, resolver: _CreateIdResolver
 ) -> tuple[NoteCreate, ...]:
     if raw_creates is None:
         return ()
@@ -501,7 +530,7 @@ def _validate_note_creates(
     creates = []
     for index, raw_create in enumerate(raw_creates):
         try:
-            creates.append(_validate_note_create(raw_create, notetypes, deck_ids))
+            creates.append(_validate_note_create(raw_create, resolver))
         except PatchValidationError as exc:
             raise PatchValidationError(f"New note {index + 1}: {exc}") from exc
     return tuple(creates)
@@ -516,15 +545,57 @@ def _int_value(value: Any, key: str) -> int:
         raise PatchValidationError(f"{key} must be an integer.") from exc
 
 
-def _validate_note_create(
-    raw: Any,
-    notetypes: Notetypes | None,
-    deck_ids: Collection[int] | None,
-) -> NoteCreate:
+class _CreateIdResolver:
+    """Resolves a new note's notetype_id/deck_id: ints, numeric strings, a
+    note type's name, or missing (the defaults)."""
+
+    def __init__(
+        self,
+        snapshot: EditorSnapshot | MultiCardSnapshot,
+        notetypes: Notetypes | None,
+        deck_ids: Collection[int] | None,
+        defaults: CreateDefaults,
+    ) -> None:
+        self.notetypes = notetypes
+        self.deck_ids = deck_ids
+        self.defaults = defaults
+        self.snapshot = snapshot
+
+    def notetype_id(self, value: Any) -> int:
+        if _is_missing(value):
+            notetype_id = self.defaults.notetype_id
+            if notetype_id is None and self.notetypes is None:
+                notetype_id = snapshot_create_defaults(self.snapshot).notetype_id
+            if notetype_id is None:
+                raise PatchValidationError("no notetype_id and no default note type.")
+            return notetype_id
+        if isinstance(value, str) and self.notetypes is not None:
+            name = value.strip().casefold()
+            for notetype_id, info in self.notetypes.items():
+                if info.name.casefold() == name:
+                    return notetype_id
+        return _int_value(value, "notetype_id")
+
+    def deck_id(self, value: Any) -> int | None:
+        if _is_missing(value):
+            deck_id = self.defaults.deck_id
+            if deck_id is None and self.deck_ids is not None:
+                raise PatchValidationError("no deck_id and no default deck.")
+            return deck_id
+        return _int_value(value, "deck_id")
+
+
+def _is_missing(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _validate_note_create(raw: Any, resolver: _CreateIdResolver) -> NoteCreate:
     if not isinstance(raw, dict):
         raise PatchValidationError("Each new note must be an object.")
-    notetype_id = _int_value(raw.get("notetype_id"), "notetype_id")
-    deck_id = _int_value(raw.get("deck_id"), "deck_id")
+    notetypes = resolver.notetypes
+    deck_ids = resolver.deck_ids
+    notetype_id = resolver.notetype_id(raw.get("notetype_id"))
+    deck_id = resolver.deck_id(raw.get("deck_id"))
     notetype = None
     if notetypes is not None:
         notetype = notetypes.get(notetype_id)
@@ -675,8 +746,7 @@ def validate_multi_note_patch(
 def _validate_multi_patch(
     raw: dict[str, Any],
     snapshot: MultiCardSnapshot,
-    notetypes: Notetypes | None,
-    deck_ids: Collection[int] | None,
+    resolver: _CreateIdResolver,
 ) -> MultiNotePatch:
     if "field_updates" in raw and "note_updates" not in raw:
         raise PatchValidationError(
@@ -731,9 +801,7 @@ def _validate_multi_patch(
     patch = MultiNotePatch(
         summary=_summary(raw, "Proposed selected-card updates"),
         note_updates=tuple(updates),
-        note_creates=_validate_note_creates(
-            raw.get("note_creates"), notetypes, deck_ids
-        ),
+        note_creates=_validate_note_creates(raw.get("note_creates"), resolver),
         assumptions=_string_list(raw.get("assumptions"), "assumptions"),
         questions=_string_list(raw.get("questions"), "questions"),
     )

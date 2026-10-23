@@ -495,6 +495,12 @@ notes and the unified patch schema; the queue window is phase 2b.
   `note_updates` has at most one entry, for the current note (`note_id` null in
   Add Cards). `validate_note_patch`/`validate_multi_note_patch` remain as
   wrappers.
+- Create ids: a missing/null/empty `notetype_id` or `deck_id` takes
+  `CreateDefaults` (the runner passes `creation_defaults`: source note type and
+  deck); numeric strings and a note type's name (case-insensitive) are accepted;
+  structure-only (client) validation falls back to the snapshot's note type and
+  leaves the deck None; with the catalog, no default is an error ("New note 1:
+  no deck_id and no default deck."). Apply refuses a None deck.
 - `snapshots.patch_to_dict` writes the unified shape;
   `patch_from_dict(data, snapshot)` now takes the thread's snapshot (the shape
   no longer says single vs multi) and still reads phase-1 rows.

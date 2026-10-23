@@ -30,6 +30,7 @@ from .patches import (
     MultiNotePatch,
     NotePatch,
     PatchValidationError,
+    snapshot_create_defaults,
     validate_patch,
 )
 from .sources import SourceAccessError, resolve_project_root
@@ -768,7 +769,13 @@ def _validate_agent_patch(
 ) -> AgentPatch:
     # Structure only: the queue runner validates again against the
     # collection's note types and decks.
-    return validate_patch(patch_data, snapshot, notetypes=None, deck_ids=None)
+    return validate_patch(
+        patch_data,
+        snapshot,
+        notetypes=None,
+        deck_ids=None,
+        defaults=snapshot_create_defaults(snapshot),
+    )
 
 
 def _validate_optional_agent_patch(
