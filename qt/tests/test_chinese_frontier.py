@@ -48,6 +48,8 @@ from chinese_frontier.generation import (
 )  # noqa: E402
 from chinese_frontier.lexicon import Lexicon  # noqa: E402
 from chinese_frontier.providers import (  # noqa: E402
+    CallTimeout,
+    CliGenerator,
     cli_command,
     parse_response,
     subscription_environment,
@@ -398,6 +400,26 @@ def test_claude_cli_disables_tools_and_parses_structured_output(tmp_path: Path) 
     )
     with pytest.raises(ValueError):
         parse_response("claude", '{"is_error":true}')
+
+
+def test_slow_starting_cli_still_receives_a_prompt_larger_than_a_pipe(
+    tmp_path: Path,
+) -> None:
+    # A reader that starts after the first poll must still get the whole
+    # prompt and EOF; macOS pipes hold only 16 KB.
+    cli = tmp_path / "claude"
+    cli.write_text(
+        "#!/bin/sh\n"
+        "sleep 1\n"
+        'size=$(wc -c | tr -d " ")\n'
+        'printf \'{"is_error":false,"structured_output":{"size":%s}}\' "$size"\n'
+    )
+    cli.chmod(0o755)
+    generator = CliGenerator(
+        {"provider": "claude", "claude_path": str(cli), "timeout_seconds": 10},
+        Event(),
+    )
+    assert generator.request("x" * 100_000, {}) == {"size": 100_000}
 
 
 def test_journal_survives_restart_and_does_not_catch_up(tmp_path: Path) -> None:
@@ -1648,7 +1670,7 @@ def test_chinese_approved_checkpoint_survives_later_model_failure(
 
     monkeypatch.setattr(generation.CliGenerator, "request", request)
     saved = []
-    with pytest.raises(TimeoutError):
+    with pytest.raises(CallTimeout) as error:
         generate(
             [source(), second],
             {w: "familiar" for w in ("这", "本", "书", "有", "一", "页")},
@@ -1659,6 +1681,7 @@ def test_chinese_approved_checkpoint_survives_later_model_failure(
         )
     assert len(saved) == 1 and saved[0].source.key == source().key
     generation.validate_audit(saved[0])
+    assert error.value.keys == (second.key,)
 
 
 def test_chinese_usage_evidence_never_promotes_suspended_or_visible_words(collection):
@@ -1704,6 +1727,25 @@ def test_chinese_timeout_yield_includes_checkpoints_but_not_old_buffer(
     )
     assert controller.state.attempted == 4 and controller.state.approved == 1
     assert controller.state.drafts == [old, new]
+
+
+def test_chinese_timeout_defers_the_targets_of_the_call(refill_controller):
+    from concurrent.futures import Future
+
+    controller, current, scheduled = refill_controller
+    approved = audited_draft(source(), candidate())
+    controller.state.drafts = [approved]
+    controller.state.defer("lesson", "No blade word is established", "v0")
+    controller.failed = lambda *args: None
+    future = Future()
+    future.set_exception(
+        CallTimeout("timed out", [approved.source.key, "fresh", "lesson"])
+    )
+    controller.generated(future, {}, {}, "v1", 0, attempted=3)
+    assert approved.source.key not in controller.state.deferred
+    assert not controller.state.can_try("fresh", "v1")
+    assert not controller.state.can_try("lesson", "v1")
+    assert "No blade word" in controller.state.deferred["lesson"]["reason"]
 
 
 def test_chinese_empty_proposal_reason_guides_next_retrieval_and_is_persisted(

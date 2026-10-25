@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, replace
 from pathlib import Path
 from threading import Event
@@ -30,8 +31,13 @@ from aqt.qt import (
 from aqt.utils import tooltip
 
 from ..diagnostics import Diagnostics
-from ..preparation import buffer_size, preparation_needed, previous_lessons
-from ..providers import GenerationStopped
+from ..preparation import (
+    TIMEOUT_LESSON,
+    buffer_size,
+    preparation_needed,
+    previous_lessons,
+)
+from ..providers import CallTimeout, GenerationStopped
 from ..refill import record_batch, refill_ready, reserve_batch, reset_day
 from ..telemetry import error_location, import_calls, observe, recover
 from .collection import (
@@ -55,6 +61,34 @@ from .generation import (
 from .lexicon import Lexicon, atomic_json
 
 MODULE = __name__.split(".")[0]
+
+
+def defer_target(
+    state: dict[str, Any], key: str, reason: str, version: str, now: float
+) -> None:
+    items = state.setdefault("deferred", {})
+    old = items.get(key, {})
+    attempts = old.get("attempts", 0) + 1 if old.get("vocabulary") == version else 1
+    items[key] = {
+        "reason": reason,
+        "vocabulary": version,
+        "attempts": attempts,
+        "retry_after": now + min(7 * 86400, 1800 * 2 ** min(attempts, 9)),
+    }
+
+
+def defer_timed_out(
+    state: dict[str, Any],
+    keys: Iterable[str],
+    approved: set[str],
+    version: str,
+    now: float,
+) -> None:
+    """Back a timed-out target off like a rejection, keeping its last lesson."""
+    for key in keys:
+        if key not in approved:
+            old = state.get("deferred", {}).get(key, {})
+            defer_target(state, key, old.get("reason") or TIMEOUT_LESSON, version, now)
 
 
 class Controller:
@@ -513,21 +547,8 @@ class Controller:
                     )
                     if self.state["steady_batches"] >= 2:
                         self.state.pop("retry_batch_size", None)
-                items = self.state.setdefault("deferred", {})
                 for key, reason in failures.items():
-                    old = items.get(key, {})
-                    attempts = (
-                        old.get("attempts", 0) + 1
-                        if old.get("vocabulary") == version
-                        else 1
-                    )
-                    items[key] = {
-                        "reason": reason,
-                        "vocabulary": version,
-                        "attempts": attempts,
-                        "retry_after": time.time()
-                        + min(7 * 86400, 1800 * 2 ** min(attempts, 9)),
-                    }
+                    defer_target(self.state, key, reason, version, time.time())
                 self.state.update(
                     drafts=[d.as_dict() for d in drafts], last_error="", retry_after=0
                 )
@@ -557,6 +578,16 @@ class Controller:
                         len(attempted_targets),
                         sum(d.target.key not in retained_keys for d in prepared),
                         config,
+                        time.time(),
+                    )
+                if isinstance(exc, CallTimeout):
+                    # Otherwise the same targets rebuild the same prompt every retry.
+                    defer_timed_out(
+                        self.state,
+                        exc.keys,
+                        {d.target.key for d in prepared}
+                        | {d.target.key for d in getattr(exc, "drafts", [])},
+                        version,
                         time.time(),
                     )
                 self.failed(exc, epoch)

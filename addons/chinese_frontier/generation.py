@@ -12,7 +12,7 @@ from typing import Any, Callable
 from .core import Candidate, Source, Validated, ValidationError, validate_candidate
 from .lexicon import Lexicon, is_word
 from .preparation import context_bundle, pack_lesson
-from .providers import CliGenerator
+from .providers import CallTimeout, CliGenerator
 from .telemetry import decision, request_model
 
 GENERATION_POLICY = 3
@@ -299,19 +299,23 @@ def generate(
     def request(
         prompt: str, schema: dict[str, Any], phase: str, call_sources: list[Source]
     ) -> Any:
-        return request_model(
-            generator,
-            prompt,
-            schema,
-            config,
-            phase,
-            attempt_index,
-            [
-                {"key": s.key, "target": s.word}
-                for s in {s.key: s for s in call_sources}.values()
-            ],
-            progress,
-        )
+        targets = [
+            {"key": s.key, "target": s.word}
+            for s in {s.key: s for s in call_sources}.values()
+        ]
+        try:
+            return request_model(
+                generator,
+                prompt,
+                schema,
+                config,
+                phase,
+                attempt_index,
+                targets,
+                progress,
+            )
+        except TimeoutError as exc:
+            raise CallTimeout(str(exc), [t["key"] for t in targets]) from exc
 
     by_id = {source.card_id: source for source in sources}
     history: dict[int, list[dict[str, Any]]] = {

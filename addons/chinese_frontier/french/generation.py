@@ -13,7 +13,7 @@ from typing import Any, Callable
 from ..core import ValidationError
 from ..generation import STRING, object_schema
 from ..preparation import context_bundle, pack_lesson
-from ..providers import CliGenerator, GenerationStopped
+from ..providers import CallTimeout, CliGenerator, GenerationStopped
 from ..telemetry import decision, request_model
 from .core import POLICY, Candidate, Knowledge, Target, _units, validate
 from .lexicon import Lexicon, normalize, tokens
@@ -294,9 +294,9 @@ def merge_drafts(retained: list[Draft], generated: list[Draft]) -> list[Draft]:
     return list({d.target.key: d for d in retained + generated}.values())
 
 
-class GenerationTimeout(TimeoutError):
-    def __init__(self, message: str, drafts: list[Draft]) -> None:
-        super().__init__(message)
+class GenerationTimeout(CallTimeout):
+    def __init__(self, message: str, drafts: list[Draft], keys: list[str]) -> None:
+        super().__init__(message, keys)
         self.drafts = drafts
 
 
@@ -703,7 +703,7 @@ def generate(
                 progress,
             )
         except TimeoutError as exc:
-            raise GenerationTimeout(str(exc), drafts.copy()) from exc
+            raise GenerationTimeout(str(exc), drafts.copy(), call_keys) from exc
 
     common = sorted(
         known.surfaces,
