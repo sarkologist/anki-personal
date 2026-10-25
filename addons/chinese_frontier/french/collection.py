@@ -19,6 +19,7 @@ from ..core import (
     DeckBudget,
     ValidationError,
     admission_slots,
+    lookahead_days,
     plain_text,
     successful_days,
 )
@@ -367,11 +368,14 @@ class Snapshot:
     repairs: dict[str, tuple[int, str, Target]] = field(default_factory=dict)
     covered: set[tuple[str, str]] = field(default_factory=set)
     covered_forms: set[str] = field(default_factory=set)
+    lookahead_days: int = 0
 
     @property
     def slots(self) -> int:
         return admission_slots(
-            self.budgets, ignore_review_limit=self.ignore_review_limit
+            self.budgets,
+            ignore_review_limit=self.ignore_review_limit,
+            lookahead_days=self.lookahead_days,
         )
 
 
@@ -562,6 +566,7 @@ def snapshot(
         repairs,
         covered,
         covered_forms,
+        lookahead_days(config),
     )
 
 

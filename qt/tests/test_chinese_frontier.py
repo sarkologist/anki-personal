@@ -235,6 +235,57 @@ def test_zero_and_exhausted_limits_never_admit() -> None:
     assert admission_slots([DeckBudget(1, 10, 10, 0, 100, 0, 0)]) == 0
 
 
+def test_lookahead_tops_up_future_days_of_new_cards() -> None:
+    # 10/day, two days ahead: 30 at the start of the day.
+    assert admission_slots([DeckBudget(1, 10, 0, 0, 100, 0, 0)], lookahead_days=2) == 30
+    # Studying today consumes today's share, not the future days'...
+    assert admission_slots([DeckBudget(1, 10, 4, 26, 100, 0, 0)], lookahead_days=2) == 0
+    # ...so the next day tops up exactly what was seen.
+    assert admission_slots([DeckBudget(1, 10, 0, 26, 100, 0, 0)], lookahead_days=2) == 4
+    # Exhausting today's limit still leaves the future days to prepare.
+    assert (
+        admission_slots([DeckBudget(1, 10, 10, 5, 100, 0, 0)], lookahead_days=2) == 15
+    )
+
+
+def test_lookahead_does_not_count_future_cards_against_todays_reviews() -> None:
+    # Today's review room admits 3; future days add their full new limit.
+    budget = DeckBudget(1, 10, 0, 0, 10, 2, 5)
+    assert admission_slots([budget]) == 3
+    assert admission_slots([budget], lookahead_days=1) == 13
+
+
+def test_lookahead_uses_the_regular_limit_not_a_today_only_override() -> None:
+    cram = DeckBudget(1, 100, 0, 0, 1000, 0, 0, daily_new_limit=10)
+    assert admission_slots([cram], lookahead_days=2) == 120
+    day_off = DeckBudget(1, 0, 0, 0, 1000, 0, 0, daily_new_limit=10)
+    assert admission_slots([day_off], lookahead_days=2) == 20
+
+
+def test_lookahead_snapshot_ignores_today_only_override(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, _draft = setup_sentence(collection)
+    deck = collection.decks.get(1)
+    deck["newLimit"] = 1
+    deck["newLimitToday"] = {"limit": 50, "today": collection.sched.today}
+    collection.decks.update_dict(deck)
+    add_word(collection, "学生")
+    assert snapshot(collection, settings, {"lookahead_days": 2}).slots(1) == 51
+
+
+def test_lookahead_snapshot_reads_config(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, _draft = setup_sentence(collection)
+    deck = collection.decks.get(1)
+    deck["newLimit"] = 1
+    collection.decks.update_dict(deck)
+    add_word(collection, "学生")
+    assert snapshot(collection, settings, {}).slots(1) == 0
+    assert snapshot(collection, settings, {"lookahead_days": 2}).slots(1) == 2
+
+
 def test_context_can_never_use_unrecognised_non_chinese_text(lexicon: Lexicon) -> None:
     with pytest.raises(ValidationError):
         validate_candidate(candidate("ISBN百。"), source(), set(), lexicon)

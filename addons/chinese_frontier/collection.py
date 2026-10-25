@@ -28,8 +28,10 @@ from .core import (
     cloze_words,
     effective_limit,
     fingerprint,
+    lookahead_days,
     plain_text,
     presentation_fingerprint,
+    regular_limit,
     successful_days,
     validate_candidate,
 )
@@ -76,10 +78,16 @@ class Snapshot:
     skipped: dict[str, int] = field(default_factory=dict)
     repairs: dict[str, int] = field(default_factory=dict)
     contexts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    lookahead_days: int = 0
 
     def slots(self, deck_id: int) -> int:
+        return self.budget_slots(self.budgets.get(deck_id, []))
+
+    def budget_slots(self, budgets: list[DeckBudget]) -> int:
         return admission_slots(
-            self.budgets.get(deck_id, []), ignore_review_limit=self.ignore_review_limit
+            budgets,
+            ignore_review_limit=self.ignore_review_limit,
+            lookahead_days=self.lookahead_days,
         )
 
 
@@ -563,6 +571,7 @@ def snapshot(
         skipped,
         repairs,
         contexts,
+        lookahead_days(config),
     )
 
 
@@ -601,6 +610,7 @@ def _read_budgets(
             effective_limit(deck, conf, "review", day),
             int(rev_today[1]) if rev_today[0] == day else 0,
             int(due_reviews),
+            regular_limit(deck, conf, "new"),
         )
     budgets = {
         did: [budgets_by_id[ancestor] for ancestor in _ancestors(decks, did)]
@@ -937,22 +947,12 @@ def _admit(
             continue
         budgets = current.budgets[source.deck_id]
         adjusted = [
-            DeckBudget(
-                budget.deck_id,
-                budget.new_limit,
-                budget.introduced,
-                budget.pending + reserved.get(budget.deck_id, 0),
-                budget.review_limit,
-                budget.reviewed,
-                budget.due_reviews,
-            )
+            replace(budget, pending=budget.pending + reserved.get(budget.deck_id, 0))
             for budget in budgets
         ]
         repair_id = current.repairs.get(source.key)
         extra_cards = max(0, valid.card_count - source.existing_cards)
-        capacity = admission_slots(
-            adjusted, ignore_review_limit=current.ignore_review_limit
-        )
+        capacity = current.budget_slots(adjusted)
         staged_character = (
             valid.candidate.mode == "characters"
             and extra_cards > capacity

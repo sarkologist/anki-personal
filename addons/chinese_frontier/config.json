@@ -29,5 +29,6 @@
     "auto_fill": true,
     "max_batches_per_cycle": 32,
     "refill_retry_seconds": 1800,
-    "buffer_notes": 4
+    "buffer_notes": 4,
+    "lookahead_days": 2
 }
