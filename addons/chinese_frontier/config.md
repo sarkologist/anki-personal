@@ -18,6 +18,11 @@ editing the add-on's `meta.json` configuration, or the defaults before packaging
 - `max_batches_per_cycle`: maximum batches before cooldown; default 32, range 1–128.
   The actual allowance adapts to remaining capacity and observed approval yield.
 - `refill_retry_seconds`: same-day cycle cooldown; default 1800, minimum 30.
+- `lookahead_days`: future days of new cards kept generated, so a day's study
+  never waits on generation; default 2, range 0–7. With 10 new cards/day, 2
+  keeps up to 30 unseen generated cards, topped up as they are introduced.
+  Anki's daily new limit still decides how many are shown each day; only
+  today's share is checked against the review limit. Shared by French.
 - `max_batches_per_day`: default 8, used only when `auto_fill` is false. Failed
   attempts count. Auto-fill uses bounded cycles instead of a fixed daily cutoff.
 - `known_words`: optional whole Chinese words explicitly declared familiar. Empty

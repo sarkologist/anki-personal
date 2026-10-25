@@ -45,7 +45,7 @@ from .collection import (
     snapshot,
     upgrade_presentation,
 )
-from .core import GENERATED_TAG, admission_slots
+from .core import GENERATED_TAG
 from .diagnostics import Diagnostics
 from .generation import GenerationResult, generate
 from .lexicon import Lexicon
@@ -314,10 +314,7 @@ class Controller:
             repairing = source.key in current.repairs
             if not repairing and any(
                 reservations.get(budget.deck_id, 0)
-                >= admission_slots(
-                    [budget], ignore_review_limit=current.ignore_review_limit
-                )
-                + ahead
+                >= current.budget_slots([budget]) + ahead
                 for budget in budgets
             ):
                 continue

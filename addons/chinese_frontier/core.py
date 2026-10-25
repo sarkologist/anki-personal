@@ -280,29 +280,40 @@ class DeckBudget:
     due_reviews: int
 
 
+def lookahead_days(config: dict[str, Any]) -> int:
+    return max(0, min(7, int(config.get("lookahead_days", 0))))
+
+
 def admission_slots(
-    budgets: list[DeckBudget], *, ignore_review_limit: bool = False
+    budgets: list[DeckBudget],
+    *,
+    ignore_review_limit: bool = False,
+    lookahead_days: int = 0,
 ) -> int:
     """Reserve *all* active/buried new cards and due reviews in each budget.
 
     Deliberately conservative: sibling burying and gather order may make some
     reserved cards unavailable today, but cannot cause over-admission.
+
+    `lookahead_days` keeps that many future days of new cards generated, so a
+    day's study never waits on generation. Only today's share is checked
+    against today's review limit; Anki's own new limit keeps the rest hidden.
     """
     if not budgets:
         return 0
     remaining = []
     for budget in budgets:
-        new = budget.new_limit - budget.introduced - budget.pending
+        today = budget.new_limit - budget.introduced
         if not ignore_review_limit:
-            review = (
+            today = min(
+                today,
                 budget.review_limit
                 - budget.reviewed
                 - budget.introduced
-                - budget.due_reviews
-                - budget.pending
+                - budget.due_reviews,
             )
-            new = min(new, review)
-        remaining.append(max(0, new))
+        target = max(0, today) + lookahead_days * max(0, budget.new_limit)
+        remaining.append(max(0, target - budget.pending))
     return min(remaining)
 
 

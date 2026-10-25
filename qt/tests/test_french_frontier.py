@@ -281,6 +281,8 @@ def test_pending_new_card_reserves_the_only_slot(collection):
     collection.decks.update_config(conf)
     add_cloze(collection, "{{c1::train}}")
     assert snapshot(collection, {"deck_id": 1}, {}, dictionary()).slots == 0
+    ahead = snapshot(collection, {"deck_id": 1}, {"lookahead_days": 2}, dictionary())
+    assert ahead.slots == 2
 
 
 def test_paused_settings_never_admit(collection):
