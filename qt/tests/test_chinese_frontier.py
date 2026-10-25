@@ -255,6 +255,25 @@ def test_lookahead_does_not_count_future_cards_against_todays_reviews() -> None:
     assert admission_slots([budget], lookahead_days=1) == 13
 
 
+def test_lookahead_uses_the_regular_limit_not_a_today_only_override() -> None:
+    cram = DeckBudget(1, 100, 0, 0, 1000, 0, 0, daily_new_limit=10)
+    assert admission_slots([cram], lookahead_days=2) == 120
+    day_off = DeckBudget(1, 0, 0, 0, 1000, 0, 0, daily_new_limit=10)
+    assert admission_slots([day_off], lookahead_days=2) == 20
+
+
+def test_lookahead_snapshot_ignores_today_only_override(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, _draft = setup_sentence(collection)
+    deck = collection.decks.get(1)
+    deck["newLimit"] = 1
+    deck["newLimitToday"] = {"limit": 50, "today": collection.sched.today}
+    collection.decks.update_dict(deck)
+    add_word(collection, "学生")
+    assert snapshot(collection, settings, {"lookahead_days": 2}).slots(1) == 51
+
+
 def test_lookahead_snapshot_reads_config(
     collection: Collection, lexicon: Lexicon
 ) -> None:

@@ -278,6 +278,8 @@ class DeckBudget:
     review_limit: int
     reviewed: int
     due_reviews: int
+    # The limit without a "today only" override; defaults to new_limit.
+    daily_new_limit: int | None = None
 
 
 def lookahead_days(config: dict[str, Any]) -> int:
@@ -312,7 +314,12 @@ def admission_slots(
                 - budget.introduced
                 - budget.due_reviews,
             )
-        target = max(0, today) + lookahead_days * max(0, budget.new_limit)
+        daily = (
+            budget.new_limit
+            if budget.daily_new_limit is None
+            else budget.daily_new_limit
+        )
+        target = max(0, today) + lookahead_days * max(0, daily)
         remaining.append(max(0, target - budget.pending))
     return min(remaining)
 
@@ -323,6 +330,10 @@ def effective_limit(
     override = deck.get(f"{kind}LimitToday")
     if isinstance(override, dict) and override.get("today") == today:
         return int(override["limit"])
+    return regular_limit(deck, config, kind)
+
+
+def regular_limit(deck: dict[str, Any], config: dict[str, Any], kind: str) -> int:
     value = deck.get(f"{kind}Limit")
     if value is not None:
         return int(value)

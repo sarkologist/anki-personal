@@ -31,6 +31,7 @@ from .core import (
     lookahead_days,
     plain_text,
     presentation_fingerprint,
+    regular_limit,
     successful_days,
     validate_candidate,
 )
@@ -609,6 +610,7 @@ def _read_budgets(
             effective_limit(deck, conf, "review", day),
             int(rev_today[1]) if rev_today[0] == day else 0,
             int(due_reviews),
+            regular_limit(deck, conf, "new"),
         )
     budgets = {
         did: [budgets_by_id[ancestor] for ancestor in _ancestors(decks, did)]
@@ -945,15 +947,7 @@ def _admit(
             continue
         budgets = current.budgets[source.deck_id]
         adjusted = [
-            DeckBudget(
-                budget.deck_id,
-                budget.new_limit,
-                budget.introduced,
-                budget.pending + reserved.get(budget.deck_id, 0),
-                budget.review_limit,
-                budget.reviewed,
-                budget.due_reviews,
-            )
+            replace(budget, pending=budget.pending + reserved.get(budget.deck_id, 0))
             for budget in budgets
         ]
         repair_id = current.repairs.get(source.key)
