@@ -50,7 +50,7 @@ from .diagnostics import Diagnostics
 from .generation import GenerationResult, generate
 from .lexicon import Lexicon
 from .preparation import buffer_size, preparation_needed, previous_lessons, read_lesson
-from .providers import GenerationStopped
+from .providers import CallTimeout, GenerationStopped
 from .state import State, vocabulary_version
 from .telemetry import error_location, import_calls, observe, recover
 
@@ -436,6 +436,11 @@ class Controller:
                     "outcome": "error",
                 }
             )
+            if isinstance(exc, CallTimeout):
+                # Otherwise the same targets rebuild the same prompt every retry.
+                self.state.defer_timed_out(
+                    exc.keys, {d.source.key for d in self.state.drafts}, version
+                )
             self.failed(exc, epoch)
             return
         self.state.record_batch(

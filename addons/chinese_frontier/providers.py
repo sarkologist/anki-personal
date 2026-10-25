@@ -10,6 +10,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from threading import Event
 from typing import Any
@@ -17,6 +18,14 @@ from typing import Any
 
 class GenerationStopped(Exception):
     pass
+
+
+class CallTimeout(TimeoutError):
+    """A writing or review call timed out; keys are the targets it carried."""
+
+    def __init__(self, message: str, keys: Iterable[str] = ()) -> None:
+        super().__init__(message)
+        self.keys = tuple(keys)
 
 
 def resolve_cli(provider: str, configured: str = "") -> str:
@@ -206,26 +215,28 @@ class CliGenerator:
         with tempfile.TemporaryDirectory(prefix="anki-chinese-frontier-") as temporary:
             folder = Path(temporary)
             (folder / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+            # A file, not a pipe: polling communicate() with input=None stops
+            # writing, so a CLI that starts reading late never saw a prompt
+            # larger than the pipe buffer (16 KB on macOS), nor EOF.
+            (folder / "prompt.txt").write_text(prompt, encoding="utf-8")
             command = cli_command(
                 self.provider, self.executable, folder, schema, self.model
             )
             with (
+                (folder / "prompt.txt").open("rb") as stdin,
                 (folder / "stdout.txt").open("w+") as stdout,
                 (folder / "stderr.txt").open("w+") as stderr,
             ):
                 process = subprocess.Popen(
                     command,
-                    stdin=subprocess.PIPE,
+                    stdin=stdin,
                     stdout=stdout,
                     stderr=stderr,
-                    text=True,
-                    encoding="utf-8",
                     cwd=folder,
                     env=self.env,
                     start_new_session=os.name == "posix",
                 )
                 deadline = time.monotonic() + self.timeout
-                pending_input: str | None = prompt
                 try:
                     while True:
                         if self.stop.is_set():
@@ -235,10 +246,10 @@ class CliGenerator:
                                 f"{self.provider} generation timed out; it will retry later"
                             )
                         try:
-                            process.communicate(input=pending_input, timeout=0.5)
+                            process.wait(timeout=0.5)
                             break
                         except subprocess.TimeoutExpired:
-                            pending_input = None
+                            pass
                     if process.returncode:
                         stderr.seek(0)
                         detail = stderr.read(2000).strip()

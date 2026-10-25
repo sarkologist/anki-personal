@@ -59,6 +59,9 @@ def read_lesson(value: Any) -> dict[str, Any]:
     return decoded if isinstance(decoded, dict) else {"reason": str(decoded)[:1600]}
 
 
+TIMEOUT_LESSON = "The model call timed out before answering."
+
+
 def pack_lesson(value: Any) -> str:
     """Keep actionable fields, never truncate a JSON document halfway through."""
     value = read_lesson(value)

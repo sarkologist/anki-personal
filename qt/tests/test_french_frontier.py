@@ -1036,6 +1036,7 @@ def test_a_later_timeout_keeps_earlier_independent_approvals():
     assert events[-1]["target_count"] == 1
     assert events[-1]["targets"][0]["key"] == other.key
     assert events[-1]["elapsed_seconds"] >= 0
+    assert error.value.keys == (other.key,)
 
 
 def test_independent_review_omits_irrelevant_vocabulary():
@@ -1150,6 +1151,31 @@ def test_timeout_automatically_retries_soon_with_a_smaller_batch(monkeypatch):
     assert controller.state["retry_batch_size"] == 1
     assert "Automatic retry" in controller.status
     assert scheduled[0][0] == 120000
+
+
+def test_timed_out_targets_are_deferred_without_losing_their_lesson():
+    from chinese_frontier.french import runtime
+
+    state = {
+        "deferred": {
+            "lesson": {
+                "reason": "No blade word is established",
+                "vocabulary": "v0",
+                "attempts": 4,
+                "retry_after": 0,
+            }
+        }
+    }
+    runtime.defer_timed_out(
+        state, ["fresh", "lesson", "approved"], {"approved"}, "v1", 100
+    )
+    deferred = state["deferred"]
+    assert "approved" not in deferred
+    assert deferred["fresh"]["retry_after"] > 100
+    assert "timed out" in deferred["fresh"]["reason"]
+    assert deferred["lesson"]["reason"] == "No blade word is established"
+    assert deferred["lesson"]["vocabulary"] == "v1"
+    assert deferred["lesson"]["retry_after"] > 100
 
 
 def test_non_timeout_account_errors_keep_the_longer_backoff(monkeypatch):

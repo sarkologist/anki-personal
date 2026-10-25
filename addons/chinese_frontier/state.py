@@ -6,13 +6,14 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import refill
 from .generation import GENERATION_POLICY, Draft
-from .preparation import pack_lesson
+from .preparation import TIMEOUT_LESSON, pack_lesson
 
 
 def vocabulary_version(known: dict[str, str]) -> str:
@@ -136,3 +137,12 @@ class State:
             "attempts": attempts,
             "retry_after": time.time() + min(7 * 86400, 1800 * 2 ** min(attempts, 9)),
         }
+
+    def defer_timed_out(
+        self, keys: Iterable[str], approved: set[str], vocabulary: str
+    ) -> None:
+        """Back a timed-out target off like a rejection, keeping its last lesson."""
+        for key in keys:
+            if key not in approved:
+                reason = self.deferred.get(key, {}).get("reason") or TIMEOUT_LESSON
+                self.defer(key, reason, vocabulary)
