@@ -214,10 +214,9 @@ def validate_review(review: Any, candidate: Candidate, source: Source) -> bool:
             fits = len(word) == len(source.word) and all(
                 word[i] == char for i, char in enumerate(source.word) if char != hidden
             )
-        if other["fits_cloze"] != fits:
-            raise ValidationError(
-                "Alternative judgment contradicts the visible character"
-            )
+        # The blank's shape decides this exactly; a reviewer that misjudges it
+        # (e.g. answering about meaning) must not void the whole batch.
+        other["fits_cloze"] = fits
         seen.add((unit, word))
     if {unit for unit, _word in seen} != set(units):
         raise ValidationError("Alternative checks omitted a cloze or contrast example")
