@@ -2131,11 +2131,11 @@ wheels = [
 
 [[package]]
 name = "types-waitress"
-version = "3.0.1.20241117"
+version = "3.0.1.20260724"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/34/d4/af78f0ae18ca02830e0a45d410b6f4eda0dfa5b82861c9d7900d1baceb31/types-waitress-3.0.1.20241117.tar.gz", hash = "sha256:1df08f8de36cc30ddade179e1cb28c59776e89a1a2874893b59fe2ea00a823a0", size = 9536, upload-time = "2024-11-17T02:55:08.514Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a0/79/87852f3ed81730ad64cdd16fe14dd664f7403aec9643c5a72d1bf36ec454/types_waitress-3.0.1.20260724.tar.gz", hash = "sha256:dc05abee59c067cf94edc273b19d38b2b9b456e544ead280b2edfefdc8851811", size = 14533, upload-time = "2026-07-24T04:57:51.05Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/59/27fe5594ca49ba4f4bdf3cf523cf915d06c4dc5df2f59942b895e2f8774a/types_waitress-3.0.1.20241117-py3-none-any.whl", hash = "sha256:4700d2f22bacab5f817692faf25f9b7d43810b72ab7434a628a5a4cd1f5766fd", size = 12799, upload-time = "2024-11-17T02:55:07.55Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/76/9892eacf410bf177167257284afbe9fb565d98f8905e29246f31f57463c6/types_waitress-3.0.1.20260724-py3-none-any.whl", hash = "sha256:bcbeb4fd3d7e864e228c9bea01580acab0d9addb10ffc8d37b914a625a13fc34", size = 17499, upload-time = "2026-07-24T04:57:50.137Z" },
 ]
 
 [[package]]
