@@ -849,6 +849,27 @@ def test_model_approval_cannot_override_a_fitting_alternative() -> None:
     assert not validate_review(report, c, target)
 
 
+def test_whole_word_fit_is_computed_not_trusted_from_the_reviewer() -> None:
+    # A whole-word blank hides every character, so any word fits its shape.
+    c, target = candidate(), source()
+    report = audit_report(target, c)
+    report["alternatives"][0]["fits_cloze"] = False
+    assert validate_review(report, c, target)
+    report["alternatives"][0]["fits_context"] = True
+    assert not validate_review(report, c, target)
+    assert report["alternatives"][0]["fits_cloze"] is True
+
+
+def test_character_fit_is_computed_from_the_visible_characters() -> None:
+    c = replace(candidate("学生有一页。"), mode="characters")
+    target = source("学生")
+    report = audit_report(target, c)
+    for other in report["alternatives"]:
+        other.update(fits_context=True, fits_cloze=True)
+    # 千 keeps neither visible sibling, so it cannot fill either blank.
+    assert validate_review(report, c, target)
+
+
 def test_character_review_requires_both_sibling_checks() -> None:
     c = replace(candidate("学生有一页。"), mode="characters")
     report = audit_report(source("学生"), c)
