@@ -24,11 +24,13 @@ from .agent_log import (
 )
 from .effort_options import effort_value
 from .patches import (
+    CardActionPatch,
     EditorSnapshot,
     MultiCardSnapshot,
     MultiNotePatch,
     NotePatch,
     PatchValidationError,
+    validate_card_action_patch,
     validate_multi_note_patch,
     validate_note_patch,
 )
@@ -145,6 +147,39 @@ MULTI_NOTE_PATCH_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+CREATE_CARDS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["create"]},
+        "summary": {"type": "string"},
+        "notes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "fields": SINGLE_NOTE_PATCH_SCHEMA["properties"]["field_updates"],
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["fields", "tags"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["action", "summary", "notes"],
+    "additionalProperties": False,
+}
+
+DELETE_CARD_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["delete"]},
+        "summary": {"type": "string"},
+        "card_id": {"type": "integer"},
+    },
+    "required": ["action", "summary", "card_id"],
+    "additionalProperties": False,
+}
+
 CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -170,6 +205,8 @@ CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
                 {"type": "null"},
                 SINGLE_NOTE_PATCH_SCHEMA,
                 MULTI_NOTE_PATCH_SCHEMA,
+                CREATE_CARDS_SCHEMA,
+                DELETE_CARD_SCHEMA,
             ]
         },
     },
@@ -204,7 +241,24 @@ Return a JSON object matching the supplied schema:
   blockquote, table, and a. Use MathJax delimiters like \\(...\\) or \\[...\\]
   for math. Do not include scripts, styles, iframes, event handlers, images, or
   javascript: links.
-- patch: null unless you are proposing changes to the current note.
+- patch: null unless proposing note edits, new cards, or deletion of the current card.
+  To create cards, return action: "create", summary, and a non-empty notes array.
+  Each new note contains fields (an array of name/html objects for EVERY field
+  in the current note type) and tags (a list of strings). New notes use the
+  current note type and context_json.deck_id; templates/clozes generate cards.
+  Do not copy current note fields or tags unless useful for the requested cards.
+  Creation requires a deck_id in the context. To delete the current card,
+  return action: "delete", summary, and the exact context_json.card_id.
+  Deletion removes ONLY that card; if it is the last card, its note is removed too.
+  Creation and deletion are available only with a single editor context, not
+  browse_multi. Ask the user to select one card if necessary.
+  Never combine these actions with note edits or card_request. Do not include
+  field_updates, note_id, notetype_id, or tags at the top level of a card action.
+  These are proposals only: the user must review and explicitly confirm each
+  creation or deletion in Anki before any collection write occurs. Never claim
+  that the action has already been performed.
+  All collection writes must use proposals. Never use external tools, the
+  collection database, or AnkiConnect to create, edit, or delete cards or notes.
 - card_request: null for a final answer. To inspect other cards, return an
   object with query (Anki search syntax, empty string for all permitted cards),
   offset (starting at 0), and limit (1 to 20). Use cid:123 to read a specific
@@ -226,6 +280,7 @@ fine to include a concise rationale or evidence summary in message and
 message_html, especially when proposing a patch.
 
 When proposing a patch:
+The following rules apply to edit patches (without action):
 - If context_json.mode is "browse_multi", target only notes listed in
   context_json.notes and return note_updates. Each note_update edits a note
   that may be shared by multiple selected cards.
@@ -252,7 +307,7 @@ When proposing a patch:
 """
 
 
-AgentPatch = NotePatch | MultiNotePatch
+AgentPatch = NotePatch | MultiNotePatch | CardActionPatch
 
 
 @dataclass(frozen=True)
@@ -762,6 +817,8 @@ def _validate_agent_patch(
     patch_data: dict[str, Any],
     snapshot: EditorSnapshot | MultiCardSnapshot,
 ) -> AgentPatch:
+    if isinstance(patch_data, dict) and "action" in patch_data:
+        return validate_card_action_patch(patch_data, snapshot)
     if isinstance(snapshot, MultiCardSnapshot):
         return validate_multi_note_patch(patch_data, snapshot)
     return validate_note_patch(patch_data, snapshot)

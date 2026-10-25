@@ -9,6 +9,7 @@ import json
 from collections.abc import Callable, Iterable
 
 from .patches import (
+    CardActionPatch,
     EditorSnapshot,
     MultiCardSnapshot,
     MultiNotePatch,
@@ -400,6 +401,54 @@ def multi_note_patch_card_ids(
 ) -> tuple[int, ...]:
     affected = set(patch.affected_note_ids())
     return tuple(card.card_id for card in snapshot.cards if card.note_id in affected)
+
+
+def render_card_action_proposal(
+    snapshot: EditorSnapshot,
+    patch: CardActionPatch,
+    preview_renderer: PreviewRenderer | None = None,
+) -> str:
+    render_preview = preview_renderer or sanitize_html
+    if patch.action == "delete":
+        detail = (
+            f"Delete current card {patch.card_id} (note {snapshot.note_id}). "
+            "Other cards of this note remain. If this is its last card, "
+            "the note is also deleted."
+        )
+        groups = [
+            (
+                "Current note",
+                {field.name: field.html for field in snapshot.fields},
+                snapshot.tags,
+            )
+        ]
+    else:
+        detail = (
+            f"Create cards from {len(patch.notes)} new note(s) using "
+            f"{snapshot.notetype_name} in deck {snapshot.deck_name or snapshot.deck_id}. "
+            "The note type's templates and clozes determine the number of cards."
+        )
+        groups = [
+            (f"New note {index}", note.fields, note.tags)
+            for index, note in enumerate(patch.notes, start=1)
+        ]
+    previews = []
+    for label, fields, tags in groups:
+        previews.append(f'<div class="agent-change-title">{html.escape(label)}</div>')
+        for name, value in fields.items():
+            previews.append(
+                f'<section class="agent-change"><strong>{html.escape(name)}</strong>'
+                f'<div class="agent-preview">{render_preview(value)}</div>'
+                f"<pre>{html.escape(value)}</pre></section>"
+            )
+        previews.append(f"<div>Tags: {html.escape(' '.join(tags))}</div>")
+    return (
+        '<section class="agent-proposal"><div class="agent-role">Proposed card action</div>'
+        f'<div class="agent-proposal-summary">{html.escape(patch.summary)}</div>'
+        f"<p>{html.escape(detail)}</p><p>Requires your confirmation.</p>"
+        + "".join(previews)
+        + "</section>"
+    )
 
 
 def render_multi_note_card_proposal_diff(

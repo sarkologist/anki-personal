@@ -92,6 +92,6 @@ subdecks. In Add Cards it uses the selected target deck. A missing deck fails
 closed. Lookups use Anki search syntax and return fields, tags, note type, template,
 and deck metadata, ordered by card ID. Results are paginated at up to 20 cards per
 lookup, with a maximum of 12 lookups per message. Agents can narrow searches or
-request further pages; no collection write operation is exposed. Retrieved cards
+request further pages. Retrieved cards
 do not become eligible patch targets. The permission applies to these
 Anki-mediated lookups; project folder tools retain their separate access setting.

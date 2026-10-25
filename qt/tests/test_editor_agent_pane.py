@@ -776,6 +776,7 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     operations_module = types.ModuleType("aqt.operations")
     operations_module.__path__ = []
+    operations_module.CollectionOp = lambda *args, **kwargs: None
     note_module = types.ModuleType("aqt.operations.note")
     note_module.update_note = lambda *args, **kwargs: None
     note_module.update_notes = lambda *args, **kwargs: None
@@ -812,6 +813,7 @@ def _import_runtime_with_aqt_stubs(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     utils_module = types.ModuleType("aqt.utils")
     utils_module.openFolder = lambda *args, **kwargs: None
+    utils_module.askUser = lambda *args, **kwargs: False
     utils_module.showWarning = lambda *args, **kwargs: None
     utils_module.tooltip = lambda *args, **kwargs: None
 
@@ -857,6 +859,7 @@ def _pane_for_runtime(
     pane.send_button = FakeButton(False)
     pane.stop_button = FakeButton(True)
     pane.apply_button = FakeButton(True)
+    pane.preview_button = FakeButton(False)
     pane.prompt = FakePrompt("draft prompt")
     pane.selection_context_label = FakeLabel()
     pane.refresh_calls = 0
@@ -878,7 +881,10 @@ def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
         currentField=0,
         card=None,
         mw=types.SimpleNamespace(
-            col=types.SimpleNamespace(media=FakeMediaManager(media_dir, {}))
+            col=types.SimpleNamespace(
+                media=FakeMediaManager(media_dir, {}),
+                decks=types.SimpleNamespace(name=lambda deck_id: "Default"),
+            )
         ),
     )
     editor.note_type = lambda: {"name": "Basic"}
@@ -901,6 +907,7 @@ def _pane_for_agent_request(runtime: Any, tmp_path: Path) -> Any:
     pane.send_button = FakeButton(True)
     pane.stop_button = FakeButton(False)
     pane.apply_button = FakeButton(True)
+    pane.preview_button = FakeButton(False)
     pane.selection_context_label = FakeLabel()
     pane.codex_path_edit = types.SimpleNamespace(text=lambda: "")
     pane.ollama_path_edit = types.SimpleNamespace(text=lambda: "")
@@ -7361,3 +7368,680 @@ def test_unknown_card_access_fails_closed(invalid: Any) -> None:
     assert "error" in read_cards(
         None, CardReadScope(invalid), {"query": "", "offset": 0, "limit": 1}
     )
+
+
+def _card_action_context() -> EditorSnapshot:
+    from dataclasses import replace
+
+    return replace(snapshot(), card_id=11, deck_id=1, deck_name="Default")
+
+
+def _create_cards_data() -> dict[str, Any]:
+    return {
+        "action": "create",
+        "summary": "Add a related card",
+        "notes": [
+            {
+                "fields": [
+                    {"name": "Front", "html": "new front"},
+                    {"name": "Back", "html": "new back"},
+                ],
+                "tags": ["new"],
+            }
+        ],
+    }
+
+
+def test_agent_validates_creation_without_editing_current_note() -> None:
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    context = _card_action_context()
+    patch = _validate_agent_patch(_create_cards_data(), context)
+    assert patch.action == "create"
+    assert patch.notes[0].fields == {"Front": "new front", "Back": "new back"}
+    assert patch.notes[0].tags == ("new",)
+    assert context.field_html("Front") == "old front"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"notes": []},
+        {"notes": [{"fields": [{"name": "Unknown", "html": "x"}], "tags": []}]},
+        {"notes": [{"fields": [{"name": "Front", "html": "x"}], "tags": []}]},
+        {
+            "notes": [
+                {
+                    "fields": [
+                        {"name": "Front", "html": " "},
+                        {"name": "Back", "html": " "},
+                    ],
+                    "tags": [],
+                }
+            ]
+        },
+        {"field_updates": [{"name": "Front", "html": "hidden edit"}]},
+    ],
+)
+def test_card_creation_rejects_invalid_or_mixed_actions(change: dict[str, Any]) -> None:
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    with pytest.raises(PatchValidationError):
+        _validate_agent_patch(
+            {**_create_cards_data(), **change}, _card_action_context()
+        )
+
+
+@pytest.mark.parametrize("card_id", [12, None, True, "11"])
+def test_agent_cannot_delete_other_cards(card_id: Any) -> None:
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    with pytest.raises(PatchValidationError):
+        _validate_agent_patch(
+            {"action": "delete", "summary": "Remove", "card_id": card_id},
+            _card_action_context(),
+        )
+
+
+@pytest.mark.parametrize("action", ["create", "delete"])
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_card_actions_only_run_after_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    confirmed: bool,
+) -> None:
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    context = _card_action_context()
+    patch = _validate_agent_patch(
+        _create_cards_data()
+        if action == "create"
+        else {"action": "delete", "summary": "Remove", "card_id": 11},
+        context,
+    )
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.BROWSER,
+        current_note_id=123,
+        last_browser_note_id=123,
+    )
+    pane.pending_patch = patch
+    pane.pending_snapshot = context
+    pane.editor.call_after_note_saved = lambda callback, **kwargs: callback()
+    monkeypatch.setattr(runtime, "editor_snapshot", lambda editor: context)
+    confirmations = []
+    operations = []
+    monkeypatch.setattr(
+        runtime,
+        "askUser",
+        lambda text, **kwargs: confirmations.append((text, kwargs)) or confirmed,
+    )
+
+    class Operation:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.success_callback = None
+
+        def success(self, callback: Any) -> Any:
+            self.success_callback = callback
+            return self
+
+        def failure(self, callback: Any) -> Any:
+            return self
+
+        def run_in_background(self, **kwargs: Any) -> None:
+            operations.append(self)
+
+    monkeypatch.setattr(runtime, "CollectionOp", Operation)
+    pane._apply_pending_patch()
+    assert len(confirmations) == 1
+    assert confirmations[0][1]["defaultno"] is True
+    assert len(operations) == int(confirmed)
+    assert pane.pending_patch is patch
+    if confirmed:
+        # Repeated clicks cannot start the same operation twice.
+        pane._apply_pending_patch()
+        assert len(confirmations) == 1
+        assert len(operations) == 1
+        operations[0].success_callback(None)
+        assert pane.pending_patch is None
+
+
+def test_card_action_rejects_changed_editor_before_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    context = _card_action_context()
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.BROWSER,
+        current_note_id=123,
+        last_browser_note_id=123,
+    )
+    pane.pending_snapshot = context
+    pane.pending_patch = _validate_agent_patch(_create_cards_data(), context)
+    pane.editor.call_after_note_saved = lambda callback, **kwargs: callback()
+    monkeypatch.setattr(
+        runtime, "editor_snapshot", lambda editor: replace(context, deck_id=2)
+    )
+    confirmations = []
+    monkeypatch.setattr(
+        runtime, "askUser", lambda *args, **kwargs: confirmations.append(args)
+    )
+    pane._apply_pending_patch()
+    assert confirmations == []
+
+
+def test_confirmed_creation_adds_new_notes_in_one_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import dataclass
+
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    collection_module = types.ModuleType("anki.collection")
+
+    @dataclass
+    class AddNoteRequest:
+        note: Any
+        deck_id: int
+
+    collection_module.AddNoteRequest = AddNoteRequest
+    monkeypatch.setitem(sys.modules, "anki.collection", collection_module)
+    context = _card_action_context()
+    data = _create_cards_data()
+    data["notes"].append(
+        {
+            "fields": [
+                {"name": "Front", "html": "second"},
+                {"name": "Back", "html": "answer"},
+            ],
+            "tags": [],
+        }
+    )
+    patch = _validate_agent_patch(data, context)
+    batches = []
+    created = []
+
+    class NewNote(dict):
+        tags: list[str]
+
+    def new_note(notetype: Any) -> Any:
+        note = NewNote()
+        created.append(note)
+        return note
+
+    col = types.SimpleNamespace(
+        models=types.SimpleNamespace(
+            get=lambda mid: {"flds": [{"name": "Front"}, {"name": "Back"}]}
+        ),
+        decks=types.SimpleNamespace(get=lambda did, **kwargs: {"dyn": 0}),
+        new_note=new_note,
+        add_notes=lambda requests: batches.append(requests) or "changes",
+    )
+    assert runtime.apply_card_action(col, context, patch) == "changes"
+    assert len(batches) == 1
+    assert len(batches[0]) == 2
+    assert all(request.deck_id == 1 for request in batches[0])
+    assert created[0] == {"Front": "new front", "Back": "new back"}
+    assert created[0].tags == ["new"]
+    assert context.field_html("Front") == "old front"
+    col.models.get = lambda mid: {"flds": [{"name": "Changed"}]}
+    with pytest.raises(PatchValidationError):
+        runtime.apply_card_action(col, context, patch)
+    assert len(batches) == 1
+
+
+def test_confirmed_deletion_only_removes_current_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    context = _card_action_context()
+    patch = _validate_agent_patch(
+        {"action": "delete", "summary": "Remove", "card_id": 11}, context
+    )
+    removed = []
+    note = types.SimpleNamespace(
+        id=123,
+        mid=7,
+        tags=list(context.tags),
+        items=lambda: [(field.name, field.html) for field in context.fields],
+    )
+    col = types.SimpleNamespace(
+        get_card=lambda cid: types.SimpleNamespace(note=lambda: note),
+        remove_cards_and_orphaned_notes=lambda ids: removed.append(ids) or "changes",
+    )
+    assert runtime.apply_card_action(col, context, patch) == "changes"
+    assert removed == [[11]]
+    note.id = 999
+    with pytest.raises(PatchValidationError):
+        runtime.apply_card_action(col, context, patch)
+    assert removed == [[11]]
+
+
+def test_card_action_preview_shows_target_and_sanitizes_fields() -> None:
+    from editor_agent_pane.codex_client import _validate_agent_patch
+    from editor_agent_pane.surface import render_card_action_proposal
+
+    context = _card_action_context()
+    data = _create_cards_data()
+    data["summary"] = "<script>evil</script>"
+    data["notes"][0]["fields"][0]["html"] = "<b>question</b><script>evil</script>"
+    rendered = render_card_action_proposal(
+        context, _validate_agent_patch(data, context)
+    )
+    assert "Basic in deck Default" in rendered
+    assert "new back" in rendered
+    assert "Tags: new" in rendered
+    assert "<b>question</b>" in rendered
+    assert "<script>" not in rendered
+    deletion = _validate_agent_patch(
+        {"action": "delete", "summary": "Remove", "card_id": 11}, context
+    )
+    rendered = render_card_action_proposal(context, deletion)
+    assert "Delete current card 11" in rendered
+    assert "last card" in rendered
+    assert "old front" in rendered
+
+
+def test_ollama_preserves_card_action_contract() -> None:
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    context = _card_action_context()
+    raw = _create_cards_data()
+    normalized = ollama_client._normalize_ollama_patch_data(raw, context)
+    assert _validate_agent_patch(normalized, context).action == "create"
+
+
+@pytest.mark.parametrize("context_kind", ["no_deck", "unsaved", "multiple"])
+def test_card_actions_reject_unavailable_targets(context_kind: str) -> None:
+    from dataclasses import replace
+
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    context = _card_action_context()
+    data = _create_cards_data()
+    if context_kind == "no_deck":
+        context = replace(context, deck_id=None)
+    elif context_kind == "unsaved":
+        context = replace(context, mode="add", note_id=None, card_id=None)
+        data = {"action": "delete", "summary": "Remove", "card_id": 11}
+    else:
+        context = multi_snapshot()
+    with pytest.raises(PatchValidationError):
+        _validate_agent_patch(data, context)
+
+
+def test_card_action_is_rechecked_after_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    context = _card_action_context()
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.BROWSER,
+        current_note_id=123,
+        last_browser_note_id=123,
+    )
+    pane.pending_snapshot = context
+    pane.pending_patch = _validate_agent_patch(_create_cards_data(), context)
+    pane.editor.call_after_note_saved = lambda callback, **kwargs: callback()
+    monkeypatch.setattr(runtime, "editor_snapshot", lambda editor: context)
+
+    def confirm(*args: Any, **kwargs: Any) -> bool:
+        pane._context_generation += 1
+        return True
+
+    monkeypatch.setattr(runtime, "askUser", confirm)
+    operations = []
+    monkeypatch.setattr(runtime, "CollectionOp", lambda *args: operations.append(args))
+    pane._apply_pending_patch()
+    assert operations == []
+
+
+@pytest.mark.parametrize("action", ["create", "delete"])
+def test_agent_completion_only_previews_card_action(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    from threading import Event
+
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    context = _card_action_context()
+    patch = _validate_agent_patch(
+        _create_cards_data()
+        if action == "create"
+        else {"action": "delete", "summary": "Remove", "card_id": 11},
+        context,
+    )
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.BROWSER,
+        current_note_id=123,
+        last_browser_note_id=123,
+    )
+    pane.editor.mw = types.SimpleNamespace(col=object())
+    pane.apply_button.setText = lambda text: None
+    pane.pending_patch = None
+    pane.pending_snapshot = None
+    monkeypatch.setattr(
+        runtime,
+        "LegacyLatexPreviewRenderer",
+        lambda **kwargs: types.SimpleNamespace(render=sanitize_html),
+    )
+    confirmations = []
+    monkeypatch.setattr(
+        runtime, "askUser", lambda *args, **kwargs: confirmations.append(args)
+    )
+    pane._handle_agent_done(
+        FutureWithResult(("Review this proposal", "", (patch,), "Done", ())),
+        generation=0,
+        stop_event=Event(),
+        prompt="Change cards",
+        snapshot=context,
+        notetype={},
+        activity=types.SimpleNamespace(detail_lines=[]),
+    )
+    assert pane.pending_patch is patch
+    assert pane.apply_button.enabled
+    assert pane.preview_button.enabled
+    assert any("Proposed card action" in js for js in pane.surface.evals)
+    assert confirmations == []
+
+
+def test_add_cards_snapshot_uses_selected_target_deck(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_agent_request(runtime, tmp_path)
+    pane.editor.editorMode = runtime.EditorMode.ADD_CARDS
+    pane.editor.parentWindow = types.SimpleNamespace(
+        deck_chooser=types.SimpleNamespace(selected_deck_id=5)
+    )
+    context = runtime.editor_snapshot(pane.editor)
+    assert context.deck_id == 5
+    assert context.as_tool_result()["deck_id"] == 5
+
+
+@pytest.mark.parametrize("action", ["create", "delete_sibling", "delete_last"])
+def test_card_actions_with_real_collection_and_undo(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    action: str,
+) -> None:
+    collection_module = pytest.importorskip("anki.collection")
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    col = collection_module.Collection(str(tmp_path / "collection.anki2"))
+    try:
+        model = col.models.by_name(
+            "Basic" if action == "delete_last" else "Basic (and reversed card)"
+        )
+        assert model is not None
+        note = col.new_note(model)
+        note["Front"] = "question"
+        note["Back"] = "answer"
+        col.add_note(note, 1)
+        card = note.cards()[0]
+        context = EditorSnapshot(
+            mode="browse",
+            note_id=int(note.id),
+            notetype_id=int(note.mid),
+            notetype_name=model["name"],
+            card_id=int(card.id),
+            deck_id=1,
+            fields=tuple(FieldSnapshot(name, value) for name, value in note.items()),
+            tags=tuple(note.tags),
+        )
+        original_cards = col.card_count()
+        original_notes = col.note_count()
+        patch = _validate_agent_patch(
+            _create_cards_data()
+            if action == "create"
+            else {"action": "delete", "summary": "Remove", "card_id": int(card.id)},
+            context,
+        )
+        runtime.apply_card_action(col, context, patch)
+        if action == "create":
+            assert col.card_count() == original_cards + 2
+            assert col.note_count() == original_notes + 1
+            assert col.get_note(note.id)["Front"] == "question"
+        else:
+            assert col.card_count() == original_cards - 1
+            assert col.note_count() == original_notes - int(action == "delete_last")
+        col.undo()
+        assert col.card_count() == original_cards
+        assert col.note_count() == original_notes
+        assert col.get_card(card.id).nid == note.id
+    finally:
+        col.close()
+
+
+@pytest.mark.parametrize("cloze", [False, True])
+def test_proposal_preview_renders_unsaved_cards_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cloze: bool,
+) -> None:
+    collection_module = pytest.importorskip("anki.collection")
+    from editor_agent_pane.codex_client import _validate_agent_patch
+    from editor_agent_pane.proposal_cards import proposal_preview_cards
+
+    col = collection_module.Collection(str(tmp_path / "preview.anki2"))
+    try:
+        model = col.models.by_name("Cloze" if cloze else "Basic (and reversed card)")
+        fields = (
+            (("Text", "existing {{c1::content}}"), ("Back Extra", ""))
+            if cloze
+            else (("Front", "existing"), ("Back", "answer"))
+        )
+        context = EditorSnapshot(
+            mode="browse",
+            note_id=123,
+            card_id=456,
+            notetype_id=model["id"],
+            notetype_name=model["name"],
+            deck_id=1,
+            fields=tuple(FieldSnapshot(name, value) for name, value in fields),
+            tags=(),
+        )
+        data = {
+            "action": "create",
+            "summary": "New card",
+            "notes": [
+                {
+                    "fields": [
+                        {
+                            "name": name,
+                            "html": (
+                                "{{c1::willing}} and {{c3::well}}"
+                                if cloze
+                                else "new question"
+                            )
+                            if index == 0
+                            else "new answer",
+                        }
+                        for index, (name, _) in enumerate(fields)
+                    ],
+                    "tags": ["new"],
+                }
+            ],
+        }
+        patch = _validate_agent_patch(data, context)
+        counts = col.card_count(), col.note_count()
+        undo = col.undo_status()
+        cards = proposal_preview_cards(col, context, patch)
+        assert [card.ord for card in cards] == ([0, 2] if cloze else [0, 1])
+        assert all(card.id == 0 and card.note(reload=True).id == 0 for card in cards)
+        assert all(card.note().tags == ["new"] for card in cards)
+        for card in cards:
+            question = card.question(reload=True)
+            answer = card.answer()
+            assert question and answer
+            assert "existing" not in question
+            assert "new answer" in answer
+            if cloze:
+                assert 'class="cloze"' in question
+        assert (col.card_count(), col.note_count()) == counts
+        assert col.undo_status() == undo
+    finally:
+        col.close()
+
+
+def test_preview_button_opens_and_reuses_window_without_applying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from editor_agent_pane.codex_client import _validate_agent_patch
+
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = _pane_for_runtime(
+        runtime,
+        mode=runtime.EditorMode.BROWSER,
+        current_note_id=123,
+        last_browser_note_id=123,
+    )
+    pane.pending_snapshot = _card_action_context()
+    pane.pending_patch = _validate_agent_patch(
+        _create_cards_data(), pane.pending_snapshot
+    )
+    pane.editor.mw = object()
+    opened = []
+    closed = []
+    module = types.ModuleType("editor_agent_pane.proposal_previewer")
+
+    class Previewer:
+        def __init__(self, **kwargs: Any) -> None:
+            opened.append(kwargs)
+            self.on_close = kwargs["on_close"]
+            self.raised = 0
+
+        def open(self) -> None:
+            pass
+
+        def raise_(self) -> None:
+            self.raised += 1
+
+        def activateWindow(self) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append(self)
+            self.on_close()
+
+    module.ProposalPreviewer = Previewer
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    pane._preview_pending_patch()
+    pane._preview_pending_patch()
+    assert len(opened) == 1
+    assert pane._proposal_previewer.raised == 1
+    assert pane.pending_patch is not None
+    pane._discard_pending_patch()
+    assert len(closed) == 1
+    assert pane._proposal_previewer is None
+    assert not pane.preview_button.enabled
+
+
+def test_proposal_preview_shows_edits_without_changing_saved_note(
+    tmp_path: Path,
+) -> None:
+    collection_module = pytest.importorskip("anki.collection")
+    from editor_agent_pane.proposal_cards import proposal_preview_cards
+
+    col = collection_module.Collection(str(tmp_path / "preview-edits.anki2"))
+    try:
+        model = col.models.by_name("Basic")
+        note = col.new_note(model)
+        note["Front"] = "original question"
+        note["Back"] = "original answer"
+        col.add_note(note, 1)
+        card = note.cards()[0]
+        context = EditorSnapshot(
+            mode="browse",
+            note_id=int(note.id),
+            card_id=int(card.id),
+            notetype_id=model["id"],
+            notetype_name=model["name"],
+            deck_id=1,
+            fields=tuple(FieldSnapshot(name, value) for name, value in note.items()),
+            tags=(),
+        )
+        patch = validate_note_patch(
+            {
+                "summary": "Improve",
+                "field_updates": [{"name": "Front", "html": "proposed question"}],
+                "tags": {"add": ["proposed"]},
+            },
+            context,
+        )
+        undo = col.undo_status()
+        preview = proposal_preview_cards(col, context, patch)[0]
+        assert "proposed question" in preview.question(reload=True)
+        assert "original answer" in preview.answer()
+        assert preview.note(reload=True).tags == ["proposed"]
+        assert col.get_note(note.id)["Front"] == "original question"
+        assert col.get_note(note.id).tags == []
+        assert col.undo_status() == undo
+    finally:
+        col.close()
+
+
+def test_proposal_previewer_navigates_unsaved_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercise the preview's navigation without constructing Qt widgets.
+    browser_module = types.ModuleType("aqt.browser.previewer")
+
+    class BasePreviewer:
+        def render_card(self) -> None:
+            self.rendered_indexes.append(self._index)
+
+        def _should_enable_prev(self) -> bool:
+            return self._state == "answer" and not self._show_both_sides
+
+        def _should_enable_next(self) -> bool:
+            return self._state == "question"
+
+    browser_module.MultiCardPreviewer = BasePreviewer
+    monkeypatch.setitem(sys.modules, browser_module.__name__, browser_module)
+    pytest.importorskip("anki.collection")
+    sys.modules.pop("editor_agent_pane.proposal_previewer", None)
+    try:
+        from editor_agent_pane.proposal_previewer import ProposalPreviewer
+
+        previewer = ProposalPreviewer.__new__(ProposalPreviewer)
+        previewer._cards = (object(), object())
+        previewer._index = 0
+        previewer._last_index = -1
+        previewer._state = "question"
+        previewer._show_both_sides = False
+        previewer.rendered_indexes = []
+        assert previewer.card_changed()
+        assert not previewer.card_changed()
+        assert previewer._state_and_mod() == ("question", 0, 0)
+        assert not previewer._should_enable_prev()
+        previewer._on_next_card()
+        assert previewer.card() is previewer._cards[1]
+        assert previewer.card_changed()
+        assert previewer._should_enable_prev()
+        assert previewer._state_and_mod() == ("question", 1, 0)
+        previewer._state = "answer"
+        assert not previewer._should_enable_next()
+        previewer._on_next_card()
+        assert previewer.rendered_indexes == [1]
+        previewer._on_prev_card()
+        assert previewer.rendered_indexes == [1, 0]
+    finally:
+        sys.modules.pop("editor_agent_pane.proposal_previewer", None)
