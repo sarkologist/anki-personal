@@ -12,6 +12,7 @@ from threading import Event
 from typing import Any
 
 from anki.collection import OpChanges
+from anki.notes import NoteId
 from aqt import gui_hooks, mw
 from aqt.operations import CollectionOp, QueryOp
 from aqt.qt import (
@@ -32,20 +33,21 @@ from aqt.qt import (
     QVBoxLayout,
     qconnect,
 )
-from aqt.utils import getOnlyText, showInfo, tooltip
+from aqt.utils import showInfo, tooltip
 
 from .collection import (
+    MAX_REPAIRS,
     SETTINGS_KEY,
     AdmissionResult,
     Snapshot,
     admit,
     initial_scope_settings,
-    report_confusion,
-    request_repair,
+    record_feedback,
+    repair_count,
     snapshot,
     upgrade_presentation,
 )
-from .core import GENERATED_TAG
+from .core import FEEDBACK_REASONS, GENERATED_TAG
 from .diagnostics import Diagnostics
 from .generation import GenerationResult, generate
 from .lexicon import Lexicon
@@ -545,36 +547,76 @@ class Controller:
         ):
             return
         note_id = reviewer.card.nid
-        action = menu.addAction("Replace this sentence automatically")
+        action = menu.addAction("Fix this sentence...")
+        qconnect(action.triggered, lambda: self.feedback_dialog(note_id))
 
-        def replace() -> None:
-            if not mw:
-                return
-            CollectionOp(
-                parent=mw, op=lambda col: request_repair(col, note_id)
-            ).success(lambda _result: self.tick(force=True)).run_in_background(
-                initiator=self
+    def feedback_dialog(self, note_id: int) -> None:
+        if not mw or not mw.col:
+            return
+        repairs = repair_count(mw.col.get_note(NoteId(note_id)))
+        dialog = QDialog(mw)
+        dialog.setWindowTitle("Fix this sentence")
+        layout = QVBoxLayout(dialog)
+        explanation = QLabel(
+            "What's wrong with it? The new sentence must fix it, and later checks keep "
+            "your feedback. Leave everything blank for a different sentence."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        if repairs >= MAX_REPAIRS:
+            warning = QLabel(
+                f"This sentence has been replaced {repairs} times. It will now be "
+                "tagged chinese-frontier::manual for you to edit instead."
             )
+            warning.setWordWrap(True)
+            layout.addWidget(warning)
+        boxes = {}
+        for key, label in FEEDBACK_REASONS.items():
+            boxes[key] = QCheckBox(label)
+            layout.addWidget(boxes[key])
+        form = QFormLayout()
+        avoid = QLineEdit()
+        avoid.setPlaceholderText("e.g. 认为 打算")
+        answered = QLineEdit()
+        answered.setPlaceholderText("Shows both words side by side")
+        form.addRow("Words to avoid", avoid)
+        form.addRow("I answered", answered)
+        layout.addLayout(form)
+        note = QTextEdit()
+        note.setAcceptRichText(False)
+        note.setPlaceholderText("Anything else")
+        note.setMaximumHeight(80)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        qconnect(buttons.accepted, dialog.accept)
+        qconnect(buttons.rejected, dialog.reject)
+        layout.addWidget(buttons)
+        if not dialog.exec():
+            return
+        reasons = tuple(key for key, box in boxes.items() if box.isChecked())
+        words = tuple(avoid.text().replace("，", " ").replace(",", " ").split())
+        text = note.toPlainText()
+        word = answered.text()
 
-        qconnect(action.triggered, replace)
-        confused = menu.addAction("I answered a different word...")
+        def done(result: Any) -> None:
+            if result.handed_over:
+                tooltip("Tagged chinese-frontier::manual for you to edit.")
+            else:
+                self.tick(force=True)
 
-        def report() -> None:
-            if not mw:
-                return
-            word = getOnlyText(
-                "Which Chinese word did you answer? It will be contrasted with this one.",
-                parent=mw,
-            ).strip()
-            if not word:
-                return
-            CollectionOp(
-                parent=mw, op=lambda col: report_confusion(col, note_id, word)
-            ).success(lambda _result: self.tick(force=True)).run_in_background(
-                initiator=self
-            )
-
-        qconnect(confused.triggered, report)
+        CollectionOp(
+            parent=mw,
+            op=lambda col: record_feedback(
+                col,
+                note_id,
+                reasons=reasons,
+                note=text,
+                avoid_words=words,
+                answered=word,
+            ),
+        ).success(done).run_in_background(initiator=self)
 
     def settings_dialog(self) -> None:
         if not mw or not mw.col:

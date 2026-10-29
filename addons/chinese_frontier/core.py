@@ -17,6 +17,15 @@ from .lexicon import Lexicon, is_word
 MODEL_NAME = "Chinese Frontier"
 GENERATED_TAG = "chinese-frontier::generated"
 EXCLUDE_TAG = "chinese-frontier::exclude"
+# A learner hands over a note that kept failing repair; automation leaves it alone.
+MANUAL_TAG = "chinese-frontier::manual"
+FEEDBACK_REASONS = {
+    "unnatural": "Sounds unnatural",
+    "ambiguous": "Another word fits the blank",
+    "too_hard": "Unfamiliar words or grammar",
+    "wrong_sense": "Tests a different sense of the word",
+    "giveaway": "Gives the answer away",
+}
 CLOZE = re.compile(r"\{\{c(\d+)::([^{}]*?)\}\}")
 
 
@@ -95,6 +104,10 @@ class Source:
     # Words the learner answered instead; the only words a contrast pair may test.
     reported_confusions: tuple[str, ...] = ()
     force_repair: bool = False
+    # The learner's complaints about earlier versions of this card.
+    learner_feedback: tuple[str, ...] = ()
+    avoid_words: tuple[str, ...] = ()
+    rejected_sentences: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -109,6 +122,9 @@ class Source:
             "avoid_sentence": self.avoid_sentence,
             "existing_candidate": self.existing_candidate,
             "reported_confusions": self.reported_confusions,
+            "learner_feedback": self.learner_feedback,
+            "avoid_words": self.avoid_words,
+            "rejected_sentences": self.rejected_sentences,
         }
 
 
@@ -188,6 +204,11 @@ def validate_candidate(
         and sentence == source.avoid_sentence
     ):
         raise ValidationError("Replace the rejected sentence with a different example")
+    if sentence in source.rejected_sentences:
+        raise ValidationError("The learner rejected this sentence")
+    rest = sentence.replace(source.word, "", 1)
+    if avoided := [w for w in source.avoid_words if w in rest]:
+        raise ValidationError("The learner asked to avoid: " + ", ".join(avoided))
     if not 3 <= len(sentence) <= 60 or any(c in sentence for c in "<>{}\n\r"):
         raise ValidationError("Use a short plain Chinese sentence without markup")
     if sentence.count(source.word) != 1:
@@ -232,7 +253,15 @@ def validate_candidate(
             raise ValidationError("A different whole-word contrast is required")
         if other.word not in source.reported_confusions:
             raise ValidationError("Contrast pairs only answer a reported confusion")
-        other_source = Source(0, 0, 0, other.word, other.definition, "contrast")
+        other_source = Source(
+            0,
+            0,
+            0,
+            other.word,
+            other.definition,
+            "contrast",
+            avoid_words=tuple(w for w in source.avoid_words if w != other.word),
+        )
         other_valid = validate_candidate(
             Candidate(other.sentence, other.translation, other.pinyin, ""),
             other_source,

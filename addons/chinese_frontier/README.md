@@ -149,8 +149,16 @@ with a grouped undo entry. Original cards and their history are never edited.
 Missed days do not accumulate extra introductions. Use only one desktop generator
 per collection; concurrent unsynced writers cannot share an admission reservation.
 
-During review, right-click a generated card and choose **Replace this sentence
-automatically**. The add-on regenerates that note in place, preserving its card ID,
+During review, right-click a generated card and choose **Fix this sentence...**.
+Tick what's wrong, list words to avoid, give the word you answered (which makes a
+side-by-side contrast), or add a note; leave it all blank for a plain reroll. The
+feedback stays in the note's `Source` metadata: the writer must fix it, the reviewer
+rejects sentences that repeat it, avoided words and rejected sentences are refused in
+code, and later audits keep checking it. Each reason also adds a
+`chinese-frontier::feedback::<reason>` tag, so the browser shows which problems
+recur. After three repairs, a further request tags the note
+`chinese-frontier::manual` for you to edit, and automation leaves it alone.
+The add-on regenerates that note in place, preserving its card ID,
 review history, and scheduling. Existing cards keep their schedules; additional character siblings consume new-card slots. Pausing in Tools
 also pauses requested repairs. Restoring the old source is as simple as suspending
 the replacement and unsuspending its original; the linked replacement is not
