@@ -11,11 +11,13 @@ import re
 import subprocess
 import sys
 import tomllib
+import urllib.request
 from pathlib import Path
 
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 REPORT = ".claude-cargo-deny-review.json"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+CHECKSUM = re.compile(r"[0-9a-f]{64}")
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 MAX_UPGRADES = 50
 MAX_FINDINGS = 10
@@ -118,6 +120,63 @@ def review_report(result, head, base):
     }
 
 
+def index_url(name):
+    name = name.lower()
+    if len(name) <= 2:
+        path = f"{len(name)}/{name}"
+    elif len(name) == 3:
+        path = f"3/{name[0]}/{name}"
+    else:
+        path = f"{name[:2]}/{name[2:4]}/{name}"
+    return f"https://index.crates.io/{path}"
+
+
+def fetch(url):
+    with urllib.request.urlopen(url, timeout=60) as response:
+        return response.read().decode()
+
+
+def index_checksum(name, version, fetch=fetch):
+    for line in fetch(index_url(name)).splitlines():
+        entry = json.loads(line)
+        if entry.get("vers") != version:
+            continue
+        if entry.get("yanked") is not False:
+            raise ValueError(f"{name} {version} is yanked")
+        checksum = entry.get("cksum")
+        if not isinstance(checksum, str) or not CHECKSUM.fullmatch(checksum):
+            raise ValueError(f"Invalid index checksum for {name} {version}")
+        return checksum
+    raise ValueError(f"{name} {version} is not in the crates.io index")
+
+
+def bump(text, name, old, new, checksum):
+    """Repoint one registry entry of Cargo.lock, leaving every other line alone.
+
+    `cargo update --precise` re-runs the resolver, which may move unrelated edges.
+    """
+    if f'name = "{name}"\nversion = "{new}"\n' in text:
+        raise ValueError(f"{name} {new} is already in Cargo.lock")
+    entry = re.compile(
+        rf'^name = "{re.escape(name)}"\nversion = "{re.escape(old)}"\n'
+        rf'source = "{re.escape(REGISTRY)}"\nchecksum = "[0-9a-f]{{64}}"$',
+        re.M,
+    )
+    replacement = (
+        f'name = "{name}"\nversion = "{new}"\n'
+        f'source = "{REGISTRY}"\nchecksum = "{checksum}"'
+    )
+    text, count = entry.subn(lambda _: replacement, text)
+    if count != 1:
+        raise ValueError(f"Expected one Cargo.lock entry for {name} {old}")
+    # References carry a version only when several versions are locked.
+    reference = re.compile(
+        rf'^ "{re.escape(name)} {re.escape(old)}( \({re.escape(REGISTRY)}\))?",$',
+        re.M,
+    )
+    return reference.sub(lambda r: f' "{name} {new}{r.group(1) or ""}",', text)
+
+
 def run(*args):
     subprocess.run(args, check=True)
 
@@ -126,11 +185,18 @@ def apply(mode, result_path, head, base, patch_path):
     result = json.loads(Path(result_path).read_text())
     if mode == "repair":
         expected = "Cargo.lock"
-        for name, old, new in upgrades(
-            result, tomllib.loads(Path(expected).read_text())
-        ):
+        lock = Path(expected)
+        text = lock.read_text()
+        for name, old, new in upgrades(result, tomllib.loads(text)):
             print(f"Upgrading {name} {old} -> {new}", flush=True)
-            run("cargo", "update", "--package", f"{name}@{old}", "--precise", new)
+            text = bump(text, name, old, new, index_checksum(name, new))
+        lock.write_text(text)
+        # Fails if the new versions' requirements don't fit the rest of the lock.
+        subprocess.run(
+            ["cargo", "metadata", "--locked", "--format-version", "1"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
     else:
         expected = REPORT
         report = review_report(result, head, base)

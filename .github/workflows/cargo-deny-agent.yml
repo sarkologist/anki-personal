@@ -6,7 +6,7 @@ run-name: cargo-deny agent ${{ inputs.request_id }}
 # the diff before anything is pushed.
 #
 # Claude only reads files inside the checkout and answers in JSON. Every command
-# (cargo-deny, cargo update) runs in steps that never see the Claude token.
+# (cargo-deny, the Cargo.lock bump) runs in steps that never see the Claude token.
 on:
   workflow_dispatch:
     inputs:
