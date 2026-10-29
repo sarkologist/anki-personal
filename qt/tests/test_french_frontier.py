@@ -141,7 +141,41 @@ def test_fitting_alternative_overrides_model_approval():
             }
         ],
     }
-    assert not validate_review(review, c)
+    assert not validate_review(review, c, target())
+
+
+def uncued_competitor_review():
+    return {
+        "approved": True,
+        "context_checks": context_checks(),
+        "reason": "fine",
+        "search_summary": "checked",
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": True,
+                "fits_cloze": False,
+                "reason": "fits but not the blank",
+            }
+        ],
+    }
+
+
+def test_vocabulary_whole_word_blank_has_no_cue_to_exclude_a_fitting_competitor():
+    from chinese_frontier.french.generation import validate_review
+
+    assert not validate_review(uncued_competitor_review(), candidate(), target())
+
+
+def test_conjugation_blank_keeps_the_reviewers_cue_judgment():
+    # The infinitive cue is visible, so a context fit can still miss the blank.
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import validate_review
+
+    conjugation = replace(target(), kind="conjugation")
+    assert validate_review(uncued_competitor_review(), candidate(), conjugation)
 
 
 def test_audit_requires_alternative_checks_for_every_example():
@@ -157,6 +191,7 @@ def test_audit_requires_alternative_checks_for_every_example():
                 "alternatives": [],
             },
             candidate(),
+            target(),
         )
 
 
@@ -1543,7 +1578,7 @@ def test_review_alternatives_must_be_concrete_cloze_substitutions():
         ],
     }
     with pytest.raises(ValidationError, match="concrete cloze substitution"):
-        validate_review(review, candidate())
+        validate_review(review, candidate(), target())
 
 
 def test_legacy_context_commentary_cannot_replace_checked_cloze_alternatives():
@@ -1564,7 +1599,7 @@ def test_legacy_context_commentary_cannot_replace_checked_cloze_alternatives():
         "alternatives": [comment],
     }
     with pytest.raises(ValidationError, match="Missing alternatives"):
-        validate_review(review, candidate())
+        validate_review(review, candidate(), target())
     review["alternatives"].append(
         {
             "example": 0,
@@ -1574,7 +1609,7 @@ def test_legacy_context_commentary_cannot_replace_checked_cloze_alternatives():
             "reason": "rent is not borrow",
         }
     )
-    assert validate_review(review, candidate())
+    assert validate_review(review, candidate(), target())
 
 
 def context_checks(*clues):
@@ -1626,7 +1661,7 @@ def test_translation_and_prefix_cannot_override_insufficient_french_context():
             }
         ],
     }
-    assert not validate_review(review, c)
+    assert not validate_review(review, c, target())
 
 
 def test_context_evidence_cannot_quote_the_hidden_answer_or_translation():
@@ -1648,10 +1683,10 @@ def test_context_evidence_cannot_quote_the_hidden_answer_or_translation():
         ],
     }
     with pytest.raises(ValidationError, match="visible French"):
-        validate_review(review, candidate())
+        validate_review(review, candidate(), target())
     review["context_checks"] = context_checks("emprunte")
     with pytest.raises(ValidationError, match="visible French"):
-        validate_review(review, candidate())
+        validate_review(review, candidate(), target())
 
 
 def test_french_context_view_removes_the_whole_target_in_stem_and_contrast_modes():
@@ -1692,10 +1727,10 @@ def test_every_contrast_example_requires_its_own_french_context_check():
         ],
     }
     with pytest.raises(ValidationError, match="Missing French-only"):
-        validate_review(review, c)
+        validate_review(review, c, target())
     review["context_checks"] = context_checks("le train", "le train")
     review["context_checks"][1]["sufficient"] = False
-    assert not validate_review(review, c)
+    assert not validate_review(review, c, target())
 
 
 def test_french_context_view_hides_capitalized_answers_without_matching_inside_words():
@@ -2010,10 +2045,10 @@ def test_review_listing_the_answer_itself_is_not_a_failed_review():
             alternative("loue", "rent is not borrow"),
         ],
     }
-    assert validate_review(review, candidate())
+    assert validate_review(review, candidate(), target())
     review["alternatives"] = review["alternatives"][:1]
     with pytest.raises(ValidationError, match="Missing alternatives"):
-        validate_review(review, candidate())
+        validate_review(review, candidate(), target())
 
 
 def test_runtime_errors_record_where_they_were_raised(monkeypatch):
@@ -2474,7 +2509,7 @@ def test_audit_clues_are_matched_as_visible_french_text(clues):
         candidate(),
         sentence="Dans son esprit, je ne emprunte pas encore le train d’Anne.",
     )
-    assert validate_review(clue_review(*clues), c)
+    assert validate_review(clue_review(*clues), c, target())
 
 
 @pytest.mark.parametrize(
@@ -2499,7 +2534,7 @@ def test_sufficient_check_still_needs_a_genuinely_visible_clue(clues):
         sentence="Dans son esprit, je ne emprunte pas encore le train d’Anne.",
     )
     with pytest.raises(ValidationError, match="visible French"):
-        validate_review(clue_review(*clues), c)
+        validate_review(clue_review(*clues), c, target())
 
 
 def sense_lexicon(*lemmas):
