@@ -111,7 +111,10 @@ Independent subscription-model review checks sense, grammar, translation, known
 context, and competing substitutions for the actual clozed target. Context-verb
 analysis stays in the review rationale rather than being mislabeled as a competing
 noun completion. A fitting alternative overrides
-approval. Rewrites and known-word contrast pairs precede a stem cue fallback;
+approval. On a whole-word vocabulary blank (word or contrast mode) nothing
+visible can exclude a competitor, so one that fits the context counts as fitting
+whatever the reviewer says about the blank; conjugation and stem blanks keep the
+reviewer's judgment of their infinitive or prefix cue. Rewrites and known-word contrast pairs precede a stem cue fallback;
 fallbacks must leave at least two letters to recall. All modes create one card.
 Contrast and stem cards display only **Disambiguation** on both sides. The hidden
 editor field `Disambiguation` records the checked alternatives, judgments,

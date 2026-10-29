@@ -293,7 +293,8 @@ def test_whole_word_vocabulary_blank_ignores_fits_cloze_excuse():
     assert checks["no_fitting_alternative"] and disagreements == 0
 
 
-def test_fitting_alternative_fails_an_approved_case():
+def test_excused_fitting_alternative_fails_a_generate_case():
+    # The generator now rejects it itself; grade() remains the backstop.
     c, t = candidate(), target()
     alternatives = [
         {
@@ -310,9 +311,7 @@ def test_fitting_alternative_fails_an_approved_case():
             proposals(t, c), {"reviews": [review(c, t, alternatives=alternatives)]}
         ),
     )
-    assert row["outcome"] == "approved" and not row["pass"]
-    assert row["failure_reason"] == "check:no_fitting_alternative"
-    assert row["fits_cloze_disagreements"] == 1
+    assert row["outcome"] == "audit_rejected" and not row["pass"]
 
 
 # Audit replay
@@ -373,7 +372,7 @@ def test_fitting_alternative_counts_as_a_rejection_for_audit_cases():
     ]
     client = Scripted(audit={"reviews": [review(c, t, alternatives=fitting)]})
     row = run(audit_case("rejected"), client)
-    assert row["outcome"] == "approved" and row["pass"]
+    assert row["outcome"] == "audit_rejected" and row["pass"]
 
 
 # Privacy

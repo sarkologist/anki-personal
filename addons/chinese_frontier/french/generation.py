@@ -178,7 +178,7 @@ def visible_clue(clue: Any, context: str) -> bool:
     )
 
 
-def validate_review(review: Any, candidate: Candidate) -> bool:
+def validate_review(review: Any, candidate: Candidate, target: Target) -> bool:
     if not isinstance(review, dict) or type(review.get("approved")) is not bool:
         raise ValidationError("Invalid independent review")
     for field in ("reason", "search_summary"):
@@ -188,6 +188,10 @@ def validate_review(review: Any, candidate: Candidate) -> bool:
     if not isinstance(alternatives, list) or not alternatives:
         raise ValidationError("Independent review must report alternatives")
     count = 2 if candidate.contrast else 1
+    # A whole-word vocabulary blank shows no cue, so whatever fits the context
+    # fits the blank. Conjugation (infinitive) and stem (prefix) cues are
+    # visible, so the reviewer's fits_cloze judgment applies there.
+    uncued = target.kind != "conjugation" and candidate.mode != "stem"
     checked = set()
     fitting = False
     answers = [candidate.answer] + (
@@ -222,7 +226,7 @@ def validate_review(review: Any, candidate: Candidate) -> bool:
         ) or not alternative.get("reason"):
             raise ValidationError("Alternative has no clear judgment")
         checked.add(index)
-        fitting |= alternative["fits_context"] and alternative["fits_cloze"]
+        fitting |= alternative["fits_context"] and (uncued or alternative["fits_cloze"])
     if checked != set(range(count)):
         raise ValidationError("Missing alternatives for a contrast example")
     contexts = french_contexts(candidate)
@@ -286,7 +290,9 @@ class Draft:
             self.audit.get("policy") != POLICY
             or self.audit.get("target_key") != self.target.key
             or self.audit.get("fingerprint") != candidate_hash(self.candidate)
-            or not validate_review(self.audit.get("review"), self.candidate)
+            or not validate_review(
+                self.audit.get("review"), self.candidate, self.target
+            )
         ):
             raise ValidationError("Draft has no matching independent approval")
 
@@ -941,7 +947,7 @@ When supplying a contrast object, the TOP-LEVEL mode MUST be contrast. The neste
             try:
                 if review.get("fingerprint") != candidate_hash(c):
                     raise ValidationError("Review belongs to a different proposal")
-                approved = validate_review(review, c)
+                approved = validate_review(review, c, pending[key])
                 decision(
                     observe,
                     "audit",
