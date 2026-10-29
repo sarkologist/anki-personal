@@ -2426,6 +2426,55 @@ def test_elided_clitic_depends_on_its_established_full_form():
         )
 
 
+def dawn():
+    lex = Lexicon(
+        [
+            Form("le", "le", "ART"),
+            Form("train", "train", "NOM"),
+            Form("aube", "aube", "NOM"),
+        ],
+        [],
+    )
+    known = Knowledge()
+    for surface in ("le", "train", "de"):
+        known.learn(surface, lex, 1, surface)
+    c = Candidate(
+        "Le train de l’aube.", "aube", "The dawn train.", "", "word", "", (), (), ()
+    )
+    return (
+        c,
+        Target("aube", "NOM", "dawn", "vocabulary", "dictionary", 1, 10),
+        known,
+        lex,
+    )
+
+
+def test_answer_after_an_elided_clitic_is_clozed_as_the_whole_word():
+    c, t, known, lex = dawn()
+    valid = validate(c, t, known, lex)
+    assert valid.text == "Le train de l’{{c1::aube}}."
+    assert valid.dependencies == ("le", "train", "de")
+
+
+def test_elided_answer_occurring_twice_is_rejected():
+    from dataclasses import replace
+
+    c, t, known, lex = dawn()
+    with pytest.raises(ValidationError, match="exactly once"):
+        validate(replace(c, sentence="L’aube de l'aube."), t, known, lex)
+
+
+def test_french_context_view_hides_an_answer_after_an_elided_clitic_only():
+    from dataclasses import replace
+
+    from chinese_frontier.french.generation import french_contexts
+
+    c, *_ = dawn()
+    assert french_contexts(c) == ["Le train de l’[…]."]
+    c = replace(c, sentence="Aujourd'hui le train.", answer="hui")
+    assert french_contexts(c) == ["Aujourd'hui le train."]
+
+
 def clue_review(*clues):
     return {
         "approved": True,

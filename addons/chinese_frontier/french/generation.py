@@ -15,7 +15,15 @@ from ..generation import STRING, object_schema
 from ..preparation import context_bundle, pack_lesson
 from ..providers import CallTimeout, CliGenerator, GenerationStopped
 from ..telemetry import decision, request_model
-from .core import POLICY, Candidate, Knowledge, Target, _units, validate
+from .core import (
+    POLICY,
+    Candidate,
+    Knowledge,
+    Target,
+    _units,
+    answer_pattern,
+    validate,
+)
 from .lexicon import Lexicon, normalize, tokens
 
 BASE = object_schema(
@@ -128,13 +136,7 @@ def french_contexts(candidate: Candidate) -> list[str]:
     if candidate.contrast:
         examples.append((candidate.contrast["sentence"], candidate.contrast["answer"]))
     return [
-        re.sub(
-            r"(?<![\w’'])" + re.escape(answer) + r"(?![\w’'])",
-            "[…]",
-            sentence,
-            count=1,
-            flags=re.I,
-        )
+        answer_pattern(answer).sub(r"\g<clitic>[…]", sentence, count=1)
         for sentence, answer in examples
     ]
 
