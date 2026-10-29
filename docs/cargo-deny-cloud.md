@@ -30,9 +30,10 @@ and Glob tools only, file access confined to the checkout, and `dontAsk` permiss
 and it answers in JSON against a fixed schema (`cargo_deny_agent.py schema`). Steps
 without the token do the rest: one saves `cargo deny check advisories` output and
 `git diff base head` under `.agent-evidence/` for Claude to read; another
-(`cargo_deny_agent.py apply`) validates the answer, runs
-`cargo update --package <name>@<from> --precise <to>` for each proposed upgrade or
-writes the review report, and refuses to produce a diff if anything else changed.
+(`cargo_deny_agent.py apply`) validates the answer, repoints each proposed upgrade's Cargo.lock entry in place
+(checksum from the crates.io index, checked with `cargo metadata --locked`; `cargo
+update --precise` would re-resolve and can move unrelated edges) or writes the review
+report, and refuses to produce a diff if anything else changed.
 So no crate code and no repository settings run beside the Claude token, and Claude's
 raw output never reaches the public log. Builds and tests run in normal PR CI, which
 must pass before merge.

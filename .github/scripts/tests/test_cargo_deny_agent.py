@@ -66,6 +66,100 @@ class Upgrades(unittest.TestCase):
                 m.upgrades(result, LOCK)
 
 
+OLD_SUM = "a" * 64
+NEW_SUM = "b" * 64
+LOCK_TEXT = f"""\
+version = 4
+
+[[package]]
+name = "app"
+version = "1.0.0"
+dependencies = [
+ "getopts",
+ "md 0.13.4",
+ "md 0.8.0",
+]
+
+[[package]]
+name = "getopts"
+version = "0.2.24"
+source = "{REGISTRY}"
+checksum = "{"c" * 64}"
+
+[[package]]
+name = "md"
+version = "0.8.0"
+source = "{REGISTRY}"
+checksum = "{"d" * 64}"
+
+[[package]]
+name = "md"
+version = "0.13.4"
+source = "{REGISTRY}"
+checksum = "{OLD_SUM}"
+dependencies = [
+ "getopts",
+]
+"""
+
+
+class Bump(unittest.TestCase):
+    def test_only_target_entry_and_its_references_change(self):
+        text = m.bump(LOCK_TEXT, "md", "0.13.4", "0.13.5", NEW_SUM)
+        self.assertEqual(
+            text,
+            LOCK_TEXT.replace('"md 0.13.4"', '"md 0.13.5"').replace(
+                f'version = "0.13.4"\nsource = "{REGISTRY}"\nchecksum = "{OLD_SUM}"',
+                f'version = "0.13.5"\nsource = "{REGISTRY}"\nchecksum = "{NEW_SUM}"',
+            ),
+        )
+
+    def test_bare_references_kept_for_single_version(self):
+        text = m.bump(LOCK_TEXT, "getopts", "0.2.24", "0.2.25", NEW_SUM)
+        self.assertIn(' "getopts",\n', text)
+        self.assertIn('version = "0.2.25"', text)
+        self.assertNotIn("0.2.24", text)
+
+    def test_existing_target_version_rejected(self):
+        with self.assertRaises(ValueError):
+            m.bump(LOCK_TEXT, "md", "0.8.0", "0.13.4", NEW_SUM)
+
+    def test_missing_entry_rejected(self):
+        with self.assertRaises(ValueError):
+            m.bump(LOCK_TEXT, "md", "0.9.0", "0.9.1", NEW_SUM)
+
+
+class IndexChecksum(unittest.TestCase):
+    def entries(self, *entries):
+        return "\n".join(json.dumps(e) for e in entries)
+
+    def test_checksum_read_from_sparse_index(self):
+        urls = []
+
+        def fetch(url):
+            urls.append(url)
+            return self.entries(
+                {"vers": "0.13.4", "cksum": OLD_SUM, "yanked": False},
+                {"vers": "0.13.5", "cksum": NEW_SUM, "yanked": False},
+            )
+
+        self.assertEqual(m.index_checksum("Pulldown-cmark", "0.13.5", fetch), NEW_SUM)
+        self.assertEqual(urls, ["https://index.crates.io/pu/ll/pulldown-cmark"])
+
+    def test_short_name_paths(self):
+        for name, path in [("a", "1/a"), ("ab", "2/ab"), ("abc", "3/a/abc")]:
+            self.assertEqual(m.index_url(name), f"https://index.crates.io/{path}")
+
+    def test_yanked_missing_or_malformed_rejected(self):
+        for entries in [
+            [{"vers": "0.13.5", "cksum": NEW_SUM, "yanked": True}],
+            [{"vers": "0.13.4", "cksum": NEW_SUM, "yanked": False}],
+            [{"vers": "0.13.5", "cksum": "zz", "yanked": False}],
+        ]:
+            with self.subTest(entries=entries), self.assertRaises(ValueError):
+                m.index_checksum("md", "0.13.5", lambda _: self.entries(*entries))
+
+
 class Review(unittest.TestCase):
     def test_report_bound_to_inputs(self):
         report = m.review_report(
