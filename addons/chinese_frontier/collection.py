@@ -16,7 +16,9 @@ from anki.notes import NoteId
 from .core import (
     CLOZE,
     EXCLUDE_TAG,
+    FEEDBACK_REASONS,
     GENERATED_TAG,
+    MANUAL_TAG,
     MODEL_NAME,
     Candidate,
     Contrast,
@@ -63,6 +65,9 @@ FIELDS = (
 METADATA_FIELDS = ("Source", "Dependencies", "Disambiguation")
 KEY_PREFIX = "chinese-frontier::key::"
 REPAIR_TAG = "chinese-frontier::repair"
+FEEDBACK_TAG = "chinese-frontier::feedback::"
+MAX_REPAIRS = 3
+STALE_SOURCE = "Source changed, was unsuspended, or is already represented"
 
 
 @dataclass
@@ -228,6 +233,44 @@ def reported_confusions(fields: dict[str, str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(w for w in words if isinstance(w, str) and is_word(w)))
 
 
+def learner_feedback(
+    fields: dict[str, str],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Complaints, words to avoid and rejected sentences from the Source metadata."""
+    entries = _json_field(fields.get("Source", "")).get("feedback", [])
+    complaints, avoid, rejected = [], [], []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        sentence = str(entry.get("sentence", ""))
+        # Only an answered word keeps the sentence: the contrast pairs it.
+        kept = entry.get("rejected") is False
+        words = [w for w in entry.get("avoid_words", []) if isinstance(w, str)]
+        problems = [
+            FEEDBACK_REASONS[r]
+            for r in entry.get("reasons", [])
+            if r in FEEDBACK_REASONS
+        ]
+        parts = [f"{'Sentence' if kept else 'Rejected sentence'}: {sentence}"]
+        if answered := str(entry.get("answered", "")):
+            parts.append("Learner answered: " + answered)
+        if problems:
+            parts.append("Problems: " + "; ".join(problems))
+        if note := str(entry.get("note", "")).strip():
+            parts.append("Learner note: " + note)
+        if words:
+            parts.append("Avoid: " + ", ".join(words))
+        complaints.append(". ".join(parts))
+        avoid.extend(words)
+        if sentence and not kept:
+            rejected.append(sentence)
+    return (
+        tuple(complaints),
+        tuple(dict.fromkeys(avoid)),
+        tuple(dict.fromkeys(rejected)),
+    )
+
+
 def needs_audit(fields: dict[str, str]) -> bool:
     audit = _json_field(fields.get("Disambiguation", ""))
     return (
@@ -267,6 +310,7 @@ def _repair_source(col: Collection, source: Source, note_id: int) -> Source:
     old_note = col.get_note(NoteId(note_id))
     previous = CLOZE.sub(lambda match: match[2].split("::", 1)[0], old_note["Text"])
     fields = dict(old_note.items())
+    complaints, avoid, rejected = learner_feedback(fields)
     try:
         previous_candidate = asdict(existing_candidate(fields, source.word))
     except ValidationError:
@@ -284,6 +328,9 @@ def _repair_source(col: Collection, source: Source, note_id: int) -> Source:
         if len(old_note.cards()) <= 1
         else (),
         force_repair=REPAIR_TAG in old_note.tags,
+        learner_feedback=complaints,
+        avoid_words=avoid,
+        rejected_sentences=rejected,
     )
 
 
@@ -405,7 +452,9 @@ def snapshot(
             in_audit_scope
             and repairing
             and isinstance(key, str)
-            and not any(tag.casefold() in ("leech", EXCLUDE_TAG) for tag in tags)
+            and not any(
+                tag.casefold() in ("leech", EXCLUDE_TAG, MANUAL_TAG) for tag in tags
+            )
         ):
             audit_notes[key] = (nid, fields, tags)
         characters = generated and source_data.get("mode") == "characters"
@@ -782,11 +831,90 @@ def request_repair(col: Collection, note_id: int) -> OpChanges:
     return col.update_note(note)
 
 
+@dataclass
+class FeedbackResult:
+    changes: OpChanges
+    # Too many repairs: the note now waits for the learner to edit it.
+    handed_over: bool
+
+
+def repair_count(note: Any) -> int:
+    entries = _json_field(note["Source"]).get("feedback", [])
+    return len(entries) if isinstance(entries, list) else 0
+
+
+def record_feedback(
+    col: Collection,
+    note_id: int,
+    *,
+    reasons: tuple[str, ...] = (),
+    note: str = "",
+    avoid_words: tuple[str, ...] = (),
+    answered: str = "",
+) -> FeedbackResult:
+    """Keep the learner's complaint on the note and queue a repair that must fix it.
+
+    With no reasons, note or words, this is a plain reroll that still avoids the
+    current sentence. The complaints stay for later audits."""
+    target = col.get_note(NoteId(note_id))
+    if GENERATED_TAG not in target.tags or target.note_type()["name"] != MODEL_NAME:
+        raise ValueError(
+            "Only generated Chinese Frontier notes can be replaced automatically"
+        )
+    data = _json_field(target["Source"])
+    word = str(data.get("word", ""))
+    if unknown := [r for r in reasons if r not in FEEDBACK_REASONS]:
+        raise ValueError("Unknown reason: " + ", ".join(unknown))
+    avoid_words = tuple(dict.fromkeys(w.strip() for w in avoid_words if w.strip()))
+    if bad := [w for w in avoid_words if not is_word(w) or w in word or word in w]:
+        raise ValueError(
+            "Words to avoid must be Chinese words other than the answer: "
+            + ", ".join(bad)
+        )
+    handed_over = repair_count(target) >= MAX_REPAIRS
+    if answered.strip():
+        _record_confusion(target, answered.strip())
+        data = _json_field(target["Source"])
+    entries = data.get("feedback")
+    entries = entries if isinstance(entries, list) else []
+    try:
+        sentence = existing_candidate(dict(target.items()), word).sentence
+    except ValidationError:
+        sentence = plain_text(
+            CLOZE.sub(lambda m: m[2].split("::", 1)[0], target["Text"])
+        )
+    answered = answered.strip()
+    entries.append(
+        {
+            "reasons": list(reasons),
+            "note": note.strip()[:500],
+            "avoid_words": list(avoid_words),
+            "answered": answered,
+            "sentence": sentence,
+            "rejected": not answered or bool(reasons or note.strip() or avoid_words),
+        }
+    )
+    data["feedback"] = entries
+    target["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
+    tags = [t for t in target.tags if t != REPAIR_TAG]
+    tags.append(MANUAL_TAG if handed_over else REPAIR_TAG)
+    tags.extend(FEEDBACK_TAG + r for r in reasons)
+    target.tags = list(dict.fromkeys(tags))
+    return FeedbackResult(col.update_note(target), handed_over)
+
+
 def report_confusion(col: Collection, note_id: int, word: str) -> OpChanges:
     """Record the word the learner answered instead; the repair contrasts the two."""
     note = col.get_note(NoteId(note_id))
     if GENERATED_TAG not in note.tags or note.note_type()["name"] != MODEL_NAME:
         raise ValueError("Only generated Chinese Frontier notes can record a confusion")
+    _record_confusion(note, word)
+    if REPAIR_TAG not in note.tags:
+        note.tags.append(REPAIR_TAG)
+    return col.update_note(note)
+
+
+def _record_confusion(note: Any, word: str) -> None:
     if len(note.cards()) > 1:
         raise ValueError(
             "This note already has character cards; a contrast pair would remove one"
@@ -805,9 +933,6 @@ def report_confusion(col: Collection, note_id: int, word: str) -> OpChanges:
         "previous_text": previous.get("previous_text", note["Text"]),
     }
     note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
-    if REPAIR_TAG not in note.tags:
-        note.tags.append(REPAIR_TAG)
-    return col.update_note(note)
 
 
 def admit(
@@ -901,10 +1026,9 @@ def _admit(
             or source.fingerprint != draft.source.fingerprint
             or source.key != draft.source.key
             or source.existing_fingerprint != draft.source.existing_fingerprint
+            or source.learner_feedback != draft.source.learner_feedback
         ):
-            rejected[draft.source.key] = (
-                "Source changed, was unsuspended, or is already represented"
-            )
+            rejected[draft.source.key] = STALE_SOURCE
             continue
         if draft.audit_only and draft.audit.get("status") == "deferred":
             try:

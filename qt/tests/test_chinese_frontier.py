@@ -16,11 +16,13 @@ ADDONS = Path(__file__).resolve().parents[2] / "addons"
 sys.path.insert(0, str(ADDONS))
 
 from chinese_frontier.collection import (  # noqa: E402
+    MAX_REPAIRS,
     SETTINGS_KEY,
     admit,
     ensure_model,
     initial_scope_settings,
     needs_audit,
+    record_feedback,
     report_confusion,
     request_repair,
     snapshot,
@@ -1874,3 +1876,218 @@ def test_existing_model_gets_metadata_flags_once(collection: Collection) -> None
     before = (stored["mod"], stored["flds"])
     again = ensure_model(collection)
     assert (again["mod"], again["flds"]) == before
+
+
+def stored_source(note) -> dict:
+    import html as html_module
+
+    return json.loads(html_module.unescape(note["Source"]))
+
+
+def test_feedback_is_recorded_and_survives_the_repair(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(
+        collection,
+        note_id,
+        reasons=("unnatural",),
+        note="sounds stiff",
+        avoid_words=("一",),
+    )
+    tags = collection.get_note(note_id).tags
+    assert "chinese-frontier::repair" in tags
+    assert "chinese-frontier::feedback::unnatural" in tags
+    target = snapshot(collection, settings, {}).sources[0]
+    assert target.force_repair and target.avoid_words == ("一",)
+    assert target.rejected_sentences == ("这本书有一百页。",)
+    assert "sounds stiff" in target.learner_feedback[0]
+    assert "这本书有一百页。" in target.learner_feedback[0]
+    assert "learner_feedback" in target.context()
+    result = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(target, candidate("这本书有百页。"))],
+        lexicon,
+    )
+    assert result.updated == [note_id]
+    after = collection.get_note(note_id)
+    assert "chinese-frontier::repair" not in after.tags
+    assert "chinese-frontier::feedback::unnatural" in after.tags
+    assert stored_source(after)["feedback"][0]["note"] == "sounds stiff"
+    # Later audits still see the complaint, so the problem cannot come back.
+    later = snapshot(collection, settings, {}).sources
+    assert all(s.word != "百" or s.avoid_words == ("一",) for s in later)
+
+
+def test_blank_feedback_is_a_plain_reroll(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(collection, note_id)
+    target = snapshot(collection, settings, {}).sources[0]
+    assert target.force_repair and target.avoid_words == ()
+    assert target.rejected_sentences == ("这本书有一百页。",)
+
+
+def test_feedback_validates_its_input(collection: Collection, lexicon: Lexicon) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    with pytest.raises(ValueError):
+        record_feedback(collection, note_id, reasons=("bogus",))
+    with pytest.raises(ValueError):
+        record_feedback(collection, note_id, avoid_words=("page",))
+    with pytest.raises(ValueError):
+        record_feedback(collection, note_id, avoid_words=("百",))
+
+
+def test_answered_word_in_feedback_becomes_a_reported_confusion(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(collection, note_id, answered="千")
+    target = snapshot(collection, settings, {}).sources[0]
+    assert target.reported_confusions == ("千",) and target.force_repair
+
+
+def test_draft_written_before_feedback_is_rejected(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(collection, note_id)
+    stale = audited_draft(
+        snapshot(collection, settings, {}).sources[0], candidate("这本书有百页。")
+    )
+    record_feedback(collection, note_id, note="wrong sense")
+    result = admit(collection, settings, {}, [stale], lexicon)
+    assert result.updated == [] and result.rejected
+
+
+def test_repeated_repairs_hand_the_note_to_the_learner(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    for _ in range(MAX_REPAIRS):
+        assert not record_feedback(collection, note_id, note="again").handed_over
+    assert record_feedback(collection, note_id, note="again").handed_over
+    tags = collection.get_note(note_id).tags
+    assert "chinese-frontier::manual" in tags
+    assert "chinese-frontier::repair" not in tags
+    assert snapshot(collection, settings, {}).repairs == {}
+
+
+def test_avoided_words_and_rejected_sentences_fail_validation(
+    lexicon: Lexicon,
+) -> None:
+    known = {"这", "本", "书", "有", "一", "页"}
+    with pytest.raises(ValidationError, match="一"):
+        validate_candidate(
+            candidate(), replace(source(), avoid_words=("一",)), known, lexicon
+        )
+    with pytest.raises(ValidationError, match="rejected"):
+        validate_candidate(
+            candidate(),
+            replace(source(), rejected_sentences=("这本书有一百页。",)),
+            known,
+            lexicon,
+        )
+
+
+def test_learner_feedback_reaches_writer_and_reviewer(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    target = replace(
+        source(),
+        force_repair=True,
+        learner_feedback=("Problems: too stiff",),
+        existing_cards=1,
+        existing_candidate=asdict(candidate()),
+    )
+    better = candidate("这本书有百页。")
+    prompts = fake_generator(
+        monkeypatch,
+        lexicon,
+        [
+            {"proposals": [{"card_id": 1, "candidates": [asdict(better)]}]},
+            {"reviews": [audit_report(target, better)]},
+        ],
+    )
+    result = generate([target], KNOWN_PAGE_WORDS, {}, tmp_path, Event())
+    assert result.drafts[0].candidate == better
+    assert all("too stiff" in prompt for prompt in prompts)
+    assert "learner_feedback" in prompts[1].split("Data:")[0]
+
+
+def test_draft_round_trip_keeps_feedback() -> None:
+    target = replace(
+        source(),
+        learner_feedback=("x",),
+        avoid_words=("一",),
+        rejected_sentences=("s",),
+    )
+    draft = Draft(target, candidate())
+    again = Draft.from_dict(json.loads(json.dumps(draft.as_dict())))
+    assert again.source == target
+
+
+def test_answered_word_alone_keeps_the_sentence_for_the_contrast(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(collection, note_id, answered="千")
+    target = snapshot(collection, settings, {}).sources[0]
+    assert target.rejected_sentences == ()
+    assert "Learner answered: 千" in target.learner_feedback[0]
+
+
+def test_contrast_note_rejects_its_primary_example(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(collection, note_id, answered="千")
+    target = snapshot(collection, settings, {}).sources[0]
+    admit(
+        collection, settings, {}, [audited_draft(target, thousand_contrast())], lexicon
+    )
+    record_feedback(collection, note_id)
+    again = snapshot(collection, settings, {}).sources[0]
+    assert again.rejected_sentences == (thousand_contrast().sentence,)
+
+
+def test_avoid_words_cannot_contain_the_answer(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    with pytest.raises(ValueError):
+        record_feedback(collection, note_id, avoid_words=("一百",))
+
+
+def test_manual_note_still_counts_its_word_as_covered(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    for _ in range(MAX_REPAIRS + 1):
+        record_feedback(collection, note_id)
+    current = snapshot(collection, settings, {})
+    assert "百" in current.covered_words and current.repairs == {}
+
+
+def test_retry_now_drops_stale_drafts_and_lifts_backoff() -> None:
+    state = State()
+    draft = Draft(source(), candidate())
+    state.drafts = [draft]
+    state.defer(source().key, "earlier failure", "v")
+    assert not state.can_try(source().key, "v")
+    state.retry_now(source().key)
+    assert state.drafts == [] and state.can_try(source().key, "v")
+    assert "earlier failure" in str(state.deferred[source().key]["reason"])
