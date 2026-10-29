@@ -58,6 +58,17 @@ def full_form(unit: str, surfaces: Any, following: str = "") -> str:
     return next((f for f in full or ELISIONS.get(unit, ()) if f in surfaces), unit)
 
 
+def answer_pattern(answer: str) -> re.Pattern[str]:
+    """Match a whole answer, also after an elided clitic (l'aube, j'étais),
+    but never after an apostrophe inside a word (aujourd'hui)."""
+    clitics = "|".join(re.escape(e[:-1]) for e in sorted(ELISIONS, key=len)[::-1])
+    return re.compile(
+        rf"(?<![\w’'])(?P<clitic>(?:{clitics})[’'])?"
+        rf"(?P<answer>{re.escape(answer)})(?![\w’'])",
+        re.I,
+    )
+
+
 @dataclass
 class Knowledge:
     surfaces: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -335,11 +346,7 @@ def validate(
     form = next(iter(forms), None)
     if not form:
         raise ValidationError("Answer is not a dictionary-verified target form")
-    spans = list(
-        re.finditer(
-            r"(?<![\w’'])" + re.escape(c.answer) + r"(?![\w’'])", c.sentence, re.I
-        )
-    )
+    spans = [m.span("answer") for m in answer_pattern(c.answer).finditer(c.sentence)]
     if len(spans) != 1:
         raise ValidationError("Cloze a complete target exactly once")
     units = _units(c.sentence, set(known.surfaces), answer)
@@ -429,8 +436,8 @@ def validate(
         # An explicit non-verb annotation also counts: it is what the audit sees.
         if any(f.pos == "VER" for f in lexicon.analyses(unit)) and unit not in uses:
             raise ValidationError("Missing context verb analysis: " + unit)
-    span = spans[0]
-    replacement = "{{c1::" + c.sentence[span.start() : span.end()] + "}}"
+    start, end = spans[0]
+    replacement = "{{c1::" + c.sentence[start:end] + "}}"
     if c.mode == "stem":
         # Keep an actual orthographic cue; never turn this into multiple new cards.
         cue = c.explanation
@@ -446,11 +453,7 @@ def validate(
         replacement = (
             html.escape(cue) + "{{c1::" + html.escape(c.answer[len(cue) :]) + "}}"
         )
-    text = (
-        html.escape(c.sentence[: span.start()])
-        + replacement
-        + html.escape(c.sentence[span.end() :])
-    )
+    text = html.escape(c.sentence[:start]) + replacement + html.escape(c.sentence[end:])
     translation = html.escape(c.translation)
     if c.mode == "contrast":
         if not isinstance(c.contrast, dict):
