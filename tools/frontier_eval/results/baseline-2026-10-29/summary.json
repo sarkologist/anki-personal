@@ -1,0 +1,1673 @@
+{
+ "runs": 3,
+ "cases": 56,
+ "case_runs": 168,
+ "attempted": 168,
+ "not_run": 0,
+ "cancelled": 0,
+ "calls": {
+  "real": 446,
+  "replayed": 86,
+  "by_phase": {
+   "Writing sentences": 243,
+   "Checking alternative answers": 203
+  },
+  "by_status": {
+   "ok": 446
+  }
+ },
+ "elapsed_seconds": {
+  "case_runs": 9364.3,
+  "wall": 2416.2
+ },
+ "generate": {
+  "cases": 40,
+  "attempted": 120,
+  "approved": 85,
+  "yield": 0.7083333333333334,
+  "pass@1": 0.675,
+  "pass^k": 0.425,
+  "pass@k": 0.875
+ },
+ "audit": {
+  "cases": 16,
+  "attempted": 48,
+  "approved": 21,
+  "yield": 0.4375,
+  "pass@1": 0.875,
+  "pass^k": 0.8125,
+  "pass@k": 0.9375
+ },
+ "outcomes": {
+  "approved": 106,
+  "validation_rejected": 23,
+  "audit_rejected": 38,
+  "refused": 1
+ },
+ "failure_reasons": {
+  "Incorrect context morphology annotation": 12,
+  "audit rejected": 11,
+  "Cloze a complete target exactly once": 9,
+  "audit approved": 6,
+  "check:no_fitting_alternative": 4,
+  "writer refused": 1,
+  "Conjugation must supply the infinitive": 1,
+  "Unlearned grammar": 1
+ },
+ "fits_cloze_disagreements": 7,
+ "groups": {
+  "audit/audit-kept": {
+   "attempted": 15,
+   "approved": 15,
+   "passed": 15,
+   "yield": 1.0,
+   "pass@1": 1.0
+  },
+  "audit/audit-rejected": {
+   "attempted": 33,
+   "approved": 6,
+   "passed": 27,
+   "yield": 0.18181818181818182,
+   "pass@1": 0.8181818181818182
+  },
+  "generate/audit": {
+   "attempted": 33,
+   "approved": 23,
+   "passed": 21,
+   "yield": 0.696969696969697,
+   "pass@1": 0.6363636363636364
+  },
+  "generate/passing": {
+   "attempted": 36,
+   "approved": 28,
+   "passed": 26,
+   "yield": 0.7777777777777778,
+   "pass@1": 0.7222222222222222
+  },
+  "generate/refused": {
+   "attempted": 24,
+   "approved": 16,
+   "passed": 16,
+   "yield": 0.6666666666666666,
+   "pass@1": 0.6666666666666666
+  },
+  "generate/validation": {
+   "attempted": 27,
+   "approved": 18,
+   "passed": 18,
+   "yield": 0.6666666666666666,
+   "pass@1": 0.6666666666666666
+  }
+ },
+ "incomplete_cases": [],
+ "per_case": [
+  {
+   "id": "fr-audit-cogner-1792551372298",
+   "kind": "audit",
+   "group": "audit-kept",
+   "label": "kept",
+   "why": "The user kept and reviewed this card (policy 2 audit approved it); the audit should still approve it.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-collier-1792786184499",
+   "kind": "audit",
+   "group": "audit-kept",
+   "label": "kept",
+   "why": "The user kept and reviewed this card (policy 2 audit approved it); the audit should still approve it.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-consultation-1792306073514",
+   "kind": "audit",
+   "group": "audit-kept",
+   "label": "kept",
+   "why": "The user kept and reviewed this card (policy 2 audit approved it); the audit should still approve it. Its stored audit lists 2 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-croire-1791922436474",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it. Its stored audit lists 7 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": "audit approved",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": false
+  },
+  {
+   "id": "fr-audit-demander-1791943636501",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-devoir-1791922902224",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it. Its stored audit lists 2 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-dieu-1791943739665",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-dire-1791859380149",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-dire-1791922117647",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it. Its stored audit lists 9 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": "audit approved",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-entendre-1791946229121",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-faire-1791859564007",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it. Its stored audit lists 8 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-héritier-1792327214167",
+   "kind": "audit",
+   "group": "audit-kept",
+   "label": "kept",
+   "why": "The user kept and reviewed this card (policy 2 audit approved it); the audit should still approve it.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-poignarder-1791957586438",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user asked for this card to be replaced (policy 1 audit approved it); the audit should reject it.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-raison-1791859765962",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-tension-1792786323171",
+   "kind": "audit",
+   "group": "audit-kept",
+   "label": "kept",
+   "why": "The user kept and reviewed this card (policy 2 audit approved it); the audit should still approve it. Its stored audit lists 4 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-audit-être-1791859101341",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": "audit approved",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-aimer-subpre3s",
+   "kind": "generate",
+   "group": "audit",
+   "label": null,
+   "why": "Deferred twice with No valid proposal.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-aller-subpre1s",
+   "kind": "generate",
+   "group": "audit",
+   "label": null,
+   "why": "Needs je or j' as subject; checks that pronouns and elisions are now usable context.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Cloze a complete target exactly once",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": false
+  },
+  {
+   "id": "fr-gen-aube",
+   "kind": "generate",
+   "group": "validation",
+   "label": null,
+   "why": "Five rejections for Cloze a complete target exactly once plus two morphology rejections on 2026-10-28.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Cloze a complete target exactly once",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": false
+  },
+  {
+   "id": "fr-gen-avoir-cndpre3s",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Conditional conjugation card approved 2026-10-28; conjugation table check.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-balader",
+   "kind": "generate",
+   "group": "audit",
+   "label": null,
+   "why": "Audit rejected then accepted in one batch; the approved draft was never admitted.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": "audit rejected",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-cap",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Approved 2026-10-28 first try; a word-mode card that should keep passing.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": "check:no_fitting_alternative",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-chirurgie",
+   "kind": "generate",
+   "group": "audit",
+   "label": "kept",
+   "why": "Deferred seven times on the clue check, later approved.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": "check:no_fitting_alternative",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-clan",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Stem card approved after an audit rejection; exercises fuller-context rewrite then stem.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-coupable",
+   "kind": "generate",
+   "group": "audit",
+   "label": "kept",
+   "why": "Audit found the French-only context insufficient, later approved.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": "audit rejected",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-devoir-cndpre2p",
+   "kind": "generate",
+   "group": "audit",
+   "label": "kept",
+   "why": "Conjugation audit found the mood unfixed; admitted card has a lapse.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-dire-cndpre1s",
+   "kind": "generate",
+   "group": "audit",
+   "label": null,
+   "why": "Deferred six times on Context clues must quote visible French; the clue normalisation fix should change this.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-dire-indpre2s",
+   "kind": "generate",
+   "group": "validation",
+   "label": null,
+   "why": "Rejected for Missing context verb analysis: tu (a pronoun treated as a verb homograph).",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-décoller",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Approved 2026-10-28 after a writer refusal and two audit rejections in the same batch; flaky.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": "audit rejected",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-décéder",
+   "kind": "generate",
+   "group": "validation",
+   "label": "kept",
+   "why": "Rejected for Unlearned context: m, x (tokeniser split), later approved.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-défi",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Approved after the auditor rejected an anglicism; stem fallback.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-dénoncer",
+   "kind": "generate",
+   "group": "audit",
+   "label": null,
+   "why": "Selected sense is giving notice to end a treaty; a sense-choice problem the ranker should avoid.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": "Conjugation must supply the infinitive",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-envisager",
+   "kind": "generate",
+   "group": "audit",
+   "label": "kept",
+   "why": "Audit rejected the clue dans son esprit; the admitted card has a lapse.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": "audit rejected",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-essayer-subpre3s",
+   "kind": "generate",
+   "group": "audit",
+   "label": null,
+   "why": "No subjunctive trigger established (il faut que is not an established construction).",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "refused"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Incorrect context morphology annotation",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": false
+  },
+  {
+   "id": "fr-gen-faire-indpre2s",
+   "kind": "generate",
+   "group": "validation",
+   "label": null,
+   "why": "Conjugation of a syncretic surface; deferred four times on morphology annotation.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-instinct",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Approved as a contrast pair; the only recent contrast-mode card, checks two-example rendering and labels.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Cloze a complete target exactly once",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-justifier",
+   "kind": "generate",
+   "group": "refused",
+   "label": null,
+   "why": "Deferred five times for lack of claim/evidence context.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-ongle",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Approved 2026-10-28 on the second attempt (one morphology annotation rejection first).",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-parler-subpre2s",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Present subjunctive card approved 2026-10-28; subjunctive trigger must be established.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Incorrect context morphology annotation",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-poignarder",
+   "kind": "generate",
+   "group": "refused",
+   "label": "repair-requested",
+   "why": "Nine writer refusals in the last batches (no blade noun established); the user also requested a repair of the old generic card.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-pouvoir-cndpre2s",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Conditional conjugation card approved 2026-10-28; checks the conjugation table on the back.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Unlearned grammar",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-pouvoir-subpre3s",
+   "kind": "generate",
+   "group": "validation",
+   "label": null,
+   "why": "Rejected as Answer is not a dictionary-verified target form, then the conjugation audit judged the lemma instead of mood.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Incorrect context morphology annotation",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-racheter",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Approved as a stem card after two morphology rejections and one audit rejection; tests the stem fallback path.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": "Incorrect context morphology annotation",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-raser",
+   "kind": "generate",
+   "group": "validation",
+   "label": "kept",
+   "why": "Rejected for Missing context verb analysis: plus (adverb forced to carry a verb analysis), later approved.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-repousser",
+   "kind": "generate",
+   "group": "refused",
+   "label": null,
+   "why": "Deferred twice as impossible: physical push-back sense needs collocates.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": "audit rejected",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-reçu",
+   "kind": "generate",
+   "group": "refused",
+   "label": null,
+   "why": "Writer refused three times: the selected sense (admis, établi) needs idées reçues; sense-choice problem.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": "audit rejected",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-serment",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Approved 2026-10-28 after five earlier refusals for missing oath context; regression sentinel for the refused-then-written class.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-signature",
+   "kind": "generate",
+   "group": "validation",
+   "label": null,
+   "why": "Seven validation rejections on 2026-10-28, all Incorrect context morphology annotation; the hottest validation failure.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Incorrect context morphology annotation",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-soudainement",
+   "kind": "generate",
+   "group": "refused",
+   "label": null,
+   "why": "Deferred four times: no established event with an abrupt onset.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "audit_rejected"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "audit_rejected"
+    }
+   ],
+   "last_failure_reason": "audit rejected",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": false
+  },
+  {
+   "id": "fr-gen-surnom",
+   "kind": "generate",
+   "group": "refused",
+   "label": null,
+   "why": "Deferred four times: no context for an added name.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Incorrect context morphology annotation",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-sécher",
+   "kind": "generate",
+   "group": "passing",
+   "label": "kept",
+   "why": "Approved 2026-10-28 but the auditor rejected the first example; flaky between runs.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Incorrect context morphology annotation",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-tapis",
+   "kind": "generate",
+   "group": "audit",
+   "label": "kept",
+   "why": "Audit: only a location and a material; later approved in the idiom sense.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": "check:no_fitting_alternative",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-traquer",
+   "kind": "generate",
+   "group": "refused",
+   "label": "kept",
+   "why": "Refused earlier (hunting sense impossible), later approved as a stem card.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-verser",
+   "kind": "generate",
+   "group": "refused",
+   "label": "kept",
+   "why": "Refused earlier for lack of liquid or container nouns, later approved; sentinel for the refused-then-written class.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-vilain",
+   "kind": "generate",
+   "group": "validation",
+   "label": null,
+   "why": "Twelve validation rejections across senses on 2026-10-28, mostly morphology annotation; one sense was eventually accepted.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 2,
+     "pass": true,
+     "outcome": "approved"
+    },
+    {
+     "run": 3,
+     "pass": true,
+     "outcome": "approved"
+    }
+   ],
+   "last_failure_reason": null,
+   "missing_runs": 0,
+   "pass^k": true,
+   "pass@k": true
+  },
+  {
+   "id": "fr-gen-être-indimp1s",
+   "kind": "generate",
+   "group": "validation",
+   "label": null,
+   "why": "Rejected for Cloze a complete target exactly once on a one-word syncretic form.",
+   "runs": [
+    {
+     "run": 1,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 2,
+     "pass": false,
+     "outcome": "validation_rejected"
+    },
+    {
+     "run": 3,
+     "pass": false,
+     "outcome": "validation_rejected"
+    }
+   ],
+   "last_failure_reason": "Cloze a complete target exactly once",
+   "missing_runs": 0,
+   "pass^k": false,
+   "pass@k": false
+  }
+ ]
+}
