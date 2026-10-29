@@ -26,3 +26,4 @@ addons/chinese_frontier/user_files/
 .venv
 docs/_build/
 docs/autoapi/
+tools/frontier_eval/cache/

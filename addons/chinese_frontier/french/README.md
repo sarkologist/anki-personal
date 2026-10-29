@@ -183,3 +183,32 @@ has direct learned-form evidence, and never reads an established noun or adjecti
 (bois) as its proven verb homograph. Explicit model annotations are never overwritten;
 ambiguous or unproven forms still require valid annotations and independent review.
 No new paradigm or grammar permission is inferred by annotation completion.
+
+## Development eval
+
+`tools/frontier_eval/run_french_eval.py` runs the generator on cases taken from
+real runs (`tools/frontier_eval/french_cases.json`) with the signed-in CLI.
+Graders are deterministic: a generate case passes when a draft is approved and
+its card passes the format checks (it revalidates, one cloze per example,
+translation and meaning present, conjugation tables, a stem leaves two letters,
+no fitting alternative on a whole-word vocabulary blank). Refusals, timeouts and
+errors count as failures. Audit cases replay a stored candidate through
+validation and the independent audit, and compare its verdict with the user's
+keep/suspend/repair label.
+
+    PYTHONPATH=out/pylib:pylib:out/qt out/pyenv/bin/python \
+      tools/frontier_eval/run_french_eval.py --runs 3 --workers 4 \
+      --knowledge-cache tools/frontier_eval/cache/knowledge.json
+
+Knowledge is read from a temporary copy of the profile collection, never from
+the open profile; the cache reuses it across runs. `--only`, `--group`,
+`--max-calls` and `--results DIR` narrow or bound a run; rerunning into the
+same directory resumes it. The repository is public, so results omit audit
+evidence, note dependencies and all other text from reviewed cards.
+
+`summary.md` reports yield (approved case-runs over attempted), pass@1 (mean
+pass over case-runs), pass^k (cases passing every run) and pass@k (cases
+passing at least once), then failure reasons, groups and a per-case table.
+`--compare OLD NEW` lists wins and regressions on pass^k and the metric
+changes, written to `NEW/compare.md`; `--summarize DIR` rebuilds a summary.
+The baseline is `tools/frontier_eval/results/baseline-2026-10-29/`.
