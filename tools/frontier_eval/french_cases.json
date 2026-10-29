@@ -1,0 +1,1687 @@
+{
+ "version": 1,
+ "language": "french",
+ "description": "Development eval cases for the French Frontier card generator, drawn from telemetry, deferred targets and generated notes as of 2026-10-29. generate cases run the full writer+audit pipeline on a target; audit cases replay a stored candidate through validation and the independent audit and compare the verdict with the user's label.",
+ "cases": [
+  {
+   "id": "fr-gen-serment",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "serment",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_serment__nom__1",
+    "kind": "vocabulary",
+    "definition": "Affirmation ou promesse faite en attestant Dieu, un être ou un objet sacré.",
+    "level": 4,
+    "frequency": 17.139,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Approved 2026-10-28 after five earlier refusals for missing oath context; regression sentinel for the refused-then-written class.",
+   "evidence": [
+    "note 1793241467308 (kept, 0 reps, mode word, admitted 2026-10-29)",
+    "telemetry audit accepted x1: Swearing before a judge in court that a statement ",
+    "deferred attempts=5 vocabulary=c7079892: No established context supports oath-taking, a sacred witness, or a sworn promise."
+   ]
+  },
+  {
+   "id": "fr-gen-ongle",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "ongle",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_ongle__nom__1",
+    "kind": "vocabulary",
+    "definition": "(Anatomie) Lame dure, cornée, translucide, qui revêt le dessus du bout des doigts et des orteils.",
+    "level": 4,
+    "frequency": 17.693,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Approved 2026-10-28 on the second attempt (one morphology annotation rejection first).",
+   "evidence": [
+    "note 1793241188128 (kept, 0 reps, mode word, admitted 2026-10-29)",
+    "telemetry validation rejected x1: Incorrect context morphology annotation",
+    "telemetry audit accepted x1: The French context limits the answer to the nail: "
+   ]
+  },
+  {
+   "id": "fr-gen-sécher",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "sécher",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_sécher__verb__1",
+    "kind": "vocabulary",
+    "definition": "Rendre sec.",
+    "level": 4,
+    "frequency": 17.734,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Approved 2026-10-28 but the auditor rejected the first example; flaky between runs.",
+   "evidence": [
+    "note 1793241188148 (kept, 0 reps, mode word, admitted 2026-10-29)",
+    "telemetry audit rejected x1: The French context limits the action to drying: yo",
+    "telemetry audit accepted x1: Wet hair after the sea, plus staying in sun and wi"
+   ]
+  },
+  {
+   "id": "fr-gen-cap",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "cap",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_4_cap__nom__1",
+    "kind": "vocabulary",
+    "definition": "(Aéronautique, Marine) Direction dans laquelle est orienté un bateau ou un aéronef en mouvement. A ne pas confondre avec la direction de la route, qui prend en compte la dérive.",
+    "level": 4,
+    "frequency": 18.351,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Approved 2026-10-28 first try; a word-mode card that should keep passing.",
+   "evidence": [
+    "note 1793240301006 (kept, 0 reps, mode word, admitted 2026-10-29)",
+    "telemetry audit accepted x1: The French context is enough: a closed port, a cre"
+   ]
+  },
+  {
+   "id": "fr-gen-décoller",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "décoller",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_3_décoller__verb__1",
+    "kind": "vocabulary",
+    "definition": "(Aviation, Astronautique) Quitter le sol pour un aéronef, ou occasionnellement pour d’autres véhicules.",
+    "level": 4,
+    "frequency": 18.032,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Approved 2026-10-28 after a writer refusal and two audit rejections in the same batch; flaky.",
+   "evidence": [
+    "note 1793241188138 (kept, 0 reps, mode word, admitted 2026-10-29)",
+    "telemetry audit rejected x1: 'vol' means 'flight' here, but the only evidence c",
+    "telemetry writer empty x1: No established word names an aircraft or a flight.",
+    "telemetry validation rejected x1: Incorrect context morphology annotation",
+    "telemetry audit rejected x1: The French context is enough on its own: the snow,",
+    "telemetry audit accepted x1: The French context points to an aircraft taking of",
+    "deferred attempts=1 vocabulary=d44545e2: Incorrect context morphology annotation"
+   ]
+  },
+  {
+   "id": "fr-gen-racheter",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "racheter",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_2_racheter__verb__1",
+    "kind": "vocabulary",
+    "definition": "Acheter des choses de même espèce que celles que l’on a vendues, ou qu’on ne possède plus par quelque cause que ce soit.",
+    "level": 4,
+    "frequency": 17.361,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Approved as a stem card after two morphology rejections and one audit rejection; tests the stem fallback path.",
+   "evidence": [
+    "note 1793241467319 (kept, 0 reps, mode stem, admitted 2026-10-29)",
+    "telemetry validation rejected x2: Incorrect context morphology annotation",
+    "telemetry audit rejected x1: The French context is good enough on its own: runn",
+    "telemetry validation rejected x1: Try fuller context and contrast before stem fallba",
+    "telemetry audit accepted x1: The French gives a clear cause: she lost her phone"
+   ]
+  },
+  {
+   "id": "fr-gen-clan",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "clan",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_4_clan__nom__1",
+    "kind": "vocabulary",
+    "definition": "(Sens figuré) Coterie sociale ou politique.",
+    "level": 4,
+    "frequency": 18.437,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Stem card approved after an audit rejection; exercises fuller-context rewrite then stem.",
+   "evidence": [
+    "note 1793240301019 (kept, 0 reps, mode stem, admitted 2026-10-29)",
+    "telemetry audit rejected x1: The French context does narrow the meaning to a ri",
+    "telemetry validation rejected x1: Try fuller context and contrast before stem fallba",
+    "telemetry audit accepted x1: The French alone points to a closed group based on"
+   ]
+  },
+  {
+   "id": "fr-gen-défi",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "défi",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_2_défi__nom__1",
+    "kind": "vocabulary",
+    "definition": "Épreuve à surmonter.",
+    "level": 4,
+    "frequency": 18.013,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Approved after the auditor rejected an anglicism; stem fallback.",
+   "evidence": [
+    "note 1793240300995 (kept, 0 reps, mode stem, admitted 2026-10-29)",
+    "telemetry audit rejected x1: The context is sufficient, but the anglicism 'chal",
+    "telemetry validation rejected x1: Try fuller context and contrast before stem fallba",
+    "telemetry audit accepted x1: The contrast between \"petite équipe\" and \"la meill"
+   ]
+  },
+  {
+   "id": "fr-gen-instinct",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "instinct",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_2_instinct__nom__1",
+    "kind": "vocabulary",
+    "definition": "Mouvement intérieur et involontaire auquel on attribue les actes non réfléchis, les sentiments indélibérés ou, par extension, une grande aptitude, une forte propension à quelque chose, en parlant de l’homme.",
+    "level": 4,
+    "frequency": 20.411,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Approved as a contrast pair; the only recent contrast-mode card, checks two-example rendering and labels.",
+   "evidence": [
+    "note 1793131629788 (disambiguation, 0 reps, mode contrast, admitted 2026-10-28)",
+    "telemetry validation rejected x1: Try fuller context and contrast before stem fallba",
+    "telemetry audit accepted x1: Both French-only contexts narrow the meaning, not "
+   ]
+  },
+  {
+   "id": "fr-gen-pouvoir-cndpre2s",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "pouvoir",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 294.981,
+    "form_key": "pourrais|pouvoir|VER|cnd:pre:2:s"
+   },
+   "label": "kept",
+   "why": "Conditional conjugation card approved 2026-10-28; checks the conjugation table on the back.",
+   "evidence": [
+    "note 1793131433406 (kept, 0 reps, mode word, admitted 2026-10-28)",
+    "telemetry audit accepted x1: The infinitive cue (pouvoir) is supplied. The Fren"
+   ]
+  },
+  {
+   "id": "fr-gen-avoir-cndpre3s",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "avoir",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 318.354,
+    "form_key": "aurait|avoir|VER|cnd:pre:3:s"
+   },
+   "label": "kept",
+   "why": "Conditional conjugation card approved 2026-10-28; conjugation table check.",
+   "evidence": [
+    "note 1793131433395 (kept, 0 reps, mode word, admitted 2026-10-28)"
+   ]
+  },
+  {
+   "id": "fr-gen-parler-subpre2s",
+   "kind": "generate",
+   "group": "passing",
+   "target": {
+    "lemma": "parler",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 149.307,
+    "form_key": "parles|parler|VER|sub:pre:2:s"
+   },
+   "label": "kept",
+   "why": "Present subjunctive card approved 2026-10-28; subjunctive trigger must be established.",
+   "evidence": [
+    "note 1793131221335 (kept, 0 reps, mode word, admitted 2026-10-28)"
+   ]
+  },
+  {
+   "id": "fr-gen-poignarder",
+   "kind": "generate",
+   "group": "refused",
+   "target": {
+    "lemma": "poignarder",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_poignarder__verb__1",
+    "kind": "vocabulary",
+    "definition": "Frapper, blesser ou tuer avec un poignard.",
+    "level": 4,
+    "frequency": 22.282,
+    "form_key": ""
+   },
+   "label": "repair-requested",
+   "why": "Nine writer refusals in the last batches (no blade noun established); the user also requested a repair of the old generic card.",
+   "evidence": [
+    "note 1791957586438 (repair-requested, 11 reps, mode stem, admitted 2026-10-23)",
+    "telemetry writer empty x1: Still blocked: the knowledge state hasn't changed ",
+    "telemetry writer empty x1: Still blocked: nothing in the knowledge state has ",
+    "telemetry writer empty x1: Still blocked at attempt 2; the knowledge state ha",
+    "telemetry writer empty x1: Still blocked because the knowledge state hasn't c",
+    "telemetry writer empty x1: Still blocked: the knowledge state is unchanged fr",
+    "telemetry writer empty x1: Still blocked at attempt 2 because the knowledge s",
+    "telemetry writer empty x1: Still blocked because the knowledge state is the s",
+    "telemetry writer empty x1: Still blocked: the knowledge state is unchanged. N",
+    "telemetry writer empty x1: Still blocked. No blade noun (couteau, lame, poign",
+    "deferred attempts=1 vocabulary=66c44369: Still blocked. No blade noun (couteau, lame, poignard, épée, dague) is established. Without one, the French ca"
+   ]
+  },
+  {
+   "id": "fr-gen-reçu",
+   "kind": "generate",
+   "group": "refused",
+   "target": {
+    "lemma": "reçu",
+    "pos": "ADJ",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_reçu__adj__1",
+    "kind": "vocabulary",
+    "definition": "Qui est admis, établi, consacré.",
+    "level": 4,
+    "frequency": 21.139,
+    "form_key": ""
+   },
+   "label": null,
+   "why": "Writer refused three times: the selected sense (admis, établi) needs idées reçues; sense-choice problem.",
+   "evidence": [
+    "telemetry writer empty x2: Still blocked. The sense 'admis, établi' needs the",
+    "telemetry writer empty x1: Still blocked: the knowledge state is unchanged. T",
+    "deferred attempts=1 vocabulary=66c44369: Still blocked. The sense 'admis, établi' needs the head noun 'idées' (idées reçues) or 'opinions', and neither"
+   ]
+  },
+  {
+   "id": "fr-gen-justifier",
+   "kind": "generate",
+   "group": "refused",
+   "target": {
+    "lemma": "justifier",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_justifier__verb__1",
+    "kind": "vocabulary",
+    "definition": "Montrer la vérité de ce qu’on avance, de ce qu’on allègue.",
+    "level": 4,
+    "frequency": 17.149,
+    "form_key": ""
+   },
+   "label": null,
+   "why": "Deferred five times for lack of claim/evidence context.",
+   "evidence": [
+    "deferred attempts=5 vocabulary=c7079892: No established context shows a claim or evidence whose truth is being demonstrated, so justifier cannot be cue"
+   ]
+  },
+  {
+   "id": "fr-gen-soudainement",
+   "kind": "generate",
+   "group": "refused",
+   "target": {
+    "lemma": "soudainement",
+    "pos": "ADV",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_soudainement__adv__1",
+    "kind": "vocabulary",
+    "definition": "D’une manière soudaine.",
+    "level": 4,
+    "frequency": 12.108,
+    "form_key": ""
+   },
+   "label": null,
+   "why": "Deferred four times: no established event with an abrupt onset.",
+   "evidence": [
+    "deferred attempts=4 vocabulary=c7079892: The established contexts give no concrete event with an abrupt onset to anchor this adverb’s meaning."
+   ]
+  },
+  {
+   "id": "fr-gen-surnom",
+   "kind": "generate",
+   "group": "refused",
+   "target": {
+    "lemma": "surnom",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_surnom__nom__1",
+    "kind": "vocabulary",
+    "definition": "Nom ajouté au nom propre d’une personne ou au nom de famille et qui désigne quelque qualité ou rappelle quelque circonstance particulière.",
+    "level": 4,
+    "frequency": 11.908,
+    "form_key": ""
+   },
+   "label": null,
+   "why": "Deferred four times: no context for an added name.",
+   "evidence": [
+    "deferred attempts=4 vocabulary=c7079892: No established context says that someone gets an added name because of a trait or a particular incident. The s"
+   ]
+  },
+  {
+   "id": "fr-gen-repousser",
+   "kind": "generate",
+   "group": "refused",
+   "target": {
+    "lemma": "repousser",
+    "pos": "VER",
+    "sense": "wiktionary:fr:repousser:VER:1",
+    "kind": "vocabulary",
+    "definition": "Pousser en arrière, rejeter ; faire reculer quelqu’un, écarter de soi quelque chose.",
+    "level": 3,
+    "frequency": 22.206,
+    "form_key": ""
+   },
+   "label": null,
+   "why": "Deferred twice as impossible: physical push-back sense needs collocates.",
+   "evidence": [
+    "deferred attempts=2 vocabulary=48e787aa: Still impossible. The physical 'push back / make recede' sense needs an established physical object with a det"
+   ]
+  },
+  {
+   "id": "fr-gen-verser",
+   "kind": "generate",
+   "group": "refused",
+   "target": {
+    "lemma": "verser",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_verser__verb__1",
+    "kind": "vocabulary",
+    "definition": "Faire couler.",
+    "level": 4,
+    "frequency": 21.899,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Refused earlier for lack of liquid or container nouns, later approved; sentinel for the refused-then-written class.",
+   "evidence": [
+    "note 1792902888063 (kept, 7 reps, mode word, admitted 2026-10-25)",
+    "deferred attempts=1 vocabulary=0343e61d: Still blocked. No liquid noun (eau, café, lait, vin, thé) and no container noun (tasse, verre) is established,"
+   ]
+  },
+  {
+   "id": "fr-gen-traquer",
+   "kind": "generate",
+   "group": "refused",
+   "target": {
+    "lemma": "traquer",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_3_traquer__verb__1",
+    "kind": "vocabulary",
+    "definition": "(Par extension) Poursuivre, cerner pour s'emparer.",
+    "level": 4,
+    "frequency": 20.475,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Refused earlier (hunting sense impossible), later approved as a stem card.",
+   "evidence": [
+    "note 1792922840725 (kept, 0 reps, mode stem, admitted 2026-10-25)"
+   ]
+  },
+  {
+   "id": "fr-gen-signature",
+   "kind": "generate",
+   "group": "validation",
+   "target": {
+    "lemma": "signature",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_3_signature__nom__1",
+    "kind": "vocabulary",
+    "definition": "(Sens figuré) (Par extension) Marque distinctive, manière de faire ou résultat particulier auxquels on reconnaît l’auteur d’une œuvre ou d’un acte.",
+    "level": 4,
+    "frequency": 21.696,
+    "form_key": ""
+   },
+   "label": null,
+   "why": "Seven validation rejections on 2026-10-28, all Incorrect context morphology annotation; the hottest validation failure.",
+   "evidence": [
+    "telemetry validation rejected x7: Incorrect context morphology annotation",
+    "deferred attempts=1 vocabulary=66c44369: Incorrect context morphology annotation"
+   ]
+  },
+  {
+   "id": "fr-gen-aube",
+   "kind": "generate",
+   "group": "validation",
+   "target": {
+    "lemma": "aube",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_aube__nom__1",
+    "kind": "vocabulary",
+    "definition": "Clarté qui blanchit l'orient au moment précédant le lever du soleil, ce moment lui-même.",
+    "level": 4,
+    "frequency": 19.041,
+    "form_key": ""
+   },
+   "label": null,
+   "why": "Five rejections for Cloze a complete target exactly once plus two morphology rejections on 2026-10-28.",
+   "evidence": [
+    "telemetry validation rejected x5: Cloze a complete target exactly once",
+    "telemetry validation rejected x2: Incorrect context morphology annotation",
+    "deferred attempts=1 vocabulary=66c44369: Cloze a complete target exactly once"
+   ]
+  },
+  {
+   "id": "fr-gen-vilain",
+   "kind": "generate",
+   "group": "validation",
+   "target": {
+    "lemma": "vilain",
+    "pos": "ADJ",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_vilain__adj__1",
+    "kind": "vocabulary",
+    "definition": "Qui déplaît à la vue.",
+    "level": 4,
+    "frequency": 17.478,
+    "form_key": ""
+   },
+   "label": null,
+   "why": "Twelve validation rejections across senses on 2026-10-28, mostly morphology annotation; one sense was eventually accepted.",
+   "evidence": [
+    "telemetry audit rejected x1: The French context is enough to fix the meaning: '",
+    "telemetry validation rejected x2: Try fuller context and contrast before stem fallba",
+    "telemetry audit rejected x1: The French-only context is good: the contrast with",
+    "deferred attempts=1 vocabulary=66c44369: The French-only context is good: the contrast with 'belle' and the consequence 'je ne veux pas la regarder' po"
+   ]
+  },
+  {
+   "id": "fr-gen-faire-indpre2s",
+   "kind": "generate",
+   "group": "validation",
+   "target": {
+    "lemma": "faire",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 1272.867,
+    "form_key": "fais|faire|VER|ind:pre:2:s"
+   },
+   "label": null,
+   "why": "Conjugation of a syncretic surface; deferred four times on morphology annotation.",
+   "evidence": [
+    "deferred attempts=4 vocabulary=be8da015: Incorrect context morphology annotation"
+   ]
+  },
+  {
+   "id": "fr-gen-dire-indpre2s",
+   "kind": "generate",
+   "group": "validation",
+   "target": {
+    "lemma": "dire",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 864.009,
+    "form_key": "dis|dire|VER|ind:pre:2:s"
+   },
+   "label": null,
+   "why": "Rejected for Missing context verb analysis: tu (a pronoun treated as a verb homograph).",
+   "evidence": [
+    "deferred attempts=3 vocabulary=be8da015: Missing context verb analysis: tu"
+   ]
+  },
+  {
+   "id": "fr-gen-être-indimp1s",
+   "kind": "generate",
+   "group": "validation",
+   "target": {
+    "lemma": "être",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 708.111,
+    "form_key": "étais|être|VER|ind:imp:1:s"
+   },
+   "label": null,
+   "why": "Rejected for Cloze a complete target exactly once on a one-word syncretic form.",
+   "evidence": [
+    "deferred attempts=1 vocabulary=be8da015: Cloze a complete target exactly once"
+   ]
+  },
+  {
+   "id": "fr-gen-pouvoir-subpre3s",
+   "kind": "generate",
+   "group": "validation",
+   "target": {
+    "lemma": "pouvoir",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 117.484,
+    "form_key": "puisse|pouvoir|VER|sub:pre:3:s"
+   },
+   "label": null,
+   "why": "Rejected as Answer is not a dictionary-verified target form, then the conjugation audit judged the lemma instead of mood.",
+   "evidence": [
+    "deferred attempts=1 vocabulary=0343e61d: Answer is not a dictionary-verified target form"
+   ]
+  },
+  {
+   "id": "fr-gen-raser",
+   "kind": "generate",
+   "group": "validation",
+   "target": {
+    "lemma": "raser",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_raser__verb__1",
+    "kind": "vocabulary",
+    "definition": "Tondre, couper le poil ou les cheveux tout près de la peau avec un rasoir.",
+    "level": 4,
+    "frequency": 21.114,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Rejected for Missing context verb analysis: plus (adverb forced to carry a verb analysis), later approved.",
+   "evidence": [
+    "note 1792555536532 (lapses1, 13 reps, mode word, admitted 2026-10-21)",
+    "deferred attempts=1 vocabulary=56d843a3: Missing context verb analysis: plus"
+   ]
+  },
+  {
+   "id": "fr-gen-décéder",
+   "kind": "generate",
+   "group": "validation",
+   "target": {
+    "lemma": "décéder",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_décéder__verb__1",
+    "kind": "vocabulary",
+    "definition": "(Administration) (Soutenu) Mourir, en parlant des personnes.",
+    "level": 4,
+    "frequency": 12.127,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Rejected for Unlearned context: m, x (tokeniser split), later approved.",
+   "evidence": [
+    "note 1792326781745 (lapses1, 14 reps, mode stem, admitted 2026-10-23)",
+    "deferred attempts=4 vocabulary=c7079892: Unlearned context: m, x"
+   ]
+  },
+  {
+   "id": "fr-gen-balader",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "balader",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_4_balader__verb__1",
+    "kind": "vocabulary",
+    "definition": "(Pronominal) Se promener.",
+    "level": 4,
+    "frequency": 17.329,
+    "form_key": ""
+   },
+   "label": null,
+   "why": "Audit rejected then accepted in one batch; the approved draft was never admitted.",
+   "evidence": [
+    "telemetry validation rejected x1: Incorrect context morphology annotation",
+    "telemetry audit rejected x1: The French context is strong: it points clearly to",
+    "telemetry audit accepted x1: The French describes a leisurely, aimless walk: a "
+   ]
+  },
+  {
+   "id": "fr-gen-envisager",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "envisager",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_2_envisager__verb__1",
+    "kind": "vocabulary",
+    "definition": "(Sens figuré) (Surtout) Considérer une chose en esprit, examiner.",
+    "level": 4,
+    "frequency": 22.079,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Audit rejected the clue dans son esprit; the admitted card has a lapse.",
+   "evidence": [
+    "note 1791957586429 (lapses1, 13 reps, mode stem, admitted 2026-10-23)",
+    "deferred attempts=1 vocabulary=0343e61d: The French context is enough to narrow the meaning: 'dans son esprit' points to thinking something over, not d"
+   ]
+  },
+  {
+   "id": "fr-gen-coupable",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "coupable",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_coupable__nom__1",
+    "kind": "vocabulary",
+    "definition": "Personne qui a commis quelque faute, quelque crime.",
+    "level": 4,
+    "frequency": 22.528,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Audit found the French-only context insufficient, later approved.",
+   "evidence": [
+    "note 1792636287408 (kept, 6 reps, mode stem, admitted 2026-10-23)",
+    "deferred attempts=1 vocabulary=eac21474: The French-only context is insufficient: 'en prison' can attach to 'a vu', so the person might have seen victi"
+   ]
+  },
+  {
+   "id": "fr-gen-tapis",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "tapis",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_3_tapis__nom__1",
+    "kind": "vocabulary",
+    "definition": "(Sens figuré) Sujet de conversation, de débat.",
+    "level": 4,
+    "frequency": 21.924,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Audit: only a location and a material; later approved in the idiom sense.",
+   "evidence": [
+    "note 1792921220592 (kept, 0 reps, mode word, admitted 2026-10-25)"
+   ]
+  },
+  {
+   "id": "fr-gen-devoir-cndpre2p",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "devoir",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 104.832,
+    "form_key": "devriez|devoir|VER|cnd:pre:2:p"
+   },
+   "label": "kept",
+   "why": "Conjugation audit found the mood unfixed; admitted card has a lapse.",
+   "evidence": [
+    "note 1792613006454 (lapses1, 12 reps, mode word, admitted 2026-10-22)",
+    "deferred attempts=1 vocabulary=56d843a3: The French-only context is insufficient: 'Vous […] rendre ce dossier en avril' accepts any modal or auxiliary "
+   ]
+  },
+  {
+   "id": "fr-gen-essayer-subpre3s",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "essayer",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 86.728,
+    "form_key": "essaye|essayer|VER|sub:pre:3:s"
+   },
+   "label": null,
+   "why": "No subjunctive trigger established (il faut que is not an established construction).",
+   "evidence": [
+    "deferred attempts=1 vocabulary=56d843a3: No subjunctive trigger is established: 'il faut que' is not an established construction, and 'pour que' and 'v"
+   ]
+  },
+  {
+   "id": "fr-gen-aller-subpre1s",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "aller",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 72.62,
+    "form_key": "aille|aller|VER|sub:pre:1:s"
+   },
+   "label": null,
+   "why": "Needs je or j' as subject; checks that pronouns and elisions are now usable context.",
+   "evidence": [
+    "deferred attempts=1 vocabulary=56d843a3: 'aille' (sub:pre:1:s) needs the subject je or j', and neither is an established surface; only the bare forms a"
+   ]
+  },
+  {
+   "id": "fr-gen-aimer-subpre3s",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "aimer",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 739.709,
+    "form_key": "aime|aimer|VER|sub:pre:3:s"
+   },
+   "label": null,
+   "why": "Deferred twice with No valid proposal.",
+   "evidence": [
+    "deferred attempts=2 vocabulary=be8da015: No valid proposal"
+   ]
+  },
+  {
+   "id": "fr-gen-dire-cndpre1s",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "dire",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 73.816,
+    "form_key": "dirais|dire|VER|cnd:pre:1:s"
+   },
+   "label": null,
+   "why": "Deferred six times on Context clues must quote visible French; the clue normalisation fix should change this.",
+   "evidence": [
+    "deferred attempts=6 vocabulary=c7079892: Context clues must quote visible French, not the answer or translation"
+   ]
+  },
+  {
+   "id": "fr-gen-chirurgie",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "chirurgie",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_chirurgie__nom__1",
+    "kind": "vocabulary",
+    "definition": "(Médecine) Partie de l’art médical qui consiste à faire avec la main ou à l’aide d’instruments certaines opérations sur le corps de l’homme.",
+    "level": 4,
+    "frequency": 21.0,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "Deferred seven times on the clue check, later approved.",
+   "evidence": [
+    "note 1791961892037 (kept, 8 reps, mode stem, admitted 2026-10-23)",
+    "deferred attempts=7 vocabulary=c7079892: Context clues must quote visible French, not the answer or translation"
+   ]
+  },
+  {
+   "id": "fr-gen-dénoncer",
+   "kind": "generate",
+   "group": "audit",
+   "target": {
+    "lemma": "dénoncer",
+    "pos": "VER",
+    "sense": "wiktionary:fr:dénoncer:VER:1",
+    "kind": "vocabulary",
+    "definition": "Notifier par voie officielle ou judiciaire.",
+    "level": 3,
+    "frequency": 22.703,
+    "form_key": ""
+   },
+   "label": null,
+   "why": "Selected sense is giving notice to end a treaty; a sense-choice problem the ranker should avoid.",
+   "evidence": [
+    "deferred attempts=2 vocabulary=48e787aa: The target sense is formally giving notice to end a treaty or contract. It needs traité, contrat or convention"
+   ]
+  },
+  {
+   "id": "fr-audit-tension-1792786323171",
+   "kind": "audit",
+   "group": "audit-kept",
+   "target": {
+    "lemma": "tension",
+    "pos": "NOM",
+    "sense": "wiktionary:fr:tension:NOM:3",
+    "kind": "vocabulary",
+    "definition": "Dissentiment entre deux états mentaux d’une personne, d’un groupe, pouvant amener des menaces d’hostilité.",
+    "level": 4,
+    "frequency": 23.142,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "The user kept and reviewed this card (policy 2 audit approved it); the audit should still approve it. Its stored audit lists 4 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "evidence": [
+    "note 1792786323171 (kept, 6 reps, mode word, admitted 2026-10-24)"
+   ],
+   "candidate": {
+    "sentence": "Depuis cette attaque, la tension entre les deux pays est très forte et on parle de guerre.",
+    "answer": "tension",
+    "translation": "Since that attack, the strain between the two countries has been very high and people are talking about war.",
+    "meaning": "strained, potentially hostile relations between parties",
+    "mode": "word",
+    "cue": "",
+    "uses": [
+     {
+      "surface": "attaque",
+      "lemma": "attaque",
+      "pos": "NOM",
+      "features": "f:s"
+     },
+     {
+      "surface": "est",
+      "lemma": "être",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "parle",
+      "lemma": "parler",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "entre",
+      "lemma": "entrer",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:3:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": ""
+   }
+  },
+  {
+   "id": "fr-audit-collier-1792786184499",
+   "kind": "audit",
+   "group": "audit-kept",
+   "target": {
+    "lemma": "collier",
+    "pos": "NOM",
+    "sense": "wiktionary:fr:collier:NOM:1",
+    "kind": "vocabulary",
+    "definition": "Ornement, bijou qui fait le tour du cou.",
+    "level": 4,
+    "frequency": 23.016,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "The user kept and reviewed this card (policy 2 audit approved it); the audit should still approve it.",
+   "evidence": [
+    "note 1792786184499 (kept, 8 reps, mode word, admitted 2026-10-24)"
+   ],
+   "candidate": {
+    "sentence": "Elle tient ses cheveux avec une main pour montrer à sa sœur le beau collier qu'elle veut porter avec ses bagues.",
+    "answer": "collier",
+    "translation": "She holds her hair back with one hand to show her sister the beautiful necklace she wants to wear with her rings.",
+    "meaning": "necklace",
+    "mode": "word",
+    "cue": "",
+    "uses": [
+     {
+      "surface": "tient",
+      "lemma": "tenir",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "montrer",
+      "lemma": "montrer",
+      "pos": "VER",
+      "features": "inf"
+     },
+     {
+      "surface": "veut",
+      "lemma": "vouloir",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "porter",
+      "lemma": "porter",
+      "pos": "VER",
+      "features": "inf"
+     }
+    ],
+    "grammar": [
+     "ind:pre:3:s",
+     "inf"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": ""
+   }
+  },
+  {
+   "id": "fr-audit-être-1791859101341",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "être",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 2741.959,
+    "form_key": "était|être|VER|ind:imp:3:s"
+   },
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "evidence": [
+    "note 1791859101341 (suspended, 1 reps, mode stem, admitted 2026-10-23)"
+   ],
+   "candidate": {
+    "sentence": "Hier, le déjeuner était délicieux.",
+    "answer": "était",
+    "translation": "Yesterday, lunch was delicious.",
+    "meaning": "was",
+    "mode": "stem",
+    "cue": "être",
+    "uses": [
+     {
+      "surface": "déjeuner",
+      "lemma": "déjeuner",
+      "pos": "NOM",
+      "features": "m:s"
+     },
+     {
+      "surface": "était",
+      "lemma": "être",
+      "pos": "VER",
+      "features": "ind:imp:3:s"
+     }
+    ],
+    "grammar": [
+     "ind:imp:3:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": "ét"
+   }
+  },
+  {
+   "id": "fr-audit-dire-1791859380149",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "dire",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 2182.177,
+    "form_key": "dit|dire|VER|ind:pre:3:s"
+   },
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "evidence": [
+    "note 1791859380149 (suspended, 0 reps, mode stem, admitted 2026-10-23)"
+   ],
+   "candidate": {
+    "sentence": "Ce qu'il dit est faux.",
+    "answer": "dit",
+    "translation": "What he is saying is wrong.",
+    "meaning": "say",
+    "mode": "stem",
+    "cue": "dire",
+    "uses": [
+     {
+      "surface": "dit",
+      "lemma": "dire",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "est",
+      "lemma": "être",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:3:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": "d"
+   }
+  },
+  {
+   "id": "fr-audit-raison-1791859765962",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "raison",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_raison__nom__1",
+    "kind": "vocabulary",
+    "definition": "(Au singulier) Faculté intellectuelle par laquelle l’homme connaît, juge et se conduit ; entendement.",
+    "level": 1,
+    "frequency": 527.253,
+    "form_key": ""
+   },
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "evidence": [
+    "note 1791859765962 (suspended, 0 reps, mode stem, admitted 2026-10-23)"
+   ],
+   "candidate": {
+    "sentence": "La raison est essentielle pour le juge.",
+    "answer": "raison",
+    "translation": "Reason is essential for the judge.",
+    "meaning": "The intellectual faculty of understanding and judgment.",
+    "mode": "stem",
+    "cue": "",
+    "uses": [
+     {
+      "surface": "est",
+      "lemma": "être",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "juge",
+      "lemma": "juge",
+      "pos": "NOM",
+      "features": "e:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:3:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": "rai"
+   }
+  },
+  {
+   "id": "fr-audit-demander-1791943636501",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "demander",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_demander__verb__1",
+    "kind": "vocabulary",
+    "definition": "Indiquer à quelqu’un par des paroles, par un écrit ou tout autre moyen ce qu’on désire obtenir de lui.",
+    "level": 1,
+    "frequency": 926.332,
+    "form_key": ""
+   },
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "evidence": [
+    "note 1791943636501 (suspended, 0 reps, mode stem, admitted 2026-10-23)",
+    "deferred attempts=3 vocabulary=be8da015: Alternative must be a competing answer"
+   ],
+   "candidate": {
+    "sentence": "Au bureau, je demande une autorisation au directeur.",
+    "answer": "demande",
+    "translation": "At the office, I ask the director for permission.",
+    "meaning": "ask someone for something",
+    "mode": "stem",
+    "cue": "",
+    "uses": [
+     {
+      "surface": "demande",
+      "lemma": "demander",
+      "pos": "VER",
+      "features": "ind:pre:1:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:1:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": "dem"
+   }
+  },
+  {
+   "id": "fr-audit-dieu-1791943739665",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "dieu",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_dieu__nom__1",
+    "kind": "vocabulary",
+    "definition": "(Religion) Être surnaturel objet de déférence d’une religion.",
+    "level": 1,
+    "frequency": 800.418,
+    "form_key": ""
+   },
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "evidence": [
+    "note 1791943739665 (suspended, 0 reps, mode stem, admitted 2026-10-23)",
+    "deferred attempts=3 vocabulary=be8da015: Grammar, morphology, the religious sense of dieu and translation are valid. Reject because ciel meaning 'heave"
+   ],
+   "candidate": {
+    "sentence": "Le dieu de la mer est puissant.",
+    "answer": "dieu",
+    "translation": "The god of the sea is powerful.",
+    "meaning": "god",
+    "mode": "stem",
+    "cue": "",
+    "uses": [
+     {
+      "surface": "est",
+      "lemma": "être",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:3:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": "di"
+   }
+  },
+  {
+   "id": "fr-audit-entendre-1791946229121",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "entendre",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_entendre__verb__1",
+    "kind": "vocabulary",
+    "definition": "Percevoir un son.",
+    "level": 1,
+    "frequency": 709.867,
+    "form_key": ""
+   },
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it.",
+   "evidence": [
+    "note 1791946229121 (suspended, 0 reps, mode stem, admitted 2026-10-23)"
+   ],
+   "candidate": {
+    "sentence": "Il ne peut pas entendre la musique dehors.",
+    "answer": "entendre",
+    "translation": "He cannot hear the music outside.",
+    "meaning": "hear",
+    "mode": "stem",
+    "cue": "",
+    "uses": [
+     {
+      "surface": "peut",
+      "lemma": "pouvoir",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "entendre",
+      "lemma": "entendre",
+      "pos": "VER",
+      "features": "inf"
+     },
+     {
+      "surface": "musique",
+      "lemma": "musique",
+      "pos": "NOM",
+      "features": "f:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:3:s",
+     "inf"
+    ],
+    "constructions": [
+     "negation"
+    ],
+    "contrast": null,
+    "explanation": "ent"
+   }
+  },
+  {
+   "id": "fr-audit-poignarder-1791957586438",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "poignarder",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_poignarder__verb__1",
+    "kind": "vocabulary",
+    "definition": "Frapper, blesser ou tuer avec un poignard.",
+    "level": 4,
+    "frequency": 22.282,
+    "form_key": ""
+   },
+   "label": "rejected",
+   "why": "The user asked for this card to be replaced (policy 1 audit approved it); the audit should reject it.",
+   "evidence": [
+    "note 1791957586438 (repair-requested, 11 reps, mode stem, admitted 2026-10-23)",
+    "telemetry writer empty x1: Still blocked: the knowledge state hasn't changed ",
+    "telemetry writer empty x1: Still blocked: nothing in the knowledge state has ",
+    "telemetry writer empty x1: Still blocked at attempt 2; the knowledge state ha",
+    "telemetry writer empty x1: Still blocked because the knowledge state hasn't c",
+    "telemetry writer empty x1: Still blocked: the knowledge state is unchanged fr",
+    "telemetry writer empty x1: Still blocked at attempt 2 because the knowledge s",
+    "telemetry writer empty x1: Still blocked because the knowledge state is the s",
+    "telemetry writer empty x1: Still blocked: the knowledge state is unchanged. N",
+    "telemetry writer empty x1: Still blocked. No blade noun (couteau, lame, poign",
+    "deferred attempts=1 vocabulary=66c44369: Still blocked. No blade noun (couteau, lame, poignard, épée, dague) is established. Without one, the French ca"
+   ],
+   "candidate": {
+    "sentence": "L'homme a poignardé son voisin.",
+    "answer": "poignardé",
+    "translation": "The man stabbed his neighbour.",
+    "meaning": "stabbed with a dagger or knife",
+    "mode": "stem",
+    "cue": "",
+    "uses": [
+     {
+      "surface": "a",
+      "lemma": "avoir",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "poignardé",
+      "lemma": "poignarder",
+      "pos": "VER",
+      "features": "par:pas:m:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:3:s",
+     "par:pas:m:s"
+    ],
+    "constructions": [
+     "compound:avoir"
+    ],
+    "contrast": null,
+    "explanation": "poign"
+   }
+  },
+  {
+   "id": "fr-audit-cogner-1792551372298",
+   "kind": "audit",
+   "group": "audit-kept",
+   "target": {
+    "lemma": "cogner",
+    "pos": "VER",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_cogner__verb__1",
+    "kind": "vocabulary",
+    "definition": "Frapper fort sur une chose pour la faire entrer ou pour la faire joindre avec une autre.",
+    "level": 4,
+    "frequency": 20.791,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "The user kept and reviewed this card (policy 2 audit approved it); the audit should still approve it.",
+   "evidence": [
+    "note 1792551372298 (kept, 11 reps, mode stem, admitted 2026-10-23)",
+    "deferred attempts=6 vocabulary=c7079892: No established context supports an object being driven into another or pieces being joined; using a tool, nail"
+   ],
+   "candidate": {
+    "sentence": "Avec un outil, il cogne fort sur un clou, qui entre dans du bois.",
+    "answer": "cogne",
+    "translation": "With a tool, he bangs hard on a nail, which goes into wood.",
+    "meaning": "strikes hard so that something goes in",
+    "mode": "stem",
+    "cue": "",
+    "uses": [
+     {
+      "surface": "entre",
+      "lemma": "entrer",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "bois",
+      "lemma": "bois",
+      "pos": "NOM",
+      "features": "m:i"
+     },
+     {
+      "surface": "outil",
+      "lemma": "outil",
+      "pos": "NOM",
+      "features": "m:s"
+     },
+     {
+      "surface": "clou",
+      "lemma": "clou",
+      "pos": "NOM",
+      "features": "m:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:3:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": "co"
+   }
+  },
+  {
+   "id": "fr-audit-faire-1791859564007",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "faire",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 1272.867,
+    "form_key": "fais|faire|VER|ind:pre:1:s"
+   },
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it. Its stored audit lists 8 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "evidence": [
+    "note 1791859564007 (suspended, 0 reps, mode word, admitted 2026-10-21)"
+   ],
+   "candidate": {
+    "sentence": "Aujourd'hui, je fais ce travail seul.",
+    "answer": "fais",
+    "translation": "Today, I do this work alone.",
+    "meaning": "do",
+    "mode": "word",
+    "cue": "faire",
+    "uses": [
+     {
+      "surface": "fais",
+      "lemma": "faire",
+      "pos": "VER",
+      "features": "ind:pre:1:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:1:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": "The subject je requires the first-person singular present indicative."
+   }
+  },
+  {
+   "id": "fr-audit-dire-1791922117647",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "dire",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 864.009,
+    "form_key": "dis|dire|VER|ind:pre:1:s"
+   },
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it. Its stored audit lists 9 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "evidence": [
+    "note 1791922117647 (suspended, 1 reps, mode word, admitted 2026-10-21)",
+    "deferred attempts=1 vocabulary=be8da015: {\"key\": \"4dd6f9146e9839a850dd9948b071f2de7ecdbf6129b7fe8f915e4140ea358224\", \"fingerprint\": \"78b12d4793ad3b6c9b"
+   ],
+   "candidate": {
+    "sentence": "Maintenant, je dis : « Ce calcul est faux. »",
+    "answer": "dis",
+    "translation": "Now I say: “This calculation is wrong.”",
+    "meaning": "say",
+    "mode": "word",
+    "cue": "dire",
+    "uses": [
+     {
+      "surface": "dis",
+      "lemma": "dire",
+      "pos": "VER",
+      "features": "ind:pre:1:s"
+     },
+     {
+      "surface": "est",
+      "lemma": "être",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:1:s",
+     "ind:pre:3:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": "The subject je and the present-tense translation select dis, the first-person singular present of dire. The quotation uses the established sense of saying something."
+   }
+  },
+  {
+   "id": "fr-audit-croire-1791922436474",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "croire",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 833.079,
+    "form_key": "crois|croire|VER|ind:pre:1:s"
+   },
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it. Its stored audit lists 7 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "evidence": [
+    "note 1791922436474 (suspended, 0 reps, mode word, admitted 2026-10-21)"
+   ],
+   "candidate": {
+    "sentence": "Je crois que ce voyage vaut la peine.",
+    "answer": "crois",
+    "translation": "I think this trip is worth it.",
+    "meaning": "think that something is true",
+    "mode": "word",
+    "cue": "croire",
+    "uses": [
+     {
+      "surface": "crois",
+      "lemma": "croire",
+      "pos": "VER",
+      "features": "ind:pre:1:s"
+     },
+     {
+      "surface": "vaut",
+      "lemma": "valoir",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "voyage",
+      "lemma": "voyage",
+      "pos": "NOM",
+      "features": "m:s"
+     },
+     {
+      "surface": "peine",
+      "lemma": "peine",
+      "pos": "NOM",
+      "features": "f:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:1:s",
+     "ind:pre:3:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": "The reviewed example « Tu crois que ça vaut la peine ? » establishes this sense. Je requires the targeted first-person singular present indicative."
+   }
+  },
+  {
+   "id": "fr-audit-devoir-1791922902224",
+   "kind": "audit",
+   "group": "audit-rejected",
+   "target": {
+    "lemma": "devoir",
+    "pos": "VER",
+    "sense": "established",
+    "kind": "conjugation",
+    "definition": "Use the already established verb sense.",
+    "level": 1,
+    "frequency": 718.655,
+    "form_key": "doit|devoir|VER|ind:pre:3:s"
+   },
+   "label": "rejected",
+   "why": "The user suspended this card (policy 1 audit approved it); the audit should reject it. Its stored audit lists 2 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "evidence": [
+    "note 1791922902224 (suspended, 0 reps, mode word, admitted 2026-10-21)"
+   ],
+   "candidate": {
+    "sentence": "Cet élève doit étudier.",
+    "answer": "doit",
+    "translation": "This student has to study.",
+    "meaning": "Expresses an obligation to study.",
+    "mode": "word",
+    "cue": "devoir",
+    "uses": [
+     {
+      "surface": "élève",
+      "lemma": "élève",
+      "pos": "NOM",
+      "features": "e:s"
+     },
+     {
+      "surface": "étudier",
+      "lemma": "étudier",
+      "pos": "VER",
+      "features": "inf"
+     }
+    ],
+    "grammar": [
+     "ind:pre:3:s",
+     "inf"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": "Cet élève requires the third-person singular present form; the obligation sense and étudier are established."
+   }
+  },
+  {
+   "id": "fr-audit-héritier-1792327214167",
+   "kind": "audit",
+   "group": "audit-kept",
+   "target": {
+    "lemma": "héritier",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_héritier__nom__1",
+    "kind": "vocabulary",
+    "definition": "(Droit) Celui que la loi appelle à recueillir une succession.",
+    "level": 4,
+    "frequency": 11.978,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "The user kept and reviewed this card (policy 2 audit approved it); the audit should still approve it.",
+   "evidence": [
+    "note 1792327214167 (kept, 11 reps, mode word, admitted 2026-10-18)",
+    "deferred attempts=4 vocabulary=c7079892: The legal contexts do not show an estate or succession, so they cannot establish this inheritance meaning."
+   ],
+   "candidate": {
+    "sentence": "Après sa mort, elle a droit à tout : elle est sa seule héritière.",
+    "answer": "héritière",
+    "translation": "After his death, she is entitled to everything: she is his only heir.",
+    "meaning": "celle qui recueille une succession",
+    "mode": "word",
+    "cue": "",
+    "uses": [
+     {
+      "surface": "mort",
+      "lemma": "mort",
+      "pos": "NOM",
+      "features": "e:s"
+     },
+     {
+      "surface": "a",
+      "lemma": "avoir",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     },
+     {
+      "surface": "est",
+      "lemma": "être",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     }
+    ],
+    "grammar": [
+     "ind:pre:3:s"
+    ],
+    "constructions": [],
+    "contrast": null,
+    "explanation": ""
+   }
+  },
+  {
+   "id": "fr-audit-consultation-1792306073514",
+   "kind": "audit",
+   "group": "audit-kept",
+   "target": {
+    "lemma": "consultation",
+    "pos": "NOM",
+    "sense": "http://kaiko.getalp.org/dbnary/fra/__ws_1_consultation__nom__1",
+    "kind": "vocabulary",
+    "definition": "Conférence que l’on tient pour consulter sur quelque affaire ou sur une maladie.",
+    "level": 4,
+    "frequency": 5.889,
+    "form_key": ""
+   },
+   "label": "kept",
+   "why": "The user kept and reviewed this card (policy 2 audit approved it); the audit should still approve it. Its stored audit lists 2 alternative(s) that fit the context but were marked fits_cloze false on a whole-word blank.",
+   "evidence": [
+    "note 1792306073514 (kept, 10 reps, mode word, admitted 2026-10-18)"
+   ],
+   "candidate": {
+    "sentence": "Le malade va au cabinet du docteur pour une consultation sur sa maladie.",
+    "answer": "consultation",
+    "translation": "The patient goes to the doctor's office for an appointment about his illness.",
+    "meaning": "medical appointment",
+    "mode": "word",
+    "cue": "",
+    "uses": [
+     {
+      "surface": "va",
+      "lemma": "aller",
+      "pos": "VER",
+      "features": "ind:pre:3:s"
+     }
+    ],
+    "grammar": [],
+    "constructions": [],
+    "contrast": null,
+    "explanation": ""
+   }
+  }
+ ]
+}
