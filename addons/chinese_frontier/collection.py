@@ -67,6 +67,7 @@ KEY_PREFIX = "chinese-frontier::key::"
 REPAIR_TAG = "chinese-frontier::repair"
 FEEDBACK_TAG = "chinese-frontier::feedback::"
 MAX_REPAIRS = 3
+STALE_SOURCE = "Source changed, was unsuspended, or is already represented"
 
 
 @dataclass
@@ -242,13 +243,17 @@ def learner_feedback(
         if not isinstance(entry, dict):
             continue
         sentence = str(entry.get("sentence", ""))
+        # Only an answered word keeps the sentence: the contrast pairs it.
+        kept = entry.get("rejected") is False
         words = [w for w in entry.get("avoid_words", []) if isinstance(w, str)]
         problems = [
             FEEDBACK_REASONS[r]
             for r in entry.get("reasons", [])
             if r in FEEDBACK_REASONS
         ]
-        parts = [f"Rejected sentence: {sentence}"]
+        parts = [f"{'Sentence' if kept else 'Rejected sentence'}: {sentence}"]
+        if answered := str(entry.get("answered", "")):
+            parts.append("Learner answered: " + answered)
         if problems:
             parts.append("Problems: " + "; ".join(problems))
         if note := str(entry.get("note", "")).strip():
@@ -257,7 +262,7 @@ def learner_feedback(
             parts.append("Avoid: " + ", ".join(words))
         complaints.append(". ".join(parts))
         avoid.extend(words)
-        if sentence:
+        if sentence and not kept:
             rejected.append(sentence)
     return (
         tuple(complaints),
@@ -453,9 +458,7 @@ def snapshot(
         ):
             audit_notes[key] = (nid, fields, tags)
         characters = generated and source_data.get("mode") == "characters"
-        excluded = any(
-            tag.casefold() in ("leech", EXCLUDE_TAG, MANUAL_TAG) for tag in tags
-        )
+        excluded = any(tag.casefold() in ("leech", EXCLUDE_TAG) for tag in tags)
         if excluded:
             if queue == -1 and nid not in seen_notes and home in scope:
                 skip("excluded or leech")
@@ -863,24 +866,32 @@ def record_feedback(
     if unknown := [r for r in reasons if r not in FEEDBACK_REASONS]:
         raise ValueError("Unknown reason: " + ", ".join(unknown))
     avoid_words = tuple(dict.fromkeys(w.strip() for w in avoid_words if w.strip()))
-    if bad := [w for w in avoid_words if not is_word(w) or w in word]:
+    if bad := [w for w in avoid_words if not is_word(w) or w in word or word in w]:
         raise ValueError(
             "Words to avoid must be Chinese words other than the answer: "
             + ", ".join(bad)
         )
     handed_over = repair_count(target) >= MAX_REPAIRS
     if answered.strip():
-        _record_confusion(target, answered)
+        _record_confusion(target, answered.strip())
         data = _json_field(target["Source"])
     entries = data.get("feedback")
     entries = entries if isinstance(entries, list) else []
-    sentence = CLOZE.sub(lambda m: m[2].split("::", 1)[0], target["Text"])
+    try:
+        sentence = existing_candidate(dict(target.items()), word).sentence
+    except ValidationError:
+        sentence = plain_text(
+            CLOZE.sub(lambda m: m[2].split("::", 1)[0], target["Text"])
+        )
+    answered = answered.strip()
     entries.append(
         {
             "reasons": list(reasons),
             "note": note.strip()[:500],
             "avoid_words": list(avoid_words),
-            "sentence": plain_text(sentence),
+            "answered": answered,
+            "sentence": sentence,
+            "rejected": not answered or bool(reasons or note.strip() or avoid_words),
         }
     )
     data["feedback"] = entries
@@ -1017,9 +1028,7 @@ def _admit(
             or source.existing_fingerprint != draft.source.existing_fingerprint
             or source.learner_feedback != draft.source.learner_feedback
         ):
-            rejected[draft.source.key] = (
-                "Source changed, was unsuspended, or is already represented"
-            )
+            rejected[draft.source.key] = STALE_SOURCE
             continue
         if draft.audit_only and draft.audit.get("status") == "deferred":
             try:

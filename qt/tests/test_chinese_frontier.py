@@ -2034,3 +2034,60 @@ def test_draft_round_trip_keeps_feedback() -> None:
     draft = Draft(target, candidate())
     again = Draft.from_dict(json.loads(json.dumps(draft.as_dict())))
     assert again.source == target
+
+
+def test_answered_word_alone_keeps_the_sentence_for_the_contrast(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(collection, note_id, answered="千")
+    target = snapshot(collection, settings, {}).sources[0]
+    assert target.rejected_sentences == ()
+    assert "Learner answered: 千" in target.learner_feedback[0]
+
+
+def test_contrast_note_rejects_its_primary_example(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(collection, note_id, answered="千")
+    target = snapshot(collection, settings, {}).sources[0]
+    admit(
+        collection, settings, {}, [audited_draft(target, thousand_contrast())], lexicon
+    )
+    record_feedback(collection, note_id)
+    again = snapshot(collection, settings, {}).sources[0]
+    assert again.rejected_sentences == (thousand_contrast().sentence,)
+
+
+def test_avoid_words_cannot_contain_the_answer(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    with pytest.raises(ValueError):
+        record_feedback(collection, note_id, avoid_words=("一百",))
+
+
+def test_manual_note_still_counts_its_word_as_covered(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    for _ in range(MAX_REPAIRS + 1):
+        record_feedback(collection, note_id)
+    current = snapshot(collection, settings, {})
+    assert "百" in current.covered_words and current.repairs == {}
+
+
+def test_retry_now_drops_stale_drafts_and_lifts_backoff() -> None:
+    state = State()
+    draft = Draft(source(), candidate())
+    state.drafts = [draft]
+    state.defer(source().key, "earlier failure", "v")
+    assert not state.can_try(source().key, "v")
+    state.retry_now(source().key)
+    assert state.drafts == [] and state.can_try(source().key, "v")
+    assert "earlier failure" in str(state.deferred[source().key]["reason"])

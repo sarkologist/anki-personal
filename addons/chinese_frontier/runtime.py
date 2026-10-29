@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from concurrent.futures import Future
 from dataclasses import asdict
@@ -36,8 +37,10 @@ from aqt.qt import (
 from aqt.utils import showInfo, tooltip
 
 from .collection import (
+    KEY_PREFIX,
     MAX_REPAIRS,
     SETTINGS_KEY,
+    STALE_SOURCE,
     AdmissionResult,
     Snapshot,
     admit,
@@ -521,7 +524,9 @@ class Controller:
             vocabulary_version(self.last_snapshot.known) if self.last_snapshot else ""
         )
         for key, reason in result.rejected.items():
-            self.state.defer(key, reason, version)
+            # A stale draft says nothing about the target; regenerate it promptly.
+            if reason != STALE_SOURCE:
+                self.state.defer(key, reason, version)
         self.state.last_error = ""
         self.state.retry_after = 0
         self.save_state()
@@ -553,7 +558,11 @@ class Controller:
     def feedback_dialog(self, note_id: int) -> None:
         if not mw or not mw.col:
             return
-        repairs = repair_count(mw.col.get_note(NoteId(note_id)))
+        target = mw.col.get_note(NoteId(note_id))
+        repairs = repair_count(target)
+        key = next(
+            (t[len(KEY_PREFIX) :] for t in target.tags if t.startswith(KEY_PREFIX)), ""
+        )
         dialog = QDialog(mw)
         dialog.setWindowTitle("Fix this sentence")
         layout = QVBoxLayout(dialog)
@@ -580,6 +589,10 @@ class Controller:
         answered = QLineEdit()
         answered.setPlaceholderText("Shows both words side by side")
         form.addRow("Words to avoid", avoid)
+        if len(target.cards()) > 1:
+            # A contrast pair would remove one of the character cards.
+            answered.setEnabled(False)
+            answered.setPlaceholderText("Not available with character cards")
         form.addRow("I answered", answered)
         layout.addLayout(form)
         note = QTextEdit()
@@ -596,11 +609,17 @@ class Controller:
         if not dialog.exec():
             return
         reasons = tuple(key for key, box in boxes.items() if box.isChecked())
-        words = tuple(avoid.text().replace("，", " ").replace(",", " ").split())
+        words = tuple(
+            re.split(r"[\s,，、;；]+", avoid.text().strip())
+            if avoid.text().strip()
+            else ()
+        )
         text = note.toPlainText()
         word = answered.text()
 
         def done(result: Any) -> None:
+            self.state.retry_now(key)
+            self.save_state()
             if result.handed_over:
                 tooltip("Tagged chinese-frontier::manual for you to edit.")
             else:

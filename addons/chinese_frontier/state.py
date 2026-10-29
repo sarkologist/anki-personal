@@ -124,6 +124,13 @@ class State:
             or time.time() >= item["retry_after"]
         )
 
+    def retry_now(self, key: str) -> None:
+        """The learner asked for a repair: drop drafts written without their
+        feedback and lift the backoff, keeping the lesson for the writer."""
+        self.drafts = [d for d in self.drafts if d.source.key != key]
+        if item := self.deferred.get(key):
+            item.update(attempts=0, retry_after=0)
+
     def defer(self, key: str, reason: str, vocabulary: str) -> None:
         previous = self.deferred.get(key, {})
         attempts = (
