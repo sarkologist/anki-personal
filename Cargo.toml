@@ -171,6 +171,11 @@ debug = 0
 debug = 0
 [profile.dev.package.rsbridge]
 debug = 0
+# Cargo strips debuginfo when debug = 0, and Apple's strip leaves the LINKEDIT
+# string pool 4-byte aligned, which macOS 27's dyld refuses to load.
+strip = "none"
+[profile.release.package.rsbridge]
+strip = "none"
 
 [profile.release-lto]
 inherits = "release"
