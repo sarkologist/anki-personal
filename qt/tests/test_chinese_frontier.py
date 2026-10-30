@@ -2135,7 +2135,12 @@ SCHEDULING = ("type", "queue", "due", "ivl", "factor", "reps", "lapses", "left")
 
 
 def scheduling(card) -> tuple:
-    return (*(getattr(card, name) for name in SCHEDULING), card.memory_state)
+    return (
+        *(getattr(card, name) for name in SCHEDULING),
+        card.memory_state,
+        card.last_review_time,
+        card.decay,
+    )
 
 
 def setup_fix(col: Collection):
@@ -2146,6 +2151,9 @@ def setup_fix(col: Collection):
     note, cards = add_cloze(col, PAGE_CLOZE, "bǎi: hundred", established=(1, 2))
     card = cards[0]
     card.ivl, card.factor, card.lapses = 30, 2300, 1
+    # FSRS measures elapsed time from here; a transplant must keep it.
+    card.last_review_time = (col.sched.day_cutoff - 2 * 86400) // 1
+    card.decay = 0.2
     col.update_card(card)
     return settings, note, col.get_card(card.id), cards[1]
 
@@ -2270,7 +2278,7 @@ def test_generated_notes_keep_their_own_feedback_path(
 def test_cancel_fix_unsuspends_untags_and_forgets(collection: Collection) -> None:
     _settings, note, card, sibling = setup_fix(collection)
     fix(collection, card.id)
-    fix(collection, sibling.id)
+    fix(collection, sibling.id, word="页", definition="page")
     cancel_fix(collection, card.id)
     assert collection.get_card(card.id).queue == 2
     # The sibling's fix still waits, so the note stays findable.
@@ -2659,3 +2667,44 @@ def test_fix_dialog_submission_requests_and_retries_now(
     controller.submit_fix(card.id, word="百", definition="hundred", note="stiff")
     record = collection.get_config(FIXES_KEY)[str(card.id)]
     assert retried == [record["key"]] and ticks == [True]
+
+
+def test_stalled_basic_fix_is_not_converted_as_an_ordinary_target(
+    collection: Collection,
+) -> None:
+    settings = {"enabled": True, "deck_id": 1}
+    collection.set_config(SETTINGS_KEY, settings)
+    note, card = add_word(collection, "百", established=True)
+    request_fix(collection, card.id, config={}, word="百", definition="hundred")
+    note["Back"] = "edited by the learner"
+    collection.update_note(note)
+    current = snapshot(collection, settings, {})
+    assert all(s.card_id != card.id for s in current.sources)
+    assert "百" in current.known
+
+
+def test_fix_on_a_card_unsuspended_by_hand_stalls(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, card, _sibling = setup_fix(collection)
+    fix(collection, card.id)
+    collection.sched.unsuspend_cards([card.id])
+    current = snapshot(collection, settings, {})
+    assert current.fixes == set()
+    assert current.skipped["fix stalled: original card was unsuspended"] == 1
+
+
+def test_fix_cannot_share_a_key_with_another_note(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, card, _sibling = setup_fix(collection)
+    _other, cards = add_cloze(collection, PAGE_CLOZE, established=(1,))
+    fix(collection, card.id)
+    # Another pending fix holds this word and meaning.
+    with pytest.raises(ValueError, match="Meaning"):
+        fix(collection, cards[0].id)
+    admit_fix(collection, settings, lexicon)
+    # Now the adopted note holds it.
+    with pytest.raises(ValueError, match="Meaning"):
+        fix(collection, cards[0].id)
+    fix(collection, cards[0].id, definition="one hundred")

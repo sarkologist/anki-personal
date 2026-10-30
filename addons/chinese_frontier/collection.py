@@ -70,6 +70,7 @@ REPAIR_TAG = "chinese-frontier::repair"
 FEEDBACK_TAG = "chinese-frontier::feedback::"
 MAX_REPAIRS = 3
 STALE_SOURCE = "Source changed, was unsuspended, or is already represented"
+KEY_TAKEN = "another Chinese Frontier note tests this word with this meaning"
 # Fixes requested on the learner's own cards wait here until a sentence passes.
 FIXES_KEY = "chineseFrontierFixes"
 PENDING_TAG = "chinese-frontier::fix-pending"
@@ -85,6 +86,9 @@ SCHEDULING = (
     "flags",
     "memory_state",
     "desired_retention",
+    # FSRS measures elapsed time from the last review, not from the revlog.
+    "last_review_time",
+    "decay",
 )
 SEGMENT_BREAK = re.compile(r"<(?:br|/?div|/?p)\b[^>]*>", re.IGNORECASE)
 
@@ -485,16 +489,19 @@ def _fix_problem(
 ) -> tuple[int, str]:
     """The original's home deck, and why its pending fix cannot proceed."""
     row = col.db.first(
-        "select c.did,c.odid,n.mid,n.flds from cards c join notes n on n.id=c.nid "
+        "select c.did,c.odid,c.queue,n.mid,n.flds from cards c join notes n on n.id=c.nid "
         "where c.id=?",
         card_id,
     )
     if not row:
         return 0, "original card was deleted"
-    did, odid, mid, joined = row
+    did, odid, queue, mid, joined = row
     home = odid or did
     if home not in primary_scope:
         return home, "original card left the chosen deck"
+    if queue != -1:
+        # Swapping now would leave both cards in review.
+        return home, "original card was unsuspended"
     model = col.models.get(mid)
     fields = {
         item["name"]: value
@@ -604,9 +611,10 @@ def snapshot(
     def skip(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
 
-    fix_sources = _fix_sources(col, primary_scope, skip)
-    # A card waiting for its fix still demonstrates what the learner knows.
-    fix_cards = {source.card_id for source in fix_sources}
+    # A card waiting for its fix, even a stalled one, still demonstrates what
+    # the learner knows, and is never converted as an ordinary target.
+    fix_sources, fix_cards = _fix_sources(col, primary_scope, skip)
+    replaced = set(fix_cards)
     adopted_sources: list[Source] = []
 
     scope_sql = _ids(scope | vocabulary_scope)
@@ -667,11 +675,10 @@ def snapshot(
         source_data = _json_field(fields.get("Source", "")) if generated else {}
         key = source_data.get("key")
         adopted = _adopted(source_data)
-        logs = review_logs.get(cid, [])
-        if adopted:
-            # The replaced learner card's history is this card's history too.
-            logs = sorted(logs + review_logs.get(int(adopted.get("card_id", 0)), []))
+        logs = _card_logs(review_logs, cid, adopted)
         live = queue != -1 or cid in fix_cards
+        if adopted:
+            replaced.add(int(adopted.get("card_id", 0)))
         in_audit_scope = (
             generated and home in primary_scope and nid in active_notes and not odid
         )
@@ -819,12 +826,13 @@ def snapshot(
         potential,
         fix_sources,
         adopted_sources,
+        replaced,
         repairs,
         existing_keys,
         covered_words | set(known),
         skip,
     )
-    fixes = {source.key for source in fix_sources}
+    fixes = {source.key for source in sources if source.card_id in fix_cards}
     # Reserve capacity through *all* normal ancestors. This intentionally stays
     # within the Chinese parent's budget even when studying a child directly.
     budgets = _read_budgets(col, decks, deck_id, sources, day)
@@ -845,11 +853,25 @@ def snapshot(
     )
 
 
+def _card_logs(
+    review_logs: dict[int, list[tuple[int, int]]],
+    card_id: int,
+    adopted: dict[str, Any] | None,
+) -> list[tuple[int, int]]:
+    logs = review_logs.get(card_id, [])
+    if adopted:
+        # The replaced learner card's history is this card's history too.
+        logs = sorted(logs + review_logs.get(int(adopted.get("card_id", 0)), []))
+    return logs
+
+
 def _fix_sources(
     col: Collection, primary_scope: set[int], skip: Callable[[str], None]
-) -> list[Source]:
+) -> tuple[list[Source], set[int]]:
+    """Sources for pending fixes, and every card with a pending record."""
     sources = []
-    for raw_id, record in col.get_config(FIXES_KEY, {}).items():
+    records = col.get_config(FIXES_KEY, {})
+    for raw_id, record in records.items():
         if not isinstance(record, dict):
             continue
         home, problem = _fix_problem(col, int(raw_id), record, primary_scope)
@@ -858,7 +880,20 @@ def _fix_sources(
             skip("fix stalled: " + problem)
         else:
             sources.append(_fix_source(int(raw_id), home, record))
-    return sources
+    return sources, {int(card_id) for card_id in records}
+
+
+def _unique_fixes(
+    fix_sources: list[Source], existing_keys: set[str], skip: Callable[[str], None]
+) -> list[Source]:
+    """One note per key: repairs find their note by key alone."""
+    unique: dict[str, Source] = {}
+    for source in fix_sources:
+        if source.key in existing_keys or source.key in unique:
+            skip("fix stalled: " + KEY_TAKEN)
+        else:
+            unique[source.key] = source
+    return list(unique.values())
 
 
 def _linked_keys(
@@ -895,16 +930,17 @@ def _select_sources(
     potential: list[Source],
     fix_sources: list[Source],
     adopted_sources: list[Source],
+    replaced: set[int],
     repairs: dict[str, int],
     existing_keys: set[str],
     represented_words: set[str],
     skip: Callable[[str], None],
 ) -> list[Source]:
     # Requested fixes come first and are never deduplicated against coverage.
+    fix_sources = _unique_fixes(fix_sources, existing_keys, skip)
     sources = list(fix_sources)
     fixes = {source.key for source in fix_sources}
     keys = existing_keys | fixes
-    replaced = {source.card_id for source in fix_sources + adopted_sources}
     potential = [
         source for source in potential if source.card_id not in replaced
     ] + adopted_sources
@@ -1378,6 +1414,12 @@ def request_fix(
     )
     home = card.odid or card.did
     source = Source(card_id, original.id, home, word, definition, "")
+    if any(
+        isinstance(other, dict) and other.get("key") == source.key
+        for other_id, other in fixes.items()
+        if other_id != str(card_id)
+    ) or col.find_notes(f"tag:{KEY_PREFIX}{source.key} -tag:{RESTORED_TAG}"):
+        raise ValueError(f"Change the Meaning: {KEY_TAKEN[0].upper() + KEY_TAKEN[1:]}")
     record.update(
         note_id=int(original.id),
         ordinal=int(card.ord),
