@@ -185,7 +185,12 @@ class Knowledge:
         ).hexdigest()
 
 
-LEARNER_FIELDS = ("learner_feedback", "avoid_words", "rejected_sentences")
+LEARNER_FIELDS = (
+    "learner_feedback",
+    "avoid_words",
+    "rejected_sentences",
+    "reported_confusions",
+)
 
 
 @dataclass(frozen=True)
@@ -203,6 +208,8 @@ class Target:
     learner_feedback: tuple[str, ...] = ()
     avoid_words: tuple[str, ...] = ()
     rejected_sentences: tuple[str, ...] = ()
+    # Words the learner confuses with the target; only these may be contrasted.
+    reported_confusions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         # Drafts reread from JSON carry lists.
@@ -340,7 +347,16 @@ def spelled(text: str) -> set[str]:
     return words
 
 
+def answers_confusion(other: Candidate, form: Form, target: Target) -> None:
+    if target.reported_confusions and not (
+        {normalize(other.answer), form.lemma} & set(target.reported_confusions)
+    ):
+        raise ValidationError("Contrast pairs only answer a reported confusion")
+
+
 def respect_feedback(c: Candidate, target: Target) -> None:
+    if target.reported_confusions and c.mode != "contrast":
+        raise ValidationError("A reported confusion needs a contrast pair")
     if " ".join(c.sentence.split()) in target.rejected_sentences:
         raise ValidationError("The learner rejected this sentence")
     context = set(tokens(c.sentence)) - set(tokens(c.answer))
@@ -515,6 +531,7 @@ def validate(
         if not alternatives or other.mode != "word":
             raise ValidationError("Unsupported contrast answer")
         f = contrast_form(other, known, lexicon)
+        answers_confusion(other, f, target)
         other_target = Target(
             f.lemma,
             f.pos,
@@ -527,7 +544,9 @@ def validate(
         )
         # The second example obeys the avoided words; the pair is rejected as
         # a whole through its first sentence.
-        respect_feedback(other, replace(target, rejected_sentences=()))
+        respect_feedback(
+            other, replace(target, rejected_sentences=(), reported_confusions=())
+        )
         other_valid = validate(other, other_target, known, lexicon)
         if normalize(other.answer) in normalize(
             c.sentence.replace(c.answer, "")

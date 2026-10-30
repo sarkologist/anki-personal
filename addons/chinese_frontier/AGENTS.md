@@ -23,3 +23,4 @@
 # French feedback
 
 - French generated notes keep learner feedback in `Source.feedback`, read by the shared `_learner_feedback`. The learner fields ride on `french.core.Target` but stay out of its key and its stored `target` metadata; a draft whose target feedback differs from the current note is stale.
+- A reported confusion (`answered` in a feedback entry) forces a contrast pair against that word, by surface or lemma, and keeps the sentence. Without one, French contrast pairs stay free.

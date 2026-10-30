@@ -298,6 +298,18 @@ def repair_count(note: Any) -> int:
     return len(entries) if isinstance(entries, list) else 0
 
 
+def confusions(data: dict[str, Any]) -> tuple[str, ...]:
+    """Words the learner said they confuse with the target, oldest first."""
+    entries = data.get("feedback", [])
+    return tuple(
+        dict.fromkeys(
+            str(e["answered"])
+            for e in (entries if isinstance(entries, list) else [])
+            if isinstance(e, dict) and e.get("answered")
+        )
+    )
+
+
 def record_feedback(
     col: Collection,
     note_id: int,
@@ -305,6 +317,7 @@ def record_feedback(
     reasons: tuple[str, ...] = (),
     note: str = "",
     avoid_words: tuple[str, ...] = (),
+    answered: str = "",
 ) -> FeedbackResult:
     """Keep the learner's complaint on the note and queue a repair that must fix it.
 
@@ -324,6 +337,9 @@ def record_feedback(
             "Words to avoid must be French words other than the answer: "
             + ", ".join(bad)
         )
+    answered = normalize(answered)
+    if answered and (len(tokens(answered)) != 1 or answer & spelled(answered)):
+        raise ValueError("Enter one other French word you confuse it with")
     handed_over = repair_count(target) >= MAX_REPAIRS
     candidate = data.get("candidate")
     sentence = (
@@ -338,7 +354,10 @@ def record_feedback(
             "reasons": list(reasons),
             "note": note.strip()[:500],
             "avoid_words": list(avoid_words),
+            "answered": answered,
             "sentence": " ".join(sentence.split()),
+            # Only a confusion keeps the sentence: the contrast pairs it.
+            "rejected": not answered or bool(reasons or note.strip() or avoid_words),
         }
     )
     data["feedback"] = entries
@@ -511,6 +530,7 @@ def snapshot(
                             learner_feedback=complaints,
                             avoid_words=avoid,
                             rejected_sentences=rejected,
+                            reported_confusions=confusions(metadata),
                         )
                         repairs[repair_target.key] = (
                             int(nid),

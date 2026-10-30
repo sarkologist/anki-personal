@@ -712,6 +712,9 @@ class Controller:
         avoid = QLineEdit()
         avoid.setPlaceholderText("e.g. pourtant enfin")
         form.addRow("Words to avoid", avoid)
+        confused = QLineEdit()
+        confused.setPlaceholderText("Shows both words side by side")
+        form.addRow("I'm confusing it with", confused)
         layout.addLayout(form)
         note = QTextEdit()
         note.setAcceptRichText(False)
@@ -730,6 +733,7 @@ class Controller:
             note_id,
             reasons=tuple(key for key, box in boxes.items() if box.isChecked()),
             note=note.toPlainText(),
+            answered=confused.text(),
             avoid_words=tuple(
                 w for w in re.split(r"[\s,;]+", avoid.text()) if w.strip()
             ),
