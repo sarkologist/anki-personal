@@ -13,3 +13,9 @@
 - Automatically audit every generated blank, including every contrast example and character sibling. Store the actual checked alternatives and judgments in the hidden `Disambiguation` field; never treat model approval as stronger than its own report of a fitting alternative.
 - Use only `Disambiguation` as the label, without an elaborating subtitle, on both review sides for contrast pairs and character fallback. Multiple clozes alone do not identify a disambiguation card.
 - Preserve existing IDs/history when repairing. Count every additional sibling against daily limits, stage across days if necessary, and establish whole-word evidence only when all siblings are learned. Record unresolved ambiguity honestly and defer rather than invent exclusive synonym rules.
+
+# Fixing the learner's own cards
+
+- Never write the fields of a note the add-on did not generate. A fix suspends only the reviewed card and tags its note `chinese-frontier::fix-pending`; the request lives in the `chineseFrontierFixes` config, with the same feedback entry shape as `Source.feedback`.
+- A fix becomes a new linked Chinese Frontier note with `Source.adopted`; its first card inherits the original card's scheduling verbatim. Later repairs synthesize their source from `Source.adopted`, and the original card's review log keeps counting as evidence.
+- Design record: `FIX_USER_CARDS.md`.

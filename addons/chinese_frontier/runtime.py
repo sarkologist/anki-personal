@@ -12,8 +12,8 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+from anki.cards import CardId
 from anki.collection import OpChanges
-from anki.notes import NoteId
 from aqt import gui_hooks, mw
 from aqt.operations import CollectionOp, QueryOp
 from aqt.qt import (
@@ -44,13 +44,20 @@ from .collection import (
     AdmissionResult,
     Snapshot,
     admit,
+    adopted_original,
+    cancel_fix,
+    fix_target_for_card,
     initial_scope_settings,
+    is_generated,
+    pending_fixes,
     record_feedback,
     repair_count,
+    request_fix,
+    restore_original,
     snapshot,
     upgrade_presentation,
 )
-from .core import FEEDBACK_REASONS, GENERATED_TAG
+from .core import FEEDBACK_REASONS
 from .diagnostics import Diagnostics
 from .generation import GenerationResult, generate
 from .lexicon import Lexicon
@@ -288,11 +295,13 @@ class Controller:
             not d.audit_only and d.additional_cards > 0 for d in self.state.drafts
         )
         needed = preparation_needed(available, queued, config)
-        if not needed and not current.repairs:
+        if not needed and not current.repairs and not current.fixes:
             self.status = "No admission slots: today's limits, pending new cards, or reviews reserve the capacity."
             self.busy = False
             return
-        if not self.state.can_refill(needed, len(current.repairs), config, time.time()):
+        if not self.state.can_refill(
+            needed, len(current.repairs) + len(current.fixes), config, time.time()
+        ):
             self.status = (
                 "Chinese refill is cooling down; it will retry automatically."
                 if config.get("auto_fill", True)
@@ -316,7 +325,7 @@ class Controller:
             ):
                 continue
             budgets = current.budgets[source.deck_id]
-            repairing = source.key in current.repairs
+            repairing = source.key in current.repairs or source.key in current.fixes
             if not repairing and any(
                 reservations.get(budget.deck_id, 0)
                 >= current.budget_slots([budget]) + ahead
@@ -545,21 +554,64 @@ class Controller:
             self.wake_timer.start(max(5000, int((ready_at - time.time()) * 1000)))
 
     def reviewer_menu(self, reviewer: Any, menu: Any) -> None:
-        if (
-            not mw
-            or not reviewer.card
-            or GENERATED_TAG not in reviewer.card.note().tags
-        ):
+        if not mw or not mw.col or not reviewer.card:
             return
-        note_id = reviewer.card.nid
-        action = menu.addAction("Fix this sentence...")
-        qconnect(action.triggered, lambda: self.feedback_dialog(note_id))
+        card_id = reviewer.card.id
+        note = reviewer.card.note()
+        if is_generated(note):
+            action = menu.addAction("Fix this sentence...")
+            qconnect(action.triggered, lambda: self.feedback_dialog(card_id))
+            if adopted_original(note):
+                restore = menu.addAction("Restore the original card")
+                qconnect(restore.triggered, lambda: self.restore(note.id))
+            return
+        target = fix_target_for_card(mw.col, card_id, self.config())
+        if target is None:
+            return
+        action = menu.addAction(
+            "Fix this sentence..."
+            if target.cloze
+            else "Make a sentence for this word..."
+        )
+        qconnect(action.triggered, lambda: self.fix_dialog(card_id))
 
-    def feedback_dialog(self, note_id: int) -> None:
+    def fix_dialog(self, card_id: int) -> None:
+        """The dictionary turns a lone clozed character into its word, if cached."""
+        folder = self.dictionary_folder
+
+        def load(_col: Any) -> Lexicon | None:
+            if not (folder / "cedict-headwords.txt").exists():
+                return None
+            try:
+                return Lexicon.load(folder)
+            except ValueError:
+                return None
+
+        QueryOp(
+            parent=mw,
+            op=load,
+            success=lambda lexicon: self.feedback_dialog(card_id, lexicon),
+        ).without_collection().run_in_background()
+
+    def restore(self, note_id: int) -> None:
+        CollectionOp(parent=mw, op=lambda col: restore_original(col, note_id)).success(
+            lambda _changes: tooltip("Your original card is back in review.")
+        ).run_in_background(initiator=self)
+
+    def feedback_dialog(self, card_id: int, lexicon: Lexicon | None = None) -> None:
         if not mw or not mw.col:
             return
-        target = mw.col.get_note(NoteId(note_id))
-        repairs = repair_count(target)
+        card = mw.col.get_card(CardId(card_id))
+        target = card.note()
+        generated = is_generated(target)
+        fix = (
+            None
+            if generated
+            else fix_target_for_card(mw.col, card_id, self.config(), lexicon)
+        )
+        if not generated and fix is None:
+            return
+        repairs = repair_count(target) if generated else 0
         key = next(
             (t[len(KEY_PREFIX) :] for t in target.tags if t.startswith(KEY_PREFIX)), ""
         )
@@ -569,6 +621,10 @@ class Controller:
         explanation = QLabel(
             "What's wrong with it? The new sentence must fix it, and later checks keep "
             "your feedback. Leave everything blank for a different sentence."
+            if generated
+            else "This card is suspended now and replaced by a new sentence card, "
+            "with its schedule, once a sentence passes review. Your note is not "
+            "edited; its other cards keep their sentence."
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
@@ -579,6 +635,16 @@ class Controller:
             )
             warning.setWordWrap(True)
             layout.addWidget(warning)
+        word_box = QComboBox()
+        meaning = QLineEdit()
+        if fix is not None:
+            details = QFormLayout()
+            word_box.setEditable(True)
+            word_box.addItems(list(fix.words))
+            meaning.setText(fix.meaning)
+            details.addRow("Target", word_box)
+            details.addRow("Meaning", meaning)
+            layout.addLayout(details)
         boxes = {}
         for key, label in FEEDBACK_REASONS.items():
             boxes[key] = QCheckBox(label)
@@ -589,7 +655,7 @@ class Controller:
         answered = QLineEdit()
         answered.setPlaceholderText("Shows both words side by side")
         form.addRow("Words to avoid", avoid)
-        if len(target.cards()) > 1:
+        if generated and len(target.cards()) > 1:
             # A contrast pair would remove one of the character cards.
             answered.setEnabled(False)
             answered.setPlaceholderText("Not available with character cards")
@@ -616,6 +682,18 @@ class Controller:
         )
         text = note.toPlainText()
         word = answered.text()
+        if fix is not None:
+            self.submit_fix(
+                card_id,
+                word=word_box.currentText(),
+                definition=meaning.text(),
+                reasons=reasons,
+                note=text,
+                avoid_words=words,
+                answered=word,
+            )
+            return
+        note_id = target.id
 
         def done(result: Any) -> None:
             self.state.retry_now(key)
@@ -635,6 +713,19 @@ class Controller:
                 avoid_words=words,
                 answered=word,
             ),
+        ).success(done).run_in_background(initiator=self)
+
+    def submit_fix(self, card_id: int, **values: Any) -> None:
+        config = self.config()
+
+        def done(result: Any) -> None:
+            self.state.retry_now(result.key)
+            self.save_state()
+            tooltip("Suspended; a new sentence card will take over its schedule.")
+            self.tick(force=True)
+
+        CollectionOp(
+            parent=mw, op=lambda col: request_fix(col, card_id, config=config, **values)
         ).success(done).run_in_background(initiator=self)
 
     def settings_dialog(self) -> None:
@@ -738,6 +829,40 @@ class Controller:
 
         update_status()
         layout.addWidget(status)
+        fixes_label = QLabel("Fixes waiting for a sentence")
+        fixes = QListWidget()
+        fixes.setMaximumHeight(110)
+        cancel = QPushButton("Cancel selected fix (unsuspends your card)")
+
+        def list_fixes() -> None:
+            fixes.clear()
+            for item in pending_fixes(mw.col):
+                days = max(0, int((time.time() - item.requested_at) // 86400))
+                text = f"{item.word}: waiting {days} d"
+                if item.problem:
+                    text += f"; stalled, {item.problem}"
+                elif reason := self.state.deferred.get(item.key, {}).get("reason"):
+                    text += "; deferred: " + str(read_lesson(reason).get("reason", ""))
+                if item.collision:
+                    text += "; another generated card tests this word"
+                entry = QListWidgetItem(text, fixes)
+                entry.setData(Qt.ItemDataRole.UserRole, item.card_id)
+            for widget in (fixes_label, fixes, cancel):
+                widget.setVisible(fixes.count() > 0)
+
+        def cancel_selected() -> None:
+            if not (entry := fixes.currentItem()):
+                return
+            card_id = int(entry.data(Qt.ItemDataRole.UserRole))
+            CollectionOp(
+                parent=dialog, op=lambda col: cancel_fix(col, card_id)
+            ).success(lambda _changes: list_fixes()).run_in_background(initiator=self)
+
+        list_fixes()
+        qconnect(cancel.clicked, cancel_selected)
+        layout.addWidget(fixes_label)
+        layout.addWidget(fixes)
+        layout.addWidget(cancel)
         layout.addWidget(diagnostics)
         refresh_timer = QTimer(dialog)
         qconnect(refresh_timer.timeout, update_status)
