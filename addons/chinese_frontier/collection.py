@@ -6,9 +6,11 @@ from __future__ import annotations
 import html
 import json
 import re
+import time
 from dataclasses import asdict, dataclass, field, replace
-from typing import Any
+from typing import Any, Callable
 
+from anki.cards import CardId
 from anki.collection import Collection, OpChanges
 from anki.decks import DeckId
 from anki.notes import NoteId
@@ -68,6 +70,23 @@ REPAIR_TAG = "chinese-frontier::repair"
 FEEDBACK_TAG = "chinese-frontier::feedback::"
 MAX_REPAIRS = 3
 STALE_SOURCE = "Source changed, was unsuspended, or is already represented"
+# Fixes requested on the learner's own cards wait here until a sentence passes.
+FIXES_KEY = "chineseFrontierFixes"
+PENDING_TAG = "chinese-frontier::fix-pending"
+ADOPTED_TAG = "chinese-frontier::adopted"
+RESTORED_TAG = "chinese-frontier::restored"
+SCHEDULING = (
+    "type",
+    "ivl",
+    "factor",
+    "reps",
+    "lapses",
+    "left",
+    "flags",
+    "memory_state",
+    "desired_retention",
+)
+SEGMENT_BREAK = re.compile(r"<(?:br|/?div|/?p)\b[^>]*>", re.IGNORECASE)
 
 
 @dataclass
@@ -84,6 +103,8 @@ class Snapshot:
     repairs: dict[str, int] = field(default_factory=dict)
     contexts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     lookahead_days: int = 0
+    # Keys of fixes the learner requested on their own cards.
+    fixes: set[str] = field(default_factory=set)
 
     def slots(self, deck_id: int) -> int:
         return self.budget_slots(self.budgets.get(deck_id, []))
@@ -227,7 +248,11 @@ def existing_candidate(fields: dict[str, str], word: str) -> Candidate:
 
 def reported_confusions(fields: dict[str, str]) -> tuple[str, ...]:
     """Words the learner answered instead, recorded in the Source metadata."""
-    reported = _json_field(fields.get("Source", "")).get("disambiguation", {})
+    return _reported_confusions(_json_field(fields.get("Source", "")))
+
+
+def _reported_confusions(data: dict[str, Any]) -> tuple[str, ...]:
+    reported = data.get("disambiguation", {})
     words = reported.get("with", ()) if isinstance(reported, dict) else ()
     words = (words,) if isinstance(words, str) else words
     return tuple(dict.fromkeys(w for w in words if isinstance(w, str) and is_word(w)))
@@ -237,7 +262,13 @@ def learner_feedback(
     fields: dict[str, str],
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Complaints, words to avoid and rejected sentences from the Source metadata."""
-    entries = _json_field(fields.get("Source", "")).get("feedback", [])
+    return _learner_feedback(_json_field(fields.get("Source", "")))
+
+
+def _learner_feedback(
+    data: dict[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    entries = data.get("feedback", [])
     complaints, avoid, rejected = [], [], []
     for entry in entries if isinstance(entries, list) else []:
         if not isinstance(entry, dict):
@@ -304,6 +335,194 @@ def _basic_words(
         else ()
     )
     return words, hsk_level
+
+
+def _unfold(text: str) -> str:
+    return CLOZE.sub(lambda match: match[2].split("::", 1)[0], text)
+
+
+def _whole_words(value: str, ordinal: int, lexicon: Lexicon) -> list[str]:
+    """Dictionary words around characters this ordinal hides on their own."""
+    marked = CLOZE.sub(
+        lambda m: (
+            "\ue000" + m[2].split("::", 1)[0] + "\ue001"
+            if int(m[1]) == ordinal + 1
+            else m[2].split("::", 1)[0]
+        ),
+        value,
+    )
+    chars: list[str] = []
+    spans = []
+    start = 0
+    # Learners space out words; Chinese segmentation ignores the spaces.
+    for char in "".join(plain_text(marked).split()):
+        if char == "\ue000":
+            start = len(chars)
+        elif char == "\ue001":
+            spans.append((start, len(chars)))
+        else:
+            chars.append(char)
+    text = "".join(chars)
+    tokens = []
+    position = 0
+    for token in lexicon.segment(text):
+        position = text.find(token, position)
+        tokens.append((position, position + len(token), token))
+        position += len(token)
+    return [
+        token
+        for begin, end in spans
+        if end - begin == 1
+        for first, last, token in tokens
+        if first <= begin and end <= last and len(token) > 1 and is_word(token)
+    ]
+
+
+@dataclass(frozen=True)
+class FixTarget:
+    # The default first; the learner may type another.
+    words: tuple[str, ...]
+    meaning: str
+    sentence: str
+    cloze: bool
+
+
+def fix_target(
+    fields: dict[str, str],
+    model: dict[str, Any],
+    ordinal: int,
+    deck_name: str,
+    config: dict[str, Any],
+    lexicon: Lexicon | None = None,
+) -> FixTarget | None:
+    """What a learner's own card tests, or None when no Chinese word can be read."""
+    if model["type"] == 0:
+        words, _level = _basic_words(
+            fields, model, ordinal, deck_name, str(config.get("front_field", "Front"))
+        )
+        meaning = plain_text(fields.get(str(config.get("back_field", "Back")), ""))
+        return FixTarget(words, meaning, "", False) if words else None
+    qfmt = model["tmpls"][0]["qfmt"]
+    clozed = [
+        value for name, value in fields.items() if "{{cloze:" + name + "}}" in qfmt
+    ]
+    hidden = [word for value in clozed for word in cloze_words(value, ordinal)]
+    if not hidden:
+        return None
+    whole = (
+        [word for value in clozed for word in _whole_words(value, ordinal, lexicon)]
+        if lexicon
+        else []
+    )
+    segments = [
+        plain_text(_unfold(part))
+        for value in clozed
+        for part in SEGMENT_BREAK.split(value)
+    ]
+    chinese = [part for part in segments if any(is_word(char) for char in part)]
+    other = [part for part in segments if part and part not in chinese]
+    extras = [
+        plain_text(_unfold(value))
+        for name, value in fields.items()
+        if "{{cloze:" + name + "}}" not in qfmt and "extra" in name.casefold()
+    ]
+    meaning = " · ".join(dict.fromkeys(part for part in other + extras if part))
+    return FixTarget(
+        tuple(dict.fromkeys(whole + hidden)), meaning[:500], " ".join(chinese), True
+    )
+
+
+def is_generated(note: Any) -> bool:
+    return GENERATED_TAG in note.tags and note.note_type()["name"] == MODEL_NAME
+
+
+def adopted_original(note: Any) -> dict[str, Any] | None:
+    """The learner card an adopted note replaced, unless it was restored."""
+    if not is_generated(note) or RESTORED_TAG in note.tags:
+        return None
+    return _adopted(_json_field(note["Source"]))
+
+
+def _adopted(data: dict[str, Any]) -> dict[str, Any] | None:
+    adopted = data.get("adopted")
+    return adopted if isinstance(adopted, dict) else None
+
+
+def _primary_scope(col: Collection) -> set[int]:
+    deck_id = int(col.get_config(SETTINGS_KEY, {}).get("deck_id", 0))
+    decks = {int(deck["id"]): deck for deck in col.decks.all()}
+    return _descendants(decks, deck_id) if deck_id in decks else set()
+
+
+def fix_target_for_card(
+    col: Collection,
+    card_id: int,
+    config: dict[str, Any],
+    lexicon: Lexicon | None = None,
+) -> FixTarget | None:
+    """Fixable learner cards live in the chosen deck tree, outside automation."""
+    card = col.get_card(CardId(card_id))
+    note = card.note()
+    home = card.odid or card.did
+    if (
+        home not in _primary_scope(col)
+        or is_generated(note)
+        or any(tag.casefold() in ("leech", EXCLUDE_TAG) for tag in note.tags)
+    ):
+        return None
+    return fix_target(
+        dict(note.items()),
+        note.note_type(),
+        card.ord,
+        col.decks.name(DeckId(home)),
+        config,
+        lexicon,
+    )
+
+
+def _fix_problem(
+    col: Collection, card_id: int, record: dict[str, Any], primary_scope: set[int]
+) -> tuple[int, str]:
+    """The original's home deck, and why its pending fix cannot proceed."""
+    row = col.db.first(
+        "select c.did,c.odid,n.mid,n.flds from cards c join notes n on n.id=c.nid "
+        "where c.id=?",
+        card_id,
+    )
+    if not row:
+        return 0, "original card was deleted"
+    did, odid, mid, joined = row
+    home = odid or did
+    if home not in primary_scope:
+        return home, "original card left the chosen deck"
+    model = col.models.get(mid)
+    fields = {
+        item["name"]: value
+        for item, value in zip(model["flds"], joined.split("\x1f"), strict=True)
+    }
+    if fingerprint(fields, []) != record.get("fingerprint"):
+        return home, "original note was edited"
+    return home, ""
+
+
+def _fix_source(card_id: int, home: int, record: dict[str, Any]) -> Source:
+    complaints, avoid, rejected = _learner_feedback(record)
+    word = str(record.get("word", ""))
+    return Source(
+        card_id,
+        int(record.get("note_id", 0)),
+        home,
+        word,
+        str(record.get("definition", "")),
+        str(record.get("fingerprint", "")),
+        avoid_sentence=str(record.get("sentence", "")),
+        existing_cards=1,
+        reported_confusions=tuple(w for w in _reported_confusions(record) if w != word),
+        force_repair=True,
+        learner_feedback=complaints,
+        avoid_words=avoid,
+        rejected_sentences=rejected,
+    )
 
 
 def _repair_source(col: Collection, source: Source, note_id: int) -> Source:
@@ -385,6 +604,11 @@ def snapshot(
     def skip(reason: str) -> None:
         skipped[reason] = skipped.get(reason, 0) + 1
 
+    fix_sources = _fix_sources(col, primary_scope, skip)
+    # A card waiting for its fix still demonstrates what the learner knows.
+    fix_cards = {source.card_id for source in fix_sources}
+    adopted_sources: list[Source] = []
+
     scope_sql = _ids(scope | vocabulary_scope)
     vocabulary_sql = _ids(vocabulary_scope)
     rows = col.db.all(
@@ -442,6 +666,12 @@ def snapshot(
         generated = GENERATED_TAG in tags and model["name"] == MODEL_NAME
         source_data = _json_field(fields.get("Source", "")) if generated else {}
         key = source_data.get("key")
+        adopted = _adopted(source_data)
+        logs = review_logs.get(cid, [])
+        if adopted:
+            # The replaced learner card's history is this card's history too.
+            logs = sorted(logs + review_logs.get(int(adopted.get("card_id", 0)), []))
+        live = queue != -1 or cid in fix_cards
         in_audit_scope = (
             generated and home in primary_scope and nid in active_notes and not odid
         )
@@ -458,12 +688,27 @@ def snapshot(
         ):
             audit_notes[key] = (nid, fields, tags)
         characters = generated and source_data.get("mode") == "characters"
-        excluded = any(tag.casefold() in ("leech", EXCLUDE_TAG) for tag in tags)
+        excluded = any(
+            tag.casefold() in ("leech", EXCLUDE_TAG, RESTORED_TAG) for tag in tags
+        )
         if excluded:
             if queue == -1 and nid not in seen_notes and home in scope:
                 skip("excluded or leech")
                 seen_notes.add(nid)
             continue
+        if adopted and home in scope and nid not in seen_notes:
+            # No suspended Basic note backs an adopted one; its metadata does.
+            seen_notes.add(nid)
+            adopted_sources.append(
+                Source(
+                    int(adopted.get("card_id", 0)),
+                    int(adopted.get("note_id", 0)),
+                    home if home in primary_scope else deck_id,
+                    str(source_data.get("word", "")),
+                    str(source_data.get("definition", "")),
+                    str(source_data.get("fingerprint", "")),
+                )
+            )
         if model["type"] == 1:
             template = model["tmpls"][0]
             words = tuple(
@@ -486,9 +731,7 @@ def snapshot(
                             queue != -1
                             and not repairing
                             and reps > 0
-                            and successful_days(
-                                review_logs.get(cid, []), timing.next_day_at
-                            )
+                            and successful_days(logs, timing.next_day_at)
                             >= minimum_success_days,
                         )
                     )
@@ -522,11 +765,10 @@ def snapshot(
             )
         if (
             home in vocabulary_scope
-            and queue != -1
+            and live
             and not repairing
             and reps > 0
-            and successful_days(review_logs.get(cid, []), timing.next_day_at)
-            >= minimum_success_days
+            and successful_days(logs, timing.next_day_at) >= minimum_success_days
         ):
             for word in words:
                 if word not in known:
@@ -571,40 +813,18 @@ def snapshot(
             )
         )
     _establish_character_words(known, evidence, character_words, character_evidence)
-    tagged_notes = col.db.all(
-        "select id,tags from notes where tags like ?", "%" + KEY_PREFIX + "%"
+    repairs, existing_keys = _linked_keys(col, audit_notes)
+    sources = _select_sources(
+        col,
+        potential,
+        fix_sources,
+        adopted_sources,
+        repairs,
+        existing_keys,
+        covered_words | set(known),
+        skip,
     )
-    repairs = {
-        tag[len(KEY_PREFIX) :]: nid
-        for nid, tag_string in tagged_notes
-        if REPAIR_TAG in tag_string.split()
-        for tag in tag_string.split()
-        if tag.startswith(KEY_PREFIX)
-    }
-    repairs.update({key: item[0] for key, item in audit_notes.items()})
-    existing_keys = {
-        tag[len(KEY_PREFIX) :]
-        for _nid, tag_string in tagged_notes
-        for tag in tag_string.split()
-        if tag.startswith(KEY_PREFIX)
-    }
-    sources: list[Source] = []
-    keys = set(existing_keys)
-    # Stable ties retain the old due/card ordering. Explicit HSK metadata is a
-    # coarse curriculum proxy; it does not claim to measure individual difficulty.
-    potential.sort(
-        key=lambda source: (source.key not in repairs, source.hsk_level or 7)
-    )
-    for source in potential:
-        if source.key not in repairs and (
-            source.key in keys or source.word in covered_words or source.word in known
-        ):
-            skip("already represented or duplicate")
-            continue
-        keys.add(source.key)
-        if source.key in repairs:
-            source = _repair_source(col, source, repairs[source.key])
-        sources.append(source)
+    fixes = {source.key for source in fix_sources}
     # Reserve capacity through *all* normal ancestors. This intentionally stays
     # within the Chinese parent's budget even when studying a child directly.
     budgets = _read_budgets(col, decks, deck_id, sources, day)
@@ -621,7 +841,90 @@ def snapshot(
         repairs,
         contexts,
         lookahead_days(config),
+        fixes,
     )
+
+
+def _fix_sources(
+    col: Collection, primary_scope: set[int], skip: Callable[[str], None]
+) -> list[Source]:
+    sources = []
+    for raw_id, record in col.get_config(FIXES_KEY, {}).items():
+        if not isinstance(record, dict):
+            continue
+        home, problem = _fix_problem(col, int(raw_id), record, primary_scope)
+        if problem:
+            # The card stays suspended until the learner cancels; never guess.
+            skip("fix stalled: " + problem)
+        else:
+            sources.append(_fix_source(int(raw_id), home, record))
+    return sources
+
+
+def _linked_keys(
+    col: Collection, audit_notes: dict[str, tuple[int, dict[str, str], list[str]]]
+) -> tuple[dict[str, int], set[str]]:
+    """Generated notes waiting for repair, and every key a generated note holds."""
+    tagged_notes = [
+        (nid, tag_string)
+        for nid, tag_string in col.db.all(
+            "select id,tags from notes where tags like ?", "%" + KEY_PREFIX + "%"
+        )
+        # A restored note neither represents its word nor waits for repair.
+        if RESTORED_TAG not in tag_string.split()
+    ]
+    repairs = {
+        tag[len(KEY_PREFIX) :]: nid
+        for nid, tag_string in tagged_notes
+        if REPAIR_TAG in tag_string.split()
+        for tag in tag_string.split()
+        if tag.startswith(KEY_PREFIX)
+    }
+    repairs.update({key: item[0] for key, item in audit_notes.items()})
+    existing_keys = {
+        tag[len(KEY_PREFIX) :]
+        for _nid, tag_string in tagged_notes
+        for tag in tag_string.split()
+        if tag.startswith(KEY_PREFIX)
+    }
+    return repairs, existing_keys
+
+
+def _select_sources(
+    col: Collection,
+    potential: list[Source],
+    fix_sources: list[Source],
+    adopted_sources: list[Source],
+    repairs: dict[str, int],
+    existing_keys: set[str],
+    represented_words: set[str],
+    skip: Callable[[str], None],
+) -> list[Source]:
+    # Requested fixes come first and are never deduplicated against coverage.
+    sources = list(fix_sources)
+    fixes = {source.key for source in fix_sources}
+    keys = existing_keys | fixes
+    replaced = {source.card_id for source in fix_sources + adopted_sources}
+    potential = [
+        source for source in potential if source.card_id not in replaced
+    ] + adopted_sources
+    # Stable ties retain the old due/card ordering. Explicit HSK metadata is a
+    # coarse curriculum proxy; it does not claim to measure individual difficulty.
+    potential.sort(
+        key=lambda source: (source.key not in repairs, source.hsk_level or 7)
+    )
+    for source in potential:
+        if source.key in fixes or (
+            source.key not in repairs
+            and (source.key in keys or source.word in represented_words)
+        ):
+            skip("already represented or duplicate")
+            continue
+        keys.add(source.key)
+        if source.key in repairs:
+            source = _repair_source(col, source, repairs[source.key])
+        sources.append(source)
+    return sources
 
 
 def _read_budgets(
@@ -935,6 +1238,254 @@ def _record_confusion(note: Any, word: str) -> None:
     note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
 
 
+def _scheduling(card: Any) -> tuple:
+    due = card.odue if card.odid else card.due
+    return (card.queue, due, *(getattr(card, name) for name in SCHEDULING))
+
+
+def _copy_scheduling(source: Any, target: Any) -> None:
+    """Carry progress over verbatim; a suspended card's queue follows its type."""
+    for name in SCHEDULING:
+        setattr(target, name, getattr(source, name))
+    due = source.odue if source.odid else source.due
+    if target.odid:
+        target.odue = due
+    else:
+        target.due = due
+    if target.type in (1, 3):
+        # Intraday learning is due at a timestamp, interday learning on a day.
+        target.queue = 1 if due > 1_000_000_000 else 3
+    else:
+        target.queue = target.type
+
+
+def _adoption_metadata(col: Collection, source: Source, fixes: dict[str, Any]) -> str:
+    """The learner's card and feedback move into the new note's Source."""
+    record = fixes[str(source.card_id)]
+    original = col.get_card(CardId(source.card_id))
+    data: dict[str, Any] = {
+        "adopted": {
+            "card_id": source.card_id,
+            "note_id": source.note_id,
+            "ordinal": int(original.ord),
+            "notetype": original.note().note_type()["name"],
+            "sentence": str(record.get("sentence", "")),
+        },
+        "feedback": record.get("feedback", []),
+    }
+    if "disambiguation" in record:
+        data["disambiguation"] = record["disambiguation"]
+    return html.escape(json.dumps(data, ensure_ascii=False))
+
+
+def _adoption_tags(source: Source, fixes: dict[str, Any]) -> list[str]:
+    return [ADOPTED_TAG] + [
+        FEEDBACK_TAG + reason
+        for entry in fixes[str(source.card_id)].get("feedback", [])
+        if isinstance(entry, dict)
+        for reason in entry.get("reasons", [])
+        if reason in FEEDBACK_REASONS
+    ]
+
+
+def _take_over(
+    col: Collection, source: Source, cards: list[Any], fixes: dict[str, Any]
+) -> None:
+    """The new note's first card continues the learner's card; the fix is done."""
+    first = min(cards, key=lambda card: card.ord)
+    _copy_scheduling(col.get_card(CardId(source.card_id)), first)
+    col.update_card(first)
+    if _scheduling(col.get_card(first.id)) != _scheduling(first):
+        raise ValueError("Copying the original card's schedule failed")
+    del fixes[str(source.card_id)]
+    _untag_pending(col, source.note_id, fixes)
+    col.set_config(FIXES_KEY, fixes, undoable=True)
+
+
+def _untag_pending(col: Collection, note_id: int, fixes: dict[str, Any]) -> None:
+    if any(
+        isinstance(r, dict) and int(r.get("note_id", 0)) == note_id
+        for r in fixes.values()
+    ) or not col.db.scalar("select count() from notes where id=?", note_id):
+        return
+    note = col.get_note(NoteId(note_id))
+    if PENDING_TAG in note.tags:
+        note.tags = [tag for tag in note.tags if tag != PENDING_TAG]
+        col.update_note(note)
+
+
+@dataclass
+class FixResult:
+    changes: OpChanges
+    key: str
+
+
+def request_fix(
+    col: Collection,
+    card_id: int,
+    *,
+    word: str,
+    definition: str,
+    config: dict[str, Any],
+    reasons: tuple[str, ...] = (),
+    note: str = "",
+    avoid_words: tuple[str, ...] = (),
+    answered: str = "",
+) -> FixResult:
+    """Suspend a learner card that tests the wrong thing and queue its replacement.
+
+    Only the card's queue and one tag on its note change; the fields never do.
+    The feedback waits in the collection config until a sentence passes."""
+    target = fix_target_for_card(col, card_id, config)
+    if target is None:
+        raise ValueError(
+            "Only your own Chinese cards in the chosen deck can be fixed here"
+        )
+    word = word.strip()
+    definition = " ".join(definition.split())
+    if not is_word(word) or (
+        target.cloze and word not in "".join(target.sentence.split())
+    ):
+        raise ValueError("Enter a Chinese word from the sentence as the target")
+    if not definition:
+        raise ValueError("Enter the meaning this card tests")
+    if unknown := [r for r in reasons if r not in FEEDBACK_REASONS]:
+        raise ValueError("Unknown reason: " + ", ".join(unknown))
+    avoid_words = tuple(dict.fromkeys(w.strip() for w in avoid_words if w.strip()))
+    if bad := [w for w in avoid_words if not is_word(w) or w in word or word in w]:
+        raise ValueError(
+            "Words to avoid must be Chinese words other than the answer: "
+            + ", ".join(bad)
+        )
+    answered = answered.strip()
+    if answered and (not is_word(answered) or answered == word):
+        raise ValueError("Enter the other Chinese word you answered")
+    card = col.get_card(CardId(card_id))
+    original = card.note()
+    fixes = dict(col.get_config(FIXES_KEY, {}))
+    record = dict(fixes.get(str(card_id), {}))
+    entries = record.get("feedback")
+    entries = list(entries) if isinstance(entries, list) else []
+    entries.append(
+        {
+            "reasons": list(reasons),
+            "note": note.strip()[:500],
+            "avoid_words": list(avoid_words),
+            "answered": answered,
+            "sentence": target.sentence,
+            "rejected": not answered or bool(reasons or note.strip() or avoid_words),
+        }
+    )
+    home = card.odid or card.did
+    source = Source(card_id, original.id, home, word, definition, "")
+    record.update(
+        note_id=int(original.id),
+        ordinal=int(card.ord),
+        deck_id=int(home),
+        word=word,
+        definition=definition,
+        key=source.key,
+        sentence=target.sentence,
+        # Fields only: the pending tag must not make the request stale.
+        fingerprint=fingerprint(dict(original.items()), []),
+        requested_at=int(record.get("requested_at", time.time())),
+        feedback=entries,
+    )
+    if answered:
+        words = tuple(dict.fromkeys((*_reported_confusions(record), answered)))
+        record["disambiguation"] = {
+            "with": words[0] if len(words) == 1 else list(words),
+            "feedback": "Learner answered " + ", ".join(words) + ".",
+        }
+    fixes[str(card_id)] = record
+    undo = col.add_custom_undo_entry("Fix Chinese sentence")
+    col.sched.suspend_cards([CardId(card_id)])
+    if PENDING_TAG not in original.tags:
+        original.tags.append(PENDING_TAG)
+        col.update_note(original)
+    col.set_config(FIXES_KEY, fixes, undoable=True)
+    return FixResult(col.merge_undo_entries(undo), source.key)
+
+
+def cancel_fix(col: Collection, card_id: int) -> OpChanges:
+    """Put a learner card waiting for a fix back into review, unchanged."""
+    fixes = dict(col.get_config(FIXES_KEY, {}))
+    record = fixes.pop(str(card_id), None)
+    if not isinstance(record, dict):
+        raise ValueError("No fix is pending for this card")
+    undo = col.add_custom_undo_entry("Cancel Chinese sentence fix")
+    if col.db.scalar("select count() from cards where id=?", card_id):
+        col.sched.unsuspend_cards([CardId(card_id)])
+    _untag_pending(col, int(record.get("note_id", 0)), fixes)
+    col.set_config(FIXES_KEY, fixes, undoable=True)
+    return col.merge_undo_entries(undo)
+
+
+def restore_original(col: Collection, note_id: int) -> OpChanges:
+    """Return to the learner's card with the adopted card's progress; the
+    adopted note stays, suspended and tagged, so its feedback remains readable."""
+    note = col.get_note(NoteId(note_id))
+    adopted = adopted_original(note)
+    if adopted is None:
+        raise ValueError("This note did not replace one of your cards, or was restored")
+    card_id = int(adopted.get("card_id", 0))
+    if not col.db.scalar("select count() from cards where id=?", card_id):
+        raise ValueError("The original card no longer exists")
+    original = col.get_card(CardId(card_id))
+    cards = sorted(note.cards(), key=lambda card: card.ord)
+    undo = col.add_custom_undo_entry("Restore original Chinese card")
+    _copy_scheduling(cards[0], original)
+    col.update_card(original)
+    col.sched.suspend_cards([card.id for card in cards])
+    note = col.get_note(note.id)
+    data = _json_field(note["Source"])
+    data["adopted"] = {**adopted, "restored_at": int(time.time())}
+    note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
+    note.tags = [tag for tag in note.tags if tag != REPAIR_TAG] + [RESTORED_TAG]
+    col.update_note(note)
+    return col.merge_undo_entries(undo)
+
+
+@dataclass(frozen=True)
+class PendingFix:
+    card_id: int
+    word: str
+    key: str
+    requested_at: int
+    problem: str
+    # Another generated note already tests this word.
+    collision: bool
+
+
+def pending_fixes(col: Collection) -> list[PendingFix]:
+    scope = _primary_scope(col)
+    result = []
+    for raw_id, record in col.get_config(FIXES_KEY, {}).items():
+        if not isinstance(record, dict):
+            continue
+        word, key = str(record.get("word", "")), str(record.get("key", ""))
+        collision = bool(
+            col.find_notes(f"tag:{KEY_PREFIX}{key}")
+            or (
+                is_word(word)
+                and col.find_notes(
+                    f'"note:{MODEL_NAME}" tag:{GENERATED_TAG} Target:*{word}*'
+                )
+            )
+        )
+        result.append(
+            PendingFix(
+                int(raw_id),
+                word,
+                key,
+                int(record.get("requested_at", 0)),
+                _fix_problem(col, int(raw_id), record, scope)[1],
+                collision,
+            )
+        )
+    return sorted(result, key=lambda item: item.requested_at)
+
+
 def admit(
     col: Collection,
     settings: dict[str, Any],
@@ -996,6 +1547,45 @@ def _write_candidate_fields(
     note["Source"] = html.escape(json.dumps(metadata, ensure_ascii=False))
 
 
+def _verify_cards(
+    cards: list[Any],
+    old_cards: dict[int, tuple],
+    source: Source,
+    valid: Validated,
+    kind: str,
+) -> None:
+    for card in cards:
+        ordinal = int(card.ord)
+        if ordinal in old_cards:
+            state = (
+                int(card.id),
+                card.type,
+                card.queue,
+                card.reps,
+                card.lapses,
+                card.ivl,
+                card.due,
+                card.factor,
+            )
+            if state != old_cards[ordinal]:
+                raise ValueError("Repair changed an existing card's scheduling")
+        elif card.type != 0:
+            raise ValueError("Additional sibling was not a new card")
+        question, answer = card.question(), card.answer()
+        if (
+            'class="cloze"' not in question
+            or source.word not in plain_text(answer)
+            or valid.candidate.translation not in plain_text(question)
+        ):
+            raise ValueError("Replacement card rendering failed verification")
+        if kind and (kind not in question or kind not in answer):
+            raise ValueError("Disambiguation label missing from a card side")
+        if _template_tests_field(
+            {"qfmt": card.template()["qfmt"]}, "Disambiguation"
+        ) or _template_tests_field({"qfmt": card.template()["afmt"]}, "Disambiguation"):
+            raise ValueError("Disambiguation audit must remain hidden during reviews")
+
+
 def _admit(
     col: Collection,
     settings: dict[str, Any],
@@ -1010,6 +1600,7 @@ def _admit(
         return AdmissionResult(OpChanges(), [], drafts, {})
     current = snapshot(col, fresh_settings, config)
     sources = {source.card_id: source for source in current.sources}
+    fixes = dict(col.get_config(FIXES_KEY, {}))
     remaining: list[Draft] = []
     rejected: dict[str, str] = {}
     admitted: list[int] = []
@@ -1037,6 +1628,12 @@ def _admit(
                 rejected[source.key] = str(exc)
                 continue
             repair_id = current.repairs.get(source.key)
+            if source.key in current.fixes:
+                # The learner's card stays suspended; the fix waits for a retry.
+                rejected[source.key] = str(
+                    draft.audit.get("reason", "No unambiguous sentence passed review")
+                )
+                continue
             if not repair_id:
                 rejected[source.key] = "Deferred audit has no existing note"
                 continue
@@ -1074,14 +1671,16 @@ def _admit(
             replace(budget, pending=budget.pending + reserved.get(budget.deck_id, 0))
             for budget in budgets
         ]
-        repair_id = current.repairs.get(source.key)
+        # A fix adds a note whose first card takes over the learner's card.
+        swap = source.key in current.fixes
+        repair_id = None if swap else current.repairs.get(source.key)
         extra_cards = max(0, valid.card_count - source.existing_cards)
         capacity = current.budget_slots(adjusted)
         staged_character = (
             valid.candidate.mode == "characters"
             and extra_cards > capacity
             and source.existing_cards < valid.card_count
-            and (bool(repair_id) or capacity >= 1)
+            and (bool(repair_id) or swap or capacity >= 1)
         )
         if extra_cards > capacity and not repair_id and not staged_character:
             remaining.append(draft)
@@ -1134,9 +1733,16 @@ def _admit(
             remaining.append(draft)
             updated.append(int(note.id))
             continue
+        if swap:
+            note["Source"] = _adoption_metadata(col, source, fixes)
         if not draft.audit_only or valid.card_count != source.existing_cards:
             _write_candidate_fields(
-                note, source, valid, rendered_text, current.evidence, bool(repair_id)
+                note,
+                source,
+                valid,
+                rendered_text,
+                current.evidence,
+                bool(repair_id) or swap,
             )
         # Only a pair answering a reported confusion is labelled; cues are not.
         kind = "Disambiguation" if valid.candidate.mode == "contrast" else ""
@@ -1159,6 +1765,8 @@ def _admit(
                 f"chinese-frontier::source::{source.card_id}",
             ]
         )
+        if swap:
+            note.tags = list(dict.fromkeys(note.tags + _adoption_tags(source, fixes)))
         note.tags = [tag for tag in note.tags if tag != "disambiguation"]
         if kind:
             note.tags.append("disambiguation")
@@ -1174,40 +1782,9 @@ def _admit(
             or stored["Disambiguation"] != note["Disambiguation"]
         ):
             raise ValueError("Replacement card count or fields failed verification")
-        for card in cards:
-            ordinal = int(card.ord)
-            if ordinal in old_cards:
-                state = (
-                    int(card.id),
-                    card.type,
-                    card.queue,
-                    card.reps,
-                    card.lapses,
-                    card.ivl,
-                    card.due,
-                    card.factor,
-                )
-                if state != old_cards[ordinal]:
-                    raise ValueError("Repair changed an existing card's scheduling")
-            elif card.type != 0:
-                raise ValueError("Additional sibling was not a new card")
-            question, answer = card.question(), card.answer()
-            if (
-                'class="cloze"' not in question
-                or source.word not in plain_text(answer)
-                or valid.candidate.translation not in plain_text(question)
-            ):
-                raise ValueError("Replacement card rendering failed verification")
-            if kind and (kind not in question or kind not in answer):
-                raise ValueError("Disambiguation label missing from a card side")
-            if _template_tests_field(
-                {"qfmt": card.template()["qfmt"]}, "Disambiguation"
-            ) or _template_tests_field(
-                {"qfmt": card.template()["afmt"]}, "Disambiguation"
-            ):
-                raise ValueError(
-                    "Disambiguation audit must remain hidden during reviews"
-                )
+        _verify_cards(cards, old_cards, source, valid, kind)
+        if swap:
+            _take_over(col, source, cards, fixes)
         added_cards += extra_cards
         (updated if repair_id else admitted).append(int(note.id))
         if staged_character:

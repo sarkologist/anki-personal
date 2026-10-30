@@ -164,6 +164,23 @@ also pauses requested repairs. Restoring the old source is as simple as suspendi
 the replacement and unsuspending its original; the linked replacement is not
 automatically recreated. To undo a conversion permanently, pause automation first.
 
+Your own cards in the chosen deck tree (cloze notes and Basic word cards) offer
+**Fix this sentence...** or **Make a sentence for this word...** too. The dialog
+adds a **Target** (the reviewed cloze, widened to its dictionary word when only one
+character is hidden, so 弄 becomes 弄虚作假) and a **Meaning**, both editable. On OK
+only that card is suspended and its note tagged `chinese-frontier::fix-pending`; the
+note's fields and other cards are never touched. The request waits in the synced
+collection config (`chineseFrontierFixes`) and is generated ahead of other targets.
+When a sentence passes, a new Chinese Frontier note tagged `chinese-frontier::adopted`
+goes into the card's own subdeck, its card takes over the original's scheduling
+(interval, due, ease, reps, lapses, FSRS state), so no new-card slot is used, and the
+tag is removed, all in one undo step. The original keeps its review history, which
+still counts toward familiar vocabulary. **Restore the original card** on the new
+note copies the schedule back, unsuspends the original and leaves the new note
+suspended and tagged `chinese-frontier::restored`. Settings list the waiting fixes,
+with a Cancel button that unsuspends the card. A fix whose note you edit or delete
+stalls there rather than proceeding; nothing is unsuspended automatically.
+
 Automatic refill sizes its generation allowance from remaining native capacity
 and observed approval yield. Each cycle is bounded to at most 32 batches; if valid
 cards still leave slots unfilled, another cycle can run after a 30-minute cooldown
