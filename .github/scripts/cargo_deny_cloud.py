@@ -443,8 +443,8 @@ def main():
 {feedback}
 .agent-evidence/deny.txt holds `cargo deny check advisories` output for {head}, and
 .agent-evidence/review.diff holds any earlier repair rounds (`git diff {base} {head}`).
-You can only read files; propose upgrades and the workflow runs
-`cargo update --package <name>@<from> --precise <to>` for each.
+You can only read files; propose upgrades and the workflow repoints each Cargo.lock
+entry to the new version, then checks the lock with `cargo metadata --locked`.
 Propose ONLY stable forward patch upgrades of existing crates.io packages in Cargo.lock,
 choosing versions the advisories name as patched. Prefer minimal updates.
 The result must preserve package names, sources, package counts, and dependency edges.
