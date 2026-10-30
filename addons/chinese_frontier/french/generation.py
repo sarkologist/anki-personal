@@ -121,6 +121,7 @@ FIRST assess each french_only_context independently, ignoring target identity, E
 When target.kind is "conjugation", the card supplies the infinitive, so take the infinitive cue as given: the French-only check asks whether the French fixes the mood, tense and person of the hidden form (for example a trigger such as "souhaiter que" plus an explicit subject), NOT whether the verb or its meaning is identifiable. Other verbs with the same mood and person (puisse, veuille, doive) are not competing answers for a conjugation target. Vocabulary targets keep the rule above.
 Then check grammar, correct morphology, dictionary sense, translation, and that every other meaning/construction is established by the supplied evidence. Reject a familiar surface used in an unfamiliar sense. For vocabulary, reject a second unfamiliar conjugation or grammatical construction. For conjugation, reject an unfamiliar verb meaning.
 Use example index 0 for a single card or first contrast example, and index 1 ONLY for the second contrast example. For EVERY example enumerate concrete French substitutions for the CLOZED TARGET only. Each alternatives.answer must be a complete competing word/phrase that could replace that target (the full word in stem mode), never a label, list, commentary, or analysis of an unchanged context word. Check alternative conjugations/tense readings only when the TARGET is a verb. Discuss context-verb grammar in reason/search_summary, not as competing cloze answers. fits_context means that this actual substitution fits both French and the full visible English. Log the actual alternatives checked with reasons. A fitting alternative is enough to reject; never fabricate an exclusive synonym rule or rely on a learner knowing idiomatic preference. Evaluate the French situation AND the full visible English translation, infinitive cue and any visible prefix. fits_cloze includes those cues. Contrast examples must each be unambiguous. Stem examples must require a meaningful remaining answer. Approval and all judgments must agree. Copy the key and fingerprint exactly.
+When a target carries learner_feedback, reject a card that repeats any complaint in it.
 """
 
 
@@ -440,7 +441,7 @@ def rank_targets(
     ][:24]
     payload = {
         "maximum": count,
-        "candidates": [asdict(t) | {"key": t.key} for t in targets],
+        "candidates": [t.prompt() for t in targets],
         "reviewed_examples": source_evidence(known, set(words), limit=1),
     }
     result = request_model(
@@ -745,6 +746,7 @@ Use only established context surfaces (including articles, elisions and phrases)
 Use the supplied context_evidence as meaning/construction evidence when writing, not just as vocabulary names. Words merely visible in an example are not automatically established. Previous lessons are failed attempts to improve upon, never permission to skip checks. Do not infer new senses or idioms from familiar spelling.
 The French situation must convey the intended meaning with the ENTIRE target hidden, ignoring the English translation, infinitive cue and any prefix. Describe a concrete cause, behavior, consequence or contrast that narrows the semantic domain for a learner. Generic frames like "Il explique sa méfiance" or "Il explique cette échéance" fail: the object could be anything. A prefix and translation may resolve residual synonyms only AFTER the French supplies semantic context. Rewrite with richer established context or omit the target if impossible; never shorten to a generic frame to evade knowledge checks. Never rely on an unexplained idiomatic preference. No markup/cloze syntax; answer occurs exactly once as a whole word or phrase. Return one proposal entry per target with up to two candidates or empty candidates if impossible. In reason explain the missing context or specific obstacle, so a later attempt can retrieve better evidence; reason can be empty when candidates are supplied.
 Attempt 0: whole word. After rejection: rewrite with fuller context or contrast an already-established competing answer. Both contrast examples use full translations; contrast must not reveal either answer in the other example. On the final attempt, if previous review reported a fitting alternative, use a contrast or stem rather than another uncued word. A visible orthographic prefix with the remainder clozed is allowed: mode stem and explanation exactly the visible prefix. Never use this for trivial one-letter answers. Such cards will not establish whole-word knowledge.
+A target may carry learner_feedback: the learner's complaints about earlier versions of this card. The new card must fix every complaint. Never reuse a sentence in rejected_sentences, and never use avoid_words anywhere in the context.
 When supplying a contrast object, the TOP-LEVEL mode MUST be contrast. The nested contrast object has mode word and contrast null. Word and stem modes MUST have contrast null. No declarative meaning hints in the blank.
 """
         selected = set(
@@ -758,7 +760,7 @@ When supplying a contrast object, the TOP-LEVEL mode MUST be contrast. The neste
         generation_evidence = source_evidence(known, selected, query, limit=1)
         payload = {
             "targets": [
-                asdict(t) | {"key": t.key}
+                t.prompt()
                 for t in pending.values()
                 if attempt != 2 or t.key not in fallbacks
             ],
@@ -916,7 +918,7 @@ When supplying a contrast object, the TOP-LEVEL mode MUST be contrast. The neste
                 {
                     "key": key,
                     "fingerprint": candidate_hash(c),
-                    "target": asdict(pending[key]),
+                    "target": pending[key].prompt(),
                     "candidate": asdict(c),
                     "french_only_context": french_contexts(c),
                     "rendered_cloze": valid.text,

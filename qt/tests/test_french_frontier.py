@@ -727,6 +727,14 @@ def test_contrast_uses_one_card_and_labels_both_sides(collection):
             "alternatives": alternatives,
         },
     }
+    from dataclasses import replace
+
+    from chinese_frontier.french.collection import snapshot
+
+    known = snapshot(collection, settings, {}, lex).known
+    # Avoided words apply to the second example too.
+    with pytest.raises(ValidationError, match="avoid: une"):
+        validate(c, replace(t, avoid_words=("une",)), known, lex)
     result = admit(collection, settings, {}, [Draft(t, c, audit)], lex)
     assert len(result.admitted) == 1
     note = collection.get_note(result.admitted[0])
@@ -3212,3 +3220,230 @@ def test_repair_drops_a_stale_disambiguation_tag(collection):
     draft = Draft(t, c, audit, repair_note=nid, old_fingerprint=fingerprint)
     assert admit(collection, settings, {}, [draft], dictionary()).admitted == [nid]
     assert "disambiguation" not in collection.get_note(nid).tags
+
+
+def repair_draft(collection, settings, c):
+    from chinese_frontier.french.collection import snapshot
+    from chinese_frontier.french.generation import Draft, candidate_hash
+
+    ((nid, fingerprint, t),) = snapshot(
+        collection, settings, {}, dictionary()
+    ).repairs.values()
+    audit = {
+        "policy": POLICY,
+        "target_key": t.key,
+        "fingerprint": candidate_hash(c),
+        "review": {
+            "approved": True,
+            "context_checks": context_checks(),
+            "reason": "clear",
+            "search_summary": "Checked rent",
+            "alternatives": [
+                {
+                    "example": 0,
+                    "answer": "loue",
+                    "fits_context": False,
+                    "fits_cloze": True,
+                    "reason": "rent differs",
+                }
+            ],
+        },
+    }
+    return Draft(t, c, audit, repair_note=nid, old_fingerprint=fingerprint)
+
+
+def test_learner_feedback_constrains_french_validation():
+    from dataclasses import replace
+
+    known = learned("je", "le", "train", "regarde", "parle")
+    with pytest.raises(ValidationError, match="rejected"):
+        validate(
+            candidate(),
+            replace(target(), rejected_sentences=("Je emprunte le train.",)),
+            known,
+            dictionary(),
+        )
+    with pytest.raises(ValidationError, match="avoid: train"):
+        validate(
+            candidate(), replace(target(), avoid_words=("Train",)), known, dictionary()
+        )
+    # An elided clitic is the word the learner asked to avoid.
+    elided = replace(candidate(), sentence="J'emprunte le train.")
+    with pytest.raises(ValidationError, match="avoid: je"):
+        validate(elided, replace(target(), avoid_words=("je",)), known, dictionary())
+    # The feedback never changes which target the card tests.
+    assert replace(target(), learner_feedback=("x",)).key == target().key
+
+
+def test_french_feedback_is_kept_and_queues_a_repair(collection):
+    from chinese_frontier.french.collection import record_feedback, snapshot
+
+    settings, note = admitted_french_note(collection, candidate())
+    result = record_feedback(
+        collection,
+        note.id,
+        reasons=("unnatural",),
+        note="  odd  ",
+        avoid_words=("train",),
+    )
+    assert not result.handed_over
+    tags = collection.get_note(note.id).tags
+    assert "french-frontier::repair" in tags
+    assert "french-frontier::feedback::unnatural" in tags
+    ((_, _, t),) = snapshot(collection, settings, {}, dictionary()).repairs.values()
+    assert t.rejected_sentences == ("Je emprunte le train.",)
+    assert t.avoid_words == ("train",)
+    assert "Problems: Sounds unnatural" in t.learner_feedback[0]
+    assert "Learner note: odd" in t.learner_feedback[0]
+    with pytest.raises(ValueError, match="Unknown reason"):
+        record_feedback(collection, note.id, reasons=("bogus",))
+    with pytest.raises(ValueError, match="other than the answer"):
+        record_feedback(collection, note.id, avoid_words=("emprunte",))
+    legacy = add_cloze(collection, "{{c1::train}}")
+    with pytest.raises(ValueError, match="generated"):
+        record_feedback(collection, legacy.id)
+
+
+def test_french_feedback_hands_over_after_three_repairs(collection):
+    from chinese_frontier.french.collection import record_feedback, snapshot
+
+    settings, note = admitted_french_note(collection, candidate())
+    for _ in range(3):
+        assert not record_feedback(collection, note.id).handed_over
+    assert record_feedback(collection, note.id).handed_over
+    tags = collection.get_note(note.id).tags
+    assert "french-frontier::manual" in tags
+    assert "french-frontier::repair" not in tags
+    assert not snapshot(collection, settings, {}, dictionary()).repairs
+
+
+def test_french_repair_keeps_feedback_and_rejects_drafts_written_without_it(
+    collection,
+):
+    import html
+    import json
+    from dataclasses import replace
+
+    from chinese_frontier.french.collection import admit, record_feedback, snapshot
+
+    settings, note = admitted_french_note(collection, candidate())
+    record_feedback(collection, note.id)
+    fresh = replace(candidate(), sentence="Le train, je emprunte.")
+    draft = repair_draft(collection, settings, fresh)
+    stale = replace(draft, target=target())
+    result = admit(collection, settings, {}, [stale], dictionary())
+    # Dropped without a backoff, so the repair is written again at once.
+    assert not result.admitted and not result.rejected
+    assert admit(collection, settings, {}, [draft], dictionary()).admitted == [note.id]
+    data = json.loads(html.unescape(collection.get_note(note.id)["Source"]))
+    assert data["feedback"][0]["sentence"] == "Je emprunte le train."
+    assert "rejected_sentences" not in data["target"]
+    assert not snapshot(collection, settings, {}, dictionary()).repairs
+    # A later complaint still remembers the first rejected sentence.
+    record_feedback(collection, note.id)
+    ((_, _, t),) = snapshot(collection, settings, {}, dictionary()).repairs.values()
+    assert t.rejected_sentences == ("Je emprunte le train.", "Le train, je emprunte.")
+
+
+def test_french_writer_and_reviewer_see_learner_feedback():
+    import json
+    from dataclasses import asdict, replace
+    from threading import Event
+
+    from chinese_frontier.french.generation import candidate_hash, generate
+
+    c = candidate()
+    t = replace(target(), learner_feedback=("Problems: Sounds unnatural",))
+    known = learned("je", "le", "train", "regarde", "parle")
+    prompts = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return json.loads(
+                    json.dumps(
+                        {"proposals": [{"key": t.key, "candidates": [asdict(c)]}]}
+                    )
+                )
+            return {
+                "reviews": [
+                    {
+                        "key": t.key,
+                        "fingerprint": candidate_hash(c),
+                        "approved": True,
+                        "context_checks": context_checks(),
+                        "reason": "checked",
+                        "search_summary": "checked alternatives",
+                        "alternatives": [
+                            {
+                                "example": 0,
+                                "answer": "prends",
+                                "fits_context": False,
+                                "fits_cloze": False,
+                                "reason": "different meaning",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+    drafts, _ = generate([t], known, dictionary(), {}, Event(), Client())
+    assert drafts
+    assert all("Problems: Sounds unnatural" in prompt for prompt in prompts)
+    assert all("learner_feedback" in prompt for prompt in prompts)
+    prompts.clear()
+    generate([target()], known, dictionary(), {}, Event(), Client())
+    assert '"avoid_words"' not in prompts[0]
+
+
+def test_french_reviewer_menu_offers_feedback_and_retries_now(collection, monkeypatch):
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import runtime
+
+    settings, note = admitted_french_note(collection, candidate())
+    key = target().key
+    monkeypatch.setattr(runtime, "mw", SimpleNamespace(col=collection))
+
+    class ImmediateOp:
+        def __init__(self, parent, op):
+            self.result = op(collection)
+
+        def success(self, done):
+            done(self.result)
+            return self
+
+        def run_in_background(self, **_kwargs):
+            pass
+
+    monkeypatch.setattr(runtime, "CollectionOp", ImmediateOp)
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.state = {
+        "deferred": {key: {"attempts": 4, "retry_after": 9e12, "reason": "x"}},
+        "drafts": [{"target": target().stored(), "repair_note": note.id}],
+    }
+    controller.save = lambda: None
+    ticks = []
+    controller.tick = lambda force=False: ticks.append(force)
+    labels = []
+    menu = SimpleNamespace(
+        addAction=lambda label: (
+            labels.append(label)
+            or SimpleNamespace(triggered=SimpleNamespace(connect=lambda _f: None))
+        )
+    )
+    controller.reviewer_menu(SimpleNamespace(card=note.cards()[0]), menu)
+    assert labels == ["Fix this sentence..."]
+    legacy = add_cloze(collection, "{{c1::train}}")
+    labels.clear()
+    controller.reviewer_menu(SimpleNamespace(card=legacy.cards()[0]), menu)
+    assert labels == []
+    controller.submit_feedback(note.id, reasons=("giveaway",))
+    assert "french-frontier::feedback::giveaway" in collection.get_note(note.id).tags
+    assert controller.state["drafts"] == []
+    assert controller.state["deferred"][key]["retry_after"] == 0
+    assert ticks == [True]

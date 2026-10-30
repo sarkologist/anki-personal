@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Iterable
 from dataclasses import asdict, replace
@@ -12,6 +13,7 @@ from threading import Event
 from typing import Any
 
 from anki.collection import OpChanges
+from anki.notes import NoteId
 from aqt import gui_hooks, mw
 from aqt.operations import CollectionOp, QueryOp
 from aqt.qt import (
@@ -24,12 +26,15 @@ from aqt.qt import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QTextEdit,
     QTimer,
     QVBoxLayout,
     qconnect,
 )
 from aqt.utils import tooltip
 
+from ..collection import MAX_REPAIRS
+from ..core import FEEDBACK_REASONS
 from ..diagnostics import Diagnostics
 from ..preparation import (
     TIMEOUT_LESSON,
@@ -41,15 +46,18 @@ from ..providers import CallTimeout, GenerationStopped
 from ..refill import record_batch, refill_ready, reserve_batch, reset_day
 from ..telemetry import error_location, import_calls, observe, recover
 from .collection import (
+    MANUAL_TAG,
     SETTINGS,
     Admission,
     admit,
     drop_cue_labels,
+    json_field,
+    record_feedback,
     refresh_conjugation_tables,
-    request_repair,
+    repair_count,
     snapshot,
 )
-from .core import MODEL, POLICY, TAG
+from .core import MODEL, POLICY, TAG, Target
 from .generation import (
     Draft,
     choose_targets,
@@ -89,6 +97,21 @@ def defer_timed_out(
         if key not in approved:
             old = state.get("deferred", {}).get(key, {})
             defer_target(state, key, old.get("reason") or TIMEOUT_LESSON, version, now)
+
+
+def retry_now(state: dict[str, Any], key: str) -> None:
+    """The learner asked for a repair: drop drafts written without their
+    feedback and lift the backoff, keeping the lesson for the writer."""
+
+    def other(draft: Any) -> bool:
+        try:
+            return Target(**draft["target"]).key != key
+        except (KeyError, TypeError, ValueError):
+            return True
+
+    state["drafts"] = [d for d in state.get("drafts", []) if other(d)]
+    if item := state.get("deferred", {}).get(key):
+        item.update(attempts=0, retry_after=0)
 
 
 class Controller:
@@ -658,15 +681,74 @@ class Controller:
         if TAG not in note.tags or note.note_type()["name"] != MODEL:
             return
         note_id = int(note.id)
-        action = menu.addAction("Replace this French sentence automatically")
-        qconnect(
-            action.triggered,
-            lambda: (
-                CollectionOp(parent=mw, op=lambda col: request_repair(col, note_id))
-                .success(lambda _r: self.tick(force=True))
-                .run_in_background(initiator=self)
+        action = menu.addAction("Fix this sentence...")
+        qconnect(action.triggered, lambda: self.feedback_dialog(note_id))
+
+    def feedback_dialog(self, note_id: int) -> None:
+        if not mw or not mw.col:
+            return
+        repairs = repair_count(mw.col.get_note(NoteId(note_id)))
+        dialog = QDialog(mw)
+        dialog.setWindowTitle("Fix this sentence")
+        layout = QVBoxLayout(dialog)
+        explanation = QLabel(
+            "What's wrong with it? The new sentence must fix it, and later checks keep "
+            "your feedback. Leave everything blank for a different sentence."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        if repairs >= MAX_REPAIRS:
+            warning = QLabel(
+                f"This sentence has been replaced {repairs} times. It will now be "
+                f"tagged {MANUAL_TAG} for you to edit instead."
+            )
+            warning.setWordWrap(True)
+            layout.addWidget(warning)
+        boxes = {}
+        for key, label in FEEDBACK_REASONS.items():
+            boxes[key] = QCheckBox(label)
+            layout.addWidget(boxes[key])
+        form = QFormLayout()
+        avoid = QLineEdit()
+        avoid.setPlaceholderText("e.g. pourtant enfin")
+        form.addRow("Words to avoid", avoid)
+        layout.addLayout(form)
+        note = QTextEdit()
+        note.setAcceptRichText(False)
+        note.setPlaceholderText("Anything else")
+        note.setMaximumHeight(80)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        qconnect(buttons.accepted, dialog.accept)
+        qconnect(buttons.rejected, dialog.reject)
+        layout.addWidget(buttons)
+        if not dialog.exec():
+            return
+        self.submit_feedback(
+            note_id,
+            reasons=tuple(key for key, box in boxes.items() if box.isChecked()),
+            note=note.toPlainText(),
+            avoid_words=tuple(
+                w for w in re.split(r"[\s,;]+", avoid.text()) if w.strip()
             ),
         )
+
+    def submit_feedback(self, note_id: int, **values: Any) -> None:
+        key = str(json_field(mw.col.get_note(NoteId(note_id))["Source"]).get("key", ""))
+
+        def done(result: Any) -> None:
+            retry_now(self.state, key)
+            self.save()
+            if result.handed_over:
+                tooltip(f"Tagged {MANUAL_TAG} for you to edit.")
+            else:
+                self.tick(force=True)
+
+        CollectionOp(
+            parent=mw, op=lambda col: record_feedback(col, note_id, **values)
+        ).success(done).run_in_background(initiator=self)
 
     def status_text(self) -> str:
         text = self.status
