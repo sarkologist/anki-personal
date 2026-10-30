@@ -19,3 +19,7 @@
 - Never write the fields of a note the add-on did not generate. A fix suspends only the reviewed card and tags its note `chinese-frontier::fix-pending`; the request lives in the `chineseFrontierFixes` config, with the same feedback entry shape as `Source.feedback`.
 - A fix becomes a new linked Chinese Frontier note with `Source.adopted`; its first card inherits the original card's scheduling verbatim. Later repairs synthesize their source from `Source.adopted`, and the original card's review log keeps counting as evidence.
 - Design record: `FIX_USER_CARDS.md`.
+
+# French feedback
+
+- French generated notes keep learner feedback in `Source.feedback`, read by the shared `_learner_feedback`. The learner fields ride on `french.core.Target` but stay out of its key and its stored `target` metadata; a draft whose target feedback differs from the current note is stale.

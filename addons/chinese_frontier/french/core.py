@@ -6,7 +6,7 @@ import hashlib
 import html
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from ..core import ValidationError
@@ -185,6 +185,9 @@ class Knowledge:
         ).hexdigest()
 
 
+LEARNER_FIELDS = ("learner_feedback", "avoid_words", "rejected_sentences")
+
+
 @dataclass(frozen=True)
 class Target:
     lemma: str
@@ -195,6 +198,26 @@ class Target:
     level: int
     frequency: float
     form_key: str = ""
+    # The learner's complaints about earlier versions of this card; never part
+    # of the key, and never stored in the note's target metadata.
+    learner_feedback: tuple[str, ...] = ()
+    avoid_words: tuple[str, ...] = ()
+    rejected_sentences: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Drafts reread from JSON carry lists.
+        for name in LEARNER_FIELDS:
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+
+    def stored(self) -> dict[str, Any]:
+        """The target metadata kept on the note, without the learner's feedback."""
+        return {k: v for k, v in asdict(self).items() if k not in LEARNER_FIELDS}
+
+    def prompt(self) -> dict[str, Any]:
+        """The target for the writer and reviewer; feedback only when there is some."""
+        return {
+            k: v for k, v in asdict(self).items() if v or k not in LEARNER_FIELDS
+        } | {"key": self.key}
 
     @property
     def key(self) -> str:
@@ -308,11 +331,35 @@ def contrast_form(other: Candidate, known: Knowledge, lexicon: Lexicon) -> Form:
     return f
 
 
+def spelled(text: str) -> set[str]:
+    """Tokens with each elided clitic also read as its full forms."""
+    words = set(tokens(text))
+    for word in list(words):
+        words.update(ELISIONS.get(word, ()))
+        words.update(("si",) if word == "s'" else ())
+    return words
+
+
+def respect_feedback(c: Candidate, target: Target) -> None:
+    if " ".join(c.sentence.split()) in target.rejected_sentences:
+        raise ValidationError("The learner rejected this sentence")
+    context = set(tokens(c.sentence)) - set(tokens(c.answer))
+    context = spelled(" ".join(context))
+    avoided = [
+        normalize(w)
+        for w in target.avoid_words
+        if tokens(w) and all(t in context for t in tokens(w))
+    ]
+    if avoided:
+        raise ValidationError("The learner asked to avoid: " + ", ".join(avoided))
+
+
 def validate(
     c: Candidate, target: Target, known: Knowledge, lexicon: Lexicon
 ) -> Validated:
     if c.mode not in ("word", "contrast", "stem") or not 5 <= len(c.sentence) <= 400:
         raise ValidationError("Invalid French sentence or disambiguation mode")
+    respect_feedback(c, target)
     if (
         any(ch in c.sentence + c.answer + c.cue for ch in "<>{}\n\r")
         or not c.translation.strip()
@@ -478,6 +525,9 @@ def validate(
             0,
             f.key,
         )
+        # The second example obeys the avoided words; the pair is rejected as
+        # a whole through its first sentence.
+        respect_feedback(other, replace(target, rejected_sentences=()))
         other_valid = validate(other, other_target, known, lexicon)
         if normalize(other.answer) in normalize(
             c.sentence.replace(c.answer, "")

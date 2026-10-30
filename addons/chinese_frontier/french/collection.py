@@ -12,10 +12,20 @@ from typing import Any
 
 from anki.collection import Collection, OpChanges
 from anki.decks import DeckId
+from anki.notes import NoteId
 
-from ..collection import _descendants, _hide_metadata, _ids, _read_budgets
+from ..collection import (
+    MAX_REPAIRS,
+    FeedbackResult,
+    _descendants,
+    _hide_metadata,
+    _ids,
+    _learner_feedback,
+    _read_budgets,
+)
 from ..core import (
     CLOZE,
+    FEEDBACK_REASONS,
     DeckBudget,
     ValidationError,
     admission_slots,
@@ -23,7 +33,16 @@ from ..core import (
     plain_text,
     successful_days,
 )
-from .core import KEY_TAG, MODEL, POLICY, TAG, Knowledge, Target, validate
+from .core import (
+    KEY_TAG,
+    MODEL,
+    POLICY,
+    TAG,
+    Knowledge,
+    Target,
+    spelled,
+    validate,
+)
 from .generation import Draft
 from .lexicon import Lexicon, normalize, tokens
 
@@ -60,6 +79,9 @@ def json_field(value: str) -> dict[str, Any]:
 
 
 REPAIR_TAG = "french-frontier::repair"
+# The learner hands over a note that kept failing repair; automation leaves it alone.
+MANUAL_TAG = "french-frontier::manual"
+FEEDBACK_TAG = "french-frontier::feedback::"
 
 
 def presentation_hash(fields: dict[str, str]) -> str:
@@ -271,6 +293,63 @@ def request_repair(col: Collection, note_id: int) -> OpChanges:
     return col.update_note(note)
 
 
+def repair_count(note: Any) -> int:
+    entries = json_field(note["Source"]).get("feedback", [])
+    return len(entries) if isinstance(entries, list) else 0
+
+
+def record_feedback(
+    col: Collection,
+    note_id: int,
+    *,
+    reasons: tuple[str, ...] = (),
+    note: str = "",
+    avoid_words: tuple[str, ...] = (),
+) -> FeedbackResult:
+    """Keep the learner's complaint on the note and queue a repair that must fix it.
+
+    With no reasons, note or words, this is a plain reroll that still avoids the
+    current sentence."""
+    target = col.get_note(NoteId(note_id))
+    if TAG not in target.tags or target.note_type()["name"] != MODEL:
+        raise ValueError("Only generated French notes can be repaired")
+    if unknown := [r for r in reasons if r not in FEEDBACK_REASONS]:
+        raise ValueError("Unknown reason: " + ", ".join(unknown))
+    data = json_field(target["Source"])
+    answer = spelled(str(data.get("answer", "")))
+    answer.add(normalize(str(data.get("target", {}).get("lemma", ""))))
+    avoid_words = tuple(dict.fromkeys(normalize(w) for w in avoid_words if w.strip()))
+    if bad := [w for w in avoid_words if not tokens(w) or answer & spelled(w)]:
+        raise ValueError(
+            "Words to avoid must be French words other than the answer: "
+            + ", ".join(bad)
+        )
+    handed_over = repair_count(target) >= MAX_REPAIRS
+    candidate = data.get("candidate")
+    sentence = (
+        str(candidate.get("sentence", ""))
+        if isinstance(candidate, dict)
+        else plain_text(CLOZE.sub(lambda m: m[2].split("::", 1)[0], target["Text"]))
+    )
+    entries = data.get("feedback")
+    entries = entries if isinstance(entries, list) else []
+    entries.append(
+        {
+            "reasons": list(reasons),
+            "note": note.strip()[:500],
+            "avoid_words": list(avoid_words),
+            "sentence": " ".join(sentence.split()),
+        }
+    )
+    data["feedback"] = entries
+    target["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
+    tags = [t for t in target.tags if t != REPAIR_TAG]
+    tags.append(MANUAL_TAG if handed_over else REPAIR_TAG)
+    tags.extend(FEEDBACK_TAG + r for r in reasons)
+    target.tags = list(dict.fromkeys(tags))
+    return FeedbackResult(col.update_note(target), handed_over)
+
+
 QUESTION_QUE = re.compile(r"(?:\bqu['’ʼ‘]\s*)?\best-ce\s+(?:que\b|qu['’ʼ‘])", re.I)
 # que governs most subjunctives; a relative (où, dont, qui, lequel) after an
 # indefinite or superlative antecedent can be subjunctive without one.
@@ -417,7 +496,7 @@ def snapshot(
             target = metadata["target"]
             represented.add((str(target.get("lemma", "")), str(target.get("pos", ""))))
             if queue != -1 and not any(
-                t.casefold() in ("leech", "french-frontier::exclude")
+                t.casefold() in ("leech", "french-frontier::exclude", MANUAL_TAG)
                 for t in tags.split()
             ):
                 if (
@@ -426,7 +505,13 @@ def snapshot(
                     or metadata.get("presentation_hash") != presentation_hash(values)
                 ):
                     try:
-                        repair_target = Target(**target)
+                        complaints, avoid, rejected = _learner_feedback(metadata)
+                        repair_target = Target(
+                            **target,
+                            learner_feedback=complaints,
+                            avoid_words=avoid,
+                            rejected_sentences=rejected,
+                        )
                         repairs[repair_target.key] = (
                             int(nid),
                             presentation_hash(values),
@@ -638,6 +723,10 @@ def admit(
                     draft.old_fingerprint,
                 ):
                     raise ValidationError("Generated note changed during repair")
+                if repair[2] != draft.target:
+                    # Written before the learner's latest feedback: drop it
+                    # without a backoff, so the repair is written again now.
+                    continue
             draft.verify()
             for word, records in draft.audit.get("evidence", {}).items():
                 if any(
@@ -671,7 +760,7 @@ def admit(
         c = draft.candidate
         data = {
             "policy": POLICY,
-            "target": asdict(draft.target),
+            "target": draft.target.stored(),
             "key": draft.target.key,
             "candidate": asdict(c),
             "answer": c.answer,
@@ -679,6 +768,10 @@ def admit(
             "mode": c.mode,
             "constructions": list(c.constructions),
         }
+        if draft.repair_note and (
+            feedback := json_field(note["Source"]).get("feedback")
+        ):
+            data["feedback"] = feedback
         audit = {**draft.audit, "status": "applied"}
         kind = card_kind(c.mode, draft.target.kind)
         values = {

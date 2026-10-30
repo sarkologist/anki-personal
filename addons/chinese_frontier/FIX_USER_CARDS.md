@@ -331,6 +331,10 @@ Both French pieces are in scope, after the Chinese work.
 
 ### French Frontier generated notes (135 live)
 
+Done: `french.collection.record_feedback` reuses the Chinese `_learner_feedback`
+reader and `FeedbackResult`; the learner fields live on `french.core.Target`, outside
+its key and its stored metadata.
+
 They have a `Source` field and a repair tag but only the old "Replace this French
 sentence automatically" item. This is a port: move the feedback entry shape,
 `learner_feedback()` and `record_feedback()` into a shared module used by both
