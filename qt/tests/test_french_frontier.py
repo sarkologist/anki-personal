@@ -2,6 +2,8 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 from __future__ import annotations
 
+import html
+import json
 import sys
 from pathlib import Path
 
@@ -735,6 +737,14 @@ def test_contrast_uses_one_card_and_labels_both_sides(collection):
     # Avoided words apply to the second example too.
     with pytest.raises(ValidationError, match="avoid: une"):
         validate(c, replace(t, avoid_words=("une",)), known, lex)
+    # A reported confusion is answered only by a contrast with that word.
+    validate(c, replace(t, reported_confusions=("femme",)), known, lex)
+    with pytest.raises(ValidationError, match="reported confusion"):
+        validate(c, replace(t, reported_confusions=("fille",)), known, lex)
+    single = replace(c, mode="word", contrast=None)
+    validate(single, t, known, lex)
+    with pytest.raises(ValidationError, match="contrast"):
+        validate(single, replace(t, reported_confusions=("femme",)), known, lex)
     result = admit(collection, settings, {}, [Draft(t, c, audit)], lex)
     assert len(result.admitted) == 1
     note = collection.get_note(result.admitted[0])
@@ -3442,8 +3452,28 @@ def test_french_reviewer_menu_offers_feedback_and_retries_now(collection, monkey
     labels.clear()
     controller.reviewer_menu(SimpleNamespace(card=legacy.cards()[0]), menu)
     assert labels == []
-    controller.submit_feedback(note.id, reasons=("giveaway",))
+    controller.submit_feedback(note.id, reasons=("giveaway",), answered="prends")
     assert "french-frontier::feedback::giveaway" in collection.get_note(note.id).tags
     assert controller.state["drafts"] == []
     assert controller.state["deferred"][key]["retry_after"] == 0
     assert ticks == [True]
+    assert '"answered": "prends"' in html.unescape(
+        collection.get_note(note.id)["Source"]
+    )
+
+
+def test_french_confusion_is_kept_for_a_contrast(collection):
+    from chinese_frontier.french.collection import record_feedback, snapshot
+
+    settings, note = admitted_french_note(collection, candidate())
+    record_feedback(collection, note.id, answered=" Prends ")
+    ((_, _, t),) = snapshot(collection, settings, {}, dictionary()).repairs.values()
+    assert t.reported_confusions == ("prends",)
+    # The sentence may stay: the contrast pairs it with the confused word.
+    assert t.rejected_sentences == ()
+    assert "Learner answered: prends" in t.learner_feedback[0]
+    assert "reported_confusions" in json.dumps(t.prompt())
+    with pytest.raises(ValueError, match="other French word"):
+        record_feedback(collection, note.id, answered="emprunte")
+    with pytest.raises(ValueError, match="other French word"):
+        record_feedback(collection, note.id, answered="deux mots")
