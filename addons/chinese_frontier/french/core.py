@@ -307,7 +307,9 @@ def _units(sentence: str, known: set[str], answer: str) -> list[str]:
     return result
 
 
-def contrast_form(other: Candidate, known: Knowledge, lexicon: Lexicon) -> Form:
+def contrast_form(
+    other: Candidate, known: Knowledge, lexicon: Lexicon, supplied: bool = False
+) -> Form:
     alternatives = lexicon.analyses(other.answer)
     declared = [
         f
@@ -330,7 +332,11 @@ def contrast_form(other: Candidate, known: Knowledge, lexicon: Lexicon) -> Form:
             if f.pos == "VER" and f.lemma == normalize(other.cue)
         ]
     f = next(
-        (f for f in alternatives if f.pos != "VER" or known.licenses(f, lexicon)),
+        (
+            f
+            for f in alternatives
+            if supplied or f.pos != "VER" or known.licenses(f, lexicon)
+        ),
         None,
     )
     if f is None:
@@ -347,11 +353,16 @@ def spelled(text: str) -> set[str]:
     return words
 
 
-def answers_confusion(other: Candidate, form: Form, target: Target) -> None:
-    if target.reported_confusions and not (
-        {normalize(other.answer), form.lemma} & set(target.reported_confusions)
-    ):
+def answers_confusion(other: Candidate, target: Target, lexicon: Lexicon) -> bool:
+    """Whether the contrast answers a reported confusion; then it is required."""
+    if not target.reported_confusions:
+        return False
+    readings = {normalize(other.answer)} | {
+        f.lemma for f in lexicon.analyses(other.answer)
+    }
+    if not readings & set(target.reported_confusions):
         raise ValidationError("Contrast pairs only answer a reported confusion")
+    return True
 
 
 def respect_feedback(c: Candidate, target: Target) -> None:
@@ -371,8 +382,13 @@ def respect_feedback(c: Candidate, target: Target) -> None:
 
 
 def validate(
-    c: Candidate, target: Target, known: Knowledge, lexicon: Lexicon
+    c: Candidate,
+    target: Target,
+    known: Knowledge,
+    lexicon: Lexicon,
+    supplied: bool = False,
 ) -> Validated:
+    """`supplied`: the answer is a word the learner reported, possibly unlearned."""
     if c.mode not in ("word", "contrast", "stem") or not 5 <= len(c.sentence) <= 400:
         raise ValidationError("Invalid French sentence or disambiguation mode")
     respect_feedback(c, target)
@@ -432,7 +448,7 @@ def validate(
             raise ValidationError("Conjugation must supply the infinitive")
     elif c.cue:
         raise ValidationError("Vocabulary cards must not reveal the target lemma")
-    if form.pos == "VER" and target.kind == "vocabulary":
+    if form.pos == "VER" and target.kind == "vocabulary" and not supplied:
         # Infinitives introduce meaning in an already demonstrated construction;
         # finite forms require a demonstrated regular pattern.
         if form.features == "inf":
@@ -442,7 +458,7 @@ def validate(
             raise ValidationError("Unlearned target grammar: " + form.features)
     if any(not isinstance(g, str) for g in c.grammar + c.constructions):
         raise ValidationError("Invalid grammar annotations")
-    allowed_feature = form.features if target.kind == "conjugation" else ""
+    allowed_feature = form.features if target.kind == "conjugation" or supplied else ""
     for feature in c.grammar:
         actual = {form.features} | {
             use.get("features", "") for use in c.uses if isinstance(use, dict)
@@ -522,21 +538,21 @@ def validate(
         if not isinstance(c.contrast, dict):
             raise ValidationError("Missing contrast example")
         other = Candidate.read(c.contrast)
-        if (
-            normalize(other.answer) == answer
-            or normalize(other.answer) not in known.surfaces
+        # A word the learner reported confusing may be one they have not learned.
+        supplied = answers_confusion(other, target, lexicon)
+        if normalize(other.answer) == answer or (
+            not supplied and normalize(other.answer) not in known.surfaces
         ):
             raise ValidationError("Contrast requires a different established answer")
         alternatives = lexicon.analyses(other.answer)
         if not alternatives or other.mode != "word":
             raise ValidationError("Unsupported contrast answer")
-        f = contrast_form(other, known, lexicon)
-        answers_confusion(other, f, target)
+        f = contrast_form(other, known, lexicon, supplied)
         other_target = Target(
             f.lemma,
             f.pos,
             "established",
-            "conjugation" if f.pos == "VER" else "vocabulary",
+            "conjugation" if f.pos == "VER" and not supplied else "vocabulary",
             "established",
             1,
             0,
@@ -547,7 +563,7 @@ def validate(
         respect_feedback(
             other, replace(target, rejected_sentences=(), reported_confusions=())
         )
-        other_valid = validate(other, other_target, known, lexicon)
+        other_valid = validate(other, other_target, known, lexicon, supplied)
         if normalize(other.answer) in normalize(
             c.sentence.replace(c.answer, "")
         ) or answer in normalize(other.sentence.replace(other.answer, "")):

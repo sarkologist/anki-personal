@@ -667,6 +667,7 @@ def test_contrast_uses_one_card_and_labels_both_sides(collection):
             Form("homme", "homme", "NOM", "m:s"),
             Form("femme", "femme", "NOM", "f:s"),
             Form("arrive", "arriver", "VER", "ind:pre:3:s"),
+            Form("fille", "fille", "NOM", "f:s"),
         ],
         [],
     )
@@ -741,6 +742,14 @@ def test_contrast_uses_one_card_and_labels_both_sides(collection):
     validate(c, replace(t, reported_confusions=("femme",)), known, lex)
     with pytest.raises(ValidationError, match="reported confusion"):
         validate(c, replace(t, reported_confusions=("fille",)), known, lex)
+    # The learner may confuse it with a word they have not learned yet.
+    girl = replace(
+        c,
+        contrast=other | {"sentence": "Une fille arrive.", "answer": "fille"},
+    )
+    validate(girl, replace(t, reported_confusions=("fille",)), known, lex)
+    with pytest.raises(ValidationError, match="established"):
+        validate(girl, t, known, lex)
     single = replace(c, mode="word", contrast=None)
     validate(single, t, known, lex)
     with pytest.raises(ValidationError, match="contrast"):
@@ -3477,3 +3486,22 @@ def test_french_confusion_is_kept_for_a_contrast(collection):
         record_feedback(collection, note.id, answered="emprunte")
     with pytest.raises(ValueError, match="one other French word"):
         record_feedback(collection, note.id, answered="deux mots")
+
+
+def test_a_reported_unlearned_verb_can_be_contrasted():
+    from dataclasses import asdict, replace
+
+    known = learned("je", "le", "train", "regarde", "parle")
+    import json
+
+    other = json.loads(json.dumps(asdict(candidate("prends")))) | {
+        "sentence": "Je prends le train.",
+        "translation": "I take the train.",
+        "meaning": "take",
+    }
+    c = replace(candidate(), mode="contrast", contrast=other)
+    validate(
+        c, replace(target(), reported_confusions=("prendre",)), known, dictionary()
+    )
+    with pytest.raises(ValidationError, match="established"):
+        validate(c, target(), known, dictionary())
