@@ -29,6 +29,7 @@ from .core import (
     Validated,
     ValidationError,
     admission_slots,
+    cloze_field,
     cloze_words,
     effective_limit,
     fingerprint,
@@ -407,9 +408,7 @@ def fix_target(
         meaning = plain_text(fields.get(str(config.get("back_field", "Back")), ""))
         return FixTarget(words, meaning, "", False) if words else None
     qfmt = model["tmpls"][0]["qfmt"]
-    clozed = [
-        value for name, value in fields.items() if "{{cloze:" + name + "}}" in qfmt
-    ]
+    clozed = [value for name, value in fields.items() if cloze_field(qfmt, name)]
     hidden = [word for value in clozed for word in cloze_words(value, ordinal)]
     if not hidden:
         return None
@@ -428,7 +427,7 @@ def fix_target(
     extras = [
         plain_text(_unfold(value))
         for name, value in fields.items()
-        if "{{cloze:" + name + "}}" not in qfmt and "extra" in name.casefold()
+        if not cloze_field(qfmt, name) and "extra" in name.casefold()
     ]
     meaning = " · ".join(dict.fromkeys(part for part in other + extras if part))
     return FixTarget(
@@ -721,7 +720,7 @@ def snapshot(
             words = tuple(
                 word
                 for name, value in fields.items()
-                if "{{cloze:" + name + "}}" in template["qfmt"]
+                if cloze_field(template["qfmt"], name)
                 for word in cloze_words(value, ordinal)
             )
             if characters:
@@ -752,7 +751,7 @@ def snapshot(
             ):
                 # A clozed dictionary entry is not already a sentence card.
                 for name, value in fields.items():
-                    if "{{cloze:" + name + "}}" not in template["qfmt"]:
+                    if not cloze_field(template["qfmt"], name):
                         continue
                     context = CLOZE.sub("", plain_text(value))
                     if sum(is_word(char) for char in context) >= 3:
