@@ -29,6 +29,7 @@ from ..core import (
     DeckBudget,
     ValidationError,
     admission_slots,
+    cloze_field,
     lookahead_days,
     plain_text,
     successful_days,
@@ -554,10 +555,7 @@ def snapshot(
         )
         qfmt = model["tmpls"][0]["qfmt"]
         for name, value in values.items():
-            if not re.search(
-                r"\{\{(?:[^{}:]+:)*cloze:(?:[^{}:]+:)*" + re.escape(name) + r"\}\}",
-                qfmt,
-            ):
+            if not cloze_field(qfmt, name):
                 continue
             # Place markers around this answer after stripping HTML, so partial
             # word cards cannot silently establish the complete lexical item.

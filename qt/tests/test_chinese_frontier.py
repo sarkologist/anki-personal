@@ -26,6 +26,7 @@ from chinese_frontier.collection import (  # noqa: E402
     cancel_fix,
     ensure_model,
     fix_target,
+    fix_target_for_card,
     initial_scope_settings,
     needs_audit,
     pending_fixes,
@@ -2708,3 +2709,21 @@ def test_fix_cannot_share_a_key_with_another_note(
     with pytest.raises(ValueError, match="Meaning"):
         fix(collection, cards[0].id)
     fix(collection, cards[0].id, definition="one hundred")
+
+
+def test_edit_filtered_cloze_templates_are_read(collection: Collection) -> None:
+    # Templates may wrap the cloze in other filters, e.g. {{edit:cloze:Text}}.
+    model = collection.models.by_name("Cloze")
+    for template in model["tmpls"]:
+        template["qfmt"] = template["qfmt"].replace(
+            "{{cloze:Text}}", "{{edit:cloze:Text}}"
+        )
+    collection.models.update_dict(model)
+    model = collection.models.by_name("Cloze")
+    target = fix_target(cloze_fields(PAGE_CLOZE, "bǎi: hundred"), model, 0, "D", {})
+    assert target is not None and target.words == ("百",)
+    assert "bǎi: hundred" in target.meaning
+    collection.set_config(SETTINGS_KEY, {"enabled": True, "deck_id": 1})
+    _note, cards = add_cloze(collection, PAGE_CLOZE, established=(1,))
+    assert "百" in snapshot(collection, {"deck_id": 1}, {}).known
+    assert fix_target_for_card(collection, cards[0].id, {}) is not None

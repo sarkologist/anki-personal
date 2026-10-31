@@ -62,6 +62,16 @@ def plain_text(value: str) -> str:
     return " ".join("".join(parser.parts).split())
 
 
+def cloze_field(template: str, name: str) -> bool:
+    """Whether the template clozes this field, also through filters like edit:."""
+    return bool(
+        re.search(
+            r"\{\{(?:[^{}:]+:)*cloze:(?:[^{}:]+:)*" + re.escape(name) + r"\}\}",
+            template,
+        )
+    )
+
+
 def cloze_words(text: str, ordinal: int) -> tuple[str, ...]:
     return tuple(
         word
