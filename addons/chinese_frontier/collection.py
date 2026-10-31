@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from anki.cards import CardId
 from anki.collection import Collection, OpChanges
+from anki.consts import QUEUE_TYPE_MANUALLY_BURIED
 from anki.decks import DeckId
 from anki.notes import NoteId
 
@@ -1238,7 +1239,24 @@ def record_feedback(
     tags.append(MANUAL_TAG if handed_over else REPAIR_TAG)
     tags.extend(FEEDBACK_TAG + r for r in reasons)
     target.tags = list(dict.fromkeys(tags))
-    return FeedbackResult(col.update_note(target), handed_over)
+    return FeedbackResult(_save_feedback(col, target, handed_over), handed_over)
+
+
+def _save_feedback(col: Collection, note: Any, handed_over: bool) -> OpChanges:
+    """Save the note; a queued repair takes its cards out of today's reviews.
+
+    Burying rather than suspending keeps the cards eligible for the repair,
+    which brings them back."""
+    undo = col.add_custom_undo_entry("Fix this sentence")
+    col.update_note(note)
+    if not handed_over:
+        col.sched.bury_cards([card.id for card in note.cards()], manual=True)
+    return col.merge_undo_entries(undo)
+
+
+def _unbury(col: Collection, cards: list[Any]) -> None:
+    if ids := [c.id for c in cards if c.queue == QUEUE_TYPE_MANUALLY_BURIED]:
+        col.sched.unbury_cards(ids)
 
 
 def report_confusion(col: Collection, note_id: int, word: str) -> OpChanges:
@@ -1824,6 +1842,8 @@ def _admit(
         ):
             raise ValueError("Replacement card count or fields failed verification")
         _verify_cards(cards, old_cards, source, valid, kind)
+        if repair_id:
+            _unbury(col, cards)
         if swap:
             _take_over(col, source, cards, fixes)
         added_cards += extra_cards

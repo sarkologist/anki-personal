@@ -12,6 +12,8 @@ from threading import Event
 
 import pytest
 
+from anki.consts import QUEUE_TYPE_MANUALLY_BURIED
+
 ADDONS = Path(__file__).resolve().parents[2] / "addons"
 sys.path.insert(0, str(ADDONS))
 
@@ -1933,6 +1935,9 @@ def test_feedback_is_recorded_and_survives_the_repair(
     tags = collection.get_note(note_id).tags
     assert "chinese-frontier::repair" in tags
     assert "chinese-frontier::feedback::unnatural" in tags
+    # The card leaves today's queue but stays eligible for its repair.
+    (card,) = collection.get_note(note_id).cards()
+    assert card.queue == QUEUE_TYPE_MANUALLY_BURIED
     target = snapshot(collection, settings, {}).sources[0]
     assert target.force_repair and target.avoid_words == ("一",)
     assert target.rejected_sentences == ("这本书有一百页。",)
@@ -1948,6 +1953,7 @@ def test_feedback_is_recorded_and_survives_the_repair(
     )
     assert result.updated == [note_id]
     after = collection.get_note(note_id)
+    assert after.cards()[0].queue != QUEUE_TYPE_MANUALLY_BURIED
     assert "chinese-frontier::repair" not in after.tags
     assert "chinese-frontier::feedback::unnatural" in after.tags
     assert stored_source(after)["feedback"][0]["note"] == "sounds stiff"
