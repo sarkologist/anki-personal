@@ -22,6 +22,8 @@ from ..collection import (
     _ids,
     _learner_feedback,
     _read_budgets,
+    _save_feedback,
+    _unbury,
 )
 from ..core import (
     CLOZE,
@@ -372,7 +374,7 @@ def record_feedback(
     tags.append(MANUAL_TAG if handed_over else REPAIR_TAG)
     tags.extend(FEEDBACK_TAG + r for r in reasons)
     target.tags = list(dict.fromkeys(tags))
-    return FeedbackResult(col.update_note(target), handed_over)
+    return FeedbackResult(_save_feedback(col, target, handed_over), handed_over)
 
 
 QUESTION_QUE = re.compile(r"(?:\bqu['’ʼ‘]\s*)?\best-ce\s+(?:que\b|qu['’ʼ‘])", re.I)
@@ -833,6 +835,7 @@ def admit(
             note.tags.append("disambiguation")
         if draft.repair_note:
             col.update_note(note)
+            _unbury(col, note.cards())
         else:
             col.add_note(note, DeckId(current.deck_id))
         if len(note.cards()) != 1:

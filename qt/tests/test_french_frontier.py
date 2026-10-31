@@ -3345,8 +3345,12 @@ def test_french_repair_keeps_feedback_and_rejects_drafts_written_without_it(
 
     from chinese_frontier.french.collection import admit, record_feedback, snapshot
 
+    from anki.consts import QUEUE_TYPE_MANUALLY_BURIED
+
     settings, note = admitted_french_note(collection, candidate())
     record_feedback(collection, note.id)
+    # The card leaves today's queue but stays eligible for its repair.
+    assert note.cards()[0].queue == QUEUE_TYPE_MANUALLY_BURIED
     fresh = replace(candidate(), sentence="Le train, je emprunte.")
     draft = repair_draft(collection, settings, fresh)
     stale = replace(draft, target=target())
@@ -3354,6 +3358,7 @@ def test_french_repair_keeps_feedback_and_rejects_drafts_written_without_it(
     # Dropped without a backoff, so the repair is written again at once.
     assert not result.admitted and not result.rejected
     assert admit(collection, settings, {}, [draft], dictionary()).admitted == [note.id]
+    assert note.cards()[0].queue != QUEUE_TYPE_MANUALLY_BURIED
     data = json.loads(html.unescape(collection.get_note(note.id)["Source"]))
     assert data["feedback"][0]["sentence"] == "Je emprunte le train."
     assert "rejected_sentences" not in data["target"]
@@ -3505,3 +3510,14 @@ def test_a_reported_unlearned_verb_can_be_contrasted():
     )
     with pytest.raises(ValidationError, match="established"):
         validate(c, target(), known, dictionary())
+
+
+def test_french_feedback_and_its_bury_undo_together(collection):
+    from chinese_frontier.french.collection import record_feedback
+
+    _settings, note = admitted_french_note(collection, candidate())
+    record_feedback(collection, note.id, reasons=("unnatural",))
+    collection.undo()
+    after = collection.get_note(note.id)
+    assert after.cards()[0].queue == 0
+    assert "french-frontier::repair" not in after.tags
