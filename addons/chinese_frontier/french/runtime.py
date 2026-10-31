@@ -687,7 +687,9 @@ class Controller:
     def feedback_dialog(self, note_id: int) -> None:
         if not mw or not mw.col:
             return
-        repairs = repair_count(mw.col.get_note(NoteId(note_id)))
+        target = mw.col.get_note(NoteId(note_id))
+        repairs = repair_count(target)
+        answer = str(json_field(target["Source"]).get("answer", "")) or "it"
         dialog = QDialog(mw)
         dialog.setWindowTitle("Fix this sentence")
         layout = QVBoxLayout(dialog)
@@ -714,7 +716,7 @@ class Controller:
         form.addRow("Words to avoid", avoid)
         confused = QLineEdit()
         confused.setPlaceholderText("Shows both words side by side")
-        form.addRow("I'm confusing it with", confused)
+        form.addRow(f"I'm confusing {answer} with", confused)
         layout.addLayout(form)
         note = QTextEdit()
         note.setAcceptRichText(False)
