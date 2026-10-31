@@ -3473,7 +3473,7 @@ def test_french_confusion_is_kept_for_a_contrast(collection):
     assert t.rejected_sentences == ()
     assert "Learner answered: prends" in t.learner_feedback[0]
     assert "reported_confusions" in json.dumps(t.prompt())
-    with pytest.raises(ValueError, match="other French word"):
+    with pytest.raises(ValueError, match="emprunte is this card's answer"):
         record_feedback(collection, note.id, answered="emprunte")
-    with pytest.raises(ValueError, match="other French word"):
+    with pytest.raises(ValueError, match="one other French word"):
         record_feedback(collection, note.id, answered="deux mots")

@@ -339,7 +339,12 @@ def record_feedback(
             + ", ".join(bad)
         )
     answered = normalize(answered)
-    if answered and (len(tokens(answered)) != 1 or answer & spelled(answered)):
+    if answered and answer & spelled(answered):
+        raise ValueError(
+            f"{answered} is this card's answer. Enter the other word you give "
+            'instead, or tick "Tests a different sense of the word".'
+        )
+    if answered and len(tokens(answered)) != 1:
         raise ValueError("Enter one other French word you confuse it with")
     handed_over = repair_count(target) >= MAX_REPAIRS
     candidate = data.get("candidate")
