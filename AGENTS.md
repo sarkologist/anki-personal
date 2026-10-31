@@ -1,4 +1,4 @@
-# Codex Configuration
+# Agent Configuration
 
 ## Project Overview
 
@@ -95,9 +95,9 @@ in build scripts/tests is fine.
 
 ## Commit workflow
 
-Before implementing changes, create or switch to a dedicated git branch. Use
-the `codex/` branch prefix by default unless the user requests a different
-branch name.
+Before implementing changes, create or switch to a dedicated git branch. Prefix
+the branch with the agent's name (`codex/`, `claude/`) unless the user
+requests a different branch name.
 
 After completing work, create a git commit unless the user says not to or the
 current interaction is quick development iteration that should remain
