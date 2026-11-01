@@ -291,7 +291,7 @@ def structured(
         if category is None or category["input"] == "flag":
             raise ValueError("Unknown reason: " + key)
         if category["input"] == "words":
-            words = [clean(w) for w in re.split(r"[\s,，、;；]+", value)]
+            words = [clean(w) for w in re.split(r"[\s,，、;；]+", value) if w]
             if bad := invalid_words(words):
                 raise ValueError(
                     f"{category.get('input_label') or category['label']}: "
@@ -321,9 +321,14 @@ def _reason_text(category: dict[str, Any], value: str) -> str:
     return ": ".join(parts)
 
 
-def feedback_tags(prefix: str, entry: dict[str, Any]) -> list[str]:
-    """Tags for a note holding this entry, built-in reasons included."""
-    return [prefix + key for key in sorted(reported(entry) - set(FIELDS))]
+def known_keys(col: Collection) -> set[str]:
+    return set(every(registry(col)))
+
+
+def feedback_tags(prefix: str, entry: dict[str, Any], known: set[str]) -> list[str]:
+    """Tags for a note holding this entry: built-in reasons and known categories,
+    so a retired key never comes back as a tag."""
+    return [prefix + key for key in sorted((reported(entry) & known) - set(FIELDS))]
 
 
 ITEM_SCHEMA = {
@@ -468,7 +473,11 @@ def apply(
             "comment": item.comment,
             "categories": assigned,
         }
+    # A failed call with nothing to date must not take the learner's undo step.
+    if not labels and not needs_work(items(col), reg):
+        return OpChanges()
     undo = col.add_custom_undo_entry("Classify Frontier feedback")
+    known = set(every(reg))
 
     def label(store: str, place: str, index: int, entry: dict[str, Any]) -> bool:
         changed = False
@@ -492,11 +501,15 @@ def apply(
             note = col.get_note(NoteId(note_id))
             data = _json_field(note["Source"])
             entries = _entries(data.get("feedback"))
-            if not any([label(model, str(note_id), index, e) for index, e in entries]):
+            changed = [
+                e for index, e in entries if label(model, str(note_id), index, e)
+            ]
+            if not changed:
                 continue
             note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
-            for _index, entry in entries:
-                note.tags.extend(feedback_tags(prefix, entry))
+            # Only the entries labelled now: a tag removed by hand stays removed.
+            for entry in changed:
+                note.tags.extend(feedback_tags(prefix, entry, known))
             note.tags = list(dict.fromkeys(note.tags))
             col.update_note(note)
     for store in FIX_STORES:
@@ -592,6 +605,7 @@ def classify_in_background(
         if not mw or not mw.col or stop.is_set():
             finish()
             return
+
         def failed(exc: Exception) -> None:
             observe(_error(exc))
             finish()
@@ -719,8 +733,9 @@ def settings_widgets(parent: Any, layout: Any) -> None:
             lambda _changes: fill() if parent.isVisible() else None
         ).run_in_background()
 
-    fill()
     qconnect(addressed.clicked, mark)
     layout.addWidget(label)
     layout.addWidget(candidates)
     layout.addWidget(addressed)
+    # Only once parented: showing a parentless widget opens its own window.
+    fill()

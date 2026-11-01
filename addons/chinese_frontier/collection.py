@@ -1247,7 +1247,9 @@ def record_feedback(
     target["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
     tags = [t for t in target.tags if t != REPAIR_TAG]
     tags.append(MANUAL_TAG if handed_over else REPAIR_TAG)
-    tags.extend(categories.feedback_tags(FEEDBACK_TAG, entries[-1]))
+    tags.extend(
+        categories.feedback_tags(FEEDBACK_TAG, entries[-1], categories.known_keys(col))
+    )
     target.tags = list(dict.fromkeys(tags))
     return FeedbackResult(_save_feedback(col, target, handed_over), handed_over)
 
@@ -1337,12 +1339,12 @@ def _adoption_metadata(col: Collection, source: Source, fixes: dict[str, Any]) -
     return html.escape(json.dumps(data, ensure_ascii=False))
 
 
-def _adoption_tags(source: Source, fixes: dict[str, Any]) -> list[str]:
+def _adoption_tags(source: Source, fixes: dict[str, Any], known: set[str]) -> list[str]:
     return [ADOPTED_TAG] + [
         tag
         for entry in fixes[str(source.card_id)].get("feedback", [])
         if isinstance(entry, dict)
-        for tag in categories.feedback_tags(FEEDBACK_TAG, entry)
+        for tag in categories.feedback_tags(FEEDBACK_TAG, entry, known)
     ]
 
 
@@ -1834,7 +1836,12 @@ def _admit(
             ]
         )
         if swap:
-            note.tags = list(dict.fromkeys(note.tags + _adoption_tags(source, fixes)))
+            note.tags = list(
+                dict.fromkeys(
+                    note.tags
+                    + _adoption_tags(source, fixes, categories.known_keys(col))
+                )
+            )
         note.tags = [tag for tag in note.tags if tag != "disambiguation"]
         if kind:
             note.tags.append("disambiguation")

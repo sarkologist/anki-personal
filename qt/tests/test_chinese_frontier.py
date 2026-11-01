@@ -3069,3 +3069,45 @@ def test_fix_requests_accept_promoted_categories_and_tag_the_adopted_note(
         "chinese-frontier::feedback::only_translation",
         "chinese-frontier::feedback::giveaway",
     } <= set(adopted.tags)
+
+
+def test_classification_without_changes_leaves_undo_alone(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    note_id = commented(collection, lexicon, "")
+    before = collection.undo_status().undo
+    categories.apply(collection, [], None)
+    assert collection.undo_status().undo == before
+    assert "chinese-frontier::feedback::ambiguous" in collection.get_note(note_id).tags
+
+
+def test_only_newly_labelled_entries_add_known_tags(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    note_id = commented(collection, lexicon, "the chinese alone should disambiguate it")
+    note = collection.get_note(note_id)
+    data = stored_source(note)
+    data["feedback"].insert(0, {"reasons": ["retired"], "at": 1, "classified": 0})
+    note["Source"] = json.dumps(data, ensure_ascii=False)
+    note.tags = [t for t in note.tags if t != "chinese-frontier::feedback::ambiguous"]
+    collection.update_note(note)
+    found = categories.items(collection)
+    batch = categories.unclassified(found, categories.registry(collection))
+    categories.apply(
+        collection,
+        batch,
+        {
+            "results": [
+                {
+                    "id": 0,
+                    "existing": [{"key": "giveaway", "value": ""}],
+                    "proposed": [],
+                }
+            ]
+        },
+    )
+    tags = collection.get_note(note_id).tags
+    assert "chinese-frontier::feedback::giveaway" in tags
+    assert "chinese-frontier::feedback::retired" not in tags
+    # The learner's labelled entry also ticked ambiguous: its tag returns with it.
+    assert "chinese-frontier::feedback::ambiguous" in tags

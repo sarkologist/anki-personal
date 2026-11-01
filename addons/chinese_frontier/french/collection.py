@@ -386,7 +386,9 @@ def record_feedback(
     target["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
     tags = [t for t in target.tags if t != REPAIR_TAG]
     tags.append(MANUAL_TAG if handed_over else REPAIR_TAG)
-    tags.extend(categories.feedback_tags(FEEDBACK_TAG, entries[-1]))
+    tags.extend(
+        categories.feedback_tags(FEEDBACK_TAG, entries[-1], categories.known_keys(col))
+    )
     target.tags = list(dict.fromkeys(tags))
     return FeedbackResult(_save_feedback(col, target, handed_over), handed_over)
 
@@ -1249,11 +1251,12 @@ def admit(
         if kind == "Disambiguation":
             note.tags.append("disambiguation")
         if record:
+            known = categories.known_keys(col)
             note.tags += [ADOPTED_TAG] + [
                 tag
                 for entry in data["feedback"]
                 if isinstance(entry, dict)
-                for tag in categories.feedback_tags(FEEDBACK_TAG, entry)
+                for tag in categories.feedback_tags(FEEDBACK_TAG, entry, known)
             ]
             note.tags = list(dict.fromkeys(note.tags))
         if draft.repair_note:
