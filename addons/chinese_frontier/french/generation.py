@@ -283,6 +283,8 @@ class Draft:
     audit: dict[str, Any]
     repair_note: int = 0
     old_fingerprint: str = ""
+    # The learner's own card this draft replaces, taking over its schedule.
+    fix_card: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         # Checkpoints are reread in memory before a JSON save/reload. Emit the
@@ -297,6 +299,7 @@ class Draft:
             data["audit"],
             int(data.get("repair_note", 0)),
             str(data.get("old_fingerprint", "")),
+            int(data.get("fix_card", 0)),
         )
 
     def verify(self) -> None:

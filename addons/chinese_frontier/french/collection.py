@@ -6,23 +6,28 @@ import hashlib
 import html
 import json
 import re
+import time
 from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from anki.cards import CardId
 from anki.collection import Collection, OpChanges
 from anki.decks import DeckId
 from anki.notes import NoteId
 
 from ..collection import (
     MAX_REPAIRS,
+    SEGMENT_BREAK,
     FeedbackResult,
+    _copy_scheduling,
     _descendants,
     _hide_metadata,
     _ids,
     _learner_feedback,
     _read_budgets,
     _save_feedback,
+    _scheduling,
     _unbury,
 )
 from ..core import (
@@ -32,6 +37,7 @@ from ..core import (
     ValidationError,
     admission_slots,
     cloze_field,
+    fingerprint,
     lookahead_days,
     plain_text,
     successful_days,
@@ -376,6 +382,330 @@ def record_feedback(
     return FeedbackResult(_save_feedback(col, target, handed_over), handed_over)
 
 
+# Fixing the learner's own cloze cards: the card is suspended and a new French
+# Frontier note, written to the learner's feedback, takes over its schedule.
+FIXES = "frenchFrontierFixes"
+PENDING_TAG = "french-frontier::fix-pending"
+ADOPTED_TAG = "french-frontier::adopted"
+RESTORED_TAG = "french-frontier::restored"
+# A fixed card tests the meaning the learner gave, not a dictionary sense.
+LEARNER_SENSE = "learner card"
+
+
+@dataclass(frozen=True)
+class FixTarget:
+    answer: str
+    sentence: str
+    # The rest of the note, usually the translation.
+    meaning: str
+
+
+def is_generated(note: Any) -> bool:
+    return TAG in note.tags and note.note_type()["name"] == MODEL
+
+
+def adopted_original(note: Any) -> dict[str, Any] | None:
+    """The learner card an adopted note replaced, unless it was restored."""
+    if not is_generated(note) or RESTORED_TAG in note.tags:
+        return None
+    adopted = json_field(note["Source"]).get("adopted")
+    return adopted if isinstance(adopted, dict) else None
+
+
+def _scope(col: Collection) -> set[int]:
+    deck_id = int(col.get_config(SETTINGS, {}).get("deck_id", 0))
+    decks = {int(d["id"]): d for d in col.decks.all()}
+    return _descendants(decks, deck_id) if deck_id in decks else set()
+
+
+def fix_target(
+    fields: dict[str, str], model: dict[str, Any], ordinal: int
+) -> FixTarget | None:
+    """The one French word this cloze card hides, with its sentence."""
+    if model["type"] != 1:
+        return None
+    qfmt = model["tmpls"][0]["qfmt"]
+    answers, sentences, other = [], [], []
+    for name, value in fields.items():
+        if not cloze_field(qfmt, name):
+            if "extra" in name.casefold():
+                other.append(plain_text(_unfold(value)))
+            continue
+        for part in SEGMENT_BREAK.split(value):
+            hidden = [
+                plain_text(m[2].split("::", 1)[0])
+                for m in CLOZE.finditer(part)
+                if int(m[1]) == ordinal + 1
+            ]
+            answers += hidden
+            (sentences if hidden else other).append(plain_text(_unfold(part)))
+    answers = list(dict.fromkeys(normalize(a) for a in answers if a))
+    if len(answers) != 1 or len(tokens(answers[0])) != 1:
+        return None
+    meaning = " · ".join(dict.fromkeys(part for part in other if part))
+    return FixTarget(answers[0], " ".join(sentences), meaning[:500])
+
+
+def _unfold(text: str) -> str:
+    return CLOZE.sub(lambda m: m[2].split("::", 1)[0], text)
+
+
+def fix_target_for_card(col: Collection, card_id: int) -> FixTarget | None:
+    """Fixable cards are the learner's own, in the French deck tree, outside automation."""
+    card = col.get_card(CardId(card_id))
+    note = card.note()
+    if (
+        (card.odid or card.did) not in _scope(col)
+        or is_generated(note)
+        or any(t.casefold() in ("leech", "french-frontier::exclude") for t in note.tags)
+    ):
+        return None
+    return fix_target(dict(note.items()), note.note_type(), card.ord)
+
+
+def fix_readings(lexicon: Lexicon, answer: str) -> list[tuple[str, str]]:
+    """Lemmas the answer can be, most frequent first."""
+    forms = sorted(lexicon.analyses(answer), key=lambda f: -f.frequency)
+    return list(dict.fromkeys((f.lemma, f.pos) for f in forms))
+
+
+def _entry(lexicon: Lexicon, lemma: str, pos: str) -> tuple[int, float]:
+    for entry in lexicon.entries:
+        if (entry.lemma, entry.pos) == (lemma, pos):
+            return entry.level, entry.frequency
+    return 0, max((f.frequency for f in lexicon.lemmas[(lemma, pos)]), default=0)
+
+
+def request_fix(
+    col: Collection,
+    card_id: int,
+    *,
+    lemma: str,
+    definition: str,
+    lexicon: Lexicon,
+    pos: str = "",
+    reasons: tuple[str, ...] = (),
+    note: str = "",
+    avoid_words: tuple[str, ...] = (),
+    answered: str = "",
+) -> str:
+    """Suspend a learner card that tests the wrong thing and queue its replacement.
+
+    Only the card's queue and one tag on its note change; the fields never do.
+    Returns the replacement's target key."""
+    fix = fix_target_for_card(col, card_id)
+    if fix is None:
+        raise ValueError(
+            "Only your own French cloze cards in the French deck can be fixed here"
+        )
+    lemma = normalize(lemma)
+    # The answer's own readings first, then any dictionary lemma typed instead.
+    readings = [
+        (lem, p)
+        for lem, p in fix_readings(lexicon, fix.answer)
+        + sorted(
+            (k for k in lexicon.lemmas if k[0] == lemma),
+            key=lambda k: -_entry(lexicon, *k)[1],
+        )
+        if lem == lemma and (not pos or p == pos)
+    ]
+    if not readings:
+        raise ValueError(f"{lemma or 'The target'} is not in the French dictionary")
+    lemma, pos = readings[0]
+    definition = " ".join(definition.split())
+    if not definition:
+        raise ValueError("Enter the meaning this card tests")
+    if unknown := [r for r in reasons if r not in FEEDBACK_REASONS]:
+        raise ValueError("Unknown reason: " + ", ".join(unknown))
+    answer = spelled(fix.answer) | {lemma}
+    avoid_words = tuple(dict.fromkeys(normalize(w) for w in avoid_words if w.strip()))
+    if bad := [w for w in avoid_words if not tokens(w) or answer & spelled(w)]:
+        raise ValueError(
+            "Words to avoid must be French words other than the answer: "
+            + ", ".join(bad)
+        )
+    answered = normalize(answered)
+    if answered and answer & spelled(answered):
+        raise ValueError(
+            f"{answered} is this card's answer. Enter the other word you give instead."
+        )
+    if answered and len(tokens(answered)) != 1:
+        raise ValueError("Enter one other French word you confuse it with")
+    level, frequency = _entry(lexicon, lemma, pos)
+    target = Target(
+        lemma, pos, LEARNER_SENSE, "vocabulary", definition, level, frequency
+    )
+    card = col.get_card(CardId(card_id))
+    original = card.note()
+    fixes = dict(col.get_config(FIXES, {}))
+    if any(
+        isinstance(other, dict) and other.get("key") == target.key
+        for other_id, other in fixes.items()
+        if other_id != str(card_id)
+    ) or col.find_notes(f"tag:{KEY_TAG}{target.key} -tag:{RESTORED_TAG}"):
+        raise ValueError(f"Another of your cards already has a fix for {lemma}")
+    record = dict(fixes.get(str(card_id), {}))
+    entries = record.get("feedback")
+    entries = list(entries) if isinstance(entries, list) else []
+    entries.append(
+        {
+            "reasons": list(reasons),
+            "note": note.strip()[:500],
+            "avoid_words": list(avoid_words),
+            "answered": answered,
+            "sentence": fix.sentence,
+            "rejected": not answered or bool(reasons or note.strip() or avoid_words),
+        }
+    )
+    record.update(
+        note_id=int(original.id),
+        ordinal=int(card.ord),
+        deck_id=int(card.odid or card.did),
+        target=target.stored(),
+        key=target.key,
+        sentence=fix.sentence,
+        # Fields only: the pending tag must not make the request stale.
+        fingerprint=fingerprint(dict(original.items()), []),
+        requested_at=int(record.get("requested_at", time.time())),
+        feedback=entries,
+    )
+    fixes[str(card_id)] = record
+    undo = col.add_custom_undo_entry("Fix French sentence")
+    col.sched.suspend_cards([CardId(card_id)])
+    if PENDING_TAG not in original.tags:
+        original.tags.append(PENDING_TAG)
+        col.update_note(original)
+    col.set_config(FIXES, fixes, undoable=True)
+    col.merge_undo_entries(undo)
+    return target.key
+
+
+def _take_over(col: Collection, card_id: int, card: Any, fixes: dict[str, Any]) -> None:
+    """The new card continues the learner's card; the fix is done."""
+    record = fixes.pop(str(card_id))
+    _copy_scheduling(col.get_card(CardId(card_id)), card)
+    col.update_card(card)
+    if _scheduling(col.get_card(card.id)) != _scheduling(card):
+        raise ValueError("Copying the original card's schedule failed")
+    _untag_pending(col, int(record.get("note_id", 0)), fixes)
+    col.set_config(FIXES, fixes, undoable=True)
+
+
+def _untag_pending(col: Collection, note_id: int, fixes: dict[str, Any]) -> None:
+    if any(
+        isinstance(r, dict) and int(r.get("note_id", 0)) == note_id
+        for r in fixes.values()
+    ) or not col.db.scalar("select count() from notes where id=?", note_id):
+        return
+    note = col.get_note(NoteId(note_id))
+    if PENDING_TAG in note.tags:
+        note.tags = [t for t in note.tags if t != PENDING_TAG]
+        col.update_note(note)
+
+
+def cancel_fix(col: Collection, card_id: int) -> OpChanges:
+    """Put a learner card waiting for a fix back into review, unchanged."""
+    fixes = dict(col.get_config(FIXES, {}))
+    record = fixes.pop(str(card_id), None)
+    if not isinstance(record, dict):
+        raise ValueError("No fix is pending for this card")
+    undo = col.add_custom_undo_entry("Cancel French sentence fix")
+    if col.db.scalar("select count() from cards where id=?", card_id):
+        col.sched.unsuspend_cards([CardId(card_id)])
+    _untag_pending(col, int(record.get("note_id", 0)), fixes)
+    col.set_config(FIXES, fixes, undoable=True)
+    return col.merge_undo_entries(undo)
+
+
+def restore_original(col: Collection, note_id: int) -> OpChanges:
+    """Return to the learner's card with the adopted card's progress; the
+    adopted note stays, suspended and tagged, so its feedback remains readable."""
+    note = col.get_note(NoteId(note_id))
+    adopted = adopted_original(note)
+    if adopted is None:
+        raise ValueError("This note did not replace one of your cards, or was restored")
+    card_id = int(adopted.get("card_id", 0))
+    if not col.db.scalar("select count() from cards where id=?", card_id):
+        raise ValueError("The original card no longer exists")
+    original = col.get_card(CardId(card_id))
+    cards = note.cards()
+    undo = col.add_custom_undo_entry("Restore original French card")
+    _copy_scheduling(cards[0], original)
+    col.update_card(original)
+    col.sched.suspend_cards([card.id for card in cards])
+    note = col.get_note(note.id)
+    data = json_field(note["Source"])
+    data["adopted"] = {**adopted, "restored_at": int(time.time())}
+    note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
+    note.tags = [t for t in note.tags if t != REPAIR_TAG] + [RESTORED_TAG]
+    col.update_note(note)
+    return col.merge_undo_entries(undo)
+
+
+def _fix_problem(
+    col: Collection, card_id: int, record: dict[str, Any], scope: set[int]
+) -> str:
+    """Why a pending fix cannot proceed; empty when it can."""
+    row = col.db.first(
+        "select c.did,c.odid,c.queue,n.mid,n.flds from cards c join notes n on n.id=c.nid "
+        "where c.id=?",
+        card_id,
+    )
+    if not row:
+        return "original card was deleted"
+    did, odid, queue, mid, joined = row
+    if (odid or did) not in scope:
+        return "original card left the French deck"
+    if queue != -1:
+        # Swapping now would leave both cards in review.
+        return "original card was unsuspended"
+    model = col.models.get(mid)
+    values = {
+        f["name"]: v for f, v in zip(model["flds"], joined.split("\x1f"), strict=True)
+    }
+    if fingerprint(values, []) != record.get("fingerprint"):
+        return "original note was edited"
+    return ""
+
+
+def _fix_target(record: dict[str, Any]) -> Target:
+    complaints, avoid, rejected = _learner_feedback(record)
+    return Target(
+        **record["target"],
+        learner_feedback=complaints,
+        avoid_words=avoid,
+        rejected_sentences=rejected,
+        reported_confusions=confusions(record),
+    )
+
+
+@dataclass(frozen=True)
+class PendingFix:
+    card_id: int
+    lemma: str
+    key: str
+    requested_at: int
+    problem: str
+
+
+def pending_fixes(col: Collection) -> list[PendingFix]:
+    scope = _scope(col)
+    result = []
+    for raw_id, record in col.get_config(FIXES, {}).items():
+        if not isinstance(record, dict):
+            continue
+        result.append(
+            PendingFix(
+                int(raw_id),
+                str(record.get("target", {}).get("lemma", "")),
+                str(record.get("key", "")),
+                int(record.get("requested_at", 0)),
+                _fix_problem(col, int(raw_id), record, scope),
+            )
+        )
+    return sorted(result, key=lambda item: item.requested_at)
+
+
 QUESTION_QUE = re.compile(r"(?:\bqu['’ʼ‘]\s*)?\best-ce\s+(?:que\b|qu['’ʼ‘])", re.I)
 # que governs most subjunctives; a relative (où, dont, qui, lequel) after an
 # indefinite or superlative antecedent can be subjunctive without one.
@@ -474,6 +804,8 @@ class Snapshot:
     covered: set[tuple[str, str]] = field(default_factory=set)
     covered_forms: set[str] = field(default_factory=set)
     lookahead_days: int = 0
+    # Learner cards awaiting a replacement: key -> (card id, fingerprint, target).
+    fixes: dict[str, tuple[int, str, Target]] = field(default_factory=dict)
 
     @property
     def slots(self) -> int:
@@ -518,6 +850,11 @@ def snapshot(
         }
         own = TAG in tags.split() and model["name"] == MODEL
         metadata = json_field(values.get("Source", "")) if own else {}
+        adopted = metadata.get("adopted")
+        card_logs = logs.get(cid, [])
+        if isinstance(adopted, dict):
+            # The replaced learner card's history is this card's history too.
+            card_logs = sorted(card_logs + logs.get(int(adopted.get("card_id", 0)), []))
         if own and isinstance(metadata.get("target"), dict):
             target = metadata["target"]
             represented.add((str(target.get("lemma", "")), str(target.get("pos", ""))))
@@ -556,7 +893,7 @@ def snapshot(
                 t.casefold() in ("leech", "french-frontier::exclude")
                 for t in tags.split()
             )
-            and successful_days(logs.get(cid, []), timing.next_day_at)
+            and successful_days(card_logs, timing.next_day_at)
             >= max(1, int(config.get("minimum_success_days", 2)))
         )
         qfmt = model["tmpls"][0]["qfmt"]
@@ -660,9 +997,27 @@ def snapshot(
     for tag_string in col.db.list(
         "select tags from notes where tags like ?", "%" + KEY_TAG + "%"
     ):
+        # A restored note no longer stands for its target.
+        if RESTORED_TAG in tag_string.split():
+            continue
         keys.update(
             t[len(KEY_TAG) :] for t in tag_string.split() if t.startswith(KEY_TAG)
         )
+    fixes = {}
+    fix_scope = _descendants(decks, deck_id)
+    for raw_id, record in col.get_config(FIXES, {}).items():
+        if not isinstance(record, dict) or _fix_problem(
+            col, int(raw_id), record, fix_scope
+        ):
+            # A stalled fix waits, suspended, until the learner cancels it.
+            continue
+        try:
+            fix_target = _fix_target(record)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if fix_target.key not in keys and fix_target.key not in fixes:
+            fixes[fix_target.key] = (int(raw_id), str(record["fingerprint"]), fix_target)
+            represented.add((fix_target.lemma, fix_target.pos))
     budgets = _read_budgets(col, decks, deck_id, [], timing.days_elapsed)[deck_id]
     return Snapshot(
         timing.days_elapsed,
@@ -676,6 +1031,7 @@ def snapshot(
         covered,
         covered_forms,
         lookahead_days(config),
+        fixes,
     )
 
 
@@ -727,19 +1083,29 @@ def admit(
     if col.get_config(SETTINGS, {}) != settings or not settings.get("enabled"):
         return Admission(OpChanges(), [], drafts, {})
     current = snapshot(col, settings, config, lexicon)
+    decks = {int(d["id"]): d for d in col.decks.all()}
     capacity = current.slots
     admitted = []
     added_cards = repaired_notes = 0
     remaining = []
     rejected = {}
     undo = None
+    fixes = dict(col.get_config(FIXES, {}))
     for draft in drafts:
         if draft.target.key in current.keys and not draft.repair_note:
             continue
-        if capacity <= 0 and not draft.repair_note:
+        # A fix takes over the learner's card, so it needs no new-card slot.
+        if capacity <= 0 and not (draft.repair_note or draft.fix_card):
             remaining.append(draft)
             continue
         try:
+            if draft.fix_card:
+                fix = current.fixes.get(draft.target.key)
+                if not fix or fix[:2] != (draft.fix_card, draft.old_fingerprint):
+                    raise ValidationError("Your card changed while its fix was written")
+                if fix[2] != draft.target:
+                    # Written before the learner's latest feedback.
+                    continue
             if draft.repair_note:
                 repair = current.repairs.get(draft.target.key)
                 if not repair or repair[:2] != (
@@ -759,7 +1125,7 @@ def admit(
                 ):
                     raise ValidationError("Context evidence changed during generation")
             valid = validate(draft.candidate, draft.target, current.known, lexicon)
-            if not draft.repair_note and (
+            if not (draft.repair_note or draft.fix_card) and (
                 (
                     draft.target.kind == "vocabulary"
                     and (draft.target.lemma, draft.target.pos) in current.covered
@@ -796,6 +1162,17 @@ def admit(
             feedback := json_field(note["Source"]).get("feedback")
         ):
             data["feedback"] = feedback
+        record = fixes.get(str(draft.fix_card), {}) if draft.fix_card else {}
+        if record:
+            original = col.get_card(CardId(draft.fix_card))
+            data["adopted"] = {
+                "card_id": draft.fix_card,
+                "note_id": int(record.get("note_id", 0)),
+                "ordinal": int(original.ord),
+                "notetype": original.note().note_type()["name"],
+                "sentence": str(record.get("sentence", "")),
+            }
+            data["feedback"] = record.get("feedback", [])
         audit = {**draft.audit, "status": "applied"}
         kind = card_kind(c.mode, draft.target.kind)
         values = {
@@ -832,18 +1209,36 @@ def admit(
         )
         if kind == "Disambiguation":
             note.tags.append("disambiguation")
+        if record:
+            note.tags += [ADOPTED_TAG] + [
+                FEEDBACK_TAG + reason
+                for entry in data["feedback"]
+                if isinstance(entry, dict)
+                for reason in entry.get("reasons", [])
+                if reason in FEEDBACK_REASONS
+            ]
+            note.tags = list(dict.fromkeys(note.tags))
         if draft.repair_note:
             col.update_note(note)
             _unbury(col, note.cards())
         else:
-            col.add_note(note, DeckId(current.deck_id))
+            home = int(record.get("deck_id", 0))
+            col.add_note(
+                note,
+                DeckId(home if home in _descendants(decks, current.deck_id) else current.deck_id)
+                if record
+                else DeckId(current.deck_id),
+            )
         if len(note.cards()) != 1:
             raise ValueError("French proposal unexpectedly created extra cards")
-        added_cards += 0 if draft.repair_note else 1
+        if record:
+            _take_over(col, draft.fix_card, note.cards()[0], fixes)
+            current.fixes.pop(draft.target.key, None)
+        added_cards += 0 if draft.repair_note or record else 1
         repaired_notes += 1 if draft.repair_note else 0
         admitted.append(int(note.id))
         current.keys.add(draft.target.key)
-        capacity -= 0 if draft.repair_note else 1
+        capacity -= 0 if draft.repair_note or record else 1
     changes = col.merge_undo_entries(undo) if undo is not None else OpChanges()
     return Admission(
         changes, admitted, remaining, rejected, added_cards, repaired_notes
