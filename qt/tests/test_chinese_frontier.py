@@ -1113,43 +1113,48 @@ def thousand_contrast() -> Candidate:
     )
 
 
-def test_reported_confusion_is_repaired_only_as_a_contrast_with_that_word(
+def test_reported_confusion_needs_a_sentence_that_rules_it_out(
     tmp_path: Path, lexicon: Lexicon, monkeypatch
 ) -> None:
-    target = replace(
-        source(),
-        reported_confusions=("千",),
-        existing_cards=1,
-        existing_candidate=asdict(candidate()),
-    )
-    pair = thousand_contrast()
+    target = replace(source(), reported_confusions=("千",))
+    single = candidate("这本书有百页。")
     prompts = fake_generator(
         monkeypatch,
         lexicon,
         [
-            {"proposals": [{"card_id": 1, "candidates": [asdict(pair)]}]},
-            {"reviews": [audit_report(target, pair)]},
+            {"proposals": [{"card_id": 1, "candidates": [asdict(single)]}]},
+            {"reviews": [audit_report(target, single)]},
         ],
     )
     result = generate([target], KNOWN_PAGE_WORDS, {}, tmp_path, Event())
-    # The old single example does not answer the confusion, so it is not re-audited.
+    # One sentence whose context rules the confusion out; no forced pair.
     assert len(prompts) == 2
-    assert 'mode="contrast"' in prompts[0] and "千" in prompts[0]
-    assert result.drafts[0].candidate == pair
+    assert "rule each one out" in prompts[0] and "千" in prompts[0]
+    assert "test every one of them" in prompts[1]
+    assert result.drafts[0].candidate == single
+    # The reviewer must test the word the learner answered.
+    other = replace(target, reported_confusions=("万",))
+    with pytest.raises(ValidationError, match="learner's answer: 万"):
+        validate_review(audit_report(other, single), single, other)
 
 
-def test_failed_confusion_contrast_defers_instead_of_falling_back(
+def test_confusion_falls_back_to_a_contrast_pair_but_keeps_character_cards(
     tmp_path: Path, lexicon: Lexicon, monkeypatch
 ) -> None:
     target = replace(source("学生"), reported_confusions=("学者",))
-    prompts = fake_generator(
-        monkeypatch,
-        lexicon,
-        [{"proposals": [{"card_id": 1, "candidates": []}]}],
-    )
+    empty = {"proposals": [{"card_id": 1, "candidates": []}]}
+    prompts = fake_generator(monkeypatch, lexicon, [empty] * 3)
     result = generate([target], KNOWN_PAGE_WORDS, {}, tmp_path, Event())
-    assert len(prompts) == 1 and result.drafts == []
+    assert len(prompts) == 3 and result.drafts == []
+    assert 'mode="contrast"' in prompts[1] and "学者" in prompts[1]
     assert target.key in result.deferred
+    # A contrast pair would delete a character card, so it is never tried.
+    prompts = fake_generator(monkeypatch, lexicon, [empty] * 2)
+    generate(
+        [replace(target, existing_cards=2)], KNOWN_PAGE_WORDS, {}, tmp_path, Event()
+    )
+    assert len(prompts) == 2
+    assert not any('mode="contrast"' in prompt for prompt in prompts)
 
 
 def test_contrast_needs_a_reported_competitor(lexicon: Lexicon) -> None:
@@ -2076,14 +2081,14 @@ def test_draft_round_trip_keeps_feedback() -> None:
     assert again.source == target
 
 
-def test_answered_word_alone_keeps_the_sentence_for_the_contrast(
+def test_answered_word_rejects_the_sentence(
     collection: Collection, lexicon: Lexicon
 ) -> None:
     settings, _note, _card, initial = setup_sentence(collection)
     note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
     record_feedback(collection, note_id, answered="千")
     target = snapshot(collection, settings, {}).sources[0]
-    assert target.rejected_sentences == ()
+    assert target.rejected_sentences == (initial.candidate.sentence,)
     assert "Learner answered: 千" in target.learner_feedback[0]
 
 
@@ -2443,13 +2448,12 @@ def test_draft_written_before_more_fix_feedback_is_stale(
     assert collection.get_config(FIXES_KEY)
 
 
-def test_reported_confusion_on_a_fix_needs_a_contrast(
+def test_reported_confusion_on_a_fix_needs_no_contrast(
     collection: Collection, lexicon: Lexicon
 ) -> None:
     settings, _note, card, _sibling = setup_fix(collection)
     fix(collection, card.id, answered="千")
-    current = snapshot(collection, settings, {})
-    target = current.sources[0]
+    target = snapshot(collection, settings, {}).sources[0]
     single = admit(
         collection,
         settings,
@@ -2457,39 +2461,31 @@ def test_reported_confusion_on_a_fix_needs_a_contrast(
         [audited_draft(target, candidate("这本书有百页。"))],
         lexicon,
     )
-    assert single.admitted == [] and "contrast" in single.rejected[target.key]
-    pair = admit(
-        collection,
-        settings,
-        {},
-        [audited_draft(target, thousand_contrast())],
-        Lexicon({*lexicon.words, "千"}),
-    )
-    assert len(pair.admitted) == 1
-    adopted = collection.get_note(pair.admitted[0])
+    assert len(single.admitted) == 1
+    adopted = collection.get_note(single.admitted[0])
     assert stored_source(adopted)["disambiguation"]["with"] == "千"
-    assert adopted["CardKind"] == "Disambiguation"
+    assert adopted["CardKind"] == ""
 
 
-def test_fix_source_reaches_writer_as_a_contrast_request(
+def test_fix_source_reaches_writer_with_the_confusion(
     collection: Collection, tmp_path: Path, lexicon: Lexicon, monkeypatch
 ) -> None:
     settings, _note, card, _sibling = setup_fix(collection)
     fix(collection, card.id, answered="千", note="the number was unclear")
     target = snapshot(collection, settings, {}).sources[0]
-    pair = thousand_contrast()
+    single = candidate("这本书有百页。")
     prompts = fake_generator(
         monkeypatch,
         lexicon,
         [
-            {"proposals": [{"card_id": card.id, "candidates": [asdict(pair)]}]},
-            {"reviews": [audit_report(target, pair)]},
+            {"proposals": [{"card_id": card.id, "candidates": [asdict(single)]}]},
+            {"reviews": [audit_report(target, single)]},
         ],
     )
     result = generate([target], KNOWN_PAGE_WORDS, {}, tmp_path, Event())
-    assert 'mode="contrast"' in prompts[0] and "千" in prompts[0]
+    assert "rule each one out" in prompts[0] and "千" in prompts[0]
     assert all("the number was unclear" in prompt for prompt in prompts)
-    assert result.drafts[0].candidate == pair
+    assert result.drafts[0].candidate == single
 
 
 def swapped(collection: Collection, lexicon: Lexicon):

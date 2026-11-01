@@ -280,7 +280,7 @@ def _learner_feedback(
         if not isinstance(entry, dict):
             continue
         sentence = str(entry.get("sentence", ""))
-        # Only an answered word keeps the sentence: the contrast pairs it.
+        # Older feedback kept the sentence for a contrast pair.
         kept = entry.get("rejected") is False
         words = [w for w in entry.get("avoid_words", []) if isinstance(w, str)]
         problems = [
@@ -1230,7 +1230,7 @@ def record_feedback(
             "avoid_words": list(avoid_words),
             "answered": answered,
             "sentence": sentence,
-            "rejected": not answered or bool(reasons or note.strip() or avoid_words),
+            "rejected": True,
         }
     )
     data["feedback"] = entries
@@ -1260,7 +1260,7 @@ def _unbury(col: Collection, cards: list[Any]) -> None:
 
 
 def report_confusion(col: Collection, note_id: int, word: str) -> OpChanges:
-    """Record the word the learner answered instead; the repair contrasts the two."""
+    """Record the word the learner answered instead; the repair must rule it out."""
     note = col.get_note(NoteId(note_id))
     if GENERATED_TAG not in note.tags or note.note_type()["name"] != MODEL_NAME:
         raise ValueError("Only generated Chinese Frontier notes can record a confusion")
@@ -1271,10 +1271,6 @@ def report_confusion(col: Collection, note_id: int, word: str) -> OpChanges:
 
 
 def _record_confusion(note: Any, word: str) -> None:
-    if len(note.cards()) > 1:
-        raise ValueError(
-            "This note already has character cards; a contrast pair would remove one"
-        )
     word = word.strip()
     data = _json_field(note["Source"])
     if not is_word(word) or word == data.get("word"):
@@ -1426,7 +1422,7 @@ def request_fix(
             "avoid_words": list(avoid_words),
             "answered": answered,
             "sentence": target.sentence,
-            "rejected": not answered or bool(reasons or note.strip() or avoid_words),
+            "rejected": True,
         }
     )
     home = card.odid or card.did
@@ -1677,6 +1673,7 @@ def _admit(
             or source.key != draft.source.key
             or source.existing_fingerprint != draft.source.existing_fingerprint
             or source.learner_feedback != draft.source.learner_feedback
+            or source.reported_confusions != draft.source.reported_confusions
         ):
             rejected[draft.source.key] = STALE_SOURCE
             continue

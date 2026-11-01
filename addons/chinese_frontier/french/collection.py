@@ -364,8 +364,7 @@ def record_feedback(
             "avoid_words": list(avoid_words),
             "answered": answered,
             "sentence": " ".join(sentence.split()),
-            # Only a confusion keeps the sentence: the contrast pairs it.
-            "rejected": not answered or bool(reasons or note.strip() or avoid_words),
+            "rejected": True,
         }
     )
     data["feedback"] = entries

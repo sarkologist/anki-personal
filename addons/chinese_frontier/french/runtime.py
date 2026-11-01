@@ -715,7 +715,7 @@ class Controller:
         avoid.setPlaceholderText("e.g. pourtant enfin")
         form.addRow("Words to avoid", avoid)
         confused = QLineEdit()
-        confused.setPlaceholderText("Shows both words side by side")
+        confused.setPlaceholderText("The new sentence will rule it out")
         form.addRow(f"I'm confusing {answer} with", confused)
         layout.addLayout(form)
         note = QTextEdit()

@@ -653,12 +653,8 @@ class Controller:
         avoid = QLineEdit()
         avoid.setPlaceholderText("e.g. 认为 打算")
         answered = QLineEdit()
-        answered.setPlaceholderText("Shows both words side by side")
+        answered.setPlaceholderText("The new sentence will rule it out")
         form.addRow("Words to avoid", avoid)
-        if generated and len(target.cards()) > 1:
-            # A contrast pair would remove one of the character cards.
-            answered.setEnabled(False)
-            answered.setPlaceholderText("Not available with character cards")
         form.addRow("I answered", answered)
         layout.addLayout(form)
         note = QTextEdit()
