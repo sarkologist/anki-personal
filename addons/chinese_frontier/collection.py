@@ -547,12 +547,10 @@ def _repair_source(col: Collection, source: Source, note_id: int) -> Source:
         existing_candidate=previous_candidate,
         existing_fingerprint=presentation_fingerprint(fields),
         existing_cards=len(old_note.cards()),
-        # A one-card pair cannot replace character siblings without removing one.
+        # Character cards keep the confusion; generation never pairs them.
         reported_confusions=tuple(
             w for w in reported_confusions(fields) if w != source.word
-        )
-        if len(old_note.cards()) <= 1
-        else (),
+        ),
         force_repair=REPAIR_TAG in old_note.tags,
         learner_feedback=complaints,
         avoid_words=avoid,

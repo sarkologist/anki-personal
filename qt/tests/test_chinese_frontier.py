@@ -1331,34 +1331,6 @@ def test_draft_written_before_a_report_cannot_clear_the_confusion(
     assert "chinese-frontier::repair" in collection.get_note(note_id).tags
 
 
-def test_confusion_on_character_cards_does_not_block_their_repair(
-    collection: Collection, lexicon: Lexicon
-) -> None:
-    import html as html_module
-
-    settings, target, c = student_target(collection)
-    note = collection.get_note(
-        admit(
-            collection,
-            settings,
-            {},
-            [audited_draft(target, replace(c, mode="characters"))],
-            lexicon,
-        ).admitted[0]
-    )
-    assert len(note.cards()) == 2
-    data = json.loads(html_module.unescape(note["Source"]))
-    data["disambiguation"] = {"with": "学者"}
-    note["Source"] = html_module.escape(json.dumps(data, ensure_ascii=False))
-    collection.update_note(note)
-    request_repair(collection, note.id)
-    queued = next(
-        s for s in snapshot(collection, settings, {}).sources if s.word == "学生"
-    )
-    # A pair would remove a sibling card, so the note keeps its character repair.
-    assert queued.reported_confusions == ()
-
-
 def test_second_reported_confusion_keeps_the_first(
     collection: Collection, lexicon: Lexicon
 ) -> None:
@@ -1432,6 +1404,27 @@ def test_upgrade_reverts_unreported_contrast_to_its_first_example(
     assert collection.get_note(reported.id)["Text"] == reported["Text"]
     assert "disambiguation" in collection.get_note(reported.id).tags
     assert not upgrade_presentation(collection).note
+
+
+def test_confusion_on_character_cards_reaches_the_writer(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, target, c = student_target(collection)
+    result = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(target, replace(c, mode="characters"))],
+        lexicon,
+    )
+    note_id = result.admitted[0]
+    assert len(collection.get_note(note_id).cards()) == 2
+    record_feedback(collection, note_id, answered="学者")
+    (repair,) = [
+        s for s in snapshot(collection, settings, {}).sources if s.word == "学生"
+    ]
+    assert repair.reported_confusions == ("学者",)
+    assert repair.existing_cards == 2
 
 
 def test_character_word_needs_all_siblings_learned_for_context(
