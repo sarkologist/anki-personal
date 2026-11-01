@@ -3908,3 +3908,64 @@ def test_cards_checked_under_an_older_policy_still_establish_words(collection):
     # A stricter ambiguity rule queues a re-check; the learner still knows the word.
     known = snapshot(collection, settings, {}, dictionary()).known
     assert "emprunte" in known.surfaces
+
+
+def promote_french(collection, key, **category):
+    from chinese_frontier import categories
+
+    reg = categories.registry(collection)
+    reg["categories"][key] = {
+        "label": key.replace("_", " "),
+        "description": "",
+        "input": "flag",
+        "input_label": "",
+        "version": 1,
+        "promoted": 1,
+        **category,
+    }
+    collection.set_config(categories.REGISTRY_KEY, reg)
+
+
+def test_french_feedback_accepts_promoted_categories(collection):
+    from chinese_frontier.french.collection import record_feedback, snapshot
+
+    settings, note = admitted_french_note(collection, candidate())
+    promote_french(collection, "only_translation")
+    promote_french(collection, "unknown_hint", input="words")
+    with pytest.raises(ValueError):
+        record_feedback(collection, note.id, values={"unknown_hint": "emprunte"})
+    record_feedback(
+        collection,
+        note.id,
+        reasons=("only_translation",),
+        values={"unknown_hint": "Train"},
+    )
+    tags = collection.get_note(note.id).tags
+    assert "french-frontier::feedback::only_translation" in tags
+    assert "french-frontier::feedback::unknown_hint" in tags
+    ((_, _, t),) = snapshot(collection, settings, {}, dictionary()).repairs.values()
+    assert "only translation; unknown hint: train" in t.learner_feedback[0]
+
+
+def test_french_fix_accepts_promoted_categories_and_is_classified(collection):
+    from chinese_frontier import categories
+    from chinese_frontier.french.collection import FIXES
+
+    promote_french(collection, "only_translation")
+    _settings, note, card, _key = user_fix(
+        collection, reasons=("only_translation",), note="la traduction seule aide"
+    )
+    fields = list(note.fields)
+    found = categories.items(collection)
+    (item,) = categories.unclassified(found, categories.registry(collection))
+    assert item.store == FIXES and item.owner == note.id
+    response = {
+        "results": [
+            {"id": 0, "existing": [{"key": "ambiguous", "value": ""}], "proposed": []}
+        ]
+    }
+    categories.apply(collection, [item], response)
+    (entry,) = collection.get_config(FIXES)[str(card.id)]["feedback"]
+    assert entry["categories"] == {"ambiguous": True}
+    assert entry["reasons"] == ["only_translation"]
+    assert collection.get_note(note.id).fields == fields

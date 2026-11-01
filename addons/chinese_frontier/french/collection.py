@@ -16,6 +16,7 @@ from anki.collection import Collection, OpChanges
 from anki.decks import DeckId
 from anki.notes import NoteId
 
+from .. import categories
 from ..collection import (
     MAX_REPAIRS,
     SEGMENT_BREAK,
@@ -32,7 +33,6 @@ from ..collection import (
 )
 from ..core import (
     CLOZE,
-    FEEDBACK_REASONS,
     DeckBudget,
     ValidationError,
     admission_slots,
@@ -320,6 +320,11 @@ def confusions(data: dict[str, Any]) -> tuple[str, ...]:
     )
 
 
+def _other_words(words: Any, answer: AbstractSet[str]) -> list[str]:
+    """The words that are not French words other than the answer."""
+    return [w for w in words if not tokens(w) or answer & spelled(w)]
+
+
 def record_feedback(
     col: Collection,
     note_id: int,
@@ -328,6 +333,7 @@ def record_feedback(
     note: str = "",
     avoid_words: tuple[str, ...] = (),
     answered: str = "",
+    values: dict[str, str] | None = None,
 ) -> FeedbackResult:
     """Keep the learner's complaint on the note and queue a repair that must fix it.
 
@@ -336,13 +342,14 @@ def record_feedback(
     target = col.get_note(NoteId(note_id))
     if TAG not in target.tags or target.note_type()["name"] != MODEL:
         raise ValueError("Only generated French notes can be repaired")
-    if unknown := [r for r in reasons if r not in FEEDBACK_REASONS]:
-        raise ValueError("Unknown reason: " + ", ".join(unknown))
     data = json_field(target["Source"])
     answer = spelled(str(data.get("answer", "")))
     answer.add(normalize(str(data.get("target", {}).get("lemma", ""))))
+    learnt = categories.structured(
+        col, reasons, values or {}, lambda ws: _other_words(ws, answer), normalize
+    )
     avoid_words = tuple(dict.fromkeys(normalize(w) for w in avoid_words if w.strip()))
-    if bad := [w for w in avoid_words if not tokens(w) or answer & spelled(w)]:
+    if bad := _other_words(avoid_words, answer):
         raise ValueError(
             "Words to avoid must be French words other than the answer: "
             + ", ".join(bad)
@@ -372,13 +379,14 @@ def record_feedback(
             "answered": answered,
             "sentence": " ".join(sentence.split()),
             "rejected": True,
+            **learnt,
         }
     )
     data["feedback"] = entries
     target["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
     tags = [t for t in target.tags if t != REPAIR_TAG]
     tags.append(MANUAL_TAG if handed_over else REPAIR_TAG)
-    tags.extend(FEEDBACK_TAG + r for r in reasons)
+    tags.extend(categories.feedback_tags(FEEDBACK_TAG, entries[-1]))
     target.tags = list(dict.fromkeys(tags))
     return FeedbackResult(_save_feedback(col, target, handed_over), handed_over)
 
@@ -496,6 +504,7 @@ def request_fix(
     note: str = "",
     avoid_words: tuple[str, ...] = (),
     answered: str = "",
+    values: dict[str, str] | None = None,
 ) -> FixResult:
     """Suspend a learner card that tests the wrong thing and queue its replacement.
 
@@ -522,11 +531,12 @@ def request_fix(
     definition = " ".join(definition.split())
     if not definition:
         raise ValueError("Enter the meaning this card tests")
-    if unknown := [r for r in reasons if r not in FEEDBACK_REASONS]:
-        raise ValueError("Unknown reason: " + ", ".join(unknown))
     answer = spelled(fix.answer) | {lemma}
+    learnt = categories.structured(
+        col, reasons, values or {}, lambda ws: _other_words(ws, answer), normalize
+    )
     avoid_words = tuple(dict.fromkeys(normalize(w) for w in avoid_words if w.strip()))
-    if bad := [w for w in avoid_words if not tokens(w) or answer & spelled(w)]:
+    if bad := _other_words(avoid_words, answer):
         raise ValueError(
             "Words to avoid must be French words other than the answer: "
             + ", ".join(bad)
@@ -562,6 +572,7 @@ def request_fix(
             "answered": answered,
             "sentence": fix.sentence,
             "rejected": True,
+            **learnt,
         }
     )
     record.update(
@@ -1239,11 +1250,10 @@ def admit(
             note.tags.append("disambiguation")
         if record:
             note.tags += [ADOPTED_TAG] + [
-                FEEDBACK_TAG + reason
+                tag
                 for entry in data["feedback"]
                 if isinstance(entry, dict)
-                for reason in entry.get("reasons", [])
-                if reason in FEEDBACK_REASONS
+                for tag in categories.feedback_tags(FEEDBACK_TAG, entry)
             ]
             note.tags = list(dict.fromkeys(note.tags))
         if draft.repair_note:

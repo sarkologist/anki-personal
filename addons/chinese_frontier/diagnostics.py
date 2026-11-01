@@ -79,6 +79,8 @@ class Diagnostics(QTabWidget):
                 for k in ("store", "state", "status", "busy", "prepared", "buffer")
             }
         )
+        if feedback := data.get("feedback"):
+            text += "\n\n" + feedback
         if self.summary.toPlainText() != text:
             self.summary.setPlainText(text)
         html = charts_html(data["store"], data["state"], dark=theme_manager.night_mode)

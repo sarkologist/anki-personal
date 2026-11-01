@@ -2745,3 +2745,327 @@ def test_only_the_chinese_may_rule_out_competing_words(
 
 def test_cards_audited_under_the_translation_rule_are_rechecked() -> None:
     assert GENERATION_POLICY >= 4
+
+
+from chinese_frontier import categories  # noqa: E402
+
+ONLY_TRANSLATION = {
+    "key": "only_translation",
+    "label": "Only the translation disambiguates",
+    "description": "The context alone admits another answer.",
+    "input": "flag",
+    "input_label": "",
+    "value": "",
+    "closest_existing": "ambiguous",
+    "why_not": "about the context, not any one word",
+}
+
+
+class FakeClassifier:
+    def __init__(self, response) -> None:
+        self.response = response
+        self.prompts: list[str] = []
+
+    def request(self, prompt: str, schema) -> dict:
+        self.prompts.append(prompt)
+        return self.response
+
+
+def commented(col: Collection, lexicon: Lexicon, comment: str) -> int:
+    settings, _note, _card, initial = setup_sentence(col)
+    note_id = admit(col, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(col, note_id, reasons=("ambiguous",), note=comment)
+    return note_id
+
+
+def classify(col: Collection, response) -> list:
+    found = categories.items(col)
+    reg = categories.registry(col)
+    batch, answer = categories.classify(found, reg, FakeClassifier(response), {})
+    categories.apply(col, batch, answer)
+    return batch
+
+
+def test_proposed_categories_fold_onto_existing_keys_and_labels() -> None:
+    reg = {"threshold": {}, "version": 0, "categories": {}, "addressed": {}}
+    assert (
+        categories.add_category(reg, {"key": "ambiguous", "label": "x"}, 0)
+        == "ambiguous"
+    )
+    assert (
+        categories.add_category(reg, {"key": "stiff", "label": "Sounds unnatural"}, 0)
+        == "unnatural"
+    )
+    assert categories.add_category(reg, {"key": "", "label": ""}, 0) == ""
+    assert reg["version"] == 0
+    key = categories.add_category(reg, {**ONLY_TRANSLATION, "input": "odd"}, 5)
+    assert key == "only_translation" and reg["version"] == 1
+    assert reg["categories"][key]["input"] == "flag"
+    assert reg["categories"][key]["promoted"] == 0
+    assert (
+        categories.add_category(reg, {"key": "Only-Translation!", "label": "y"}, 6)
+        == key
+    )
+    assert reg["version"] == 1
+
+
+def test_comments_are_labelled_once_tagged_and_dated(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    note_id = commented(collection, lexicon, "the chinese alone should disambiguate it")
+    client = FakeClassifier(
+        {"results": [{"id": 0, "existing": [], "proposed": [ONLY_TRANSLATION]}]}
+    )
+    found = categories.items(collection)
+    batch, answer = categories.classify(
+        found, categories.registry(collection), client, {}
+    )
+    assert len(batch) == 1 and "the chinese alone" in client.prompts[0]
+    assert '"ambiguous"' in client.prompts[0] and '"answered"' in client.prompts[0]
+    categories.apply(collection, batch, answer)
+    note = collection.get_note(note_id)
+    (entry,) = stored_source(note)["feedback"]
+    assert entry["categories"] == {"only_translation": True}
+    assert entry["classified"] == 1 and isinstance(entry["at"], int)
+    assert "chinese-frontier::feedback::only_translation" in note.tags
+    reg = categories.registry(collection)
+    assert reg["categories"]["only_translation"]["promoted"] == 0
+    # Labelled comments are never sent again.
+    assert categories.unclassified(categories.items(collection), reg) == []
+    assert not categories.needs_work(categories.items(collection), reg)
+
+
+def test_unknown_keys_are_dropped_and_restated_fields_keep_their_value(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    note_id = commented(collection, lexicon, "i'm confusing it with 千")
+    classify(
+        collection,
+        {
+            "results": [
+                {
+                    "id": 0,
+                    "existing": [
+                        {"key": "answered", "value": "千"},
+                        {"key": "made_up", "value": ""},
+                    ],
+                    "proposed": [],
+                },
+                {
+                    "id": 7,
+                    "existing": [{"key": "giveaway", "value": ""}],
+                    "proposed": [],
+                },
+            ]
+        },
+    )
+    note = collection.get_note(note_id)
+    (entry,) = stored_source(note)["feedback"]
+    assert entry["categories"] == {"answered": "千"}
+    # A restated field is counted, not tagged, and does not change the repair.
+    assert not [t for t in note.tags if t.endswith("::answered")]
+    assert entry["answered"] == ""
+    assert categories.registry(collection)["categories"] == {}
+
+
+def test_an_unlabelled_comment_is_offered_again_only_for_newer_categories(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    note_id = commented(collection, lexicon, "the pinyin is missing tones")
+    classify(collection, {"results": [{"id": 0, "existing": [], "proposed": []}]})
+    reg = categories.registry(collection)
+    assert categories.unclassified(categories.items(collection), reg) == []
+    reg["version"] = 1
+    reg["categories"]["only_translation"] = {
+        "label": "Only the translation disambiguates",
+        "input": "flag",
+        "version": 1,
+        "promoted": 0,
+    }
+    collection.set_config(categories.REGISTRY_KEY, reg)
+    batch = classify(
+        collection,
+        {
+            "results": [
+                {
+                    "id": 0,
+                    "existing": [
+                        {"key": "unnatural", "value": ""},
+                        {"key": "only_translation", "value": ""},
+                    ],
+                    "proposed": [{**ONLY_TRANSLATION, "key": "pinyin_tones"}],
+                }
+            ]
+        },
+    )
+    assert len(batch) == 1
+    (entry,) = stored_source(collection.get_note(note_id))["feedback"]
+    assert entry["categories"] == {"only_translation": True}
+    assert "pinyin_tones" not in categories.registry(collection)["categories"]
+
+
+def test_a_category_on_enough_distinct_notes_is_promoted(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    collection.set_config(
+        categories.REGISTRY_KEY, {"threshold": {"notes": 1, "days": 30}}
+    )
+    commented(collection, lexicon, "the chinese alone should disambiguate it")
+    classify(
+        collection,
+        {"results": [{"id": 0, "existing": [], "proposed": [ONLY_TRANSLATION]}]},
+    )
+    reg = categories.registry(collection)
+    assert [key for key, _c in categories.promoted(reg)] == ["only_translation"]
+
+
+def item(owner: int, at: float, **entry) -> categories.Item:
+    return categories.Item(
+        "Chinese Frontier", owner, str(owner), 0, {"at": at, **entry}
+    )
+
+
+def test_counts_are_distinct_notes_within_the_window() -> None:
+    reg = {
+        "threshold": {"notes": 2, "days": 10},
+        "version": 0,
+        "categories": {},
+        "addressed": {},
+    }
+    now = 100 * 86400
+    found = [
+        item(1, now, reasons=["unnatural"]),
+        item(1, now, categories={"unnatural": True}),
+        item(2, now - 86400, answered="千"),
+        item(3, now - 20 * 86400, reasons=["unnatural"]),
+        categories.Item("Chinese Frontier", 4, "4", 0, {"reasons": ["unnatural"]}),
+    ]
+    counted = categories.counts(found, reg, now)
+    assert counted == {"unnatural": {1}, "answered": {2}}
+
+
+def test_recurring_categories_are_rule_change_candidates_until_addressed() -> None:
+    reg = {
+        "threshold": {"notes": 1, "days": 30},
+        "version": 0,
+        "categories": {},
+        "addressed": {},
+    }
+    now = 100 * 86400
+    found = [
+        item(1, now - 10, reasons=["ambiguous"], note="only the English helps"),
+        item(2, now - 5, reasons=["ambiguous"]),
+        item(3, now, reasons=["unnatural"]),
+    ]
+    rows = categories.recurring(found, reg, now)
+    assert [(r["key"], r["notes"], r["candidate"]) for r in rows] == [
+        ("ambiguous", 2, True),
+        ("unnatural", 1, False),
+    ]
+    assert rows[0]["examples"] == ["only the English helps"]
+    text = categories.recurring_text(rows, reg)
+    assert "Another word fits the blank (2 notes in 30 days)" in text
+    reg["addressed"] = {"ambiguous": now - 7}
+    rows = categories.recurring(found, reg, now)
+    assert ("ambiguous", 1, False) in [
+        (r["key"], r["notes"], r["candidate"]) for r in rows
+    ]
+    assert categories.recurring_text(rows, reg) == ""
+
+
+def test_undated_entries_get_a_date_without_a_model_call(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    note_id = commented(collection, lexicon, "")
+    note = collection.get_note(note_id)
+    data = stored_source(note)
+    data["feedback"][0].pop("at", None)
+    note["Source"] = json.dumps(data, ensure_ascii=False)
+    collection.update_note(note)
+    found = categories.items(collection)
+    reg = categories.registry(collection)
+    assert categories.unclassified(found, reg) == []
+    assert categories.needs_work(found, reg)
+    categories.apply(collection, [], None)
+    (entry,) = stored_source(collection.get_note(note_id))["feedback"]
+    assert isinstance(entry["at"], int) and "classified" not in entry
+    assert "chinese-frontier::feedback::ambiguous" in collection.get_note(note_id).tags
+
+
+def promote(col: Collection, key: str, **category) -> None:
+    reg = categories.registry(col)
+    reg["categories"][key] = {
+        "label": key.replace("_", " "),
+        "description": "",
+        "input": "flag",
+        "input_label": "",
+        "version": 1,
+        "promoted": 1,
+        **category,
+    }
+    col.set_config(categories.REGISTRY_KEY, reg)
+
+
+def test_feedback_accepts_promoted_categories_and_their_values(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    promote(collection, "only_translation", description="Context admits another.")
+    promote(collection, "unknown_hint", input="words", input_label="Words")
+    promote(collection, "candidate", promoted=0)
+    with pytest.raises(ValueError):
+        record_feedback(collection, note_id, reasons=("candidate",))
+    with pytest.raises(ValueError):
+        record_feedback(collection, note_id, values={"only_translation": "x"})
+    with pytest.raises(ValueError):
+        record_feedback(collection, note_id, values={"unknown_hint": "page"})
+    record_feedback(
+        collection,
+        note_id,
+        reasons=("only_translation",),
+        values={"unknown_hint": "页、书"},
+    )
+    note = collection.get_note(note_id)
+    (entry,) = stored_source(note)["feedback"]
+    assert entry["values"] == {"unknown_hint": "页 书"} and isinstance(entry["at"], int)
+    assert entry["reason_text"]["only_translation"] == (
+        "only translation: Context admits another."
+    )
+    assert "chinese-frontier::feedback::only_translation" in note.tags
+    assert "chinese-frontier::feedback::unknown_hint" in note.tags
+    target = snapshot(collection, settings, {}).sources[0]
+    assert "only translation: Context admits another." in target.learner_feedback[0]
+    assert "unknown hint: 页 书" in target.learner_feedback[0]
+
+
+def test_fix_requests_accept_promoted_categories_and_tag_the_adopted_note(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, note, card, _sibling = setup_fix(collection)
+    fields = list(note.fields)
+    promote(collection, "only_translation")
+    with pytest.raises(ValueError):
+        fix(collection, card.id, reasons=("bogus",))
+    fix(collection, card.id, reasons=("only_translation",), note="still unclear")
+    classify(
+        collection,
+        {
+            "results": [
+                {
+                    "id": 0,
+                    "existing": [{"key": "giveaway", "value": ""}],
+                    "proposed": [],
+                }
+            ]
+        },
+    )
+    (entry,) = collection.get_config(FIXES_KEY)[str(card.id)]["feedback"]
+    assert entry["categories"] == {"giveaway": True}
+    assert collection.get_note(note.id).fields == fields
+    _target, result = admit_fix(collection, settings, lexicon)
+    adopted = collection.get_note(result.admitted[0])
+    assert {
+        "chinese-frontier::feedback::only_translation",
+        "chinese-frontier::feedback::giveaway",
+    } <= set(adopted.tags)

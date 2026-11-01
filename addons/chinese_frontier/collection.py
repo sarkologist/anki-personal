@@ -16,6 +16,7 @@ from anki.consts import QUEUE_TYPE_MANUALLY_BURIED
 from anki.decks import DeckId
 from anki.notes import NoteId
 
+from . import categories
 from .core import (
     CLOZE,
     EXCLUDE_TAG,
@@ -283,10 +284,13 @@ def _learner_feedback(
         # Older feedback kept the sentence for a contrast pair.
         kept = entry.get("rejected") is False
         words = [w for w in entry.get("avoid_words", []) if isinstance(w, str)]
+        # A learnt category carries its own text, so old entries stay readable.
+        learnt = entry.get("reason_text")
+        learnt = learnt if isinstance(learnt, dict) else {}
         problems = [
-            FEEDBACK_REASONS[r]
-            for r in entry.get("reasons", [])
-            if r in FEEDBACK_REASONS
+            FEEDBACK_REASONS[r] if r in FEEDBACK_REASONS else str(learnt[r])
+            for r in dict.fromkeys([*entry.get("reasons", []), *learnt])
+            if r in FEEDBACK_REASONS or r in learnt
         ]
         parts = [f"{'Sentence' if kept else 'Rejected sentence'}: {sentence}"]
         if answered := str(entry.get("answered", "")):
@@ -1180,6 +1184,11 @@ def repair_count(note: Any) -> int:
     return len(entries) if isinstance(entries, list) else 0
 
 
+def _other_words(words: Any, word: str) -> list[str]:
+    """The words that are not Chinese words other than the answer."""
+    return [w for w in words if not is_word(w) or w in word or word in w]
+
+
 def record_feedback(
     col: Collection,
     note_id: int,
@@ -1188,6 +1197,7 @@ def record_feedback(
     note: str = "",
     avoid_words: tuple[str, ...] = (),
     answered: str = "",
+    values: dict[str, str] | None = None,
 ) -> FeedbackResult:
     """Keep the learner's complaint on the note and queue a repair that must fix it.
 
@@ -1200,10 +1210,11 @@ def record_feedback(
         )
     data = _json_field(target["Source"])
     word = str(data.get("word", ""))
-    if unknown := [r for r in reasons if r not in FEEDBACK_REASONS]:
-        raise ValueError("Unknown reason: " + ", ".join(unknown))
+    learnt = categories.structured(
+        col, reasons, values or {}, lambda ws: _other_words(ws, word)
+    )
     avoid_words = tuple(dict.fromkeys(w.strip() for w in avoid_words if w.strip()))
-    if bad := [w for w in avoid_words if not is_word(w) or w in word or word in w]:
+    if bad := _other_words(avoid_words, word):
         raise ValueError(
             "Words to avoid must be Chinese words other than the answer: "
             + ", ".join(bad)
@@ -1229,13 +1240,14 @@ def record_feedback(
             "answered": answered,
             "sentence": sentence,
             "rejected": True,
+            **learnt,
         }
     )
     data["feedback"] = entries
     target["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
     tags = [t for t in target.tags if t != REPAIR_TAG]
     tags.append(MANUAL_TAG if handed_over else REPAIR_TAG)
-    tags.extend(FEEDBACK_TAG + r for r in reasons)
+    tags.extend(categories.feedback_tags(FEEDBACK_TAG, entries[-1]))
     target.tags = list(dict.fromkeys(tags))
     return FeedbackResult(_save_feedback(col, target, handed_over), handed_over)
 
@@ -1327,11 +1339,10 @@ def _adoption_metadata(col: Collection, source: Source, fixes: dict[str, Any]) -
 
 def _adoption_tags(source: Source, fixes: dict[str, Any]) -> list[str]:
     return [ADOPTED_TAG] + [
-        FEEDBACK_TAG + reason
+        tag
         for entry in fixes[str(source.card_id)].get("feedback", [])
         if isinstance(entry, dict)
-        for reason in entry.get("reasons", [])
-        if reason in FEEDBACK_REASONS
+        for tag in categories.feedback_tags(FEEDBACK_TAG, entry)
     ]
 
 
@@ -1378,6 +1389,7 @@ def request_fix(
     note: str = "",
     avoid_words: tuple[str, ...] = (),
     answered: str = "",
+    values: dict[str, str] | None = None,
 ) -> FixResult:
     """Suspend a learner card that tests the wrong thing and queue its replacement.
 
@@ -1396,10 +1408,11 @@ def request_fix(
         raise ValueError("Enter a Chinese word from the sentence as the target")
     if not definition:
         raise ValueError("Enter the meaning this card tests")
-    if unknown := [r for r in reasons if r not in FEEDBACK_REASONS]:
-        raise ValueError("Unknown reason: " + ", ".join(unknown))
+    learnt = categories.structured(
+        col, reasons, values or {}, lambda ws: _other_words(ws, word)
+    )
     avoid_words = tuple(dict.fromkeys(w.strip() for w in avoid_words if w.strip()))
-    if bad := [w for w in avoid_words if not is_word(w) or w in word or word in w]:
+    if bad := _other_words(avoid_words, word):
         raise ValueError(
             "Words to avoid must be Chinese words other than the answer: "
             + ", ".join(bad)
@@ -1421,6 +1434,7 @@ def request_fix(
             "answered": answered,
             "sentence": target.sentence,
             "rejected": True,
+            **learnt,
         }
     )
     home = card.odid or card.did
