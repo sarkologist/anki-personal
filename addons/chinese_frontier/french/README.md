@@ -96,6 +96,8 @@ Vocabulary cards introduce one meaning using established grammar. Conjugation
 cards introduce one dictionary-verified form of an established verb and supply its
 infinitive on the front. Complete English translations are visible beside the
 French blank. Vocabulary translations must not reveal the French answer verbatim.
+The translation aids understanding but never disambiguates: the French context
+(with any infinitive cue or visible prefix) must rule out competing answers.
 Target verb morphology is resolved from its declared grammar rather than the
 ordering of dictionary readings. Context verb analyses are checked explicitly, including auxiliary
 and participle forms. A context reading of an answered syncretic surface (fais,

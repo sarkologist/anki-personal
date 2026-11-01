@@ -15,7 +15,10 @@ from .lexicon import Form, Lexicon, normalize, tokens
 MODEL = "French Frontier"
 TAG = "french-frontier::generated"
 KEY_TAG = "french-frontier::key::"
-POLICY = 2
+POLICY = 3
+# Applied cards checked under this policy or later still establish their words
+# while a re-check is pending: policy 3 only changed what may disambiguate.
+EVIDENCE_POLICY = 2
 # Only these spelling-preserving -er patterns can be generalized. Dictionary
 # verification remains mandatory, including for orthographic stem changes.
 ER_ENDINGS = {

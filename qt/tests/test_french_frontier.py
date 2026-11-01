@@ -3785,3 +3785,126 @@ def test_french_reviewer_menu_offers_fix_and_restore(collection, monkeypatch):
         SimpleNamespace(card=collection.get_note(nid).cards()[0]), menu
     )
     assert labels == ["Fix this sentence...", "Restore the original card"]
+
+
+def test_only_the_french_may_rule_out_competing_words():
+    import json
+    from dataclasses import asdict
+    from threading import Event
+
+    from chinese_frontier.french.generation import (
+        AUDIT_INSTRUCTIONS,
+        candidate_hash,
+        generate,
+    )
+
+    assert "translation never rules out" in AUDIT_INSTRUCTIONS
+    assert "fits both French and the full visible English" not in AUDIT_INSTRUCTIONS
+    assert POLICY >= 3
+    c, t = candidate(), target()
+    prompts = []
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return json.loads(
+                    json.dumps(
+                        {"proposals": [{"key": t.key, "candidates": [asdict(c)]}]}
+                    )
+                )
+            return {
+                "reviews": [
+                    {
+                        "key": t.key,
+                        "fingerprint": candidate_hash(c),
+                        "approved": True,
+                        "context_checks": context_checks(),
+                        "reason": "checked",
+                        "search_summary": "checked alternatives",
+                        "alternatives": [
+                            {
+                                "example": 0,
+                                "answer": "prends",
+                                "fits_context": False,
+                                "fits_cloze": False,
+                                "reason": "different meaning",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+    known = learned("je", "le", "train", "regarde", "parle")
+    generate([t], known, dictionary(), {}, Event(), Client())
+    assert "translation never disambiguates" in prompts[0]
+    assert "prefix and translation may resolve" not in prompts[0]
+
+
+def test_cards_checked_under_an_older_policy_still_establish_words(collection):
+    import html as html_module
+
+    from chinese_frontier.french.collection import SETTINGS, admit, snapshot
+    from chinese_frontier.french.generation import Draft, candidate_hash
+
+    settings = {"enabled": True, "deck_id": 1}
+    collection.set_config(SETTINGS, settings)
+    for word in ("je", "le", "train", "regarde", "parle"):
+        add_cloze(collection, "{{c1::" + word + "}}", learned=True)
+    add_cloze(collection, "Je {{c1::prends}} le train.", suspended=True)
+    c, t = candidate(), target()
+    review = {
+        "approved": True,
+        "context_checks": context_checks(),
+        "reason": "Clear",
+        "search_summary": "Checked alternatives",
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": True,
+                "reason": "different",
+            }
+        ],
+    }
+    audit = {
+        "policy": POLICY,
+        "target_key": t.key,
+        "fingerprint": candidate_hash(c),
+        "review": review,
+        "provider": "codex",
+    }
+    note_id = admit(collection, settings, {}, [Draft(t, c, audit)], dictionary())
+    note = collection.get_note(note_id.admitted[0])
+    card = note.cards()[0]
+    card.queue = card.type = 2
+    card.reps = 2
+    card.due = collection.sched.today + 100
+    collection.update_card(card)
+    for days in (2, 3):
+        stamp = (collection.sched.day_cutoff - days * 86400 + 3600) * 1000 + days
+        collection.db.execute(
+            "insert into revlog values (?,?,?,?,?,?,?,?,?)",
+            stamp,
+            card.id,
+            0,
+            3,
+            1,
+            1,
+            2500,
+            1000,
+            1,
+        )
+    known = snapshot(collection, settings, {}, dictionary()).known
+    assert "emprunte" in known.surfaces
+    stored = json.loads(html_module.unescape(note["Disambiguation"]))
+    stored["policy"] = 2
+    note["Disambiguation"] = html_module.escape(json.dumps(stored))
+    collection.update_note(note)
+    # A stricter ambiguity rule queues a re-check; the learner still knows the word.
+    known = snapshot(collection, settings, {}, dictionary()).known
+    assert "emprunte" in known.surfaces
