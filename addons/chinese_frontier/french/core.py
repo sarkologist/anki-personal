@@ -208,7 +208,8 @@ class Target:
     learner_feedback: tuple[str, ...] = ()
     avoid_words: tuple[str, ...] = ()
     rejected_sentences: tuple[str, ...] = ()
-    # Words the learner confuses with the target; only these may be contrasted.
+    # Words the learner confuses with the target: the context must rule them out,
+    # and a contrast pair may test them even when unlearned.
     reported_confusions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -354,7 +355,7 @@ def spelled(text: str) -> set[str]:
 
 
 def answers_confusion(other: Candidate, target: Target, lexicon: Lexicon) -> bool:
-    """Whether the contrast answers a reported confusion; then it is required."""
+    """Whether the contrast answers a reported confusion, which may be unlearned."""
     if not target.reported_confusions:
         return False
     readings = {normalize(other.answer)} | {
@@ -366,8 +367,6 @@ def answers_confusion(other: Candidate, target: Target, lexicon: Lexicon) -> boo
 
 
 def respect_feedback(c: Candidate, target: Target) -> None:
-    if target.reported_confusions and c.mode != "contrast":
-        raise ValidationError("A reported confusion needs a contrast pair")
     if " ".join(c.sentence.split()) in target.rejected_sentences:
         raise ValidationError("The learner rejected this sentence")
     context = set(tokens(c.sentence)) - set(tokens(c.answer))

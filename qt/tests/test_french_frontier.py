@@ -752,8 +752,8 @@ def test_contrast_uses_one_card_and_labels_both_sides(collection):
         validate(girl, t, known, lex)
     single = replace(c, mode="word", contrast=None)
     validate(single, t, known, lex)
-    with pytest.raises(ValidationError, match="contrast"):
-        validate(single, replace(t, reported_confusions=("femme",)), known, lex)
+    # A confusion asks for context that rules it out, not necessarily a pair.
+    validate(single, replace(t, reported_confusions=("femme",)), known, lex)
     result = admit(collection, settings, {}, [Draft(t, c, audit)], lex)
     assert len(result.admitted) == 1
     note = collection.get_note(result.admitted[0])
@@ -3476,15 +3476,29 @@ def test_french_reviewer_menu_offers_feedback_and_retries_now(collection, monkey
     )
 
 
-def test_french_confusion_is_kept_for_a_contrast(collection):
+def test_french_confusion_must_be_ruled_out(collection):
     from chinese_frontier.french.collection import record_feedback, snapshot
+    from chinese_frontier.french.generation import validate_review
 
     settings, note = admitted_french_note(collection, candidate())
     record_feedback(collection, note.id, answered=" Prends ")
     ((_, _, t),) = snapshot(collection, settings, {}, dictionary()).repairs.values()
     assert t.reported_confusions == ("prends",)
-    # The sentence may stay: the contrast pairs it with the confused word.
-    assert t.rejected_sentences == ()
+    # The learner gave another word, so this sentence did not tell them apart.
+    assert t.rejected_sentences == ("Je emprunte le train.",)
+    with pytest.raises(ValidationError, match="confusion: prends"):
+        validate_review(uncued_competitor_review(), candidate(), t)
+    review = uncued_competitor_review()
+    review["alternatives"].append(
+        {
+            "example": 0,
+            "answer": "Prends",
+            "fits_context": False,
+            "fits_cloze": True,
+            "reason": "take is not borrow",
+        }
+    )
+    validate_review(review, candidate(), t)
     assert "Learner answered: prends" in t.learner_feedback[0]
     assert "reported_confusions" in json.dumps(t.prompt())
     with pytest.raises(ValueError, match="emprunte is this card's answer"):

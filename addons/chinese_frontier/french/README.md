@@ -161,10 +161,11 @@ to say what's wrong: the same reasons as Chinese, words to avoid and a free note
 The replacement must fix every complaint, never reuses a rejected sentence, and the
 feedback stays in `Source` (tags `french-frontier::feedback::<reason>`) for later
 repairs. After three repairs the note is tagged `french-frontier::manual` for you to
-edit instead. "I'm confusing it with" records the word you mix it up with; the
-repair must then be a contrast pair against that word (it may be one you have
-not learned yet; the rest of both sentences must be established),
-and contrast pairs on that note may only use a reported word. Repairs
+edit instead. "I'm confusing it with" records the word you mix it up with and
+rejects the sentence: the new context must rule that word out, and the reviewer
+must test it. A contrast pair against it is allowed when one sentence cannot (it
+may be a word you have not learned yet; the rest of both sentences must be
+established), and contrast pairs on that note may only use a reported word. Repairs
 preserve card IDs/history/scheduling, reject concurrent edits, and consume no new
 slot because this implementation keeps exactly one card per note. Originals never
 enter the repair queue. Native operations are grouped for undo. Use one desktop

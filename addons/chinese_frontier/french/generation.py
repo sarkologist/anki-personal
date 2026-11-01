@@ -122,7 +122,7 @@ When target.kind is "conjugation", the card supplies the infinitive, so take the
 Then check grammar, correct morphology, dictionary sense, translation, and that every other meaning/construction is established by the supplied evidence. Reject a familiar surface used in an unfamiliar sense. For vocabulary, reject a second unfamiliar conjugation or grammatical construction. For conjugation, reject an unfamiliar verb meaning.
 Use example index 0 for a single card or first contrast example, and index 1 ONLY for the second contrast example. For EVERY example enumerate concrete French substitutions for the CLOZED TARGET only. Each alternatives.answer must be a complete competing word/phrase that could replace that target (the full word in stem mode), never a label, list, commentary, or analysis of an unchanged context word. Check alternative conjugations/tense readings only when the TARGET is a verb. Discuss context-verb grammar in reason/search_summary, not as competing cloze answers. fits_context means that this actual substitution fits both French and the full visible English. Log the actual alternatives checked with reasons. A fitting alternative is enough to reject; never fabricate an exclusive synonym rule or rely on a learner knowing idiomatic preference. Evaluate the French situation AND the full visible English translation, infinitive cue and any visible prefix. fits_cloze includes those cues. Contrast examples must each be unambiguous. Stem examples must require a meaningful remaining answer. Approval and all judgments must agree. Copy the key and fingerprint exactly.
 When a target carries learner_feedback, reject a card that repeats any complaint in it.
-A contrast answer listed in target.reported_confusions was supplied by the learner: it needs no established evidence, but its sentence, sense and translation must still be correct.
+Each word in target.reported_confusions is one the learner confuses with the target: unless the card is a contrast pair, test each exactly as written as an alternative for example 0. A contrast answer listed in target.reported_confusions was supplied by the learner: it needs no established evidence, but its sentence, sense and translation must still be correct.
 """
 
 
@@ -231,6 +231,18 @@ def validate_review(review: Any, candidate: Candidate, target: Target) -> bool:
         fitting |= alternative["fits_context"] and (uncued or alternative["fits_cloze"])
     if checked != set(range(count)):
         raise ValidationError("Missing alternatives for a contrast example")
+    tested = {
+        normalize(a.get("answer", ""))
+        for a in alternatives
+        if isinstance(a, dict) and a.get("example") == 0
+    }
+    # A contrast pair tests the confusion directly.
+    if not candidate.contrast and (
+        missing := [w for w in target.reported_confusions if w not in tested]
+    ):
+        raise ValidationError(
+            "Review must check the learner's confusion: " + ", ".join(missing)
+        )
     contexts = french_contexts(candidate)
     checks = review.get("context_checks")
     if not isinstance(checks, list) or len(checks) != count:
@@ -748,7 +760,7 @@ Use the supplied context_evidence as meaning/construction evidence when writing,
 The French situation must convey the intended meaning with the ENTIRE target hidden, ignoring the English translation, infinitive cue and any prefix. Describe a concrete cause, behavior, consequence or contrast that narrows the semantic domain for a learner. Generic frames like "Il explique sa méfiance" or "Il explique cette échéance" fail: the object could be anything. A prefix and translation may resolve residual synonyms only AFTER the French supplies semantic context. Rewrite with richer established context or omit the target if impossible; never shorten to a generic frame to evade knowledge checks. Never rely on an unexplained idiomatic preference. No markup/cloze syntax; answer occurs exactly once as a whole word or phrase. Return one proposal entry per target with up to two candidates or empty candidates if impossible. In reason explain the missing context or specific obstacle, so a later attempt can retrieve better evidence; reason can be empty when candidates are supplied.
 Attempt 0: whole word. After rejection: rewrite with fuller context or contrast an already-established competing answer. Both contrast examples use full translations; contrast must not reveal either answer in the other example. On the final attempt, if previous review reported a fitting alternative, use a contrast or stem rather than another uncued word. A visible orthographic prefix with the remainder clozed is allowed: mode stem and explanation exactly the visible prefix. Never use this for trivial one-letter answers. Such cards will not establish whole-word knowledge.
 A target may carry learner_feedback: the learner's complaints about earlier versions of this card. The new card must fix every complaint. Never reuse a sentence in rejected_sentences, and never use avoid_words anywhere in the context.
-A target with reported_confusions MUST be a contrast pair from attempt 0: the second example's answer is one of those words, the word the learner confuses with the target. That word may be unestablished; every other context word must still be established.
+reported_confusions are words the learner confuses with the target. The French situation must clearly rule each one out, so the learner can tell them apart. If one sentence cannot, a contrast pair whose second answer is one of those words is allowed; that word may be unestablished, but every other context word must still be established.
 When supplying a contrast object, the TOP-LEVEL mode MUST be contrast. The nested contrast object has mode word and contrast null. Word and stem modes MUST have contrast null. No declarative meaning hints in the blank.
 """
         selected = set(

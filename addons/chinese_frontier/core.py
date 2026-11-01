@@ -111,7 +111,8 @@ class Source:
     existing_candidate: dict[str, Any] | None = None
     existing_fingerprint: str = ""
     existing_cards: int = 0
-    # Words the learner answered instead; the only words a contrast pair may test.
+    # Words the learner answered instead: the context must rule them out, and
+    # they are the only words a contrast pair may test.
     reported_confusions: tuple[str, ...] = ()
     force_repair: bool = False
     # The learner's complaints about earlier versions of this card.
@@ -293,8 +294,6 @@ def validate_candidate(
         dependencies = tuple(dict.fromkeys((*dependencies, *other_valid.dependencies)))
     elif candidate.contrast is not None:
         raise ValidationError("Only contrast mode may contain a second example")
-    elif source.reported_confusions:
-        raise ValidationError("A reported confusion needs a contrast pair")
     return Validated(candidate, text, dependencies, translation, count)
 
 

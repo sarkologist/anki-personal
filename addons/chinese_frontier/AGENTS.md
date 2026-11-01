@@ -1,7 +1,8 @@
 # Chinese cloze feedback
 
 - Treat a learner's plausible competing answer as evidence that the card needs a clearer distinction, even if the original sentence is grammatical.
-- For reported confusions, follow the deck's existing disambiguation style: contrast short examples side by side, cloze whole competing words with the same ordinal, and edit the existing note so one card and its scheduling history are preserved. Record the learner's word as `disambiguation.with` in the `Source` metadata.
+- A reported confusion rejects the sentence; the new sentence's context must rule the learner's word out, and the reviewer must test that word. It is available on character-card notes too. Record the learner's word as `disambiguation.with` in the `Source` metadata.
+- Only when no single sentence passes may a reported confusion become a contrast pair: short examples side by side, whole competing words clozed with the same ordinal, editing the existing note so one card and its scheduling history are preserved. Never for notes with character cards.
 - Contrast pairs answer reported confusions only. Never use one to make an ambiguous example unambiguous, and never pair the target with a word the learner did not supply.
 - Make the distinguishing relation visible in the Chinese context. Connector examples should distinguish contrast, cause, or an outcome holding across alternatives; an English hint alone does not establish that relation.
 - Validate other context words against live-card evidence. A competing word explicitly supplied by the learner may be tested in the contrast; do not infer familiarity for additional words.
@@ -23,4 +24,4 @@
 # French feedback
 
 - French generated notes keep learner feedback in `Source.feedback`, read by the shared `_learner_feedback`. The learner fields ride on `french.core.Target` but stay out of its key and its stored `target` metadata; a draft whose target feedback differs from the current note is stale.
-- A reported confusion (`answered` in a feedback entry) forces a contrast pair against that word, by surface or lemma, and keeps the sentence. That word may be unlearned (`validate(..., supplied=True)` skips only its own grammar and meaning checks); its context words must still be established. Without one, French contrast pairs stay free.
+- A reported confusion (`answered` in a feedback entry) rejects the sentence; the new context must rule that word out and the reviewer must test it exactly as written. A contrast pair against it (by surface or lemma) is allowed but not required, and that word may be unlearned (`validate(..., supplied=True)` skips only its own grammar and meaning checks); its context words must still be established. Without one, French contrast pairs stay free.

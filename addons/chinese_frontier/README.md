@@ -100,13 +100,14 @@ as a fallback. Character fallback assigns a separate ordinal to each distinct
 character; repeated characters share an ordinal to prevent copying.
 Single-character and repeated-only words cannot use that fallback.
 
-Contrast pairs are only made for a confusion you report, never to rescue an
-ambiguous example: a confusion is a fact about your recall, seen only in review.
-Right-click a generated card during review and choose **I answered a different
-word...**. The word is recorded in the note's `Source` field, and the note is
-regenerated in place as a pair contrasting the two words. Both whole words are
-hidden with `c1`, producing one card that keeps its history. If no clear pair passes
-review, the existing card is kept and the attempt is logged. Older contrast pairs
+A confusion you report (**I answered** in **Fix this sentence...**) is recorded in
+the note's `Source` field and rejects the sentence. The new sentence's context must
+rule the word out, and the reviewer must test it as an alternative. Only if no single
+sentence passes may the note become a pair contrasting the two words, both hidden
+with `c1` on one card that keeps its history; notes with character cards are never
+turned into pairs. Contrast pairs are never made to rescue an ambiguous example
+without a reported confusion. If nothing passes review, the existing card is kept and
+the attempt is logged. Older contrast pairs
 made without a reported confusion are reduced to their first example once and
 re-audited.
 
@@ -150,8 +151,8 @@ Missed days do not accumulate extra introductions. Use only one desktop generato
 per collection; concurrent unsynced writers cannot share an admission reservation.
 
 During review, right-click a generated card and choose **Fix this sentence...**.
-Tick what's wrong, list words to avoid, give the word you answered (which makes a
-side-by-side contrast), or add a note; leave it all blank for a plain reroll. The
+Tick what's wrong, list words to avoid, give the word you answered (the new
+sentence must rule it out), or add a note; leave it all blank for a plain reroll. The
 feedback stays in the note's `Source` metadata: the writer must fix it, the reviewer
 rejects sentences that repeat it, avoided words and rejected sentences are refused in
 code, and later audits keep checking it. Each reason also adds a
