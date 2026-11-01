@@ -43,6 +43,7 @@ from ..core import (
     successful_days,
 )
 from .core import (
+    EVIDENCE_POLICY,
     KEY_TAG,
     MODEL,
     POLICY,
@@ -943,8 +944,10 @@ def snapshot(
                 form_key = ""
                 if own:
                     audit = json_field(values.get("Disambiguation", ""))
+                    policy = audit.get("policy")
                     if (
-                        audit.get("policy") != POLICY
+                        not isinstance(policy, int)
+                        or not EVIDENCE_POLICY <= policy <= POLICY
                         or audit.get("status") != "applied"
                     ):
                         continue
