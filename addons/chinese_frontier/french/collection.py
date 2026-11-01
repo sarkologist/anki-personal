@@ -587,11 +587,11 @@ def request_fix(
 
 def _take_over(col: Collection, card_id: int, card: Any, fixes: dict[str, Any]) -> None:
     """The new card continues the learner's card; the fix is done."""
-    record = fixes.pop(str(card_id))
     _copy_scheduling(col.get_card(CardId(card_id)), card)
     col.update_card(card)
     if _scheduling(col.get_card(card.id)) != _scheduling(card):
         raise ValueError("Copying the original card's schedule failed")
+    record = fixes.pop(str(card_id))
     _untag_pending(col, int(record.get("note_id", 0)), fixes)
     col.set_config(FIXES, fixes, undoable=True)
 
@@ -633,6 +633,11 @@ def restore_original(col: Collection, note_id: int) -> OpChanges:
     if not col.db.scalar("select count() from cards where id=?", card_id):
         raise ValueError("The original card no longer exists")
     original = col.get_card(CardId(card_id))
+    if original.queue != -1:
+        raise ValueError(
+            "The original card is already back in review; restoring would "
+            "overwrite its progress"
+        )
     cards = note.cards()
     undo = col.add_custom_undo_entry("Restore original French card")
     _copy_scheduling(cards[0], original)
@@ -696,16 +701,28 @@ class PendingFix:
 def pending_fixes(col: Collection) -> list[PendingFix]:
     scope = _scope(col)
     result = []
+    keys: set[str] = set()
     for raw_id, record in col.get_config(FIXES, {}).items():
         if not isinstance(record, dict):
             continue
+        key = str(record.get("key", ""))
+        # The snapshot skips these silently; say why the fix is not moving.
+        collision = key in keys or bool(
+            col.find_notes(f"tag:{KEY_TAG}{key} -tag:{RESTORED_TAG}")
+        )
+        keys.add(key)
         result.append(
             PendingFix(
                 int(raw_id),
                 str(record.get("target", {}).get("lemma", "")),
                 str(record.get("key", "")),
                 int(record.get("requested_at", 0)),
-                _fix_problem(col, int(raw_id), record, scope),
+                _fix_problem(col, int(raw_id), record, scope)
+                or (
+                    "another French Frontier note already tests this"
+                    if collision
+                    else ""
+                ),
             )
         )
     return sorted(result, key=lambda item: item.requested_at)
@@ -1166,10 +1183,10 @@ def admit(
             "mode": c.mode,
             "constructions": list(c.constructions),
         }
-        if draft.repair_note and (
-            feedback := json_field(note["Source"]).get("feedback")
-        ):
-            data["feedback"] = feedback
+        if draft.repair_note:
+            # A repair keeps the complaints and the learner card it replaced.
+            old = json_field(note["Source"])
+            data.update({k: old[k] for k in ("feedback", "adopted") if old.get(k)})
         record = fixes.get(str(draft.fix_card), {}) if draft.fix_card else {}
         if record:
             original = col.get_card(CardId(draft.fix_card))
@@ -1233,11 +1250,19 @@ def admit(
             # A fix stays in its card's deck, which the snapshot found in scope.
             home = original.odid or original.did if record else current.deck_id
             col.add_note(note, DeckId(home))
-        if len(note.cards()) != 1:
-            raise ValueError("French proposal unexpectedly created extra cards")
         if record:
-            _take_over(col, draft.fix_card, note.cards()[0], fixes)
+            try:
+                if len(note.cards()) != 1:
+                    raise ValueError("French proposal unexpectedly created extra cards")
+                _take_over(col, draft.fix_card, note.cards()[0], fixes)
+            except ValueError as exc:
+                # Never leave a half-adopted note holding the fix's key.
+                col.remove_notes([note.id])
+                rejected[draft.target.key] = str(exc)
+                continue
             current.fixes.pop(draft.target.key, None)
+        elif len(note.cards()) != 1:
+            raise ValueError("French proposal unexpectedly created extra cards")
         added_cards += 0 if draft.repair_note or record else 1
         repaired_notes += 1 if draft.repair_note else 0
         admitted.append(int(note.id))

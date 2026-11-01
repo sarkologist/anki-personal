@@ -3673,9 +3673,12 @@ def test_french_fix_adopts_the_learner_cards_schedule(collection):
         PENDING_TAG,
         RESTORED_TAG,
         admit,
+        adopted_original,
+        record_feedback,
         restore_original,
         snapshot,
     )
+    from chinese_frontier.french.generation import candidate_hash
 
     settings, note, card, key = user_fix(collection, reasons=("unnatural",))
     home = collection.decks.id("Default::sub")
@@ -3707,10 +3710,27 @@ def test_french_fix_adopts_the_learner_cards_schedule(collection):
     assert PENDING_TAG not in collection.get_note(note.id).tags
     assert collection.get_card(card.id).queue == -1
     assert not snapshot(collection, settings, {}, dictionary()).fixes
+    # A later repair of the new note still knows which card it replaced.
+    record_feedback(collection, nid, reasons=("unnatural",))
+    repair = snapshot(collection, settings, {}, dictionary()).repairs[key]
+    again = replace(draft, target=repair[2], fix_card=0)
+    again = replace(
+        again,
+        candidate=replace(fresh, sentence="Je emprunte, le train."),
+        repair_note=nid,
+        old_fingerprint=repair[1],
+    )
+    again.audit["fingerprint"] = candidate_hash(again.candidate)
+    again.audit["target_key"] = again.target.key
+    result = admit(collection, settings, {}, [again], dictionary())
+    assert result.admitted == [nid], result.rejected
+    assert adopted_original(collection.get_note(nid))["card_id"] == card.id
     restore_original(collection, nid)
     assert collection.get_card(card.id).queue != -1
     assert collection.get_note(nid).cards()[0].queue == -1
     assert RESTORED_TAG in collection.get_note(nid).tags
+    with pytest.raises(ValueError, match="restored"):
+        restore_original(collection, nid)
     # A restored note no longer holds the key, so the card can be fixed again.
     assert key not in snapshot(collection, settings, {}, dictionary()).keys
 

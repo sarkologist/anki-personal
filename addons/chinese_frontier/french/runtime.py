@@ -947,7 +947,9 @@ class Controller:
             card_id = int(entry.data(Qt.ItemDataRole.UserRole))
             CollectionOp(
                 parent=dialog, op=lambda col: cancel_fix(col, card_id)
-            ).success(lambda _changes: list_fixes()).run_in_background(initiator=self)
+            ).success(
+                lambda _changes: list_fixes() if dialog.isVisible() else None
+            ).run_in_background(initiator=self)
 
         list_fixes()
         qconnect(cancel.clicked, cancel_selected)
