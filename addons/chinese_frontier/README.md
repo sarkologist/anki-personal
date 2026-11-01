@@ -158,7 +158,10 @@ feedback stays in the note's `Source` metadata: the writer must fix it, the revi
 rejects sentences that repeat it, avoided words and rejected sentences are refused in
 code, and later audits keep checking it. Each reason also adds a
 `chinese-frontier::feedback::<reason>` tag, so the browser shows which problems
-recur. After three repairs, a further request tags the note
+recur. In the background, the add-on's CLI also labels your notes
+("Anything else") with categories. A category reported on three distinct notes
+within 30 days becomes a field of its own in the dialog. One reported on six is
+listed in Tools as a candidate rule change. Design record: `FEEDBACK_CATEGORIES.md`. After three repairs, a further request tags the note
 `chinese-frontier::manual` for you to edit, and automation leaves it alone.
 The add-on regenerates that note in place, preserving its card ID,
 review history, and scheduling. Existing cards keep their schedules; additional character siblings consume new-card slots. Pausing in Tools

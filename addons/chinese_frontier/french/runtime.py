@@ -36,6 +36,7 @@ from aqt.qt import (
 )
 from aqt.utils import tooltip
 
+from .. import categories
 from ..collection import MAX_REPAIRS
 from ..core import FEEDBACK_REASONS
 from ..diagnostics import Diagnostics
@@ -161,6 +162,7 @@ class Controller:
                 )
             },
             "status": self.status,
+            "feedback": categories.overview_text(mw.col) if mw and mw.col else "",
             "busy": self.busy,
             "prepared": sum(
                 not (d.get("repair_note") or d.get("fix_card"))
@@ -289,9 +291,14 @@ class Controller:
             return
         if not force and time.time() < self.state.get("retry_after", 0):
             return
-        self.busy = True
         epoch = self.epoch
         config = self.config()
+        if not force and categories.classify_in_background(
+            config, self.stop, self.observe, lambda: self.classified(epoch)
+        ):
+            self.busy = True
+            return
+        self.busy = True
         if self.state.get("retry_batch_size"):
             config["batch_size"] = min(
                 int(config.get("batch_size", 4)), self.state["retry_batch_size"]
@@ -826,6 +833,7 @@ class Controller:
         confused = QLineEdit()
         confused.setPlaceholderText("The new sentence will rule it out")
         form.addRow(f"I'm confusing {answer} with", confused)
+        learnt = categories.learnt_fields(mw.col, layout, form)
         layout.addLayout(form)
         note = QTextEdit()
         note.setAcceptRichText(False)
@@ -840,8 +848,13 @@ class Controller:
         layout.addWidget(buttons)
         if not dialog.exec():
             return None
+        extra, values = learnt()
         return {
-            "reasons": tuple(key for key, box in boxes.items() if box.isChecked()),
+            "reasons": (
+                *(key for key, box in boxes.items() if box.isChecked()),
+                *extra,
+            ),
+            "values": values,
             "note": note.toPlainText(),
             "answered": confused.text(),
             "avoid_words": tuple(
@@ -864,8 +877,15 @@ class Controller:
             parent=mw, op=lambda col: record_feedback(col, note_id, **values)
         ).success(done).run_in_background(initiator=self)
 
+    def classified(self, epoch: int) -> None:
+        if self.valid(epoch):
+            self.busy = False
+            self.tick()
+
     def status_text(self) -> str:
         text = self.status
+        if mw and mw.col and (recurring := categories.status_line(mw.col)):
+            text += "\n" + recurring
         started = getattr(self, "request_started_at", 0)
         if self.busy and started:
             text += f" ({max(0, int(time.time() - started))}s elapsed)"
@@ -956,6 +976,7 @@ class Controller:
         layout.addWidget(fixes_label)
         layout.addWidget(fixes)
         layout.addWidget(cancel)
+        categories.settings_widgets(dialog, layout)
         diagnostics = Diagnostics(dialog, self.diagnostics_data)
         layout.addWidget(diagnostics)
         refresh = QTimer(dialog)

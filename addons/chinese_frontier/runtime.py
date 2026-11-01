@@ -36,6 +36,7 @@ from aqt.qt import (
 )
 from aqt.utils import showInfo, tooltip
 
+from . import categories
 from .collection import (
     KEY_PREFIX,
     MAX_REPAIRS,
@@ -104,6 +105,7 @@ class Controller:
                 )
             },
             "status": self.status,
+            "feedback": categories.overview_text(mw.col) if mw and mw.col else "",
             "busy": self.busy,
             "prepared": sum(
                 not d.audit_only and d.additional_cards > 0 for d in self.state.drafts
@@ -229,14 +231,24 @@ class Controller:
             return
         if not force and time.time() < self.state.retry_after:
             return
-        self.busy = True
         epoch = self.epoch
         config = self.config()
+        if not force and categories.classify_in_background(
+            config, self.stop, self.observe, lambda: self.classified(epoch)
+        ):
+            self.busy = True
+            return
+        self.busy = True
         QueryOp(
             parent=mw,
             op=lambda col: snapshot(col, settings, config),
             success=lambda result: self.scanned(result, settings, config, epoch),
         ).failure(lambda exc: self.failed(exc, epoch)).run_in_background()
+
+    def classified(self, epoch: int) -> None:
+        if self.valid(epoch):
+            self.busy = False
+            self.tick()
 
     def scanned(
         self,
@@ -656,6 +668,7 @@ class Controller:
         answered.setPlaceholderText("The new sentence will rule it out")
         form.addRow("Words to avoid", avoid)
         form.addRow("I answered", answered)
+        learnt = categories.learnt_fields(mw.col, layout, form)
         layout.addLayout(form)
         note = QTextEdit()
         note.setAcceptRichText(False)
@@ -670,7 +683,11 @@ class Controller:
         layout.addWidget(buttons)
         if not dialog.exec():
             return
-        reasons = tuple(key for key, box in boxes.items() if box.isChecked())
+        extra, values = learnt()
+        reasons = (
+            *(key for key, box in boxes.items() if box.isChecked()),
+            *extra,
+        )
         words = tuple(
             re.split(r"[\s,，、;；]+", avoid.text().strip())
             if avoid.text().strip()
@@ -687,6 +704,7 @@ class Controller:
                 note=text,
                 avoid_words=words,
                 answered=word,
+                values=values,
             )
             return
         note_id = target.id
@@ -708,6 +726,7 @@ class Controller:
                 note=text,
                 avoid_words=words,
                 answered=word,
+                values=values,
             ),
         ).success(done).run_in_background(initiator=self)
 
@@ -807,6 +826,8 @@ class Controller:
 
         def update_status() -> None:
             text = self.status
+            if recurring := categories.status_line(mw.col):
+                text += "\n" + recurring
             if current := self.last_snapshot:
                 text += f"\n\nEstablished vocabulary: {len(current.known)} words\nEligible sources: {len(current.sources)}\nPrepared sentences: {len(self.state.drafts)}\nDeferred targets: {len(self.state.deferred)}"
                 if current.skipped:
@@ -859,6 +880,7 @@ class Controller:
         layout.addWidget(fixes_label)
         layout.addWidget(fixes)
         layout.addWidget(cancel)
+        categories.settings_widgets(dialog, layout)
         layout.addWidget(diagnostics)
         refresh_timer = QTimer(dialog)
         qconnect(refresh_timer.timeout, update_status)

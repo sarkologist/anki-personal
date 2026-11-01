@@ -26,3 +26,8 @@
 
 - French generated notes keep learner feedback in `Source.feedback`, read by the shared `_learner_feedback`. The learner fields ride on `french.core.Target` but stay out of its key and its stored `target` metadata; a draft whose target feedback differs from the current note is stale.
 - A reported confusion (`answered` in a feedback entry) rejects the sentence; the new context must rule that word out and the reviewer must test it exactly as written. A contrast pair against it (by surface or lemma) is allowed but not required, and that word may be unlearned (`validate(..., supplied=True)` skips only its own grammar and meaning checks); its context words must still be established. Without one, French contrast pairs stay free.
+
+# Feedback categories
+
+- Learnt categories live in the synced `frontierFeedbackCategories` config, shared by both languages. Keys, labels and input kinds never change once created; classifications are assigned once per entry (`categories`, `classified`). A promoted category's text is copied into the entry (`reason_text`), so `_learner_feedback` never reads the registry. Classified categories are statistics and tags only: they never reach the writer or the reviewer.
+- Design record: `FEEDBACK_CATEGORIES.md`.
