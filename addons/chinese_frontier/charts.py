@@ -40,6 +40,7 @@ AUDIT_MESSAGES = (
     "Approval must cite visible French situational clues",
     "Context clues must quote visible French, not the answer or translation",
     "Review belongs to a different proposal",
+    "Review must check the learner's confusion",
 )
 THEMES = (
     (

@@ -5,6 +5,7 @@
 - Only when no single sentence passes may a reported confusion become a contrast pair: short examples side by side, whole competing words clozed with the same ordinal, editing the existing note so one card and its scheduling history are preserved. Never for notes with character cards.
 - Contrast pairs answer reported confusions only. Never use one to make an ambiguous example unambiguous, and never pair the target with a word the learner did not supply.
 - Make the distinguishing relation visible in the Chinese context. Connector examples should distinguish contrast, cause, or an outcome holding across alternatives; an English hint alone does not establish that relation.
+- The Chinese context alone must rule out competing words. The full translation is shown to aid understanding, never to disambiguate.
 - Validate other context words against live-card evidence. A competing word explicitly supplied by the learner may be tested in the contrast; do not infer familiarity for additional words.
 
 - Show the complete, unclozed English translation alongside each Chinese example on the front. Do not use declarative definition hints inside the blank: the task is contextual recall.
