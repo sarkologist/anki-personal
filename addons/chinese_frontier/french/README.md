@@ -168,7 +168,23 @@ may be a word you have not learned yet; the rest of both sentences must be
 established), and contrast pairs on that note may only use a reported word. Repairs
 preserve card IDs/history/scheduling, reject concurrent edits, and consume no new
 slot because this implementation keeps exactly one card per note. Originals never
-enter the repair queue. Native operations are grouped for undo. Use one desktop
+enter the repair queue. Native operations are grouped for undo.
+
+Your own French cloze cards in the French deck tree (not leeches or
+`french-frontier::exclude`) also offer **Fix this sentence...** when the reviewed
+ordinal hides one word. Choose the lemma it tests (the word's dictionary readings,
+most frequent first, or type another) and the meaning, plus the same feedback. The
+card is suspended at once and its note tagged `french-frontier::fix-pending`; the
+request waits under the `frenchFrontierFixes` config key. A vocabulary target with
+the sense `learner card` and your meaning is written first in the next batch,
+without a new-card slot, and must already satisfy the feedback. On admission the
+new note goes to the card's deck, its card takes over the original card's
+scheduling and review history, and it is tagged `french-frontier::adopted`; your
+note's fields are never edited. **Restore the original card** on the new note moves
+the progress back and leaves the new note suspended with
+`french-frontier::restored`. A request stalls, with the card still suspended, if the
+card is unsuspended, edited, deleted or moved out of the French deck; Tools → French
+Frontier lists waiting fixes and cancels one, which unsuspends the card. Use one desktop
 generator per collection; unsynced devices cannot share admission reservations.
 
 French context must carry the meaning with the entire target hidden, before the

@@ -396,8 +396,8 @@ LEARNER_SENSE = "learner card"
 class FixTarget:
     answer: str
     sentence: str
-    # The rest of the note, usually the translation.
-    meaning: str
+    # The rest of the cloze field, usually the translation.
+    translation: str
 
 
 def is_generated(note: Any) -> bool:
@@ -425,11 +425,11 @@ def fix_target(
     if model["type"] != 1:
         return None
     qfmt = model["tmpls"][0]["qfmt"]
-    answers, sentences, other = [], [], []
+    answers: list[str] = []
+    sentences: list[str] = []
+    other: list[str] = []
     for name, value in fields.items():
         if not cloze_field(qfmt, name):
-            if "extra" in name.casefold():
-                other.append(plain_text(_unfold(value)))
             continue
         for part in SEGMENT_BREAK.split(value):
             hidden = [
@@ -442,8 +442,8 @@ def fix_target(
     answers = list(dict.fromkeys(normalize(a) for a in answers if a))
     if len(answers) != 1 or len(tokens(answers[0])) != 1:
         return None
-    meaning = " · ".join(dict.fromkeys(part for part in other if part))
-    return FixTarget(answers[0], " ".join(sentences), meaning[:500])
+    translation = " ".join(dict.fromkeys(part for part in other if part))
+    return FixTarget(answers[0], " ".join(sentences), translation[:500])
 
 
 def _unfold(text: str) -> str:
@@ -476,6 +476,13 @@ def _entry(lexicon: Lexicon, lemma: str, pos: str) -> tuple[int, float]:
     return 0, max((f.frequency for f in lexicon.lemmas[(lemma, pos)]), default=0)
 
 
+@dataclass
+class FixResult:
+    changes: OpChanges
+    # The replacement's target key.
+    key: str
+
+
 def request_fix(
     col: Collection,
     card_id: int,
@@ -488,11 +495,10 @@ def request_fix(
     note: str = "",
     avoid_words: tuple[str, ...] = (),
     answered: str = "",
-) -> str:
+) -> FixResult:
     """Suspend a learner card that tests the wrong thing and queue its replacement.
 
-    Only the card's queue and one tag on its note change; the fields never do.
-    Returns the replacement's target key."""
+    Only the card's queue and one tag on its note change; the fields never do."""
     fix = fix_target_for_card(col, card_id)
     if fix is None:
         raise ValueError(
@@ -554,7 +560,7 @@ def request_fix(
             "avoid_words": list(avoid_words),
             "answered": answered,
             "sentence": fix.sentence,
-            "rejected": not answered or bool(reasons or note.strip() or avoid_words),
+            "rejected": True,
         }
     )
     record.update(
@@ -576,8 +582,7 @@ def request_fix(
         original.tags.append(PENDING_TAG)
         col.update_note(original)
     col.set_config(FIXES, fixes, undoable=True)
-    col.merge_undo_entries(undo)
-    return target.key
+    return FixResult(col.merge_undo_entries(undo), target.key)
 
 
 def _take_over(col: Collection, card_id: int, card: Any, fixes: dict[str, Any]) -> None:
@@ -1016,7 +1021,11 @@ def snapshot(
         except (KeyError, TypeError, ValueError):
             continue
         if fix_target.key not in keys and fix_target.key not in fixes:
-            fixes[fix_target.key] = (int(raw_id), str(record["fingerprint"]), fix_target)
+            fixes[fix_target.key] = (
+                int(raw_id),
+                str(record["fingerprint"]),
+                fix_target,
+            )
             represented.add((fix_target.lemma, fix_target.pos))
     budgets = _read_budgets(col, decks, deck_id, [], timing.days_elapsed)[deck_id]
     return Snapshot(
@@ -1083,7 +1092,6 @@ def admit(
     if col.get_config(SETTINGS, {}) != settings or not settings.get("enabled"):
         return Admission(OpChanges(), [], drafts, {})
     current = snapshot(col, settings, config, lexicon)
-    decks = {int(d["id"]): d for d in col.decks.all()}
     capacity = current.slots
     admitted = []
     added_cards = repaired_notes = 0
@@ -1148,7 +1156,7 @@ def admit(
             else col.new_note(model)
         )
         c = draft.candidate
-        data = {
+        data: dict[str, Any] = {
             "policy": POLICY,
             "target": draft.target.stored(),
             "key": draft.target.key,
@@ -1222,13 +1230,9 @@ def admit(
             col.update_note(note)
             _unbury(col, note.cards())
         else:
-            home = int(record.get("deck_id", 0))
-            col.add_note(
-                note,
-                DeckId(home if home in _descendants(decks, current.deck_id) else current.deck_id)
-                if record
-                else DeckId(current.deck_id),
-            )
+            # A fix stays in its card's deck, which the snapshot found in scope.
+            home = original.odid or original.did if record else current.deck_id
+            col.add_note(note, DeckId(home))
         if len(note.cards()) != 1:
             raise ValueError("French proposal unexpectedly created extra cards")
         if record:

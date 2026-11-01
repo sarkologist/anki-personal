@@ -942,6 +942,7 @@ def test_automatic_refill_continues_after_the_old_daily_cap(monkeypatch):
         day=1,
         slots=3,
         repairs={},
+        fixes={},
         known=SimpleNamespace(version="known", surfaces={"je": []}),
     )
     controller.scanned(
@@ -1858,7 +1859,7 @@ def test_cached_french_draft_does_not_abort_a_no_capacity_scan(monkeypatch):
     controller.failed = lambda error, epoch: pytest.fail(str(error))
     monkeypatch.setattr(runtime, "mw", SimpleNamespace())
     current = SimpleNamespace(
-        day=1, slots=0, repairs={}, known=SimpleNamespace(version="v1")
+        day=1, slots=0, repairs={}, fixes={}, known=SimpleNamespace(version="v1")
     )
     controller.scanned(current, {}, {}, None, Event(), 0)
     assert not controller.busy
@@ -1986,6 +1987,7 @@ def test_french_buffer_prepares_at_zero_capacity_and_stops_when_full(
         day=1,
         slots=0,
         repairs={},
+        fixes={},
         known=known,
         represented=set(),
         keys=set(),
@@ -3463,6 +3465,8 @@ def test_french_reviewer_menu_offers_feedback_and_retries_now(collection, monkey
     controller.reviewer_menu(SimpleNamespace(card=note.cards()[0]), menu)
     assert labels == ["Fix this sentence..."]
     legacy = add_cloze(collection, "{{c1::train}}")
+    # Outside the French deck, the learner's own cards are left alone.
+    collection.set_deck([legacy.cards()[0].id], collection.decks.id("elsewhere"))
     labels.clear()
     controller.reviewer_menu(SimpleNamespace(card=legacy.cards()[0]), menu)
     assert labels == []
@@ -3535,3 +3539,229 @@ def test_french_feedback_and_its_bury_undo_together(collection):
     after = collection.get_note(note.id)
     assert after.cards()[0].queue == 0
     assert "french-frontier::repair" not in after.tags
+
+
+def user_fix(collection, **values):
+    """A learner's own cloze card in the French deck, with a fix requested."""
+    from chinese_frontier.french.collection import SETTINGS, request_fix
+
+    settings = {"enabled": True, "deck_id": 1}
+    collection.set_config(SETTINGS, settings)
+    for word in ("je", "le", "train", "regarde", "parle"):
+        add_cloze(collection, "{{c1::" + word + "}}", learned=True)
+    note = add_cloze(
+        collection, "Je {{c1::emprunte}} le train.<br>I borrow the train.", learned=True
+    )
+    card = note.cards()[0]
+    key = request_fix(
+        collection,
+        card.id,
+        lemma="emprunter",
+        definition="borrow",
+        lexicon=dictionary(),
+        **values,
+    ).key
+    return settings, note, card, key
+
+
+def fix_draft(collection, settings, c, key):
+    from chinese_frontier.french.collection import snapshot
+    from chinese_frontier.french.generation import Draft, candidate_hash
+
+    card_id, fingerprint, t = snapshot(collection, settings, {}, dictionary()).fixes[
+        key
+    ]
+    review = {
+        "approved": True,
+        "context_checks": context_checks(),
+        "reason": "clear",
+        "search_summary": "Checked rent",
+        "alternatives": [
+            {
+                "example": 0,
+                "answer": "loue",
+                "fits_context": False,
+                "fits_cloze": True,
+                "reason": "rent differs",
+            }
+        ],
+    }
+    audit = {
+        "policy": POLICY,
+        "target_key": t.key,
+        "fingerprint": candidate_hash(c),
+        "review": review,
+    }
+    return Draft(t, c, audit, fix_card=card_id, old_fingerprint=fingerprint)
+
+
+def test_french_user_card_fix_target(collection):
+    from chinese_frontier.french.collection import (
+        SETTINGS,
+        fix_readings,
+        fix_target_for_card,
+    )
+
+    collection.set_config(SETTINGS, {"enabled": True, "deck_id": 1})
+    note = add_cloze(collection, "Je {{c1::emprunte}} le train.<br>I borrow the train.")
+    fix = fix_target_for_card(collection, note.cards()[0].id)
+    assert (fix.answer, fix.sentence, fix.translation) == (
+        "emprunte",
+        "Je emprunte le train.",
+        "I borrow the train.",
+    )
+    assert fix_readings(dictionary(), fix.answer) == [("emprunter", "VER")]
+    other = collection.decks.id("elsewhere")
+    card = note.cards()[0]
+    card.did = other
+    collection.update_card(card)
+    assert fix_target_for_card(collection, card.id) is None
+
+
+def test_french_fix_request_suspends_and_queues_a_target(collection):
+    from chinese_frontier.french.collection import (
+        PENDING_TAG,
+        request_fix,
+        snapshot,
+    )
+
+    settings, note, card, key = user_fix(collection, reasons=("unnatural",))
+    assert collection.get_card(card.id).queue == -1
+    assert PENDING_TAG in collection.get_note(note.id).tags
+    current = snapshot(collection, settings, {}, dictionary())
+    card_id, _fp, t = current.fixes[key]
+    assert card_id == card.id
+    assert (t.lemma, t.definition) == ("emprunter", "borrow")
+    assert t.rejected_sentences == ("Je emprunte le train.",)
+    assert ("emprunter", "VER") in current.represented
+    with pytest.raises(ValueError, match="this card's answer"):
+        request_fix(
+            collection,
+            card.id,
+            lemma="emprunter",
+            definition="borrow",
+            lexicon=dictionary(),
+            answered="emprunte",
+        )
+    with pytest.raises(ValueError, match="not in the French dictionary"):
+        request_fix(
+            collection, card.id, lemma="xyz", definition="x", lexicon=dictionary()
+        )
+    twin = add_cloze(collection, "Tu {{c1::emprunte}} le train.")
+    with pytest.raises(ValueError, match="already has a fix for emprunter"):
+        request_fix(
+            collection,
+            twin.cards()[0].id,
+            lemma="emprunter",
+            definition="borrow",
+            lexicon=dictionary(),
+        )
+    collection.undo()  # the twin
+    collection.undo()
+    assert collection.get_card(card.id).queue != -1
+    assert PENDING_TAG not in collection.get_note(note.id).tags
+    assert not snapshot(collection, settings, {}, dictionary()).fixes
+
+
+def test_french_fix_adopts_the_learner_cards_schedule(collection):
+    from dataclasses import replace
+
+    from chinese_frontier.collection import _scheduling
+    from chinese_frontier.french.collection import (
+        ADOPTED_TAG,
+        FIXES,
+        PENDING_TAG,
+        RESTORED_TAG,
+        admit,
+        restore_original,
+        snapshot,
+    )
+
+    settings, note, card, key = user_fix(collection, reasons=("unnatural",))
+    home = collection.decks.id("Default::sub")
+    collection.set_deck([card.id], home)
+    conf = collection.decks.config_dict_for_deck_id(1)
+    conf["new"]["perDay"] = 0
+    collection.decks.update_config(conf)
+    original = _scheduling(collection.get_card(card.id))
+    fresh = replace(candidate(), sentence="Le train, je emprunte.")
+    stale = fix_draft(collection, settings, fresh, key)
+    stale = replace(stale, target=replace(stale.target, learner_feedback=()))
+    result = admit(collection, settings, {}, [stale], dictionary())
+    assert not result.admitted and not result.rejected
+    draft = fix_draft(collection, settings, fresh, key)
+    result = admit(collection, settings, {}, [draft], dictionary())
+    (nid,) = result.admitted
+    assert result.added_cards == 0
+    new = collection.get_note(nid)
+    (new_card,) = new.cards()
+    assert new_card.did == home
+    assert _scheduling(new_card)[2:] == original[2:]
+    assert new_card.queue != -1
+    assert ADOPTED_TAG in new.tags
+    assert "french-frontier::feedback::unnatural" in new.tags
+    data = json.loads(html.unescape(new["Source"]))
+    assert data["adopted"]["card_id"] == card.id
+    assert data["feedback"][0]["reasons"] == ["unnatural"]
+    assert collection.get_config(FIXES, {}) == {}
+    assert PENDING_TAG not in collection.get_note(note.id).tags
+    assert collection.get_card(card.id).queue == -1
+    assert not snapshot(collection, settings, {}, dictionary()).fixes
+    restore_original(collection, nid)
+    assert collection.get_card(card.id).queue != -1
+    assert collection.get_note(nid).cards()[0].queue == -1
+    assert RESTORED_TAG in collection.get_note(nid).tags
+    # A restored note no longer holds the key, so the card can be fixed again.
+    assert key not in snapshot(collection, settings, {}, dictionary()).keys
+
+
+def test_french_fix_can_be_cancelled(collection):
+    from chinese_frontier.french.collection import (
+        PENDING_TAG,
+        cancel_fix,
+        pending_fixes,
+    )
+
+    _settings, note, card, key = user_fix(collection)
+    (pending,) = pending_fixes(collection)
+    assert (pending.card_id, pending.lemma, pending.key) == (card.id, "emprunter", key)
+    assert not pending.problem
+    cancel_fix(collection, card.id)
+    assert collection.get_card(card.id).queue != -1
+    assert PENDING_TAG not in collection.get_note(note.id).tags
+    assert not pending_fixes(collection)
+
+
+def test_french_reviewer_menu_offers_fix_and_restore(collection, monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import runtime
+    from chinese_frontier.french.collection import admit
+
+    monkeypatch.setattr(runtime, "mw", SimpleNamespace(col=collection))
+    controller = runtime.Controller.__new__(runtime.Controller)
+    labels = []
+    menu = SimpleNamespace(
+        addAction=lambda label: (
+            labels.append(label)
+            or SimpleNamespace(triggered=SimpleNamespace(connect=lambda _f: None))
+        )
+    )
+    settings, _note, _card, key = user_fix(collection)
+    mine = add_cloze(collection, "Je {{c1::regarde}} le train.")
+    controller.reviewer_menu(SimpleNamespace(card=mine.cards()[0]), menu)
+    assert labels == ["Fix this sentence..."]
+    fresh = replace(candidate(), sentence="Le train, je emprunte.")
+    (nid,) = admit(
+        collection,
+        settings,
+        {},
+        [fix_draft(collection, settings, fresh, key)],
+        dictionary(),
+    ).admitted
+    labels.clear()
+    controller.reviewer_menu(
+        SimpleNamespace(card=collection.get_note(nid).cards()[0]), menu
+    )
+    assert labels == ["Fix this sentence...", "Restore the original card"]
