@@ -352,6 +352,11 @@ and the same validation rule as Chinese, in a later PR.
 
 ### French user cloze notes (3292 live)
 
+Done, simpler than planned below: the lemma comes from every dictionary reading of
+the hidden word (most frequent first, or typed), the target is always vocabulary
+with the sense `learner card` and the learner's meaning, and no senses are
+fetched. A conjugation-specific fix is left for later.
+
 Same fix record, swap, restore and tracking as Chinese, under a
 `frenchFrontierFixes` config key and `french-frontier::fix-pending` tag, placed in
 the French chosen deck tree. The difference is the target. A French `Target` is

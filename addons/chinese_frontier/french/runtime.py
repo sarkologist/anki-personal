@@ -25,7 +25,10 @@ from aqt.qt import (
     QFormLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
+    Qt,
     QTextEdit,
     QTimer,
     QVBoxLayout,
@@ -50,14 +53,22 @@ from .collection import (
     SETTINGS,
     Admission,
     admit,
+    adopted_original,
+    cancel_fix,
     drop_cue_labels,
+    fix_readings,
+    fix_target_for_card,
+    is_generated,
     json_field,
+    pending_fixes,
     record_feedback,
     refresh_conjugation_tables,
     repair_count,
+    request_fix,
+    restore_original,
     snapshot,
 )
-from .core import MODEL, POLICY, TAG, Target
+from .core import POLICY, Target
 from .generation import (
     Draft,
     choose_targets,
@@ -152,7 +163,8 @@ class Controller:
             "status": self.status,
             "busy": self.busy,
             "prepared": sum(
-                not d.get("repair_note") for d in self.state.get("drafts", [])
+                not (d.get("repair_note") or d.get("fix_card"))
+                for d in self.state.get("drafts", [])
             ),
             "buffer": buffer_size(self.config()),
             "deferred": dict(
@@ -378,12 +390,16 @@ class Controller:
         except (KeyError, TypeError, ValueError) as exc:
             self.failed(exc, epoch)
             return
-        if drafts and (current.slots or any(d.repair_note for d in drafts)):
+        # Fixes replace the learner's cards, so like repairs they need no slot.
+        repairs = {**current.repairs, **current.fixes}
+        if drafts and (
+            current.slots or any(d.repair_note or d.fix_card for d in drafts)
+        ):
             self.apply(drafts, settings, config, lexicon, stop, epoch)
             return
-        queued = sum(not d.repair_note for d in drafts)
+        queued = sum(not (d.repair_note or d.fix_card) for d in drafts)
         needed = preparation_needed(current.slots, queued, config)
-        if not needed and not current.repairs:
+        if not needed and not repairs:
             self.status = "No French admission slots: pending new cards, reviews or daily limits reserve capacity."
             self.busy = False
             return
@@ -391,7 +407,7 @@ class Controller:
             self.state,
             current.day,
             needed,
-            len(current.repairs),
+            len(repairs),
             config,
             time.time(),
         ):
@@ -409,7 +425,7 @@ class Controller:
             return
         reserve_batch(self.state)
         count = min(
-            max(needed, len(current.repairs)),
+            max(needed, len(repairs)),
             max(1, min(8, int(config.get("batch_size", 4)))),
         )
         self.state["active_batch_size"] = count
@@ -437,6 +453,12 @@ class Controller:
                     old_fingerprint=current.repairs[d.target.key][1],
                 )
                 if d.target.key in current.repairs
+                else replace(
+                    d,
+                    fix_card=current.fixes[d.target.key][0],
+                    old_fingerprint=current.fixes[d.target.key][1],
+                )
+                if d.target.key in current.fixes
                 else d
                 for d in generated_drafts
             ]
@@ -492,12 +514,9 @@ class Controller:
                     )
                 return selected
 
-            repairs = {
-                key: item
-                for key, item in current.repairs.items()
-                if key not in deferred
-            }
-            repair_targets = [item[2] for item in repairs.values()][:count]
+            repair_targets = [
+                item[2] for key, item in repairs.items() if key not in deferred
+            ][:count]
             targets = repair_targets + (
                 choose_targets(
                     lexicon,
@@ -675,14 +694,96 @@ class Controller:
         ).run_in_background(initiator=self)
 
     def reviewer_menu(self, reviewer: Any, menu: Any) -> None:
-        if not reviewer.card:
+        if not mw or not mw.col or not reviewer.card:
             return
+        card_id = int(reviewer.card.id)
         note = reviewer.card.note()
-        if TAG not in note.tags or note.note_type()["name"] != MODEL:
-            return
         note_id = int(note.id)
-        action = menu.addAction("Fix this sentence...")
-        qconnect(action.triggered, lambda: self.feedback_dialog(note_id))
+        if is_generated(note):
+            action = menu.addAction("Fix this sentence...")
+            qconnect(action.triggered, lambda: self.feedback_dialog(note_id))
+            if adopted_original(note):
+                restore = menu.addAction("Restore the original card")
+                qconnect(restore.triggered, lambda: self.restore(note_id))
+        elif fix_target_for_card(mw.col, card_id):
+            action = menu.addAction("Fix this sentence...")
+            qconnect(action.triggered, lambda: self.fix_dialog(card_id))
+
+    def restore(self, note_id: int) -> None:
+        CollectionOp(parent=mw, op=lambda col: restore_original(col, note_id)).success(
+            lambda _changes: tooltip("Your original card is back in review.")
+        ).run_in_background(initiator=self)
+
+    def fix_dialog(self, card_id: int) -> None:
+        """Fixing the learner's own card needs the dictionary for its lemma."""
+        if self.lexicon is not None:
+            self.open_fix_dialog(card_id, self.lexicon)
+            return
+
+        def loaded(future: Any) -> None:
+            try:
+                self.lexicon = future.result()
+            except Exception as exc:
+                tooltip(f"French dictionary unavailable: {exc}")
+                return
+            self.open_fix_dialog(card_id, self.lexicon)
+
+        mw.taskman.run_in_background(
+            lambda: Lexicon.load(self.folder), loaded, uses_collection=False
+        )
+
+    def open_fix_dialog(self, card_id: int, lexicon: Lexicon) -> None:
+        if not mw or not mw.col or not (fix := fix_target_for_card(mw.col, card_id)):
+            return
+        dialog = QDialog(mw)
+        dialog.setWindowTitle("Fix this sentence")
+        layout = QVBoxLayout(dialog)
+        explanation = QLabel(
+            "This card is suspended now and replaced by a new sentence card, with "
+            "its schedule, once a sentence passes review. Your note is not edited."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        card = QLabel(f"{fix.sentence}\n{fix.translation}".strip())
+        card.setWordWrap(True)
+        layout.addWidget(card)
+        details = QFormLayout()
+        lemma = QComboBox()
+        lemma.setEditable(True)
+        for word, pos in fix_readings(lexicon, fix.answer):
+            lemma.addItem(f"{word} ({pos})", (word, pos))
+        meaning = QLineEdit()
+        meaning.setPlaceholderText(f"What {fix.answer} means here, e.g. to see")
+        details.addRow("Target", lemma)
+        details.addRow("Meaning", meaning)
+        layout.addLayout(details)
+        values = self.feedback_form(dialog, layout, fix.answer)
+        if values is None:
+            return
+        chosen = lemma.currentData()
+        word, pos = (
+            chosen
+            if chosen and lemma.currentText() == lemma.itemText(lemma.currentIndex())
+            else (lemma.currentText().split(" (")[0], "")
+        )
+
+        def done(result: Any) -> None:
+            retry_now(self.state, result.key)
+            self.save()
+            self.tick(force=True)
+
+        CollectionOp(
+            parent=mw,
+            op=lambda col: request_fix(
+                col,
+                card_id,
+                lemma=word,
+                pos=pos,
+                definition=meaning.text(),
+                lexicon=lexicon,
+                **values,
+            ),
+        ).success(done).run_in_background(initiator=self)
 
     def feedback_dialog(self, note_id: int) -> None:
         if not mw or not mw.col:
@@ -706,6 +807,14 @@ class Controller:
             )
             warning.setWordWrap(True)
             layout.addWidget(warning)
+        values = self.feedback_form(dialog, layout, answer)
+        if values is not None:
+            self.submit_feedback(note_id, **values)
+
+    def feedback_form(
+        self, dialog: Any, layout: Any, answer: str
+    ) -> dict[str, Any] | None:
+        """The learner's complaints, or None when the dialog is cancelled."""
         boxes = {}
         for key, label in FEEDBACK_REASONS.items():
             boxes[key] = QCheckBox(label)
@@ -730,16 +839,15 @@ class Controller:
         qconnect(buttons.rejected, dialog.reject)
         layout.addWidget(buttons)
         if not dialog.exec():
-            return
-        self.submit_feedback(
-            note_id,
-            reasons=tuple(key for key, box in boxes.items() if box.isChecked()),
-            note=note.toPlainText(),
-            answered=confused.text(),
-            avoid_words=tuple(
+            return None
+        return {
+            "reasons": tuple(key for key, box in boxes.items() if box.isChecked()),
+            "note": note.toPlainText(),
+            "answered": confused.text(),
+            "avoid_words": tuple(
                 w for w in re.split(r"[\s,;]+", avoid.text()) if w.strip()
             ),
-        )
+        }
 
     def submit_feedback(self, note_id: int, **values: Any) -> None:
         key = str(json_field(mw.col.get_note(NoteId(note_id))["Source"]).get("key", ""))
@@ -810,6 +918,44 @@ class Controller:
         status = QLabel(self.status_text())
         status.setWordWrap(True)
         layout.addWidget(status)
+        fixes_label = QLabel("Fixes waiting for a sentence")
+        fixes = QListWidget()
+        fixes.setMaximumHeight(110)
+        cancel = QPushButton("Cancel selected fix (unsuspends your card)")
+
+        def list_fixes() -> None:
+            fixes.clear()
+            for item in pending_fixes(mw.col):
+                days = max(0, int((time.time() - item.requested_at) // 86400))
+                text = f"{item.lemma}: waiting {days} d"
+                if item.problem:
+                    text += f"; stalled, {item.problem}"
+                elif (
+                    reason := self.state.get("deferred", {})
+                    .get(item.key, {})
+                    .get("reason")
+                ):
+                    text += f"; deferred: {reason}"
+                entry = QListWidgetItem(text, fixes)
+                entry.setData(Qt.ItemDataRole.UserRole, item.card_id)
+            for widget in (fixes_label, fixes, cancel):
+                widget.setVisible(fixes.count() > 0)
+
+        def cancel_selected() -> None:
+            if not (entry := fixes.currentItem()):
+                return
+            card_id = int(entry.data(Qt.ItemDataRole.UserRole))
+            CollectionOp(
+                parent=dialog, op=lambda col: cancel_fix(col, card_id)
+            ).success(
+                lambda _changes: list_fixes() if dialog.isVisible() else None
+            ).run_in_background(initiator=self)
+
+        list_fixes()
+        qconnect(cancel.clicked, cancel_selected)
+        layout.addWidget(fixes_label)
+        layout.addWidget(fixes)
+        layout.addWidget(cancel)
         diagnostics = Diagnostics(dialog, self.diagnostics_data)
         layout.addWidget(diagnostics)
         refresh = QTimer(dialog)
