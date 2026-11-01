@@ -2722,3 +2722,26 @@ def test_edit_filtered_cloze_templates_are_read(collection: Collection) -> None:
     _note, cards = add_cloze(collection, PAGE_CLOZE, established=(1,))
     assert "百" in snapshot(collection, {"deck_id": 1}, {}).known
     assert fix_target_for_card(collection, cards[0].id, {}) is not None
+
+
+def test_only_the_chinese_may_rule_out_competing_words(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    target = source()
+    c = candidate()
+    prompts = fake_generator(
+        monkeypatch,
+        lexicon,
+        [
+            {"proposals": [{"card_id": 1, "candidates": [asdict(c)]}]},
+            {"reviews": [audit_report(target, c)]},
+        ],
+    )
+    generate([target], KNOWN_PAGE_WORDS, {}, tmp_path, Event())
+    writer, reviewer = (p.split("Data:")[0] for p in prompts)
+    assert "Chinese alone" in writer and "Chinese alone" in reviewer
+    assert "AND intended English situation" not in reviewer
+
+
+def test_cards_audited_under_the_translation_rule_are_rechecked() -> None:
+    assert GENERATION_POLICY >= 4

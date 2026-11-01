@@ -132,7 +132,8 @@ siblings wait for capacity. The whole word becomes available as familiar context
 only after **all** its character siblings meet the learning threshold; individual
 characters do not become familiar words through this fallback.
 The full English translation appears alongside the Chinese on the front, without
-definition hints in the blank. Pronunciation and word explanations remain on the
+definition hints in the blank. The translation aids understanding but never disambiguates:
+the Chinese context alone must rule out competing words. Pronunciation and word explanations remain on the
 answer side. Existing generated hints and the original front template are upgraded
 on profile opening without changing card IDs or scheduling; customized templates
 are preserved. Pending new

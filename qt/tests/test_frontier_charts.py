@@ -136,8 +136,9 @@ def test_audit_messages_cover_every_fixed_validate_review_error():
     from chinese_frontier.french.generation import validate_review
 
     source = textwrap.dedent(inspect.getsource(validate_review))
+    # A message with details appended is labelled by its fixed prefix.
     raised = {
-        node.args[0].value
+        getattr(node.args[0], "left", node.args[0]).value.removesuffix(": ")
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Call)
         and getattr(node.func, "id", "") == "ValidationError"
