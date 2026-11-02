@@ -169,7 +169,8 @@ capacity.
 When automation cannot finish a card on its own (a handed-over note you have not
 edited yet, a held note whose repair cannot run or keeps being rejected, a stalled
 fix of your own card), the main screen shows "Chinese Frontier: N cards need your
-attention" and a tooltip announces new ones. **Review** (or Tools → Chinese
+attention" (otherwise "nothing needs your attention") and a tooltip announces new
+ones. **Review** (or Tools → Chinese
 Frontier: needs attention…) lists each card with the reason, opens them in the
 Browser, and can release a hold, dismiss a handover or cancel a fix. Design record:
 `ATTENTION.md`.

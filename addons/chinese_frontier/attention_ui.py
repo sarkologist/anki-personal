@@ -33,9 +33,12 @@ class AttentionNotice:
         language: str,
         compute: Callable[[], list[Attention]],
         resolve: Callable[[Collection, Attention], OpChanges],
+        configured: Callable[[], bool],
     ) -> None:
         assert mw
         self.language = language
+        # A language without a chosen deck stays off the main screen.
+        self.configured = configured
         self.command = f"{language.lower()}_frontier_attention"
         self.compute = compute
         self.resolve = resolve
@@ -85,7 +88,7 @@ class AttentionNotice:
             mw.deckBrowser.refresh()
 
     def render(self, _deck_browser: object, content: object) -> None:
-        if self.cached:
+        if mw and mw.col and self.configured():
             content.stats += banner(self.language, len(self.cached), self.command)  # type: ignore[attr-defined]
 
     def message(

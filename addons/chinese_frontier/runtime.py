@@ -978,7 +978,10 @@ def install() -> None:
     mw.form.menuTools.addAction(action)
     mw.addonManager.setConfigAction(MODULE, controller.settings_dialog)
     controller.notice = AttentionNotice(
-        "Chinese", controller.attention, resolve_attention
+        "Chinese",
+        controller.attention,
+        resolve_attention,
+        lambda: bool(mw.col.get_config(SETTINGS_KEY, {})),
     )
     gui_hooks.profile_did_open.append(controller.opened)
     gui_hooks.profile_will_close.append(controller.closed)
