@@ -17,11 +17,19 @@ when the condition goes away.
 | rejected | held, and its key was deferred 3+ times in a row on the current vocabulary | a repair lands, or the learner releases it | Release |
 | stalled fix | a fix on the learner's own card reports a problem | the problem goes away, or the learner cancels | Cancel fix |
 
+A hold records `Source.held_at`; a snapshot that began earlier cannot know its
+repair is queued, so the hold is not reported stuck until a later scan. A stalled
+fix is only one whose snapshot problem blocks it, not a mere word collision.
+
 Release unsuspends the cards the hold suspended and drops the hold; the repair tag
 stays, so a later repair still happens. Until a snapshot has run, stuck holds are
 not reported (nothing is known yet).
 
 ## Where it shows
+
+The list is computed when the profile opens, after each scan and after dialog
+actions, and cached for the main screen, which redraws only when the count
+changes. A failure in it is logged and never stops generation.
 
 - Main screen (deck browser): one line per language, only when the count is
   non-zero, with a link that opens the dialog.

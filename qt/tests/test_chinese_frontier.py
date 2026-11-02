@@ -2133,6 +2133,28 @@ def test_a_held_note_whose_repair_cannot_run_needs_attention(
     assert needs_attention(collection, current, {}, False) == []
 
 
+def test_a_hold_newer_than_the_snapshot_is_not_reported_stuck(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    before = snapshot(collection, settings, {})
+    record_feedback(collection, note_id, note="ambiguous")
+    # The old snapshot predates the hold, so it cannot know the repair is queued.
+    assert needs_attention(collection, before, {}, False) == []
+
+
+def test_another_sense_of_the_word_does_not_stall_a_fix(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    admit(collection, settings, {}, [initial], lexicon)
+    _other, card = add_word(collection, "百", established=True)
+    request_fix(collection, card.id, config={}, word="百", definition="many")
+    assert next(f for f in pending_fixes(collection) if f.card_id == card.id).collision
+    assert needs_attention(collection, None, {}, False) == []
+
+
 def test_a_stalled_fix_needs_attention(collection: Collection) -> None:
     settings = {"enabled": True, "deck_id": 1}
     collection.set_config(SETTINGS_KEY, settings)
@@ -3281,16 +3303,17 @@ def test_attention_notice_shows_on_the_main_screen_and_notifies_once(
         compute=controller.attention,
         resolve=runtime.resolve_attention,
         notified=set(),
+        cached=[],
         action=SimpleNamespace(setText=labels.append),
         open=lambda: opened.append(True),
     )
+    notice.refresh()
+    notice.refresh()
+    assert len(tips) == 1 and labels[-1].endswith("(1)…") and len(redraws) == 1
     content = SimpleNamespace(stats="")
     notice.render(None, content)
     assert "1 card needs your attention" in content.stats
     assert "pycmd('chinese_frontier_attention')" in content.stats
-    notice.refresh()
-    notice.refresh()
-    assert len(tips) == 1 and labels[-1].endswith("(1)…") and redraws
     assert notice.message((False, None), "chinese_frontier_attention", None) == (
         True,
         None,
@@ -3298,6 +3321,7 @@ def test_attention_notice_shows_on_the_main_screen_and_notifies_once(
     assert opened and notice.message((False, None), "other", None) == (False, None)
     runtime.resolve_attention(collection, item)
     assert "chinese-frontier::held" not in collection.get_note(note_id).tags
+    notice.refresh()
     content = SimpleNamespace(stats="")
     notice.render(None, content)
     assert content.stats == ""
@@ -3349,6 +3373,7 @@ def test_attention_dialog_browses_and_releases(
         compute=lambda: needs_attention(collection, current, {}, False),
         resolve=runtime.resolve_attention,
         notified=set(),
+        cached=[],
         action=type("A", (), {"setText": lambda self, _t: None})(),
     )
     notice.open()
@@ -3367,4 +3392,8 @@ def test_attention_dialog_browses_and_releases(
     act.click()
     assert "Nothing needs" in listing.item(0).text()
     assert collection.get_note(note_id).cards()[0].queue != QUEUE_TYPE_SUSPENDED
+    # The whole action is one undo step.
+    collection.undo()
+    assert "chinese-frontier::held" in collection.get_note(note_id).tags
+    assert collection.get_note(note_id).cards()[0].queue == QUEUE_TYPE_SUSPENDED
     dialog.close()

@@ -169,6 +169,8 @@ class Controller:
         )
         recover(self.state.telemetry, vars(self.state).get("day", -1))
         self.save_state()
+        if self.notice:
+            self.notice.refresh()
         interval = max(30, int(self.config().get("poll_seconds", 300)))
         self.timer.start(interval * 1000)
         config = self.config()

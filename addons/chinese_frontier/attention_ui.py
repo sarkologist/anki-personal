@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import traceback
 from typing import Callable
 
 import aqt
@@ -39,6 +40,8 @@ class AttentionNotice:
         self.compute = compute
         self.resolve = resolve
         self.notified: set[tuple[str, int]] = set()
+        # Recomputed on refresh, not on every main-screen render.
+        self.cached: list[Attention] = []
         self.action = QAction(f"{language} Frontier: needs attention…", mw)
         qconnect(self.action.triggered, self.open)
         mw.form.menuTools.addAction(self.action)
@@ -46,15 +49,25 @@ class AttentionNotice:
         gui_hooks.webview_did_receive_js_message.append(self.message)
 
     def items(self) -> list[Attention]:
-        return self.compute() if mw and mw.col else []
+        """A failure here must not stop generation or the main screen."""
+        if not mw or not mw.col:
+            return []
+        try:
+            self.cached = self.compute()
+        except Exception:
+            traceback.print_exc()
+            self.cached = []
+        return self.cached
 
     def reset(self) -> None:
         self.notified.clear()
+        self.cached = []
 
     def refresh(self) -> None:
         """Tell the learner once about items not seen before; redraw the notice."""
         if not mw or not mw.col:
             return
+        before = len(self.cached)
         items = self.items()
         self.action.setText(
             f"{self.language} Frontier: needs attention ({len(items)})…"
@@ -68,12 +81,12 @@ class AttentionNotice:
                 period=8000,
             )
         self.notified |= new
-        if mw.state == "deckBrowser":
+        if mw.state == "deckBrowser" and len(items) != before:
             mw.deckBrowser.refresh()
 
     def render(self, _deck_browser: object, content: object) -> None:
-        if items := self.items():
-            content.stats += banner(self.language, len(items), self.command)  # type: ignore[attr-defined]
+        if self.cached:
+            content.stats += banner(self.language, len(self.cached), self.command)  # type: ignore[attr-defined]
 
     def message(
         self, handled: tuple[bool, object], message: str, _context: object
@@ -149,13 +162,17 @@ class AttentionNotice:
                 aqt.dialogs.open("Browser", mw, search=(browser_search(items),))
 
         def act_on() -> None:
-            items = selected()
+            # Rows can go stale while the dialog is open; act only on current ones.
+            current = set(self.items())
+            items = [item for item in selected() if item in current]
 
             def op(col: Collection) -> OpChanges:
-                changes = OpChanges()
+                undo = col.add_custom_undo_entry(
+                    f"{self.language} Frontier: {act.text().lower()}"
+                )
                 for item in items:
-                    changes.MergeFrom(self.resolve(col, item))
-                return changes
+                    self.resolve(col, item)
+                return col.merge_undo_entries(undo)
 
             def done(_changes: OpChanges) -> None:
                 fill()

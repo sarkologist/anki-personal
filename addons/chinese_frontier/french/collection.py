@@ -239,6 +239,7 @@ def refresh_conjugation_tables(
         if (
             TAG not in note.tags
             or REPAIR_TAG in note.tags
+            or MANUAL_TAG in note.tags
             or not isinstance(target, dict)
             or not isinstance(candidate, dict)
             or target.get("kind") != "conjugation"
@@ -779,7 +780,11 @@ def needs_attention(
         note = col.get_note(nid)
         data = json_field(note["Source"])
         key = str(data.get("key", ""))
-        word = str(data.get("target", {}).get("lemma", "")) or str(data.get("answer"))
+        target = data.get("target")
+        word = str(
+            (target.get("lemma") if isinstance(target, dict) else "")
+            or data.get("answer", "")
+        )
         card_id = min(note.card_ids())
         if MANUAL_TAG in note.tags:
             if data.get("handed_over") == presentation_hash(dict(note.items())):
@@ -787,9 +792,10 @@ def needs_attention(
                 items.append(Attention(EDIT, card_id, nid, word, reason))
             continue
         attempts, last = rejections.get(key, (0, ""))
+        known = current is not None and data.get("held_at", 0) < current.taken_at
         if paused:
             reason = "French Frontier is paused, so no repair runs"
-        elif repairable is not None and nid not in repairable:
+        elif known and repairable is not None and nid not in repairable:
             reason = (
                 "Tagged leech or excluded, so no repair runs"
                 if any(
@@ -915,6 +921,8 @@ class Snapshot:
     lookahead_days: int = 0
     # Learner cards awaiting a replacement: key -> (card id, fingerprint, target).
     fixes: dict[str, tuple[int, str, Target]] = field(default_factory=dict)
+    # When the scan began; holds placed later are not yet known to it.
+    taken_at: float = 0.0
 
     @property
     def slots(self) -> int:
@@ -928,6 +936,7 @@ class Snapshot:
 def snapshot(
     col: Collection, settings: dict[str, Any], config: dict[str, Any], lexicon: Lexicon
 ) -> Snapshot:
+    started = time.time()
     deck_id = int(settings.get("deck_id", 0))
     decks = {int(d["id"]): d for d in col.decks.all()}
     if deck_id not in decks or decks[deck_id].get("dyn"):
@@ -1148,6 +1157,7 @@ def snapshot(
         covered_forms,
         lookahead_days(config),
         fixes,
+        started,
     )
 
 

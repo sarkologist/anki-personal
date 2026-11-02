@@ -273,6 +273,8 @@ class Controller:
                 ).success(
                     lambda _changes: self.tick() if self.valid(epoch) else None
                 ).run_in_background(initiator=self)
+        if self.notice:
+            self.notice.refresh()
         self.timer.start(max(30, int(config.get("poll_seconds", 300))) * 1000)
         mw.progress.single_shot(1500, self.tick)
 

@@ -115,6 +115,8 @@ class Snapshot:
     lookahead_days: int = 0
     # Keys of fixes the learner requested on their own cards.
     fixes: set[str] = field(default_factory=set)
+    # When the scan began; holds placed later are not yet known to it.
+    taken_at: float = 0.0
 
     def slots(self, deck_id: int) -> int:
         return self.budget_slots(self.budgets.get(deck_id, []))
@@ -582,6 +584,13 @@ def snapshot(
     col: Collection, settings: dict[str, Any], config: dict[str, Any]
 ) -> Snapshot:
     """Read only, on Anki's serialized collection executor."""
+    started = time.time()
+    return replace(_scan(col, settings, config), taken_at=started)
+
+
+def _scan(
+    col: Collection, settings: dict[str, Any], config: dict[str, Any]
+) -> Snapshot:
     deck_id = int(settings.get("deck_id", 0))
     decks = {int(deck["id"]): deck for deck in col.decks.all()}
     if deck_id not in decks or decks[deck_id].get("dyn"):
@@ -1286,7 +1295,7 @@ def _save_feedback(
             )
         )
         data = _json_field(note["Source"])
-        data["held"] = held
+        data.update(held=held, held_at=time.time())
         note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
         note.tags.append(hold_tag)
     else:
@@ -1309,6 +1318,7 @@ def _drop_hold(note: Any, hold_tag: str) -> list[int]:
     note.tags = [t for t in note.tags if t != hold_tag]
     data = _json_field(note["Source"])
     held = data.pop("held", [])
+    data.pop("held_at", None)
     note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
     return [int(cid) for cid in held] if isinstance(held, list) else []
 
@@ -1324,8 +1334,10 @@ def _release(col: Collection, cards: list[Any], held: list[int]) -> None:
 
 def release_hold(col: Collection, note_id: int, hold_tag: str = HOLD_TAG) -> OpChanges:
     """Return a held note to reviews unrepaired; a later repair still replaces it."""
-    undo = col.add_custom_undo_entry("Release held card")
     note = col.get_note(NoteId(note_id))
+    if hold_tag not in note.tags:
+        return OpChanges()
+    undo = col.add_custom_undo_entry("Release held card")
     held = _drop_hold(note, hold_tag)
     col.update_note(note)
     _release(col, note.cards(), held)
@@ -1363,9 +1375,10 @@ def needs_attention(
                 items.append(Attention(EDIT, card_id, nid, word, reason))
             continue
         attempts, last = rejections.get(key, (0, ""))
+        known = current is not None and data.get("held_at", 0) < current.taken_at
         if paused:
             reason = "Chinese Frontier is paused, so no repair runs"
-        elif repairable is not None and key not in repairable:
+        elif known and repairable is not None and key not in repairable:
             reason = _stuck_reason(col, note, data)
         elif attempts >= REJECTIONS:
             reason = f"Rejected {attempts} times in a row: {last}"
@@ -1375,7 +1388,7 @@ def needs_attention(
             continue
         items.append(Attention(STUCK, card_id, nid, word, reason))
     for fix in pending_fixes(col):
-        if problem := fix.problem or (KEY_TAKEN if fix.collision else ""):
+        if problem := fix.problem:
             note_id = col.db.scalar("select nid from cards where id=?", fix.card_id)
             reason = "The fix of your card is stalled: " + problem
             items.append(
