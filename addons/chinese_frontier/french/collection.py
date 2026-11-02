@@ -23,6 +23,7 @@ from ..collection import (
     FeedbackResult,
     _copy_scheduling,
     _descendants,
+    _drop_hold,
     _hide_metadata,
     _ids,
     _learner_feedback,
@@ -662,12 +663,11 @@ def restore_original(col: Collection, note_id: int) -> OpChanges:
     col.update_card(original)
     col.sched.suspend_cards([card.id for card in cards])
     note = col.get_note(note.id)
+    _drop_hold(note, HOLD_TAG)
     data = json_field(note["Source"])
     data["adopted"] = {**adopted, "restored_at": int(time.time())}
     note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
-    note.tags = [t for t in note.tags if t not in (REPAIR_TAG, HOLD_TAG)] + [
-        RESTORED_TAG
-    ]
+    note.tags = [t for t in note.tags if t != REPAIR_TAG] + [RESTORED_TAG]
     col.update_note(note)
     return col.merge_undo_entries(undo)
 
@@ -1206,6 +1206,7 @@ def admit(
             "mode": c.mode,
             "constructions": list(c.constructions),
         }
+        held = _drop_hold(note, HOLD_TAG) if draft.repair_note else []
         if draft.repair_note:
             # A repair keeps the complaints and the learner card it replaced.
             old = json_field(note["Source"])
@@ -1246,9 +1247,8 @@ def admit(
         values["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
         for name, value in values.items():
             note[name] = value
-        held = HOLD_TAG in note.tags
         note.tags = (
-            [t for t in note.tags if t not in (REPAIR_TAG, HOLD_TAG, "disambiguation")]
+            [t for t in note.tags if t not in (REPAIR_TAG, "disambiguation")]
             if draft.repair_note
             else [
                 TAG,

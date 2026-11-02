@@ -3536,6 +3536,23 @@ def test_a_reported_unlearned_verb_can_be_contrasted():
         validate(c, target(), known, dictionary())
 
 
+def test_french_repair_leaves_a_card_the_learner_suspended_suspended(collection):
+    from dataclasses import replace
+
+    from chinese_frontier.french.collection import admit, record_feedback
+
+    from anki.consts import QUEUE_TYPE_SUSPENDED
+
+    settings, note = admitted_french_note(collection, candidate())
+    collection.sched.suspend_cards([note.cards()[0].id])
+    record_feedback(collection, note.id)
+    fresh = replace(candidate(), sentence="Le train, je emprunte.")
+    draft = repair_draft(collection, settings, fresh)
+    assert admit(collection, settings, {}, [draft], dictionary()).admitted == [note.id]
+    assert note.cards()[0].queue == QUEUE_TYPE_SUSPENDED
+    assert "french-frontier::held" not in collection.get_note(note.id).tags
+
+
 def test_french_feedback_and_its_hold_undo_together(collection):
     from chinese_frontier.french.collection import record_feedback
 

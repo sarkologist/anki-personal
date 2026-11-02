@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from anki.cards import CardId
 from anki.collection import Collection, OpChanges
-from anki.consts import QUEUE_TYPE_MANUALLY_BURIED
+from anki.consts import QUEUE_TYPE_MANUALLY_BURIED, QUEUE_TYPE_SUSPENDED
 from anki.decks import DeckId
 from anki.notes import NoteId
 
@@ -805,7 +805,7 @@ def snapshot(
                 record = {"card": cid, "context": text[:800]}
                 if text and record not in contexts.setdefault(word, []):
                     contexts[word].append(record)
-        if home not in scope or queue != -1 or nid in seen_notes:
+        if home not in scope or queue != -1 or nid in seen_notes or HOLD_TAG in tags:
             continue
         if model["type"] != 0 or not words or not meaning:
             skip("not a supported single-word note")
@@ -988,7 +988,9 @@ def _read_budgets(
         descendants = _ids(_descendants(decks, budget_id))
         pending = col.db.scalar(
             f"select count(*) from cards where (did in {descendants} or odid in {descendants}) "
-            "and type=0 and queue in (0,-2,-3)"
+            "and type=0 and (queue in (0,-2,-3) or (queue=-1 and nid in "
+            # A held card comes back new when its repair lands.
+            "(select id from notes where tags like '%-frontier::held %')))"
         )
         due_reviews = col.db.scalar(
             f"select count(*) from cards where (did in {descendants} or odid in {descendants}) "
@@ -1269,26 +1271,45 @@ def _save_feedback(
     rejected sentence back. The hold tag keeps the suspended note eligible for
     the repair, which releases it. A note handed over to the learner is released."""
     undo = col.add_custom_undo_entry("Fix this sentence")
-    held = hold_tag in note.tags
-    note.tags = [t for t in note.tags if t != hold_tag]
+    cards = note.cards()
+    held = _drop_hold(note, hold_tag)
     if not handed_over:
+        # Only cards the hold suspends come back; the learner's own suspensions stay.
+        held = list(
+            dict.fromkeys(
+                held + [c.id for c in cards if c.queue != QUEUE_TYPE_SUSPENDED]
+            )
+        )
+        data = _json_field(note["Source"])
+        data["held"] = held
+        note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
         note.tags.append(hold_tag)
     col.update_note(note)
-    ids = [card.id for card in note.cards()]
-    if not handed_over:
-        col.sched.suspend_cards(ids)
+    if handed_over:
+        _release(col, cards, held)
     elif held:
-        col.sched.unsuspend_cards(ids)
+        col.sched.suspend_cards([CardId(cid) for cid in held])
     return col.merge_undo_entries(undo)
 
 
-def _release(col: Collection, cards: list[Any], held: bool) -> None:
+def _drop_hold(note: Any, hold_tag: str) -> list[int]:
+    """Remove a hold from the note, returning the cards it suspended."""
+    if hold_tag not in note.tags:
+        return []
+    note.tags = [t for t in note.tags if t != hold_tag]
+    data = _json_field(note["Source"])
+    held = data.pop("held", [])
+    note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
+    return [int(cid) for cid in held] if isinstance(held, list) else []
+
+
+def _release(col: Collection, cards: list[Any], held: list[int]) -> None:
     """Return cards to reviews once their repair lands."""
     # Repairs requested before holds existed buried the cards instead.
     if ids := [c.id for c in cards if c.queue == QUEUE_TYPE_MANUALLY_BURIED]:
         col.sched.unbury_cards(ids)
-    if held:
-        col.sched.unsuspend_cards([c.id for c in cards])
+    if ids := [c.id for c in cards if c.id in held]:
+        col.sched.unsuspend_cards(ids)
 
 
 def report_confusion(col: Collection, note_id: int, word: str) -> OpChanges:
@@ -1527,12 +1548,11 @@ def restore_original(col: Collection, note_id: int) -> OpChanges:
     col.update_card(original)
     col.sched.suspend_cards([card.id for card in cards])
     note = col.get_note(note.id)
+    _drop_hold(note, HOLD_TAG)
     data = _json_field(note["Source"])
     data["adopted"] = {**adopted, "restored_at": int(time.time())}
     note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
-    note.tags = [tag for tag in note.tags if tag not in (REPAIR_TAG, HOLD_TAG)] + [
-        RESTORED_TAG
-    ]
+    note.tags = [tag for tag in note.tags if tag != REPAIR_TAG] + [RESTORED_TAG]
     col.update_note(note)
     return col.merge_undo_entries(undo)
 
@@ -1792,7 +1812,6 @@ def _admit(
             undo = col.add_custom_undo_entry("Update Chinese sentence cards")
             model = ensure_model(col)
         note = col.get_note(NoteId(repair_id)) if repair_id else col.new_note(model)
-        held = HOLD_TAG in note.tags
         old_cards = (
             {
                 int(c.ord): (
@@ -1849,8 +1868,9 @@ def _admit(
         note["Disambiguation"] = html.escape(
             json.dumps(audit, ensure_ascii=False, indent=2)
         )
+        held = _drop_hold(note, HOLD_TAG) if repair_id else []
         note.tags = (
-            [tag for tag in note.tags if tag not in (REPAIR_TAG, HOLD_TAG)]
+            [tag for tag in note.tags if tag != REPAIR_TAG]
             if repair_id
             else [
                 GENERATED_TAG,

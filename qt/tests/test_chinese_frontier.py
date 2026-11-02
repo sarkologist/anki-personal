@@ -2012,6 +2012,52 @@ def test_draft_written_before_feedback_is_rejected(
     assert result.updated == [] and result.rejected
 
 
+def test_a_deferred_repair_keeps_the_rejected_sentence_held(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    pending = snapshot(collection, settings, {}).budgets[1][0].pending
+    record_feedback(collection, note_id, note="ambiguous")
+    target = snapshot(collection, settings, {}).sources[0]
+    # The held card comes back new, so it still reserves new-card capacity.
+    assert snapshot(collection, settings, {}).budgets[1][0].pending == pending
+    c = Candidate.from_dict(target.existing_candidate)
+    draft = audited_draft(target, c, audit_only=True)
+    draft.audit.update(status="deferred", reason="A competing answer still fits")
+    draft.audit["checks"][-1]["review"]["approved"] = False
+    result = admit(collection, settings, {}, [draft], lexicon)
+    assert result.updated == [note_id] and result.rejected
+    after = collection.get_note(note_id)
+    assert "competing answer" in after["Disambiguation"]
+    assert "chinese-frontier::held" in after.tags
+    assert after.cards()[0].queue == QUEUE_TYPE_SUSPENDED
+    retry = snapshot(collection, settings, {}).sources[0]
+    assert retry.force_repair and retry.key == target.key
+
+
+def test_a_repair_leaves_cards_the_learner_suspended_suspended(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    collection.sched.suspend_cards([c.id for c in collection.get_note(note_id).cards()])
+    record_feedback(collection, note_id, note="stiff")
+    target = snapshot(collection, settings, {}).sources[0]
+    result = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(target, candidate("这本书有百页。"))],
+        lexicon,
+    )
+    assert result.updated == [note_id]
+    after = collection.get_note(note_id)
+    assert after.cards()[0].queue == QUEUE_TYPE_SUSPENDED
+    assert "chinese-frontier::held" not in after.tags
+    assert "held" not in stored_source(after)
+
+
 def test_repeated_repairs_hand_the_note_to_the_learner(
     collection: Collection, lexicon: Lexicon
 ) -> None:

@@ -162,7 +162,9 @@ recur. In the background, the add-on's CLI also labels your notes
 ("Anything else") with categories. A category reported on three distinct notes
 within 30 days becomes a field of its own in the dialog. One reported on six is
 listed in Tools as a candidate rule change. Design record: `FEEDBACK_CATEGORIES.md`. Until the new sentence passes review, which can take several attempts, the note's
-cards stay suspended and tagged `chinese-frontier::held`; the repair unsuspends them.
+cards stay suspended and tagged `chinese-frontier::held`; the repair unsuspends them
+(cards you had suspended yourself stay suspended). Held new cards keep reserving new-card
+capacity, and Tools shows how many notes are held.
 After three repairs, a further request tags the note
 `chinese-frontier::manual` for you to edit, unsuspends it, and automation leaves it alone.
 The add-on regenerates that note in place, preserving its card ID,

@@ -38,6 +38,7 @@ from aqt.utils import showInfo, tooltip
 
 from . import categories
 from .collection import (
+    HOLD_TAG,
     KEY_PREFIX,
     MAX_REPAIRS,
     SETTINGS_KEY,
@@ -830,7 +831,7 @@ class Controller:
             if recurring := categories.status_line(mw.col):
                 text += "\n" + recurring
             if current := self.last_snapshot:
-                text += f"\n\nEstablished vocabulary: {len(current.known)} words\nEligible sources: {len(current.sources)}\nPrepared sentences: {len(self.state.drafts)}\nDeferred targets: {len(self.state.deferred)}"
+                text += f"\n\nEstablished vocabulary: {len(current.known)} words\nEligible sources: {len(current.sources)}\nPrepared sentences: {len(self.state.drafts)}\nDeferred targets: {len(self.state.deferred)}\nHeld for repair (tag {HOLD_TAG}): {len(mw.col.find_notes(f'tag:{HOLD_TAG}'))}"
                 if current.skipped:
                     text += "\nSkipped: " + ", ".join(
                         f"{reason}: {count}"
