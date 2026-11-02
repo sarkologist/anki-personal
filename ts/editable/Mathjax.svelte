@@ -94,9 +94,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         //
         // A block equation wider than the field must not be clipped. Cap it to
         // the field width (`max-width: 100%`) and let it scroll horizontally
-        // (`overflow-x: auto`) so the left edge stays visible — the old
-        // `overflow: visible` + `margin: auto` centred the overflow and cut off
-        // *both* ends. The 10% enlargement uses `zoom`, not `transform: scale`:
+        // (`overflow-x: auto`) so the left edge stays visible — with the old
+        // `overflow: visible` the excess spilled past the field's right edge,
+        // and `transform: scale(1.1)`, growing from the centre, pushed the
+        // left edge out too. The 10% enlargement uses `zoom`, not `transform: scale`:
         // a transform is applied after layout, so its overflow isn't scrollable
         // and the scaled math would spill past the field and clip again.
         ":host(.block) { display: block; overflow-x: auto; overflow-y: hidden; width: fit-content; max-width: 100% !important; margin: 1rem auto; zoom: 1.1; }",
