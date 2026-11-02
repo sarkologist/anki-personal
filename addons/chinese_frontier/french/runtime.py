@@ -37,6 +37,8 @@ from aqt.qt import (
 from aqt.utils import tooltip
 
 from .. import categories
+from ..attention import EDIT, STALLED, Attention, rejections
+from ..attention_ui import AttentionNotice
 from ..collection import MAX_REPAIRS
 from ..core import FEEDBACK_REASONS
 from ..diagnostics import Diagnostics
@@ -54,17 +56,21 @@ from .collection import (
     MANUAL_TAG,
     SETTINGS,
     Admission,
+    Snapshot,
     admit,
     adopted_original,
     cancel_fix,
+    dismiss_handover,
     drop_cue_labels,
     fix_readings,
     fix_target_for_card,
     is_generated,
     json_field,
+    needs_attention,
     pending_fixes,
     record_feedback,
     refresh_conjugation_tables,
+    release_hold,
     repair_count,
     request_fix,
     restore_original,
@@ -127,7 +133,18 @@ def retry_now(state: dict[str, Any], key: str) -> None:
         item.update(attempts=0, retry_after=0)
 
 
+def resolve_attention(col: Any, item: Attention) -> OpChanges:
+    if item.kind == EDIT:
+        return dismiss_handover(col, item.note_id)
+    if item.kind == STALLED:
+        return cancel_fix(col, item.card_id)
+    return release_hold(col, item.note_id)
+
+
 class Controller:
+    notice: AttentionNotice | None = None
+    last_snapshot: Snapshot | None = None
+
     def __init__(self) -> None:
         self.timer = QTimer(mw)
         qconnect(self.timer.timeout, self.tick)
@@ -205,6 +222,19 @@ class Controller:
         self.busy = False
         self.tables_refreshed = False
         self.path = None
+        self.last_snapshot = None
+        if self.notice:
+            self.notice.reset()
+
+    def attention(self) -> list[Attention]:
+        assert mw and mw.col
+        settings = mw.col.get_config(SETTINGS, {})
+        return needs_attention(
+            mw.col,
+            self.last_snapshot,
+            rejections(self.state.get("deferred", {})),
+            bool(settings) and not settings.get("enabled"),
+        )
 
     def opened(self) -> None:
         self.closed()
@@ -384,6 +414,9 @@ class Controller:
         if not self.valid(epoch):
             return
         reset_day(self.state, current.day)
+        self.last_snapshot = current
+        if self.notice:
+            self.notice.refresh()
         self.state.setdefault("telemetry", {})["snapshot"] = {
             "at": time.time(),
             "slots": current.slots,
@@ -1036,6 +1069,9 @@ def install() -> None:
     action = QAction("French Frontier…", mw)
     qconnect(action.triggered, controller.settings_dialog)
     mw.form.menuTools.addAction(action)
+    controller.notice = AttentionNotice(
+        "French", controller.attention, resolve_attention
+    )
     gui_hooks.profile_did_open.append(controller.opened)
     gui_hooks.profile_will_close.append(controller.closed)
     gui_hooks.sync_did_finish.append(controller.tick)

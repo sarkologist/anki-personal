@@ -17,6 +17,7 @@ from anki.decks import DeckId
 from anki.notes import NoteId
 
 from . import categories
+from .attention import EDIT, REJECTED, REJECTIONS, STALLED, STUCK, Attention
 from .core import (
     CLOZE,
     EXCLUDE_TAG,
@@ -1263,7 +1264,11 @@ def record_feedback(
 
 
 def _save_feedback(
-    col: Collection, note: Any, handed_over: bool, hold_tag: str = HOLD_TAG
+    col: Collection,
+    note: Any,
+    handed_over: bool,
+    hold_tag: str = HOLD_TAG,
+    presentation: Callable[[dict[str, str]], str] = presentation_fingerprint,
 ) -> OpChanges:
     """Save the note; a queued repair keeps its cards out of reviews until it lands.
 
@@ -1284,6 +1289,11 @@ def _save_feedback(
         data["held"] = held
         note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
         note.tags.append(hold_tag)
+    else:
+        # The learner is asked to edit this note until its sentence changes.
+        data = _json_field(note["Source"])
+        data["handed_over"] = presentation(dict(note.items()))
+        note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
     col.update_note(note)
     if handed_over:
         _release(col, cards, held)
@@ -1310,6 +1320,76 @@ def _release(col: Collection, cards: list[Any], held: list[int]) -> None:
         col.sched.unbury_cards(ids)
     if ids := [c.id for c in cards if c.id in held]:
         col.sched.unsuspend_cards(ids)
+
+
+def release_hold(col: Collection, note_id: int, hold_tag: str = HOLD_TAG) -> OpChanges:
+    """Return a held note to reviews unrepaired; a later repair still replaces it."""
+    undo = col.add_custom_undo_entry("Release held card")
+    note = col.get_note(NoteId(note_id))
+    held = _drop_hold(note, hold_tag)
+    col.update_note(note)
+    _release(col, note.cards(), held)
+    return col.merge_undo_entries(undo)
+
+
+def dismiss_handover(col: Collection, note_id: int) -> OpChanges:
+    """Stop asking the learner to edit a handed-over note."""
+    note = col.get_note(NoteId(note_id))
+    data = _json_field(note["Source"])
+    data.pop("handed_over", None)
+    note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
+    return col.update_note(note)
+
+
+def needs_attention(
+    col: Collection,
+    current: Snapshot | None,
+    rejections: dict[str, tuple[int, str]],
+    paused: bool,
+) -> list[Attention]:
+    """Notes and cards automation cannot finish; `rejections` maps a key to its
+    consecutive rejections and the last reason. Without a snapshot, stuck holds
+    are unknown and not reported."""
+    repairable = None if current is None else {s.key for s in current.sources}
+    items = []
+    for nid in col.find_notes(f"tag:{HOLD_TAG} OR tag:{MANUAL_TAG}"):
+        note = col.get_note(nid)
+        data = _json_field(note["Source"])
+        key, word = str(data.get("key", "")), str(data.get("word", ""))
+        card_id = min(note.card_ids())
+        if MANUAL_TAG in note.tags:
+            if data.get("handed_over") == presentation_fingerprint(dict(note.items())):
+                reason = f"Replaced {MAX_REPAIRS} times; edit the sentence yourself"
+                items.append(Attention(EDIT, card_id, nid, word, reason))
+            continue
+        attempts, last = rejections.get(key, (0, ""))
+        if paused:
+            reason = "Chinese Frontier is paused, so no repair runs"
+        elif repairable is not None and key not in repairable:
+            reason = _stuck_reason(col, note, data)
+        elif attempts >= REJECTIONS:
+            reason = f"Rejected {attempts} times in a row: {last}"
+            items.append(Attention(REJECTED, card_id, nid, word, reason))
+            continue
+        else:
+            continue
+        items.append(Attention(STUCK, card_id, nid, word, reason))
+    for fix in pending_fixes(col):
+        if problem := fix.problem or (KEY_TAKEN if fix.collision else ""):
+            note_id = col.db.scalar("select nid from cards where id=?", fix.card_id)
+            reason = "The fix of your card is stalled: " + problem
+            items.append(
+                Attention(STALLED, fix.card_id, note_id or 0, fix.word, reason)
+            )
+    return items
+
+
+def _stuck_reason(col: Collection, note: Any, data: dict[str, Any]) -> str:
+    if any(t.casefold() in ("leech", EXCLUDE_TAG) for t in note.tags):
+        return "Tagged leech or excluded, so no repair runs"
+    if not col.db.scalar("select 1 from cards where id=?", data.get("card_id", 0)):
+        return "Its source card was deleted, so no repair can run"
+    return "No repair can run: its source card was unsuspended, moved or changed"
 
 
 def report_confusion(col: Collection, note_id: int, word: str) -> OpChanges:

@@ -3341,6 +3341,40 @@ def test_french_feedback_hands_over_after_three_repairs(collection):
     assert not snapshot(collection, settings, {}, dictionary()).repairs
 
 
+def test_french_notes_needing_attention(collection):
+    from chinese_frontier.attention import EDIT, REJECTED, STUCK
+    from chinese_frontier.french.collection import (
+        dismiss_handover,
+        needs_attention,
+        record_feedback,
+        release_hold,
+        snapshot,
+    )
+
+    settings, note = admitted_french_note(collection, candidate())
+    record_feedback(collection, note.id)
+    current = snapshot(collection, settings, {}, dictionary())
+    assert needs_attention(collection, current, {}, False) == []
+    ((_, _, t),) = current.repairs.values()
+    (item,) = needs_attention(collection, current, {t.key: (4, "odd")}, False)
+    assert item.kind == REJECTED and item.word == "emprunter"
+    note = collection.get_note(note.id)
+    note.tags.append("leech")
+    collection.update_note(note)
+    current = snapshot(collection, settings, {}, dictionary())
+    (item,) = needs_attention(collection, current, {}, False)
+    assert item.kind == STUCK and "leech" in item.reason
+    release_hold(collection, note.id)
+    assert note.cards()[0].queue == 0
+    assert needs_attention(collection, current, {}, False) == []
+    for _ in range(4):
+        record_feedback(collection, note.id)
+    (item,) = needs_attention(collection, current, {}, False)
+    assert item.kind == EDIT
+    dismiss_handover(collection, note.id)
+    assert needs_attention(collection, current, {}, False) == []
+
+
 def test_french_repair_keeps_feedback_and_rejects_drafts_written_without_it(
     collection,
 ):

@@ -17,6 +17,13 @@ from anki.consts import QUEUE_TYPE_MANUALLY_BURIED, QUEUE_TYPE_SUSPENDED
 ADDONS = Path(__file__).resolve().parents[2] / "addons"
 sys.path.insert(0, str(ADDONS))
 
+from chinese_frontier.attention import (  # noqa: E402
+    EDIT,
+    REJECTED,
+    STALLED,
+    STUCK,
+    browser_search,
+)
 from chinese_frontier.collection import (  # noqa: E402
     ADOPTED_TAG,
     FIXES_KEY,
@@ -26,13 +33,16 @@ from chinese_frontier.collection import (  # noqa: E402
     SETTINGS_KEY,
     admit,
     cancel_fix,
+    dismiss_handover,
     ensure_model,
     fix_target,
     fix_target_for_card,
     initial_scope_settings,
+    needs_attention,
     needs_audit,
     pending_fixes,
     record_feedback,
+    release_hold,
     report_confusion,
     request_fix,
     request_repair,
@@ -2075,6 +2085,67 @@ def test_repeated_repairs_hand_the_note_to_the_learner(
     assert snapshot(collection, settings, {}).repairs == {}
 
 
+def test_a_handed_over_note_needs_attention_until_it_is_edited(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    for _ in range(MAX_REPAIRS + 1):
+        record_feedback(collection, note_id, note="again")
+    current = snapshot(collection, settings, {})
+    (item,) = needs_attention(collection, current, {}, False)
+    assert (item.kind, item.note_id, item.word) == (EDIT, note_id, "百")
+    assert browser_search([item]) == f"cid:{item.card_id}"
+    note = collection.get_note(note_id)
+    note["Text"] = "这本书有一{{c1::百}}多页。"
+    collection.update_note(note)
+    assert needs_attention(collection, current, {}, False) == []
+    note["Text"] = "这本书有一{{c1::百}}页。"
+    collection.update_note(note)
+    assert needs_attention(collection, current, {}, False)
+    dismiss_handover(collection, note_id)
+    assert needs_attention(collection, current, {}, False) == []
+
+
+def test_a_held_note_whose_repair_cannot_run_needs_attention(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, source_note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(collection, note_id, note="ambiguous")
+    # Before any snapshot nothing is known; a repairable hold is not reported.
+    assert needs_attention(collection, None, {}, False) == []
+    current = snapshot(collection, settings, {})
+    assert needs_attention(collection, current, {}, False) == []
+    key = current.sources[0].key
+    (rejected,) = needs_attention(collection, current, {key: (3, "unnatural")}, False)
+    assert rejected.kind == REJECTED and "unnatural" in rejected.reason
+    (paused,) = needs_attention(collection, current, {}, True)
+    assert paused.kind == STUCK and "paused" in paused.reason
+    collection.remove_notes([source_note.id])
+    current = snapshot(collection, settings, {})
+    (stuck,) = needs_attention(collection, current, {}, False)
+    assert stuck.kind == STUCK and "deleted" in stuck.reason
+    release_hold(collection, note_id)
+    after = collection.get_note(note_id)
+    assert "chinese-frontier::held" not in after.tags
+    assert after.cards()[0].queue != QUEUE_TYPE_SUSPENDED
+    assert needs_attention(collection, current, {}, False) == []
+
+
+def test_a_stalled_fix_needs_attention(collection: Collection) -> None:
+    settings = {"enabled": True, "deck_id": 1}
+    collection.set_config(SETTINGS_KEY, settings)
+    note, card = add_word(collection, "百", established=True)
+    request_fix(collection, card.id, config={}, word="百", definition="hundred")
+    assert needs_attention(collection, None, {}, False) == []
+    note["Back"] = "edited by the learner"
+    collection.update_note(note)
+    (item,) = needs_attention(collection, None, {}, False)
+    assert (item.kind, item.card_id, item.note_id) == (STALLED, card.id, note.id)
+    assert "edited" in item.reason
+
+
 def test_avoided_words_and_rejected_sentences_fail_validation(
     lexicon: Lexicon,
 ) -> None:
@@ -3166,3 +3237,134 @@ def test_only_newly_labelled_entries_add_known_tags(
     assert "chinese-frontier::feedback::retired" not in tags
     # The learner's labelled entry also ticked ambiguous: its tag returns with it.
     assert "chinese-frontier::feedback::ambiguous" in tags
+
+
+def test_attention_notice_shows_on_the_main_screen_and_notifies_once(
+    monkeypatch, menu_controller, lexicon: Lexicon
+) -> None:
+    from types import SimpleNamespace
+
+    from chinese_frontier import attention_ui, runtime
+
+    controller, _ticks = menu_controller
+    collection = runtime.mw.col
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(collection, note_id, note="ambiguous")
+    controller.last_snapshot = snapshot(collection, settings, {})
+    key = controller.last_snapshot.sources[0].key
+    controller.state.defer(key, "unnatural", "v1")
+    controller.state.defer(key, "unnatural", "v1")
+    assert controller.attention() == []
+    controller.state.defer(key, "still unnatural", "v1")
+    (item,) = controller.attention()
+    assert item.kind == REJECTED and "still unnatural" in item.reason
+
+    tips: list[str] = []
+    redraws: list[bool] = []
+    monkeypatch.setattr(attention_ui, "tooltip", lambda text, **_: tips.append(text))
+    monkeypatch.setattr(
+        attention_ui,
+        "mw",
+        SimpleNamespace(
+            col=collection,
+            state="deckBrowser",
+            deckBrowser=SimpleNamespace(refresh=lambda: redraws.append(True)),
+        ),
+    )
+    notice = attention_ui.AttentionNotice.__new__(attention_ui.AttentionNotice)
+    labels: list[str] = []
+    opened: list[bool] = []
+    notice.__dict__.update(
+        language="Chinese",
+        command="chinese_frontier_attention",
+        compute=controller.attention,
+        resolve=runtime.resolve_attention,
+        notified=set(),
+        action=SimpleNamespace(setText=labels.append),
+        open=lambda: opened.append(True),
+    )
+    content = SimpleNamespace(stats="")
+    notice.render(None, content)
+    assert "1 card needs your attention" in content.stats
+    assert "pycmd('chinese_frontier_attention')" in content.stats
+    notice.refresh()
+    notice.refresh()
+    assert len(tips) == 1 and labels[-1].endswith("(1)…") and redraws
+    assert notice.message((False, None), "chinese_frontier_attention", None) == (
+        True,
+        None,
+    )
+    assert opened and notice.message((False, None), "other", None) == (False, None)
+    runtime.resolve_attention(collection, item)
+    assert "chinese-frontier::held" not in collection.get_note(note_id).tags
+    content = SimpleNamespace(stats="")
+    notice.render(None, content)
+    assert content.stats == ""
+
+
+def test_attention_dialog_browses_and_releases(
+    monkeypatch, collection: Collection, lexicon: Lexicon
+) -> None:
+    from chinese_frontier import attention_ui, runtime
+
+    import aqt
+    from aqt.qt import QApplication, QDialog, QPushButton, QWidget
+
+    app = QApplication.instance() or QApplication([])
+    settings, source_note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    record_feedback(collection, note_id, note="ambiguous")
+    collection.remove_notes([source_note.id])
+    current = snapshot(collection, settings, {})
+
+    class Main(QWidget):
+        col = collection
+        state = "review"
+
+    parent = Main()
+    searches: list[tuple] = []
+
+    class Op:
+        def __init__(self, parent, op):
+            self.op = op
+
+        def success(self, callback):
+            self.callback = callback
+            return self
+
+        def run_in_background(self, **_):
+            self.callback(self.op(collection))
+
+    monkeypatch.setattr(attention_ui, "mw", parent)
+    monkeypatch.setattr(attention_ui, "CollectionOp", Op)
+    monkeypatch.setattr(attention_ui, "tooltip", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        aqt.dialogs, "open", lambda name, _mw, search: searches.append(search)
+    )
+    notice = attention_ui.AttentionNotice.__new__(attention_ui.AttentionNotice)
+    notice.__dict__.update(
+        language="Chinese",
+        command="chinese_frontier_attention",
+        compute=lambda: needs_attention(collection, current, {}, False),
+        resolve=runtime.resolve_attention,
+        notified=set(),
+        action=type("A", (), {"setText": lambda self, _t: None})(),
+    )
+    notice.open()
+    (dialog,) = [
+        w for w in app.topLevelWidgets() if isinstance(w, QDialog) and w.isVisible()
+    ]
+    listing = dialog.findChild(attention_ui.QListWidget)
+    buttons = {b.text(): b for b in dialog.findChildren(QPushButton)}
+    assert listing.count() == 1 and "deleted" in listing.item(0).text()
+    buttons["Open in Browser"].click()
+    card_id = collection.get_note(note_id).cards()[0].id
+    assert searches == [(f"cid:{card_id}",)]
+    act = buttons[""]
+    listing.item(0).setSelected(True)
+    assert act.text() == "Release" and act.isVisibleTo(dialog)
+    act.click()
+    assert "Nothing needs" in listing.item(0).text()
+    assert collection.get_note(note_id).cards()[0].queue != QUEUE_TYPE_SUSPENDED
+    dialog.close()

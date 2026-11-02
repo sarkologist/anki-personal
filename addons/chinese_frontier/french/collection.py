@@ -17,6 +17,7 @@ from anki.decks import DeckId
 from anki.notes import NoteId
 
 from .. import categories
+from ..attention import EDIT, REJECTED, REJECTIONS, STALLED, STUCK, Attention
 from ..collection import (
     MAX_REPAIRS,
     SEGMENT_BREAK,
@@ -31,6 +32,12 @@ from ..collection import (
     _release,
     _save_feedback,
     _scheduling,
+)
+from ..collection import (
+    dismiss_handover as _dismiss_handover,
+)
+from ..collection import (
+    release_hold as _release_hold,
 )
 from ..core import (
     CLOZE,
@@ -394,7 +401,8 @@ def record_feedback(
     )
     target.tags = list(dict.fromkeys(tags))
     return FeedbackResult(
-        _save_feedback(col, target, handed_over, HOLD_TAG), handed_over
+        _save_feedback(col, target, handed_over, HOLD_TAG, presentation_hash),
+        handed_over,
     )
 
 
@@ -746,6 +754,65 @@ def pending_fixes(col: Collection) -> list[PendingFix]:
             )
         )
     return sorted(result, key=lambda item: item.requested_at)
+
+
+def dismiss_handover(col: Collection, note_id: int) -> OpChanges:
+    return _dismiss_handover(col, note_id)
+
+
+def release_hold(col: Collection, note_id: int) -> OpChanges:
+    return _release_hold(col, note_id, HOLD_TAG)
+
+
+def needs_attention(
+    col: Collection,
+    current: Snapshot | None,
+    rejections: dict[str, tuple[int, str]],
+    paused: bool,
+) -> list[Attention]:
+    """Notes and cards automation cannot finish; see the Chinese counterpart."""
+    repairable = (
+        None if current is None else {nid for nid, _, _ in current.repairs.values()}
+    )
+    items = []
+    for nid in col.find_notes(f"tag:{HOLD_TAG} OR tag:{MANUAL_TAG}"):
+        note = col.get_note(nid)
+        data = json_field(note["Source"])
+        key = str(data.get("key", ""))
+        word = str(data.get("target", {}).get("lemma", "")) or str(data.get("answer"))
+        card_id = min(note.card_ids())
+        if MANUAL_TAG in note.tags:
+            if data.get("handed_over") == presentation_hash(dict(note.items())):
+                reason = f"Replaced {MAX_REPAIRS} times; edit the sentence yourself"
+                items.append(Attention(EDIT, card_id, nid, word, reason))
+            continue
+        attempts, last = rejections.get(key, (0, ""))
+        if paused:
+            reason = "French Frontier is paused, so no repair runs"
+        elif repairable is not None and nid not in repairable:
+            reason = (
+                "Tagged leech or excluded, so no repair runs"
+                if any(
+                    t.casefold() in ("leech", "french-frontier::exclude")
+                    for t in note.tags
+                )
+                else "No repair can run for this note"
+            )
+        elif attempts >= REJECTIONS:
+            reason = f"Rejected {attempts} times in a row: {last}"
+            items.append(Attention(REJECTED, card_id, nid, word, reason))
+            continue
+        else:
+            continue
+        items.append(Attention(STUCK, card_id, nid, word, reason))
+    for fix in pending_fixes(col):
+        if fix.problem:
+            note_id = col.db.scalar("select nid from cards where id=?", fix.card_id)
+            reason = "The fix of your card is stalled: " + fix.problem
+            items.append(
+                Attention(STALLED, fix.card_id, note_id or 0, fix.lemma, reason)
+            )
+    return items
 
 
 QUESTION_QUE = re.compile(r"(?:\bqu['’ʼ‘]\s*)?\best-ce\s+(?:que\b|qu['’ʼ‘])", re.I)
