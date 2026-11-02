@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from .providers import GenerationStopped
+from .providers import GenerationStopped, configured_model
 
 Observer = Callable[[dict[str, Any]], None]
 
@@ -40,7 +40,7 @@ def request_model(
         "target_count": len(targets),
         "targets": targets[:32],
         "provider": provider,
-        "model": config.get(f"{provider}_model") or "CLI default",
+        "model": configured_model(config) or "CLI default",
         "finished": False,
     }
     if progress:

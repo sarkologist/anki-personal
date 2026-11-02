@@ -11,11 +11,13 @@ from typing import Any, Callable
 
 from .core import Candidate, Source, Validated, ValidationError, validate_candidate
 from .lexicon import Lexicon, is_word
-from .preparation import context_bundle, pack_lesson
+from .preparation import brief, context_bundle, pack_lesson
 from .providers import CallTimeout, CliGenerator
 from .telemetry import decision, request_model
 
 GENERATION_POLICY = 4
+MEANING_CHARS = 120
+EVIDENCE_CHARS = 240
 
 
 def object_schema(properties: dict[str, Any]) -> dict[str, Any]:
@@ -534,10 +536,20 @@ not become trivial copy-the-visible-character drills; defer if no useful recall 
             common + sorted(known),
             96 + (attempt_index - 1) * 32,
         )
-        known_data = [{"word": w, "meaning": known[w]} for w in selected]
+        # Meanings gain a gloss per card (up to 2 kB a word) and were 60% of
+        # this prompt. The writer needs the gist; the audit sees them whole.
+        known_data = [
+            {"word": w, "meaning": brief(known[w], MEANING_CHARS)} for w in selected
+        ]
         data = {
             "feedback": {s.key: deferred[s.key] for s in pending if s.key in deferred},
-            "context_evidence": {w: contexts.get(w, [])[:1] for w in selected},
+            "context_evidence": {
+                w: [
+                    {**r, "context": brief(r["context"], EVIDENCE_CHARS)}
+                    for r in contexts.get(w, [])[:1]
+                ]
+                for w in selected
+            },
             "previous_lessons": {
                 source.key: lessons[source.key]
                 for source in pending

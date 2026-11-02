@@ -69,7 +69,14 @@ from .diagnostics import Diagnostics
 from .generation import GenerationResult, generate
 from .lexicon import Lexicon
 from .preparation import buffer_size, preparation_needed, previous_lessons, read_lesson
-from .providers import CallTimeout, GenerationStopped
+from .providers import (
+    CALL_BUDGET,
+    CallBudget,
+    CallBudgetExhausted,
+    CallTimeout,
+    GenerationStopped,
+)
+from .refill import calls_left
 from .state import State, vocabulary_version
 from .telemetry import error_location, import_calls, observe, recover
 
@@ -228,6 +235,8 @@ class Controller:
         if not self.valid(epoch):
             return
         self.busy = False
+        if isinstance(exc, CallBudgetExhausted):
+            self.status = "Today's model call budget is used; resumes next Anki day."
         if isinstance(exc, GenerationStopped):
             return
         self.observe(
@@ -346,13 +355,16 @@ class Controller:
         if not self.state.can_refill(
             needed, len(current.repairs) + len(current.fixes), config, time.time()
         ):
-            self.status = (
-                "Chinese refill is cooling down; it will retry automatically."
-                if config.get("auto_fill", True)
-                else "Today's generation budget is used; resumes next Anki day."
-            )
             self.save_state()
             self.busy = False
+            if self.state.daily_budget_used(config):
+                # The poll timer notices the next Anki day; waking every few
+                # seconds would only rescan the collection.
+                self.status = (
+                    "Today's generation budget is used; resumes next Anki day."
+                )
+                return
+            self.status = "Chinese refill is cooling down; it will retry automatically."
             self.schedule_next()
             return
         version = vocabulary_version(current.known)
@@ -395,7 +407,7 @@ class Controller:
             elif not current.known:
                 self.status = "No established vocabulary yet. Study existing cards or mark familiar words in add-on configuration."
             elif current.sources:
-                self.status = "Remaining targets are deferred; retries follow vocabulary growth or their backoff."
+                self.status = "Remaining targets are deferred; each retries when its backoff ends."
             else:
                 self.status = "All eligible suspended words are represented."
             self.state.pause_refill(config, time.time())
@@ -404,6 +416,10 @@ class Controller:
             return
         self.state.reserve_batch()
         self.save_state()  # Reserve the generation attempt before launching the CLI.
+        config = {
+            **config,
+            CALL_BUDGET: CallBudget(calls_left(vars(self.state), config)),
+        }
         self.status = f"Generating sentences for {len(sources)} words with {config.get('provider', 'codex')}…"
         stop = self.stop
         folder = self.dictionary_folder

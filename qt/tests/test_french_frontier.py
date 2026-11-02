@@ -915,7 +915,7 @@ def test_early_stem_is_saved_for_the_final_fallback():
     assert len(drafts) == 1 and drafts[0].candidate.mode == "stem"
 
 
-def test_automatic_refill_continues_after_the_old_daily_cap(monkeypatch):
+def test_automatic_refill_stops_at_the_daily_cap(monkeypatch):
     from threading import Event
     from types import SimpleNamespace
 
@@ -948,8 +948,44 @@ def test_automatic_refill_continues_after_the_old_daily_cap(monkeypatch):
     controller.scanned(
         current, {}, {"auto_fill": True, "max_batches_per_day": 8}, None, Event(), 0
     )
+    assert not scheduled and controller.state["batches"] == 8
+    assert controller.status == "French generation resumes next Anki day."
+    controller.scanned(
+        current, {}, {"auto_fill": True, "max_batches_per_day": 9}, None, Event(), 0
+    )
     assert len(scheduled) == 1
     assert controller.state["batches"] == 9
+
+
+def test_daily_cap_holds_even_when_the_cycle_has_room():
+    from chinese_frontier.refill import refill_ready
+
+    state = {"day": 1, "batches": 8, "cycle_batches": 0, "cycle_limit": 32}
+    assert not refill_ready(state, 1, 10, 0, {"max_batches_per_day": 8}, 100)
+    assert refill_ready(state, 2, 10, 0, {"max_batches_per_day": 8}, 100)
+
+
+def test_spent_call_budget_stops_refill_for_the_day():
+    from chinese_frontier.refill import calls_left, refill_ready
+
+    state = {"day": 1, "batches": 0, "telemetry": {"days": {"1": {"calls": 29}}}}
+    config = {"max_calls_per_day": 30}
+    assert calls_left(state, config) == 1
+    assert refill_ready(state, 1, 10, 0, config, 100)
+    state["telemetry"]["days"]["1"]["calls"] = 30
+    assert not refill_ready(state, 1, 10, 0, config, 100)
+    # Yesterday's calls do not count against a new Anki day.
+    assert refill_ready(state, 2, 10, 0, config, 100)
+
+
+def test_deferral_attempts_survive_vocabulary_changes():
+    from chinese_frontier.french.runtime import defer_target
+
+    state = {}
+    defer_target(state, "k", "ambiguous", "v1", 0)
+    defer_target(state, "k", "ambiguous", "v2", 0)
+    assert state["deferred"]["k"]["attempts"] == 2
+    assert state["deferred"]["k"]["retry_after"] == 1800 * 4
 
 
 def test_refill_budget_adapts_to_approval_yield():
@@ -968,13 +1004,13 @@ def test_refill_retries_automatically_on_the_same_day_after_cooldown():
 
     from chinese_frontier.refill import refill_ready
 
-    state = {"day": 1, "batches": 32, "cycle_batches": 4, "cycle_limit": 4}
+    state = {"day": 1, "batches": 4, "cycle_batches": 4, "cycle_limit": 4}
     config = {"refill_retry_seconds": 60}
     assert not refill_ready(state, 1, 3, 0, config, 100)
     state = json.loads(json.dumps(state))  # Profile reopen keeps the cooldown.
     assert not refill_ready(state, 1, 3, 0, config, 159)
     assert refill_ready(state, 1, 3, 0, config, 160)
-    assert state["batches"] == 32
+    assert state["batches"] == 4
     assert state["cycle_batches"] == 0 and state["refill_at"] == 0
 
 
@@ -2813,7 +2849,7 @@ def test_established_syncretic_surface_is_recognised_in_context():
             return {"proposals": []}
 
     generate([target()], known, lex, {}, Event(), Client())
-    assert first.key in payloads[0]["context_analyses"]["fais"]
+    assert first.features in payloads[0]["context_analyses"]["fais"]["faire|VER"]
 
 
 def test_conjugation_audit_judges_the_form_not_the_given_verb():
@@ -2914,7 +2950,7 @@ def test_writer_gets_analyses_for_every_established_verb_surface():
 
     generate([target()], known, lex, {}, Event(), Client())
     assert "fais" not in payloads[0]["context_evidence"]
-    assert first.key in payloads[0]["context_analyses"]["fais"]
+    assert first.features in payloads[0]["context_analyses"]["fais"]["faire|VER"]
 
 
 def aller():

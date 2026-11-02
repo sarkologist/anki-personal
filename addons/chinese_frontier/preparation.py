@@ -26,6 +26,14 @@ def terms(text: str) -> set[str]:
     return words
 
 
+def brief(text: str, limit: int) -> str:
+    """Shorten prompt evidence at a gloss boundary where one is close."""
+    if len(text) <= limit:
+        return text
+    cut = text.rfind("; ", 0, limit)
+    return text[:cut] if cut >= limit // 2 else text[: limit - 1].rstrip() + "…"
+
+
 def context_bundle(
     records: dict[str, list[str]], query: str, common: Iterable[str], limit: int = 96
 ) -> list[str]:

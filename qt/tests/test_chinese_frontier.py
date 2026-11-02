@@ -72,6 +72,9 @@ from chinese_frontier.generation import (
 )  # noqa: E402
 from chinese_frontier.lexicon import Lexicon  # noqa: E402
 from chinese_frontier.providers import (  # noqa: E402
+    CALL_BUDGET,
+    CallBudget,
+    CallBudgetExhausted,
     CallTimeout,
     CliGenerator,
     cli_command,
@@ -486,6 +489,25 @@ def test_codex_cli_uses_subscription_and_schema(tmp_path: Path, monkeypatch) -> 
     )
 
 
+def test_claude_defaults_to_a_cheaper_model_than_the_interactive_one(
+    tmp_path: Path,
+) -> None:
+    def command(config):
+        generator = CliGenerator({"provider": "claude", **config}, Event())
+        return cli_command(
+            "claude", "/claude", tmp_path, {}, generator.model, generator.effort
+        )
+
+    default = command({"claude_model": ""})
+    assert default[default.index("--model") + 1] == "sonnet"
+    assert default[default.index("--effort") + 1] == "medium"
+    chosen = command({"claude_model": "opus", "claude_effort": "high"})
+    assert chosen[chosen.index("--model") + 1] == "opus"
+    assert chosen[chosen.index("--effort") + 1] == "high"
+    codex = CliGenerator({"provider": "codex"}, Event())
+    assert codex.model == codex.effort == ""
+
+
 def test_claude_cli_disables_tools_and_parses_structured_output(tmp_path: Path) -> None:
     command = cli_command("claude", "/claude", tmp_path, {})
     assert command[command.index("--tools") + 1] == ""
@@ -529,7 +551,8 @@ def test_journal_survives_restart_and_does_not_catch_up(tmp_path: Path) -> None:
     restored = State.load(path)
     assert restored.drafts == state.drafts
     assert not restored.can_try(source().key, "v1")
-    assert restored.can_try(source().key, "v2")
+    # Any graduating card changes the vocabulary; that must not lift the backoff.
+    assert not restored.can_try(source().key, "v2")
     restored.reset_day(10)
     assert restored.batches == 0
 
@@ -1571,9 +1594,65 @@ def refill_controller(monkeypatch):
     return controller, current, scheduled
 
 
-def test_chinese_automatically_refills_beyond_legacy_daily_cap(refill_controller):
+def test_chinese_auto_fill_stops_at_the_daily_cap(refill_controller):
     controller, current, scheduled = refill_controller
+    woken = []
+    controller.schedule_next = lambda: woken.append(1)
     controller.scanned(current, {}, {"max_batches_per_day": 8}, 0)
+    assert not scheduled and controller.state.batches == 8
+    assert "budget is used" in controller.status
+    # The poll timer notices the next day; a 5 s wake would only rescan.
+    assert not woken
+
+
+def test_chinese_batch_draws_on_the_calls_left_today(refill_controller, monkeypatch):
+    from chinese_frontier import runtime
+
+    controller, current, scheduled = refill_controller
+    controller.state.batches = 0
+    controller.state.telemetry = {"days": {"1": {"calls": 25}}}
+    controller.scanned(current, {}, {"max_calls_per_day": 30}, 0)
+    configs = []
+    monkeypatch.setattr(
+        runtime, "generate", lambda *args, **kw: configs.append(args[2])
+    )
+    scheduled[0][0]()
+    assert configs[0][CALL_BUDGET].remaining == 5
+
+
+def test_chinese_stops_for_the_day_once_the_call_budget_is_spent(refill_controller):
+    controller, current, scheduled = refill_controller
+    controller.state.batches = 0
+    controller.state.telemetry = {"days": {"1": {"calls": 30}}}
+    controller.scanned(current, {}, {"max_calls_per_day": 30}, 0)
+    assert not scheduled and "budget is used" in controller.status
+    controller.failed(CallBudgetExhausted(), 0)
+    assert "call budget is used" in controller.status
+    assert not controller.state.last_error
+
+
+def test_call_budget_refuses_calls_before_starting_the_cli(tmp_path: Path) -> None:
+    calls = tmp_path / "calls"
+    cli = tmp_path / "claude"
+    cli.write_text(
+        "#!/bin/sh\n"
+        f"echo x >> {calls}\n"
+        'printf \'{"is_error":false,"structured_output":{}}\'\n'
+    )
+    cli.chmod(0o755)
+    config = {"provider": "claude", "claude_path": str(cli)}
+    budget = CallBudget(1)
+    generator = CliGenerator({**config, CALL_BUDGET: budget}, Event())
+    assert generator.request("x", {}) == {}
+    with pytest.raises(CallBudgetExhausted):
+        generator.request("x", {})
+    assert calls.read_text().count("x") == 1
+    assert CliGenerator(config, Event()).budget is None
+
+
+def test_chinese_auto_fill_refills_below_the_daily_cap(refill_controller):
+    controller, current, scheduled = refill_controller
+    controller.scanned(current, {}, {"max_batches_per_day": 9}, 0)
     assert len(scheduled) == 1
     assert controller.state.batches == 9
 
@@ -1668,7 +1747,7 @@ def test_old_chinese_state_can_refill_without_losing_deferred_targets(tmp_path):
     }
     path.write_text(json.dumps(old))
     state = State.load(path)
-    assert state.can_refill(2, 0, {"max_batches_per_day": 8}, 100)
+    assert state.can_refill(2, 0, {"max_batches_per_day": 32}, 100)
     assert state.batches == 8 and state.attempted == state.approved == 0
     assert state.deferred == old["deferred"]
 
@@ -1751,11 +1830,44 @@ def test_chinese_writer_receives_proven_usage_and_lessons_with_bounded_inventory
         for p in prompts
     )
     assert len(events) == 2 * len(prompts)
+
     assert all(
         e["prompt_chars"] > 0 and e["elapsed_seconds"] >= 0
         for e in events
         if e["finished"]
     )
+
+
+def test_chinese_writer_prompt_shortens_accumulated_meanings_and_evidence(
+    tmp_path, lexicon, monkeypatch
+):
+    from chinese_frontier import generation
+
+    prompts = []
+    monkeypatch.setattr(generation.Lexicon, "load", lambda _folder: lexicon)
+    monkeypatch.setattr(generation.CliGenerator, "__init__", lambda *args: None)
+    monkeypatch.setattr(generation.CliGenerator, "check_login", lambda self: None)
+
+    def request(self, prompt, schema):
+        prompts.append(json.loads(prompt.split("Data:\n", 1)[1]))
+        return {"proposals": []}
+
+    monkeypatch.setattr(generation.CliGenerator, "request", request)
+    meaning = "; ".join(f"book sense {i}" for i in range(200))
+    generate(
+        [source()],
+        {"书": meaning},
+        {},
+        tmp_path,
+        Event(),
+        contexts={"书": [{"card": 99, "context": "这本书很好。" * 100}]},
+    )
+    (entry,) = prompts[0]["known_words"]
+    assert len(entry["meaning"]) <= generation.MEANING_CHARS
+    assert entry["meaning"].startswith("book sense 0; book sense 1")
+    evidence = prompts[0]["context_evidence"]["书"][0]
+    assert evidence["card"] == 99
+    assert len(evidence["context"]) <= generation.EVIDENCE_CHARS
 
 
 def test_chinese_approved_checkpoint_survives_later_model_failure(

@@ -48,8 +48,21 @@ from ..preparation import (
     preparation_needed,
     previous_lessons,
 )
-from ..providers import CallTimeout, GenerationStopped
-from ..refill import record_batch, refill_ready, reserve_batch, reset_day
+from ..providers import (
+    CALL_BUDGET,
+    CallBudget,
+    CallBudgetExhausted,
+    CallTimeout,
+    GenerationStopped,
+)
+from ..refill import (
+    calls_left,
+    daily_budget_used,
+    record_batch,
+    refill_ready,
+    reserve_batch,
+    reset_day,
+)
 from ..telemetry import error_location, import_calls, observe, recover
 from .collection import (
     HOLD_TAG,
@@ -94,8 +107,9 @@ def defer_target(
     state: dict[str, Any], key: str, reason: str, version: str, now: float
 ) -> None:
     items = state.setdefault("deferred", {})
-    old = items.get(key, {})
-    attempts = old.get("attempts", 0) + 1 if old.get("vocabulary") == version else 1
+    # Attempts survive vocabulary changes, which happen whenever a card
+    # graduates; resetting them kept every deferred target near a 1 h backoff.
+    attempts = items.get(key, {}).get("attempts", 0) + 1
     items[key] = {
         "reason": reason,
         "vocabulary": version,
@@ -282,6 +296,8 @@ class Controller:
         if not self.valid(epoch):
             return
         self.busy = False
+        if isinstance(exc, CallBudgetExhausted):
+            self.status = "French model call budget is used; resumes next Anki day."
         if isinstance(exc, GenerationStopped):
             return
         self.observe(
@@ -455,9 +471,9 @@ class Controller:
             time.time(),
         ):
             self.status = (
-                "French refill is cooling down; it will retry automatically."
-                if config.get("auto_fill", True)
-                else "French generation resumes next Anki day."
+                "French generation resumes next Anki day."
+                if daily_budget_used(self.state, config)
+                else "French refill is cooling down; it will retry automatically."
             )
             self.save()
             self.busy = False
@@ -467,6 +483,7 @@ class Controller:
             self.busy = False
             return
         reserve_batch(self.state)
+        config = {**config, CALL_BUDGET: CallBudget(calls_left(self.state, config))}
         count = min(
             max(needed, len(repairs)),
             max(1, min(8, int(config.get("batch_size", 4)))),
@@ -479,8 +496,7 @@ class Controller:
         deferred = {
             key
             for key, item in self.state.get("deferred", {}).items()
-            if item.get("vocabulary") == version
-            and time.time() < item.get("retry_after", 0)
+            if time.time() < item.get("retry_after", 0)
         }
         self.request_started_at = time.time()
         self.status = f"Selecting up to {count} French targets with {config.get('provider', 'codex')}…"
@@ -642,7 +658,9 @@ class Controller:
                     self.apply(drafts, settings, config, lexicon, stop, epoch)
                 else:
                     self.busy = False
-                    self.status = "French targets deferred; retries follow vocabulary growth or backoff."
+                    self.status = (
+                        "French targets deferred; each retries when its backoff ends."
+                    )
                     if attempted:
                         mw.progress.single_shot(5000, self.tick)
             except Exception as exc:
