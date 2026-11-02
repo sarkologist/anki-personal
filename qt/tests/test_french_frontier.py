@@ -3335,6 +3335,9 @@ def test_french_feedback_hands_over_after_three_repairs(collection):
     tags = collection.get_note(note.id).tags
     assert "french-frontier::manual" in tags
     assert "french-frontier::repair" not in tags
+    # The learner edits it now, so the earlier hold is released.
+    assert "french-frontier::held" not in tags
+    assert note.cards()[0].queue == 0
     assert not snapshot(collection, settings, {}, dictionary()).repairs
 
 
@@ -3347,12 +3350,14 @@ def test_french_repair_keeps_feedback_and_rejects_drafts_written_without_it(
 
     from chinese_frontier.french.collection import admit, record_feedback, snapshot
 
-    from anki.consts import QUEUE_TYPE_MANUALLY_BURIED
+    from anki.consts import QUEUE_TYPE_SUSPENDED
 
     settings, note = admitted_french_note(collection, candidate())
     record_feedback(collection, note.id)
-    # The card leaves today's queue but stays eligible for its repair.
-    assert note.cards()[0].queue == QUEUE_TYPE_MANUALLY_BURIED
+    # The card stays out of reviews until its repair lands, even when a deferred
+    # repair takes days, yet stays eligible for the repair.
+    assert note.cards()[0].queue == QUEUE_TYPE_SUSPENDED
+    assert "french-frontier::held" in collection.get_note(note.id).tags
     fresh = replace(candidate(), sentence="Le train, je emprunte.")
     draft = repair_draft(collection, settings, fresh)
     stale = replace(draft, target=target())
@@ -3360,7 +3365,8 @@ def test_french_repair_keeps_feedback_and_rejects_drafts_written_without_it(
     # Dropped without a backoff, so the repair is written again at once.
     assert not result.admitted and not result.rejected
     assert admit(collection, settings, {}, [draft], dictionary()).admitted == [note.id]
-    assert note.cards()[0].queue != QUEUE_TYPE_MANUALLY_BURIED
+    assert note.cards()[0].queue != QUEUE_TYPE_SUSPENDED
+    assert "french-frontier::held" not in collection.get_note(note.id).tags
     data = json.loads(html.unescape(collection.get_note(note.id)["Source"]))
     assert data["feedback"][0]["sentence"] == "Je emprunte le train."
     assert "rejected_sentences" not in data["target"]
@@ -3530,7 +3536,7 @@ def test_a_reported_unlearned_verb_can_be_contrasted():
         validate(c, target(), known, dictionary())
 
 
-def test_french_feedback_and_its_bury_undo_together(collection):
+def test_french_feedback_and_its_hold_undo_together(collection):
     from chinese_frontier.french.collection import record_feedback
 
     _settings, note = admitted_french_note(collection, candidate())
@@ -3539,6 +3545,7 @@ def test_french_feedback_and_its_bury_undo_together(collection):
     after = collection.get_note(note.id)
     assert after.cards()[0].queue == 0
     assert "french-frontier::repair" not in after.tags
+    assert "french-frontier::held" not in after.tags
 
 
 def user_fix(collection, **values):

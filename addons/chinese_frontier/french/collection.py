@@ -27,9 +27,9 @@ from ..collection import (
     _ids,
     _learner_feedback,
     _read_budgets,
+    _release,
     _save_feedback,
     _scheduling,
-    _unbury,
 )
 from ..core import (
     CLOZE,
@@ -89,6 +89,8 @@ def json_field(value: str) -> dict[str, Any]:
 
 
 REPAIR_TAG = "french-frontier::repair"
+# The learner rejected the sentence, so its cards stay suspended until the repair lands.
+HOLD_TAG = "french-frontier::held"
 # The learner hands over a note that kept failing repair; automation leaves it alone.
 MANUAL_TAG = "french-frontier::manual"
 FEEDBACK_TAG = "french-frontier::feedback::"
@@ -390,7 +392,9 @@ def record_feedback(
         categories.feedback_tags(FEEDBACK_TAG, entries[-1], categories.known_keys(col))
     )
     target.tags = list(dict.fromkeys(tags))
-    return FeedbackResult(_save_feedback(col, target, handed_over), handed_over)
+    return FeedbackResult(
+        _save_feedback(col, target, handed_over, HOLD_TAG), handed_over
+    )
 
 
 # Fixing the learner's own cloze cards: the card is suspended and a new French
@@ -661,7 +665,9 @@ def restore_original(col: Collection, note_id: int) -> OpChanges:
     data = json_field(note["Source"])
     data["adopted"] = {**adopted, "restored_at": int(time.time())}
     note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
-    note.tags = [t for t in note.tags if t != REPAIR_TAG] + [RESTORED_TAG]
+    note.tags = [t for t in note.tags if t not in (REPAIR_TAG, HOLD_TAG)] + [
+        RESTORED_TAG
+    ]
     col.update_note(note)
     return col.merge_undo_entries(undo)
 
@@ -894,8 +900,9 @@ def snapshot(
         if own and isinstance(metadata.get("target"), dict):
             target = metadata["target"]
             represented.add((str(target.get("lemma", "")), str(target.get("pos", ""))))
-            if queue != -1 and not any(
-                t.casefold() in ("leech", "french-frontier::exclude", MANUAL_TAG)
+            if (queue != -1 or HOLD_TAG in tags.split()) and not any(
+                t.casefold()
+                in ("leech", "french-frontier::exclude", MANUAL_TAG, RESTORED_TAG)
                 for t in tags.split()
             ):
                 if (
@@ -1239,8 +1246,9 @@ def admit(
         values["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
         for name, value in values.items():
             note[name] = value
+        held = HOLD_TAG in note.tags
         note.tags = (
-            [t for t in note.tags if t not in (REPAIR_TAG, "disambiguation")]
+            [t for t in note.tags if t not in (REPAIR_TAG, HOLD_TAG, "disambiguation")]
             if draft.repair_note
             else [
                 TAG,
@@ -1261,7 +1269,7 @@ def admit(
             note.tags = list(dict.fromkeys(note.tags))
         if draft.repair_note:
             col.update_note(note)
-            _unbury(col, note.cards())
+            _release(col, note.cards(), held)
         else:
             # A fix stays in its card's deck, which the snapshot found in scope.
             home = original.odid or original.did if record else current.deck_id

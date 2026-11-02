@@ -162,7 +162,8 @@ or policy change. Right-click one during review and choose **Fix this sentence..
 to say what's wrong: the same reasons as Chinese, words to avoid and a free note.
 The replacement must fix every complaint, never reuses a rejected sentence, and the
 feedback stays in `Source` (tags `french-frontier::feedback::<reason>`) for later
-repairs. After three repairs the note is tagged `french-frontier::manual` for you to
+repairs. Until the new sentence passes review, the card stays suspended and tagged
+`french-frontier::held`; the repair unsuspends it. After three repairs the note is tagged `french-frontier::manual` for you to
 edit instead. "I'm confusing it with" records the word you mix it up with and
 rejects the sentence: the new context must rule that word out, and the reviewer
 must test it. A contrast pair against it is allowed when one sentence cannot (it

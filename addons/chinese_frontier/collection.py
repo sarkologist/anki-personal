@@ -70,6 +70,8 @@ FIELDS = (
 METADATA_FIELDS = ("Source", "Dependencies", "Disambiguation")
 KEY_PREFIX = "chinese-frontier::key::"
 REPAIR_TAG = "chinese-frontier::repair"
+# The learner rejected the sentence, so its cards stay suspended until the repair lands.
+HOLD_TAG = "chinese-frontier::held"
 FEEDBACK_TAG = "chinese-frontier::feedback::"
 MAX_REPAIRS = 3
 STALE_SOURCE = "Source changed, was unsuspended, or is already represented"
@@ -682,7 +684,10 @@ def snapshot(
         if adopted:
             replaced.add(int(adopted.get("card_id", 0)))
         in_audit_scope = (
-            generated and home in primary_scope and nid in active_notes and not odid
+            generated
+            and home in primary_scope
+            and (nid in active_notes or HOLD_TAG in tags)
+            and not odid
         )
         repairing = generated and (
             REPAIR_TAG in tags or (in_audit_scope and needs_audit(fields))
@@ -692,7 +697,8 @@ def snapshot(
             and repairing
             and isinstance(key, str)
             and not any(
-                tag.casefold() in ("leech", EXCLUDE_TAG, MANUAL_TAG) for tag in tags
+                tag.casefold() in ("leech", EXCLUDE_TAG, MANUAL_TAG, RESTORED_TAG)
+                for tag in tags
             )
         ):
             audit_notes[key] = (nid, fields, tags)
@@ -1254,21 +1260,35 @@ def record_feedback(
     return FeedbackResult(_save_feedback(col, target, handed_over), handed_over)
 
 
-def _save_feedback(col: Collection, note: Any, handed_over: bool) -> OpChanges:
-    """Save the note; a queued repair takes its cards out of today's reviews.
+def _save_feedback(
+    col: Collection, note: Any, handed_over: bool, hold_tag: str = HOLD_TAG
+) -> OpChanges:
+    """Save the note; a queued repair keeps its cards out of reviews until it lands.
 
-    Burying rather than suspending keeps the cards eligible for the repair,
-    which brings them back."""
+    Burying lasted only until the next day, so a deferred repair brought the
+    rejected sentence back. The hold tag keeps the suspended note eligible for
+    the repair, which releases it. A note handed over to the learner is released."""
     undo = col.add_custom_undo_entry("Fix this sentence")
-    col.update_note(note)
+    held = hold_tag in note.tags
+    note.tags = [t for t in note.tags if t != hold_tag]
     if not handed_over:
-        col.sched.bury_cards([card.id for card in note.cards()], manual=True)
+        note.tags.append(hold_tag)
+    col.update_note(note)
+    ids = [card.id for card in note.cards()]
+    if not handed_over:
+        col.sched.suspend_cards(ids)
+    elif held:
+        col.sched.unsuspend_cards(ids)
     return col.merge_undo_entries(undo)
 
 
-def _unbury(col: Collection, cards: list[Any]) -> None:
+def _release(col: Collection, cards: list[Any], held: bool) -> None:
+    """Return cards to reviews once their repair lands."""
+    # Repairs requested before holds existed buried the cards instead.
     if ids := [c.id for c in cards if c.queue == QUEUE_TYPE_MANUALLY_BURIED]:
         col.sched.unbury_cards(ids)
+    if held:
+        col.sched.unsuspend_cards([c.id for c in cards])
 
 
 def report_confusion(col: Collection, note_id: int, word: str) -> OpChanges:
@@ -1510,7 +1530,9 @@ def restore_original(col: Collection, note_id: int) -> OpChanges:
     data = _json_field(note["Source"])
     data["adopted"] = {**adopted, "restored_at": int(time.time())}
     note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
-    note.tags = [tag for tag in note.tags if tag != REPAIR_TAG] + [RESTORED_TAG]
+    note.tags = [tag for tag in note.tags if tag not in (REPAIR_TAG, HOLD_TAG)] + [
+        RESTORED_TAG
+    ]
     col.update_note(note)
     return col.merge_undo_entries(undo)
 
@@ -1770,6 +1792,7 @@ def _admit(
             undo = col.add_custom_undo_entry("Update Chinese sentence cards")
             model = ensure_model(col)
         note = col.get_note(NoteId(repair_id)) if repair_id else col.new_note(model)
+        held = HOLD_TAG in note.tags
         old_cards = (
             {
                 int(c.ord): (
@@ -1827,7 +1850,7 @@ def _admit(
             json.dumps(audit, ensure_ascii=False, indent=2)
         )
         note.tags = (
-            [tag for tag in note.tags if tag != REPAIR_TAG]
+            [tag for tag in note.tags if tag not in (REPAIR_TAG, HOLD_TAG)]
             if repair_id
             else [
                 GENERATED_TAG,
@@ -1859,7 +1882,7 @@ def _admit(
             raise ValueError("Replacement card count or fields failed verification")
         _verify_cards(cards, old_cards, source, valid, kind)
         if repair_id:
-            _unbury(col, cards)
+            _release(col, cards, held)
         if swap:
             _take_over(col, source, cards, fixes)
         added_cards += extra_cards

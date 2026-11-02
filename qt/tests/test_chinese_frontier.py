@@ -12,7 +12,7 @@ from threading import Event
 
 import pytest
 
-from anki.consts import QUEUE_TYPE_MANUALLY_BURIED
+from anki.consts import QUEUE_TYPE_MANUALLY_BURIED, QUEUE_TYPE_SUSPENDED
 
 ADDONS = Path(__file__).resolve().parents[2] / "addons"
 sys.path.insert(0, str(ADDONS))
@@ -1933,9 +1933,11 @@ def test_feedback_is_recorded_and_survives_the_repair(
     tags = collection.get_note(note_id).tags
     assert "chinese-frontier::repair" in tags
     assert "chinese-frontier::feedback::unnatural" in tags
-    # The card leaves today's queue but stays eligible for its repair.
+    # The card stays out of reviews until its repair lands, even when a deferred
+    # repair takes days, yet stays eligible for the repair.
+    assert "chinese-frontier::held" in tags
     (card,) = collection.get_note(note_id).cards()
-    assert card.queue == QUEUE_TYPE_MANUALLY_BURIED
+    assert card.queue == QUEUE_TYPE_SUSPENDED
     target = snapshot(collection, settings, {}).sources[0]
     assert target.force_repair and target.avoid_words == ("一",)
     assert target.rejected_sentences == ("这本书有一百页。",)
@@ -1951,8 +1953,12 @@ def test_feedback_is_recorded_and_survives_the_repair(
     )
     assert result.updated == [note_id]
     after = collection.get_note(note_id)
-    assert after.cards()[0].queue != QUEUE_TYPE_MANUALLY_BURIED
+    assert after.cards()[0].queue not in (
+        QUEUE_TYPE_SUSPENDED,
+        QUEUE_TYPE_MANUALLY_BURIED,
+    )
     assert "chinese-frontier::repair" not in after.tags
+    assert "chinese-frontier::held" not in after.tags
     assert "chinese-frontier::feedback::unnatural" in after.tags
     assert stored_source(after)["feedback"][0]["note"] == "sounds stiff"
     # Later audits still see the complaint, so the problem cannot come back.
@@ -2017,6 +2023,9 @@ def test_repeated_repairs_hand_the_note_to_the_learner(
     tags = collection.get_note(note_id).tags
     assert "chinese-frontier::manual" in tags
     assert "chinese-frontier::repair" not in tags
+    # The learner edits it now, so the earlier hold is released.
+    assert "chinese-frontier::held" not in tags
+    assert collection.get_note(note_id).cards()[0].queue != QUEUE_TYPE_SUSPENDED
     assert snapshot(collection, settings, {}).repairs == {}
 
 

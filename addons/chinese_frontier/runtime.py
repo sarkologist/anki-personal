@@ -631,8 +631,9 @@ class Controller:
         dialog.setWindowTitle("Fix this sentence")
         layout = QVBoxLayout(dialog)
         explanation = QLabel(
-            "What's wrong with it? The new sentence must fix it, and later checks keep "
-            "your feedback. Leave everything blank for a different sentence."
+            "What's wrong with it? The card is suspended until a new sentence fixes "
+            "it, and later checks keep your feedback. Leave everything blank for a "
+            "different sentence."
             if generated
             else "This card is suspended now and replaced by a new sentence card, "
             "with its schedule, once a sentence passes review. Your note is not "
