@@ -3306,6 +3306,7 @@ def test_attention_notice_shows_on_the_main_screen_and_notifies_once(
         cached=[],
         action=SimpleNamespace(setText=labels.append),
         open=lambda: opened.append(True),
+        configured=lambda: bool(collection.get_config(SETTINGS_KEY, {})),
     )
     notice.refresh()
     notice.refresh()
@@ -3322,6 +3323,12 @@ def test_attention_notice_shows_on_the_main_screen_and_notifies_once(
     runtime.resolve_attention(collection, item)
     assert "chinese-frontier::held" not in collection.get_note(note_id).tags
     notice.refresh()
+    content = SimpleNamespace(stats="")
+    notice.render(None, content)
+    assert "nothing needs your attention" in content.stats
+    assert "pycmd" not in content.stats
+    # Without a chosen deck the language stays off the main screen.
+    collection.set_config(SETTINGS_KEY, {})
     content = SimpleNamespace(stats="")
     notice.render(None, content)
     assert content.stats == ""

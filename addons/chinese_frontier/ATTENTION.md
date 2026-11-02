@@ -31,8 +31,8 @@ The list is computed when the profile opens, after each scan and after dialog
 actions, and cached for the main screen, which redraws only when the count
 changes. A failure in it is logged and never stops generation.
 
-- Main screen (deck browser): one line per language, only when the count is
-  non-zero, with a link that opens the dialog.
+- Main screen (deck browser): one line per language with a chosen deck, either
+  the count with a link that opens the dialog, or "nothing needs your attention".
 - Tools menu: "<Language> Frontier: needs attention…".
 - A tooltip once per session when items appear that were not listed before.
 - The dialog lists word, reason and kind; "Open in Browser" searches the selected

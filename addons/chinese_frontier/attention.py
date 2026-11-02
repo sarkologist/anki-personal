@@ -49,9 +49,15 @@ def browser_search(items: Iterable[Attention]) -> str:
 
 
 def banner(language: str, count: int, command: str) -> str:
+    style = "margin:1em auto;text-align:center"
+    if not count:
+        return (
+            f'<div style="{style};opacity:.6">{html.escape(language)} Frontier: '
+            "nothing needs your attention.</div>"
+        )
     cards = "card needs" if count == 1 else "cards need"
     return (
-        '<div style="margin:1em auto;text-align:center">'
+        f'<div style="{style}">'
         f"{html.escape(language)} Frontier: {count} {cards} your attention. "
         f"<a href=# onclick=\"return pycmd('{command}')\">Review</a></div>"
     )

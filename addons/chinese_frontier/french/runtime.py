@@ -1072,7 +1072,10 @@ def install() -> None:
     qconnect(action.triggered, controller.settings_dialog)
     mw.form.menuTools.addAction(action)
     controller.notice = AttentionNotice(
-        "French", controller.attention, resolve_attention
+        "French",
+        controller.attention,
+        resolve_attention,
+        lambda: bool(mw.col.get_config(SETTINGS, {})),
     )
     gui_hooks.profile_did_open.append(controller.opened)
     gui_hooks.profile_will_close.append(controller.closed)
