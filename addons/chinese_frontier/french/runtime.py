@@ -50,6 +50,7 @@ from ..providers import CallTimeout, GenerationStopped
 from ..refill import record_batch, refill_ready, reserve_batch, reset_day
 from ..telemetry import error_location, import_calls, observe, recover
 from .collection import (
+    HOLD_TAG,
     MANUAL_TAG,
     SETTINGS,
     Admission,
@@ -802,8 +803,9 @@ class Controller:
         dialog.setWindowTitle("Fix this sentence")
         layout = QVBoxLayout(dialog)
         explanation = QLabel(
-            "What's wrong with it? The new sentence must fix it, and later checks keep "
-            "your feedback. Leave everything blank for a different sentence."
+            "What's wrong with it? The card is suspended until a new sentence fixes "
+            "it, and later checks keep your feedback. Leave everything blank for a "
+            "different sentence."
         )
         explanation.setWordWrap(True)
         layout.addWidget(explanation)
@@ -886,6 +888,8 @@ class Controller:
         text = self.status
         if mw and mw.col and (recurring := categories.status_line(mw.col)):
             text += "\n" + recurring
+        if mw and mw.col and (held := len(mw.col.find_notes(f"tag:{HOLD_TAG}"))):
+            text += f"\nHeld for repair (tag {HOLD_TAG}): {held}"
         started = getattr(self, "request_started_at", 0)
         if self.busy and started:
             text += f" ({max(0, int(time.time() - started))}s elapsed)"
