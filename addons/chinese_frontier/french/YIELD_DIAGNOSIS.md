@@ -22,13 +22,13 @@ subtypes, such as `ART:def`, `PRO:per`, `ADJ:pos`, `ADJ:dem` and `AUX`, so all
 of them are dropped. The cached `lexicon-v3.json` has **0 ART and 0 PRO
 forms**. Only homograph noise survives:
 
-| surface | analyses in lexicon |
-|---|---|
-| le | `le NOM m` (0.25/M) |
-| la | `la NOM m:i` (musical note) |
-| il | `il NOM` |
-| lui | **only** `luire VER par:pas:*` |
-| son, ce, cette, ses, leur | none |
+| surface                   | analyses in lexicon            |
+| ------------------------- | ------------------------------ |
+| le                        | `le NOM m` (0.25/M)            |
+| la                        | `la NOM m:i` (musical note)    |
+| il                        | `il NOM`                       |
+| lui                       | **only** `luire VER par:pas:*` |
+| son, ce, cette, ses, leur | none                           |
 
 Downstream effects, each confirmed offline:
 
@@ -37,7 +37,7 @@ Downstream effects, each confirmed offline:
    established surfaces: 32 frequency anchors plus query matches, 96 to 160
    in total. Anchors are sorted by lexicon frequency, so `le` ranks 1636th
    and `il` 1350th of 1896, and neither is ever selected. All of these words
-   *are* in `Knowledge.surfaces`. **77 of 114** recent writer refusals cite
+   _are_ in `Knowledge.surfaces`. **77 of 114** recent writer refusals cite
    missing articles, determiners or pronouns, for example "no articles
    le/la", "subject pronoun 'tu' is not in established_context" and "'je'
    nor 'j'' is an established surface". **22** refusals cite nothing else,
@@ -74,7 +74,7 @@ spelling, not new knowledge.
 `affaire` (noun, 257/M) need a verb annotation because `plaire` and
 `affairer` readings exist. `annotate_context` also does the reverse: 53
 established noun or adjective homographs, such as `bois`, `garde`, `fête` and
-`passé`, are silently tagged with their only proven *verb* form. The auditor
+`passé`, are silently tagged with their only proven _verb_ form. The auditor
 noticed `bois` tagged as `boire ind:pre:1:s` in "matériel en bois".
 
 **Syncretic verb surfaces are unusable as context.** `learn` adds a form only
@@ -83,18 +83,18 @@ when its analysis is unique, so `fais`, `dis`, `dit`, `attends`, `viennent`,
 and always fail. The writer cites "'dit' has no verb analysis".
 
 **The audit clue check is a literal, case-sensitive substring test**
-(`clue not in contexts[index]`, `rev.py`). These all reject the *whole*
+(`clue not in contexts[index]`, `rev.py`). These all reject the _whole_
 review:
 
-| clue | verdict |
-|---|---|
-| `dans son esprit` | accepted |
-| `Dans son esprit` (case) | rejected |
-| `avant d'agir` when the sentence has `’` | rejected |
+| clue                                                  | verdict  |
+| ----------------------------------------------------- | -------- |
+| `dans son esprit`                                     | accepted |
+| `Dans son esprit` (case)                              | rejected |
+| `avant d'agir` when the sentence has `’`              | rejected |
 | `ne … pas encore` / `ne...pas encore` (discontinuous) | rejected |
-| `dans  son esprit` (whitespace) | rejected |
-| `« dans son esprit »` | rejected |
-| one bad clue among good ones | rejected |
+| `dans  son esprit` (whitespace)                       | rejected |
+| `« dans son esprit »`                                 | rejected |
+| one bad clue among good ones                          | rejected |
 
 This is **6 of 16** recent audit rejections, 3 of them on stem or
 post-stem candidates. Claude's own audit reasons use `…` to join
@@ -167,7 +167,7 @@ Each fix needs a failing test first, as with the earlier fixes.
    `ADJ`, `AUX`→`VER`) and keep the subtype, then bump the lexicon cache to
    v4. This restores `le`, `il`, `lui`, `son` and the others, fixes anchor
    ranking, and makes correct pronoun and determiner annotations validate.
-   *Check:* FLELex `DET`/`PRO` entries become rankable, so confirm that the
+   _Check:_ FLELex `DET`/`PRO` entries become rankable, so confirm that the
    floor or ceiling still excludes them as targets.
 2. **Show the writer the complete `established_context`.** That is 20 kB.
    Keep `context_bundle` only for choosing `context_evidence` examples.
@@ -191,7 +191,7 @@ Each fix needs a failing test first, as with the earlier fixes.
    - Don't require a verb annotation when the established evidence for that
      surface is a unique non-verb meaning, or when its non-verb reading
      dominates by frequency (`plus`, `affaire`).
-   - Make `annotate_context` fill from established *meanings*, not only
+   - Make `annotate_context` fill from established _meanings_, not only
      proven verb forms, so `bois` is not tagged as `boire`.
    - License a context use of an established syncretic surface (`fais`,
      `dit`) when the declared analysis's lemma is an established meaning.
@@ -204,7 +204,7 @@ Each fix needs a failing test first, as with the earlier fixes.
    cases like the clue failures directly visible next time.
 9. **Policy decision for the user** (only if yield is still low after 1 to
    7):
-   - Accept words visible in at least 2 reviewed contexts as *context*
+   - Accept words visible in at least 2 reviewed contexts as _context_
      familiarity. Reading a word you see at every review is recognition,
      not recall. This adds 126 A1 entries.
    - Alternatively, schedule occasional gap-filling targets for the

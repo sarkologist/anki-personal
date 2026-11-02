@@ -10,12 +10,12 @@ when the condition goes away.
 
 ## What counts
 
-| kind | condition | clears when | action in the dialog |
-|---|---|---|---|
-| edit | `Source.handed_over` equals the note's current presentation fingerprint (set when feedback hands the note over) | the learner edits the sentence, or dismisses it | Dismiss |
-| stuck | held, and the last snapshot has no repair for it (source card gone, moved, excluded) | a repair becomes possible, or the learner releases it | Release |
-| rejected | held, and its key was deferred 3+ times in a row on the current vocabulary | a repair lands, or the learner releases it | Release |
-| stalled fix | a fix on the learner's own card reports a problem | the problem goes away, or the learner cancels | Cancel fix |
+| kind        | condition                                                                                                       | clears when                                           | action in the dialog |
+| ----------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | -------------------- |
+| edit        | `Source.handed_over` equals the note's current presentation fingerprint (set when feedback hands the note over) | the learner edits the sentence, or dismisses it       | Dismiss              |
+| stuck       | held, and the last snapshot has no repair for it (source card gone, moved, excluded)                            | a repair becomes possible, or the learner releases it | Release              |
+| rejected    | held, and its key was deferred 3+ times in a row on the current vocabulary                                      | a repair lands, or the learner releases it            | Release              |
+| stalled fix | a fix on the learner's own card reports a problem                                                               | the problem goes away, or the learner cancels         | Cancel fix           |
 
 A hold records `Source.held_at`; a snapshot that began earlier cannot know its
 repair is queued, so the hold is not reported stuck until a later scan. A stalled

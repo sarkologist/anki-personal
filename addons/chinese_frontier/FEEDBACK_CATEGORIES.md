@@ -26,17 +26,18 @@ French so it syncs and one complaint type is not split by language:
 
 ```json
 {
-  "threshold": {"notes": 3, "days": 30},
-  "version": 4,
-  "categories": {
-    "only_translation": {
-      "label": "Only the translation disambiguates",
-      "description": "The Chinese/French context alone admits another answer.",
-      "input": "flag",
-      "created": 1793500000, "promoted": 1793600000
-    }
-  },
-  "addressed": {"ambiguous": 1793700000}
+    "threshold": { "notes": 3, "days": 30 },
+    "version": 4,
+    "categories": {
+        "only_translation": {
+            "label": "Only the translation disambiguates",
+            "description": "The Chinese/French context alone admits another answer.",
+            "input": "flag",
+            "created": 1793500000,
+            "promoted": 1793600000
+        }
+    },
+    "addressed": { "ambiguous": 1793700000 }
 }
 ```
 
@@ -104,11 +105,11 @@ change).
 
 The classifier reads and writes feedback entries in all four stores:
 
-| store | entries |
-|---|---|
-| generated Chinese/French notes | `Source.feedback` |
-| pending fixes | `chineseFrontierFixes` / `frenchFrontierFixes` records' `feedback` |
-| adopted notes | `Source.feedback` (copied from the fix record at swap) |
+| store                          | entries                                                            |
+| ------------------------------ | ------------------------------------------------------------------ |
+| generated Chinese/French notes | `Source.feedback`                                                  |
+| pending fixes                  | `chineseFrontierFixes` / `frenchFrontierFixes` records' `feedback` |
+| adopted notes                  | `Source.feedback` (copied from the fix record at swap)             |
 
 New entries get `"at": <epoch>`. Older entries have no timestamp. They get the
 time they are first classified, so the existing notes count as recent once.

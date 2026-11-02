@@ -7,11 +7,11 @@ restored notes suspended and tagged, French in scope.
 
 ## What the collection looks like
 
-| deck | live cards | note types |
-|---|---|---|
-| chinese | 4493 | Cloze-dfcd6 3566, Basic (HSK 5) 434, Chinese Frontier ~117 |
-| french | 3427 | Cloze-dfcd6 3292, French Frontier 135 |
-| HSK6 - * | 0 | Basic Quizlet (all suspended, converted by the add-on) |
+| deck     | live cards | note types                                                 |
+| -------- | ---------- | ---------------------------------------------------------- |
+| chinese  | 4493       | Cloze-dfcd6 3566, Basic (HSK 5) 434, Chinese Frontier ~117 |
+| french   | 3427       | Cloze-dfcd6 3292, French Frontier 135                      |
+| HSK6 - * | 0          | Basic Quizlet (all suspended, converted by the add-on)     |
 
 The user's own Chinese cloze notes are mostly **one sentence with many cloze
 ordinals**, often character-level:
@@ -24,7 +24,7 @@ translation is a second `<div>` inside `Text`; pinyin and glosses are free text 
 ## Recommendation in one paragraph
 
 Treat a fix request on a user card the way the add-on already treats a suspended
-Basic word: the user card is a *source*, the add-on writes a **new Chinese Frontier
+Basic word: the user card is a _source_, the add-on writes a **new Chinese Frontier
 note** linked to it, and the pipeline (writer, reviewer, validation, admission,
 audits, later repairs) runs unchanged on that note. Three things make it a "fix"
 rather than a conversion. The request records the learner's feedback up front, so
@@ -68,11 +68,11 @@ Show **Fix this sentence...** (cloze notes) or **Make a sentence for this word..
 
 Three real notes show why Target and Meaning must be editable:
 
-| reviewed card | detected by `cloze_words` | lexicon default | learner may want |
-|---|---|---|---|
-| `{{c5::弄}}{{c6::虚}} {{c2::作假}}, {{c3::骗取}}{{c4::荣誉}}`, ordinal c5 | 弄 (a dictionary word on its own: "to do, to handle") | 弄虚作假 (CC-CEDICT headword containing the clozed character) | 弄虚作假 |
-| `各种{{c1::迹}}象 都 表{{c5::明}} {{c6::形}}{{c7::势}} 将{{c2::好转}}`, ordinal c6 | 形 | 形势 | 形势 |
-| `这本书…写得很 {{c1::生}}动。 … 我 {{c1::激}}动…`, ordinal c1 | 生 and 激 (two sentences share c1) | 生动 and 激动, offered as a choice | either, or the learner may decide the card tests both and cancel |
+| reviewed card                                                                      | detected by `cloze_words`                             | lexicon default                                               | learner may want                                                 |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `{{c5::弄}}{{c6::虚}} {{c2::作假}}, {{c3::骗取}}{{c4::荣誉}}`, ordinal c5          | 弄 (a dictionary word on its own: "to do, to handle") | 弄虚作假 (CC-CEDICT headword containing the clozed character) | 弄虚作假                                                         |
+| `各种{{c1::迹}}象 都 表{{c5::明}} {{c6::形}}{{c7::势}} 将{{c2::好转}}`, ordinal c6 | 形                                                    | 形势                                                          | 形势                                                             |
+| `这本书…写得很 {{c1::生}}动。 … 我 {{c1::激}}动…`, ordinal c1                      | 生 and 激 (two sentences share c1)                    | 生动 and 激动, offered as a choice                            | either, or the learner may decide the card tests both and cancel |
 
 The sense is the other trap: the third note's `Extra` glosses 生动 as "vivid"
 (adjective), but 生 alone would be glossed "life, raw". A sentence written for the
@@ -106,17 +106,17 @@ next sync); and the original content is gone unless copied aside. Rejected.
 (the existing source→replacement relation plus a scheduling transplant).
 Recommended and chosen.
 
-| | A in place | B convert | C link + swap |
-|---|---|---|---|
-| user fields written | yes | yes (replaced) | no |
-| sibling cards | rewritten | deleted | untouched |
-| card id kept | yes | yes | no (new card; original keeps id + revlog) |
-| scheduling kept | yes | yes | copied (ivl, due, ease, reps, lapses, FSRS state) |
-| revlog kept on the studied card | yes | yes | no; stays on the suspended original |
-| new-card slot | none | none | none |
-| sync | normal | full sync | normal |
-| undo | note edit | schema | grouped entries + restore item |
-| pipeline changes | large | medium | small (snapshot + admit + dialog) |
+|                                 | A in place | B convert      | C link + swap                                     |
+| ------------------------------- | ---------- | -------------- | ------------------------------------------------- |
+| user fields written             | yes        | yes (replaced) | no                                                |
+| sibling cards                   | rewritten  | deleted        | untouched                                         |
+| card id kept                    | yes        | yes            | no (new card; original keeps id + revlog)         |
+| scheduling kept                 | yes        | yes            | copied (ivl, due, ease, reps, lapses, FSRS state) |
+| revlog kept on the studied card | yes        | yes            | no; stays on the suspended original               |
+| new-card slot                   | none       | none           | none                                              |
+| sync                            | normal     | full sync      | normal                                            |
+| undo                            | note edit  | schema         | grouped entries + restore item                    |
+| pipeline changes                | large      | medium         | small (snapshot + admit + dialog)                 |
 
 The one real loss in C is that the new card's review graph starts empty. The
 original card keeps the history and is one click away (Browse, `tag:
@@ -409,6 +409,7 @@ A new helper `add_cloze(col, text, extra, deck, established)` builds a user cloz
 note with several ordinals, next to the existing `add_word` and `setup_sentence`.
 
 Target detection (pure functions, no collection):
+
 - single-ordinal word cloze → that word; character ordinal inside a lexicon word →
   the whole word (the 弄 → 弄虚作假 case); two words on one ordinal → both offered;
   non-Chinese cloze → none.
@@ -416,6 +417,7 @@ Target detection (pure functions, no collection):
 - meaning default: Basic `Back`; cloze translation div plus `Extra`, condensed.
 
 Request and cancel:
+
 - `request_fix` suspends exactly the reviewed card (siblings stay live), adds the
   pending tag, writes the record with key, fingerprint, feedback entry and
   confusion; fields unchanged; `col.undo()` reverts all three.
@@ -425,6 +427,7 @@ Request and cancel:
 - `cancel_fix` unsuspends, untags, deletes the record, in one undo entry.
 
 Snapshot:
+
 - a record becomes a `Source` with `force_repair`, `existing_cards=1`,
   `avoid_sentence`, `rejected_sentences`, `learner_feedback`, `avoid_words`,
   `reported_confusions`, sorted ahead of ordinary sources, not skipped although
@@ -434,6 +437,7 @@ Snapshot:
   in `skipped`; the card stays suspended; nothing is deleted.
 
 Admission:
+
 - with zero slots the draft is still admitted; the new note carries
   `Source.adopted`, `feedback`, key, source and adopted tags, sits in the original
   card's deck; the new card's `type, queue, due, ivl, factor, reps, lapses, left,
@@ -448,6 +452,7 @@ Admission:
 - `test_learner_feedback_reaches_writer_and_reviewer` extended to a fix source.
 
 After the swap:
+
 - `record_feedback` on the adopted note queues a repair; `snapshot` synthesizes
   the source from `Source.adopted` with no Basic note present; the repair keeps
   card id and scheduling (existing verification).
@@ -458,6 +463,7 @@ After the swap:
   repaired or counted as coverage; a second call raises.
 
 Runtime (monkeypatched `mw` as in the existing runtime tests):
+
 - the fix item appears for a user cloze card and a Basic card in the chosen deck
   tree, not for a generated note (which keeps its own items), a card in an extra
   source or vocabulary deck, or a card with no detectable target; the restore item
@@ -465,6 +471,7 @@ Runtime (monkeypatched `mw` as in the existing runtime tests):
   `retry_now` with the record's key, and `tick(force=True)`.
 
 French:
+
 - generated-note feedback: record, tags, writer and reviewer prompt contents,
   avoided word and rejected sentence enforcement in `validate`, stale draft
   rejection, manual handover; mirrors of the Chinese tests.
