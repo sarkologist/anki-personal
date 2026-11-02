@@ -164,7 +164,15 @@ within 30 days becomes a field of its own in the dialog. One reported on six is
 listed in Tools as a candidate rule change. Design record: `FEEDBACK_CATEGORIES.md`. Until the new sentence passes review, which can take several attempts, the note's
 cards stay suspended and tagged `chinese-frontier::held`; the repair unsuspends them
 (cards you had suspended yourself stay suspended). Held new cards keep reserving new-card
-capacity, and Tools shows how many notes are held.
+capacity.
+
+When automation cannot finish a card on its own (a handed-over note you have not
+edited yet, a held note whose repair cannot run or keeps being rejected, a stalled
+fix of your own card), the main screen shows "Chinese Frontier: N cards need your
+attention" and a tooltip announces new ones. **Review** (or Tools → Chinese
+Frontier: needs attention…) lists each card with the reason, opens them in the
+Browser, and can release a hold, dismiss a handover or cancel a fix. Design record:
+`ATTENTION.md`.
 After three repairs, a further request tags the note
 `chinese-frontier::manual` for you to edit, unsuspends it, and automation leaves it alone.
 The add-on regenerates that note in place, preserving its card ID,

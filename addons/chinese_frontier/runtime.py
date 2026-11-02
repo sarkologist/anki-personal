@@ -37,6 +37,8 @@ from aqt.qt import (
 from aqt.utils import showInfo, tooltip
 
 from . import categories
+from .attention import EDIT, STALLED, Attention, rejections
+from .attention_ui import AttentionNotice
 from .collection import (
     HOLD_TAG,
     KEY_PREFIX,
@@ -48,11 +50,14 @@ from .collection import (
     admit,
     adopted_original,
     cancel_fix,
+    dismiss_handover,
     fix_target_for_card,
     initial_scope_settings,
     is_generated,
+    needs_attention,
     pending_fixes,
     record_feedback,
+    release_hold,
     repair_count,
     request_fix,
     restore_original,
@@ -71,7 +76,17 @@ from .telemetry import error_location, import_calls, observe, recover
 MODULE = __name__.split(".")[0]
 
 
+def resolve_attention(col: Any, item: Attention) -> OpChanges:
+    if item.kind == EDIT:
+        return dismiss_handover(col, item.note_id)
+    if item.kind == STALLED:
+        return cancel_fix(col, item.card_id)
+    return release_hold(col, item.note_id)
+
+
 class Controller:
+    notice: AttentionNotice | None = None
+
     def __init__(self) -> None:
         self.epoch = 0
         self.stop = Event()
@@ -125,6 +140,16 @@ class Controller:
         assert mw
         return mw.addonManager.getConfig(MODULE) or {}
 
+    def attention(self) -> list[Attention]:
+        assert mw and mw.col
+        settings = mw.col.get_config(SETTINGS_KEY, {})
+        return needs_attention(
+            mw.col,
+            self.last_snapshot,
+            rejections(self.state.deferred),
+            bool(settings) and not settings.get("enabled"),
+        )
+
     def opened(self) -> None:
         assert mw
         self.closed()
@@ -144,6 +169,8 @@ class Controller:
         )
         recover(self.state.telemetry, vars(self.state).get("day", -1))
         self.save_state()
+        if self.notice:
+            self.notice.refresh()
         interval = max(30, int(self.config().get("poll_seconds", 300)))
         self.timer.start(interval * 1000)
         config = self.config()
@@ -181,6 +208,8 @@ class Controller:
         self.busy = False
         self.last_snapshot = None
         self.path = None
+        if self.notice:
+            self.notice.reset()
 
     def save_state(self) -> None:
         if self.path:
@@ -262,6 +291,8 @@ class Controller:
             return
         assert mw
         self.last_snapshot = current
+        if self.notice:
+            self.notice.refresh()
         self.state.reset_day(current.day)
         self.state.telemetry["snapshot"] = {
             "at": time.time(),
@@ -946,6 +977,9 @@ def install() -> None:
     qconnect(action.triggered, controller.settings_dialog)
     mw.form.menuTools.addAction(action)
     mw.addonManager.setConfigAction(MODULE, controller.settings_dialog)
+    controller.notice = AttentionNotice(
+        "Chinese", controller.attention, resolve_attention
+    )
     gui_hooks.profile_did_open.append(controller.opened)
     gui_hooks.profile_will_close.append(controller.closed)
     gui_hooks.sync_did_finish.append(controller.tick)
