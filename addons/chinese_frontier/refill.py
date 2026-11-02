@@ -19,6 +19,19 @@ def reset_day(state: dict[str, Any], day: int) -> None:
         )
 
 
+def calls_left(state: dict[str, Any], config: dict[str, Any]) -> int:
+    """Model calls still allowed today, from the persisted telemetry counter."""
+    day = (state.get("telemetry") or {}).get("days", {}).get(str(state.get("day")), {})
+    limit = max(1, int(config.get("max_calls_per_day", 30)))
+    return max(0, limit - int(day.get("calls", 0)))
+
+
+def daily_budget_used(state: dict[str, Any], config: dict[str, Any]) -> bool:
+    return not calls_left(state, config) or state.get("batches", 0) >= max(
+        1, int(config.get("max_batches_per_day", 32))
+    )
+
+
 def pause_cycle(state: dict[str, Any], config: dict[str, Any], now: float) -> None:
     state["refill_at"] = now + max(30, int(config.get("refill_retry_seconds", 1800)))
 
@@ -31,15 +44,17 @@ def refill_ready(
     config: dict[str, Any],
     now: float,
 ) -> bool:
-    """Bound subscription work per cycle; retry deficits without a daily cutoff."""
+    """Bound subscription work per Anki day, and per cycle within the day."""
     reset_day(state, day)
     needed = max(slots, repairs)
     if needed <= 0:
         return False
+    # Every batch spends several CLI calls, so the daily ceiling holds in
+    # both modes; auto-fill only spreads that budget over cycles.
+    if daily_budget_used(state, config):
+        return False
     if not config.get("auto_fill", True):
-        return state.get("batches", 0) < max(
-            1, int(config.get("max_batches_per_day", 32))
-        )
+        return True
     if state.get("refill_at", 0) > now:
         return False
     if state.get("refill_at", 0):

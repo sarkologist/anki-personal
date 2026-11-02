@@ -105,6 +105,9 @@ class State:
     ) -> bool:
         return refill.refill_ready(vars(self), self.day, slots, repairs, config, now)
 
+    def daily_budget_used(self, config: dict[str, Any]) -> bool:
+        return refill.daily_budget_used(vars(self), config)
+
     def reserve_batch(self) -> None:
         refill.reserve_batch(vars(self))
 
@@ -117,12 +120,10 @@ class State:
         refill.pause_cycle(vars(self), config, now)
 
     def can_try(self, key: str, vocabulary: str) -> bool:
+        # The vocabulary changes whenever any card graduates, several times a
+        # day; letting that lift the backoff retried every deferred target.
         item = self.deferred.get(key)
-        return (
-            not item
-            or item["vocabulary"] != vocabulary
-            or time.time() >= item["retry_after"]
-        )
+        return not item or time.time() >= item["retry_after"]
 
     def retry_now(self, key: str) -> None:
         """The learner asked for a repair: drop drafts written without their
@@ -132,12 +133,7 @@ class State:
             item.update(attempts=0, retry_after=0)
 
     def defer(self, key: str, reason: str, vocabulary: str) -> None:
-        previous = self.deferred.get(key, {})
-        attempts = (
-            int(previous.get("attempts", 0)) + 1
-            if previous.get("vocabulary") == vocabulary
-            else 1
-        )
+        attempts = int(self.deferred.get(key, {}).get("attempts", 0)) + 1
         self.deferred[key] = {
             "reason": pack_lesson(reason),
             "vocabulary": vocabulary,

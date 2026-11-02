@@ -286,7 +286,7 @@ reviewer prompts already consume and `validate_candidate` already enforces.
 - Backoff: `state.retry_now(key)` on request lifts the deferral and drops drafts
   written without the feedback; `_admit` already rejects a draft whose
   `learner_feedback` differs from the current source as `STALE_SOURCE`.
-  A fix that never passes review stays pending, retried on vocabulary growth and
+  A fix that never passes review stays pending, retried on its
   backoff like any deferred target, visible in the settings list and cancellable.
   `MAX_REPAIRS` applies after the swap; before it, there is nothing to hand over.
 

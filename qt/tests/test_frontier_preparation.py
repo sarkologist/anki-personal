@@ -8,11 +8,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "addons"))
 from chinese_frontier.preparation import (  # noqa: E402
+    brief,
     context_bundle,
     pack_lesson,
     preparation_needed,
     read_lesson,
 )
+
+
+def test_brief_keeps_whole_glosses_when_it_can():
+    assert brief("short", 10) == "short"
+    assert brief("alpha; beta; gamma; delta", 18) == "alpha; beta"
+    assert brief("x" * 30, 10) == "x" * 9 + "…"
 
 
 def test_bundle_retrieves_relevant_proven_usage_without_promoting_visible_words():

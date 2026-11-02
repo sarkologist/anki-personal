@@ -12,12 +12,33 @@ import tempfile
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 from typing import Any
 
 
 class GenerationStopped(Exception):
     pass
+
+
+class CallBudgetExhausted(GenerationStopped):
+    """Today's model calls are spent; the batch stops like a requested stop."""
+
+
+# Runtimes put a CallBudget under this config key for one batch, so every
+# writer, audit and ranking request of that batch draws on it.
+CALL_BUDGET = "_call_budget"
+
+
+class CallBudget:
+    def __init__(self, remaining: int) -> None:
+        self.remaining = remaining
+        self.lock = Lock()
+
+    def spend(self) -> None:
+        with self.lock:
+            if self.remaining <= 0:
+                raise CallBudgetExhausted()
+            self.remaining -= 1
 
 
 class CallTimeout(TimeoutError):
@@ -76,6 +97,7 @@ def cli_command(
     folder: Path,
     schema: dict[str, Any],
     model: str = "",
+    effort: str = "",
 ) -> list[str]:
     if provider == "codex":
         command = [
@@ -126,9 +148,23 @@ def cli_command(
         ]
         if model.strip():
             command.extend(["--model", model.strip()])
+        if effort.strip():
+            command.extend(["--effort", effort.strip()])
     else:
         raise ValueError("Unknown provider")
     return command
+
+
+# Without --model, claude -p inherits the user's interactive choice (often
+# Opus at high effort) for every one of hundreds of headless calls a day.
+CLAUDE_MODEL = "sonnet"
+CLAUDE_EFFORT = "medium"
+
+
+def configured_model(config: dict[str, Any]) -> str:
+    provider = str(config.get("provider", "codex"))
+    model = str(config.get(f"{provider}_model", "")).strip()
+    return model or (CLAUDE_MODEL if provider == "claude" else "")
 
 
 def _stop_process(process: subprocess.Popen) -> None:
@@ -169,8 +205,14 @@ class CliGenerator:
         self.executable = resolve_cli(
             self.provider, str(config.get(f"{self.provider}_path", ""))
         )
-        self.model = str(config.get(f"{self.provider}_model", ""))
+        self.model = configured_model(config)
+        self.effort = (
+            str(config.get("claude_effort") or CLAUDE_EFFORT)
+            if self.provider == "claude"
+            else ""
+        )
         self.timeout = max(10, min(900, int(config.get("timeout_seconds", 240))))
+        self.budget: CallBudget | None = config.get(CALL_BUDGET)
         self.stop = stop
         self.env = subscription_environment()
 
@@ -212,6 +254,8 @@ class CliGenerator:
     def request(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         if self.stop.is_set():
             raise GenerationStopped()
+        if self.budget:
+            self.budget.spend()
         with tempfile.TemporaryDirectory(prefix="anki-chinese-frontier-") as temporary:
             folder = Path(temporary)
             (folder / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
@@ -220,7 +264,7 @@ class CliGenerator:
             # larger than the pipe buffer (16 KB on macOS), nor EOF.
             (folder / "prompt.txt").write_text(prompt, encoding="utf-8")
             command = cli_command(
-                self.provider, self.executable, folder, schema, self.model
+                self.provider, self.executable, folder, schema, self.model, self.effort
             )
             with (
                 (folder / "prompt.txt").open("rb") as stdin,

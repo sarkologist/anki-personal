@@ -8,7 +8,10 @@ editing the add-on's `meta.json` configuration, or the defaults before packaging
 - `codex_path`, `claude_path`: optional executable paths; common macOS locations
   are discovered automatically even when Anki's PATH lacks the CLI.
 - `codex_model`, `claude_model`: optional model name. Empty uses the CLI's built-in
-  default; Codex user config is intentionally not loaded.
+  default for Codex, whose user config is intentionally not loaded, and `sonnet`
+  for Claude. Otherwise `claude -p` would inherit the interactive model, often
+  Opus, for hundreds of calls a day.
+- `claude_effort`: `low`, `medium` (default), `high`, `xhigh` or `max`.
 - `timeout_seconds`: per generation or language-review request; default 240.
 - `batch_size`: 1–12 targets per batch; default 4.
 - `minimum_success_days`: Good/Easy study days since the last Again required for
@@ -23,8 +26,13 @@ editing the add-on's `meta.json` configuration, or the defaults before packaging
   keeps up to 30 unseen generated cards, topped up as they are introduced.
   Anki's daily new limit still decides how many are shown each day; only
   today's share is checked against the review limit. Shared by French.
-- `max_batches_per_day`: default 8, used only when `auto_fill` is false. Failed
-  attempts count. Auto-fill uses bounded cycles instead of a fixed daily cutoff.
+- `max_batches_per_day`: default 8. A hard ceiling in both modes; auto-fill only
+  spreads it over cycles. Failed attempts count. A batch costs up to three writer
+  and three audit calls.
+- `max_calls_per_day`: default 30. Hard ceiling on CLI calls per Anki day,
+  checked before every writer, audit and ranking call; a batch that reaches it
+  stops and keeps the cards already approved. French has its own count and may
+  override it in `french`.
 - `known_words`: optional whole Chinese words explicitly declared familiar. Empty
   by default. These are overrides, not automatically inferred common vocabulary.
 - `front_field`, `back_field`: source Basic fields; defaults `Front` and `Back`.
@@ -43,7 +51,7 @@ All scopes include descendant decks. These settings sync; CLI paths and the prov
 desktop-local. Pause before undoing a batch to prevent automatic regeneration.
 
 French settings live in the `french` object. `provider`, `codex_model`,
-`claude_model`, CLI paths, `batch_size`, `timeout_seconds`,
+`claude_model`, `claude_effort`, CLI paths, `batch_size`, `timeout_seconds`,
 `minimum_success_days` and `poll_seconds` override their
 shared defaults for French only. Tools → French Frontier saves its own collection
 scope. Installer-only `initial_french_collection_path` and
@@ -53,7 +61,7 @@ See [French Frontier](french/README.md) for evidence, morphology and source deta
 French `auto_fill` defaults to true. `max_batches_per_cycle` (32) bounds each
 refill cycle, with automatic same-day retries after `refill_retry_seconds` (1800).
 The allowance adapts to remaining native slots and observed approval yield.
-`max_batches_per_day` (32) applies to French only when `auto_fill` is false.
+`max_batches_per_day` (32) caps French batches per Anki day in both modes.
 Chinese uses the same adaptive refill policy with its own persisted counters.
 No retry changes quality requirements.
 

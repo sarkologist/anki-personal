@@ -221,7 +221,8 @@ Approvals are checkpointed individually so a later timeout retains finished work
 Both languages record the last 30 writer/auditor calls with prompt characters, elapsed time,
 phase, target count, and errors, alongside attempted/approved yield counters in
 profile state. These are diagnostics, not evidence of linguistic approval.
-Setting `auto_fill` to false restores the explicit eight-batch daily ceiling.
+`max_batches_per_day` (eight by default) and `max_calls_per_day` (30) cap each
+Anki day whether or not `auto_fill` is on. Deferred targets keep their backoff when the vocabulary changes.
 The add-on rescans on startup, after sync or review changes, and every five minutes.
 Routine runs stay quiet; persistent errors appear once and in the status dialog.
 
