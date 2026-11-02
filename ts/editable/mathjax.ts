@@ -37,6 +37,7 @@ function getEmptyIcon(style: HTMLStyleElement): [string, string] {
 export function convertMathjax(
     input: string,
     fontSize: number,
+    block: boolean,
 ): [string, string] {
     input = revealClozeAnswers(input);
     // The SVG is rendered inline inside a shadow root on <anki-mathjax>, so
@@ -51,9 +52,15 @@ export function convertMathjax(
         return getEmptyIcon(style);
     }
 
+    // `display` controls TeX rendering style: block math uses display style
+    // (large operators, limits above/below), inline math uses text style
+    // (small operators, limits as sub/superscripts). Without this, MathJax
+    // defaults to `display: true`, so inline math like `\sum` or `\int` renders
+    // oversized and swells its text line — the reviewer avoids this by wrapping
+    // inline math in `\(…\)` (see reviewer/mathjax.ts).
     let output: Element;
     try {
-        output = globalThis.MathJax.tex2svg(input);
+        output = globalThis.MathJax.tex2svg(input, { display: block });
     } catch (e) {
         return ["Mathjax Error", String(e)];
     }

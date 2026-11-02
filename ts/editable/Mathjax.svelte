@@ -24,6 +24,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     function scheduleRender(
         mathjax: string,
         fontSize: number,
+        block: boolean,
         templateScriptVersion: number,
     ): void {
         const generation = ++renderGeneration;
@@ -34,7 +35,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             // key only depends on the rendered geometry / template version.
             // Empty input needs no MathJax; the same icon doubles as the loading
             // placeholder for non-empty input.
-            [converted, title] = convertMathjax("", fontSize);
+            [converted, title] = convertMathjax("", fontSize, block);
             if (source.trim().length === 0) {
                 return;
             }
@@ -42,9 +43,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             void getCachedMathjaxConversionAfterLoad(
                 mathjax,
                 fontSize,
+                block,
                 templateScriptVersion,
                 loadMathjax,
-                () => convertMathjax(source, fontSize),
+                () => convertMathjax(source, fontSize, block),
             ).then(
                 (conversion) => {
                     if (generation === renderGeneration) {
@@ -61,7 +63,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         });
     }
 
-    $: scheduleRender(mathjax, fontSize, mathjaxConfig.templateScriptVersion);
+    $: scheduleRender(mathjax, fontSize, block, mathjaxConfig.templateScriptVersion);
     $: empty = title === "MathJax";
 
     let host: HTMLElement;
@@ -89,7 +91,16 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         // the host is a <span>, not a replaced element, so without it
         // `display: block` would fill the parent width and the auto margins
         // would collapse to zero, leaving the math flush-left.
-        ":host(.block) { display: block; overflow: visible; width: fit-content; max-width: none !important; margin: 1rem auto; transform: scale(1.1); }",
+        //
+        // A block equation wider than the field must not be clipped. Cap it to
+        // the field width (`max-width: 100%`) and let it scroll horizontally
+        // (`overflow-x: auto`) so the left edge stays visible — with the old
+        // `overflow: visible` the excess spilled past the field's right edge,
+        // and `transform: scale(1.1)`, growing from the centre, pushed the
+        // left edge out too. The 10% enlargement uses `zoom`, not `transform: scale`:
+        // a transform is applied after layout, so its overflow isn't scrollable
+        // and the scaled math would spill past the field and clip again.
+        ":host(.block) { display: block; overflow-x: auto; overflow-y: hidden; width: fit-content; max-width: 100% !important; margin: 1rem auto; zoom: 1.1; }",
         ":host(.empty) { vertical-align: text-bottom; }",
         ":host(.empty) svg { width: var(--font-size); height: var(--font-size); }",
     ].join("\n");

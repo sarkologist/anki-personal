@@ -32,6 +32,7 @@ describe("mathjax render cache", () => {
         const pending = getCachedMathjaxConversionAfterLoad(
             "x",
             20,
+            false,
             0,
             () => loading,
             () => {
@@ -46,7 +47,7 @@ describe("mathjax render cache", () => {
         finishLoading();
         await expect(pending).resolves.toEqual(conversion("real"));
         expect(
-            getCachedMathjaxConversion("x", 20, 0, () => conversion("wrong")),
+            getCachedMathjaxConversion("x", 20, false, 0, () => conversion("wrong")),
         ).toEqual(conversion("real"));
         expect(computes).toBe(1);
     });
@@ -54,7 +55,7 @@ describe("mathjax render cache", () => {
     test("computes once per distinct expression, hits on repeat", () => {
         let computes = 0;
         const render = (src: string) =>
-            getCachedMathjaxConversion(src, 20, 0, () => {
+            getCachedMathjaxConversion(src, 20, false, 0, () => {
                 computes++;
                 return conversion(src);
             });
@@ -65,18 +66,19 @@ describe("mathjax render cache", () => {
         expect(computes).toBe(2);
     });
 
-    test("separates entries by font size and template version", () => {
+    test("separates entries by font size, math style and template version", () => {
         let computes = 0;
         const compute = () => {
             computes++;
             return conversion("x");
         };
 
-        getCachedMathjaxConversion("x", 20, 0, compute);
-        getCachedMathjaxConversion("x", 30, 0, compute); // different font size
-        getCachedMathjaxConversion("x", 20, 1, compute); // different version
-        getCachedMathjaxConversion("x", 20, 0, compute); // hit
-        expect(computes).toBe(3);
+        getCachedMathjaxConversion("x", 20, false, 0, compute);
+        getCachedMathjaxConversion("x", 30, false, 0, compute); // different font size
+        getCachedMathjaxConversion("x", 20, true, 0, compute); // block vs inline
+        getCachedMathjaxConversion("x", 20, false, 1, compute); // different version
+        getCachedMathjaxConversion("x", 20, false, 0, compute); // hit
+        expect(computes).toBe(4);
     });
 
     test("retains a full bucket of distinct expressions and stays bounded", () => {
@@ -86,7 +88,7 @@ describe("mathjax render cache", () => {
 
         let computes = 0;
         const render = (src: string) =>
-            getCachedMathjaxConversion(src, 20, 0, () => {
+            getCachedMathjaxConversion(src, 20, false, 0, () => {
                 computes++;
                 return conversion(src);
             });
@@ -124,7 +126,7 @@ describe("mathjax cache on a large note (load + re-decorate)", () => {
 
     function renderAll(countCompute: () => void): void {
         for (const src of sources) {
-            getCachedMathjaxConversion(src, 20, 0, () => {
+            getCachedMathjaxConversion(src, 20, false, 0, () => {
                 countCompute();
                 return conversion(src);
             });
