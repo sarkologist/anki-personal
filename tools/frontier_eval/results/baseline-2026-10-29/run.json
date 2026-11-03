@@ -1,0 +1,31 @@
+{
+ "settings": {
+  "provider": "claude",
+  "model": "claude-opus-5-5",
+  "timeout_seconds": 480,
+  "runs": 3,
+  "workers": 4,
+  "max_calls": 650,
+  "only": "",
+  "group": "",
+  "cases_file": "tools/frontier_eval/french_cases.json"
+ },
+ "cases_sha256": "b40d294a9a8f46a68b2e303559d67ddba5aa1ed28ec528562cc204a52e1e94d2",
+ "knowledge": {
+  "version": "375c67c40cbeae4adb7fea38bc9a417c532e5bdba3389f10f708cbc5ec163c23",
+  "day": 5027,
+  "source": "cache",
+  "surfaces": 1927,
+  "forms": 1020,
+  "meanings": 870,
+  "constructions": 2
+ },
+ "git": {
+  "commit": "52ab980e4c8ce3851a4bd03d2b0802ff1e3d9b9d",
+  "dirty": true
+ },
+ "started_at": "2026-10-29T11:25:27",
+ "finished_at": "2026-10-29T16:24:23",
+ "wall_seconds": 2416.2,
+ "interrupted": false
+}
