@@ -13,9 +13,6 @@ use ninja_gen::Build;
 /// `./ninja shell`: the native macOS shell (see native-shell-port-plan.md),
 /// bundled as out/shell/AnkiShell.app with the built web assets.
 pub fn build_shell(build: &mut Build) -> Result<()> {
-    if !cfg!(target_os = "macos") {
-        return Ok(());
-    }
     build.add_action(
         "shell:bin",
         CargoBuild {
