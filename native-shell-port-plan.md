@@ -192,25 +192,25 @@ one screen at a time. The old Anki covers everything not ported yet.
 
 ### Phase 0: foundation and risk burn-down
 
-- [ ] `shell/` Tauri 2 crate in the workspace; `./ninja shell` builds it
+- [x] `shell/` Tauri 2 crate in the workspace; `./ninja shell` builds it
       against `out/` web assets; app bundle.
-- [ ] Backend in-process: open profile/collection; the lock is free
+- [x] Backend in-process: open profile/collection; the lock is free
       (`rslib` opens SQLite in exclusive locking mode), so just surface its
       error. Backups on close (with a quick check) and on a timer.
-- [ ] Protocol handler (`/_anki/*`, media, pages) and a generic bridge
+- [x] Protocol handler (`/_anki/*`, media, pages) and a generic bridge
       dispatcher.
-- [ ] Settings: own JSON, plus an import of the profile list and sync
+- [x] Settings: own JSON, plus an import of the profile list and sync
       credentials (`syncKey`, `syncUser`, `hostNum`, `currentSyncUrl`,
       `customSyncUrl`) from `prefs21.db`. Its pickles contain Qt objects
       (`sip._unpickle_type`), so the import runs in Python using
       `aqt.profiles`' unpickler, not `serde-pickle`. Offer a "re-import"
       action, since the old Anki can change them while it's the fallback (a
       re-login, a sync redirect).
-- [ ] Native AnkiConnect subset; check it against the actions existing
+- [x] Native AnkiConnect subset; check it against the actions existing
       automations call (Claude workflows, Alfred).
-- [ ] WebKit selection shim with tests, so the editor works with selection in
+- [x] WebKit selection shim with tests, so the editor works with selection in
       WebKit.
-- [ ] Leak/perf harness: the spike's `bench.py` as a CI-runnable check.
+- [x] Leak/perf harness: the spike's `bench.py` as a CI-runnable check.
 
 Exit: the shell opens your profile, the AnkiConnect smoke test passes, and the
 editor selection tests pass in WebKit.
@@ -291,3 +291,111 @@ runs in parallel.
 ## Findings
 
 (append per phase)
+
+### Phase 0 (2026-11-05)
+
+The exit criteria are met. The shell opens a copy of the real profile (29,857
+cards). The AnkiConnect smoke test passes, and so do the editor selection
+checks in WKWebView. How to build, run and check it is in `shell/README.md`.
+
+- **Shell:** `shell/` (crate `anki-shell`) uses Tauri 2.11 without
+  `tauri-cli`. `./ninja shell` builds the binary and `shell/bundle.sh`
+  assembles an ad-hoc-signed `out/shell/AnkiShell.app` with the web assets in
+  `Resources/web`. The backend method table (snake_case name -> service and
+  method index) is generated in `build.rs` with `anki_proto_gen`, the same
+  way `_backend_generated.py` is, so it can't drift.
+- **Collection:** Opening the profile the old Anki holds fails with rslib's
+  `DbErrorKind::Locked` ("Anki already open, or media currently syncing."),
+  and the home page shows it with a retry. Closing runs `pragma quick_check`,
+  then a throttled backup (skipped if the check fails), then
+  `await_backup_completion`. A 5-minute timer asks for a backup, and the
+  backend decides whether one is due.
+- **Protocol:** `anki://localhost/` mirrors `mediasrv.py`:
+  - per-webview kinds with the same API-access split as `webview.py`;
+  - the four-endpoint whitelist for the reviewer and previewer;
+  - `exposed_backend_list` plus `post_handler_list` for pages with access;
+  - the `application/binary` content-type guard;
+  - the editor CSP nonce;
+  - SvelteKit routes;
+  - legacy path remaps;
+  - path-traversal guards (tested, with the guards mutated out to check the
+    tests fail).
+
+  Endpoints that need UI state (scheduling states, `deckOptionsReady`, ...)
+  go to handlers registered by the app; the rest return an error until their
+  phase. `/_addons/` is a 404 until phase 2.
+- **Bridge:** `pycmd`/`bridgeCommand` are a `fetch` POST to
+  `/_shell/bridge`, chained so commands arrive in order as on Qt's channel.
+  `domDone` is sent at `DOMContentLoaded`, and evals are queued until then
+  (`_queueAction`). Unknown commands are logged and counted. The editor sends
+  `editorState` on load, which nothing handles yet (phase 3). Editing the
+  current note works: `key:`/`blur:`/`saveFields:` save through
+  `update_notes`. `escape_media_filenames` isn't applied on load yet.
+- **Settings:** `~/Library/Application Support/AnkiShell/settings.json`. The
+  import runs `shell/scripts/import_prefs.py` (embedded in the binary) with
+  an Anki install's Python and `-I`, and reuses
+  `ProfileManager._unpickle`. It opens `prefs21.db` read-only, so the old
+  Anki can stay open. It imports the profile names, `syncKey`, `syncUser`,
+  `hostNum`, `currentSyncUrl`, `customSyncUrl`, `syncMedia` and `autoSync`.
+  Re-importing replaces the imported fields and keeps the shell's own
+  (`last_profile`).
+- **AnkiConnect:** the action list comes from the actions this user's
+  automations have called (Claude workflow transcripts, `~/anki-eq2mathjax`).
+  The Alfred workflows use the separate `alfred_anki_html_bridge` add-on,
+  not AnkiConnect, so they wait for phase 3.
+  - 56 actions are native.
+  - The add-on's other 65 return "<action> is not supported by the native
+    shell yet": all `gui*`, `sync`, export/import, and notetype edits.
+  - Response shapes follow the add-on. Two exceptions: keys come out in
+    alphabetical order (`serde_json` without `preserve_order`), and
+    `getProfiles` lists the profile folders.
+  - 200 `cardsInfo` on the real collection take about 0.3 s.
+- **WebKit selection** (WKWebView on macOS 27):
+  - What WebKit has: there's no `ShadowRoot.getSelection`.
+    `getComposedRanges({shadowRoots})` (the dictionary form) and
+    `Selection.direction` both work. The anchor and focus are retargeted to
+    the shadow host.
+  - Two traps beyond the plan's:
+    - `addRange()` silently ignores ranges inside a shadow root, as the spec
+      says. `collapse`, `extend`, `setBaseAndExtent`, `collapseToEnd` and
+      `modify` do accept them.
+    - The document selection is already empty when `blur` fires during a
+      focus change, which is when the editor saves the caret.
+  - The shim (`ts/lib/tslib/cross-browser.ts`) returns a
+    `ShadowRootSelection` adapter from the same `getSelection` helper. It
+    reads through `getComposedRanges` and turns `addRange` into
+    `setBaseAndExtent`. It also remembers the last range inside each shadow
+    root (from `selectionchange` and from its own reads) while the selection
+    is empty.
+  - Tests: 15 vitest tests against a fake that reproduces the WebKit
+    behaviour above, written red first. `shell/harness/editor-selection.js`
+    runs in the real editor page: caret placement, caret restored after a
+    refocus, bold (surround), cloze on a backward selection (wrap), and the
+    result saved to the collection.
+  - Before the shim, caret restore, bold and cloze all failed with
+    `location.anchor` errors. With it, all checks pass.
+- **WebKit editing, for phase 3:**
+  - WebKit leaves a trailing placeholder `<br>` in the live DOM after
+    formatting the end of a field; it isn't saved.
+  - Native undo after Anki's wrap and surround, which edit the DOM directly,
+    depends on timing. WebKit coalesces the typing on either side of them,
+    so one undo can revert several edits. It hasn't been compared with
+    Chromium yet. Anki has no field undo of its own.
+  - Not exercised yet: MathJax/LaTeX overlays, paste, IME.
+- **Test channel and background runs:** there's no WebDriver for WKWebView,
+  so `--test <script>` evaluates an async JS body in a real page and checks
+  its result. `--test` and `--bench` run in the background:
+  - Tauri's `Accessory` policy still gets activated at launch by tao, so the
+    app starts as `Prohibited` and switches to `Accessory` on `Ready`.
+  - Windows open unfocused and behind other windows (`orderBack:`), and
+    WebKit's occlusion detection is turned off (SPI) so covered pages keep
+    rendering.
+
+  While the screen is locked, every page is `hidden`: there are no animation
+  frames and timers are throttled to about 300 ms. The harness waits race
+  `requestAnimationFrame` with a timer for that reason; the typing and memory
+  benchmarks need an unlocked screen.
+- **Memory check:** `shell/harness/bench.py` runs on a synthetic profile (300
+  notes, so it needs no user data). It measured 108 MB idle, 161 MB after 40
+  cards and 190 MB after 240, against budgets of 400 MB total and 150 MB
+  growth. `--compare-stock` reruns the spike's stock-Anki side.
