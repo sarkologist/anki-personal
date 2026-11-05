@@ -21,6 +21,7 @@ anki_proto.workspace = true
 anki_proto_gen.workspace = true
 anyhow.workspace = true
 prost-reflect.workspace = true
+tauri-build.workspace = true
 
 [dependencies]
 anki = { workspace = true, features = ["rustls"] }
@@ -38,6 +39,7 @@ regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
+tauri.workspace = true
 # rslib relies on io-util being enabled by another workspace member
 tokio = { workspace = true, features = ["io-util", "net"] }
 tracing.workspace = true
@@ -46,10 +48,3 @@ unicode-normalization.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-
-# macOS only (see native-shell-port-plan.md); elsewhere the crate is empty
-[target.'cfg(target_os = "macos")'.dependencies]
-tauri.workspace = true
-
-[target.'cfg(target_os = "macos")'.build-dependencies]
-tauri-build.workspace = true

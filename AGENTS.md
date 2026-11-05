@@ -11,6 +11,13 @@ Anki is a spaced repetition flashcard program with a multi-layered architecture.
 - Protobuf definitions in proto/ that are used by the different layers to
   talk to each other.
 
+## Platform
+
+This fork targets macOS only, and isn't meant to be merged upstream. Don't
+spend effort on Linux or Windows: no cross-platform guards, builds or checks
+for them, in new code or when fixing old code. Platform-specific code for
+other platforms that's already here can stay as it is.
+
 ## Building/checking
 
 ./check (check.bat) will format the code and run the main build & checks.

@@ -298,11 +298,9 @@ The exit criteria are met. The shell opens a copy of the real profile (29,857
 cards). The AnkiConnect smoke test passes, and so do the editor selection
 checks in WKWebView. How to build, run and check it is in `shell/README.md`.
 
-- **Shell:** `shell/` (crate `anki-shell`, macOS only: Tauri is a macOS
-  target dependency and the crate is empty elsewhere, so Linux builds don't
-  need gtk/webkit2gtk) uses Tauri 2 without
-  `tauri-cli`. Tauri's Linux-only gtk stack brings in unmaintained
-  `proc-macro-error` (RUSTSEC-2024-0370), which is ignored in `.deny.toml`.
+- **Shell:** `shell/` (crate `anki-shell`) uses Tauri 2 without
+  `tauri-cli`. The fork is macOS only (`AGENTS.md`), so `.deny.toml`
+  audits only macOS targets; Tauri's Linux gtk stack isn't checked.
   `./ninja shell` builds the binary and `shell/bundle.sh`
   assembles an ad-hoc-signed `out/shell/AnkiShell.app` with the web assets in
   `Resources/web`. The backend method table (snake_case name -> service and
