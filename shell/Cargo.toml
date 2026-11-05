@@ -1,0 +1,55 @@
+[package]
+name = "anki-shell"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+description = "Native macOS shell for Anki's web UI and Rust backend"
+
+[lib]
+name = "anki_shell"
+path = "src/lib.rs"
+
+[[bin]]
+name = "anki-shell"
+path = "src/main.rs"
+
+[build-dependencies]
+anki_proto.workspace = true
+anki_proto_gen.workspace = true
+anyhow.workspace = true
+prost-reflect.workspace = true
+
+[dependencies]
+anki = { workspace = true, features = ["rustls"] }
+anki_proto.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+data-encoding.workspace = true
+dirs.workspace = true
+globset.workspace = true
+htmlescape.workspace = true
+prost.workspace = true
+rand.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+# rslib relies on io-util being enabled by another workspace member
+tokio = { workspace = true, features = ["io-util", "net"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# macOS only (see native-shell-port-plan.md); elsewhere the crate is empty
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri.workspace = true
+
+[target.'cfg(target_os = "macos")'.build-dependencies]
+tauri-build.workspace = true

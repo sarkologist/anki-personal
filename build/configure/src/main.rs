@@ -9,6 +9,7 @@ mod platform;
 mod pylib;
 mod python;
 mod rust;
+mod shell;
 mod web;
 
 use std::env;
@@ -33,6 +34,7 @@ use python::setup_venv;
 use rust::build_rust;
 use rust::check_minilints;
 use rust::check_rust;
+use shell::build_shell;
 use web::build_and_check_web;
 use web::check_sql;
 
@@ -96,6 +98,7 @@ fn main() -> Result<()> {
     build_pylib(build)?;
     build_and_check_web(build)?;
     build_and_check_aqt(build)?;
+    build_shell(build)?;
 
     if env::var("OFFLINE_BUILD").is_err() {
         build_launcher(build)?;
