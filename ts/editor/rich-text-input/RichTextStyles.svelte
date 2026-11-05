@@ -7,7 +7,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import type { StyleLinkType, StyleObject } from "./CustomStyles.svelte";
     import CustomStyles from "./CustomStyles.svelte";
-    import { mount } from "svelte";
+    import { mount, unmount } from "svelte";
 
     export let callback: (styles: Record<string, any>) => void;
 
@@ -51,7 +51,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         },
     ];
 
-    function attachToShadow(element: Element) {
+    function attachToShadow(element: Element): { destroy(): void } {
         const customStyles = mount(CustomStyles, {
             target: element.shadowRoot!,
             props: { styles },
@@ -60,6 +60,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             userBaseResolve(styleTag);
             callback(customStyles);
         });
+        // `mount` roots are not destroyed with their parent.
+        return { destroy: () => unmount(customStyles) };
     }
 </script>
 

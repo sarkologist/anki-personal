@@ -86,6 +86,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         onDestroy,
         onMount,
         tick,
+        unmount,
     } from "svelte";
     import type { Readable } from "svelte/store";
 
@@ -221,7 +222,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         resetUndo,
     };
 
+    let destroyed = false;
+
     richTextPromise.then((editable: HTMLElement) => {
+        if (destroyed) {
+            return;
+        }
         fieldUndo = new FieldUndo(editable, undecorateFragment, (rawHtml) => {
             /* When the mirror has already flushed this exact DOM state, its
              * store holds the normalized (undecorated) fragment; serializing
@@ -294,6 +300,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     });
 
     onDestroy(() => {
+        destroyed = true;
         undoCleanups.forEach((cleanup) => cleanup());
         undoCleanups.length = 0;
         selectionCleanups.forEach((cleanup) => cleanup());
@@ -304,11 +311,23 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const allContexts = getAllContexts();
 
-    function attachContentEditable(element: Element, { stylesDidLoad }): void {
+    /* `mount` creates an independent root that is not destroyed with this
+     * component, so it must be unmounted explicitly, or every removed field
+     * (notetype switch, mask editor toggle) keeps its whole editable alive. */
+    function attachContentEditable(
+        element: Element,
+        { stylesDidLoad },
+    ): { destroy(): void } {
+        let instance: ReturnType<typeof mount> | null = null;
+        let destroyed = false;
+
         (async () => {
             await stylesDidLoad;
+            if (destroyed) {
+                return;
+            }
 
-            mount(ContentEditable, {
+            instance = mount(ContentEditable, {
                 target: element.shadowRoot!,
                 props: {
                     nodes,
@@ -320,6 +339,15 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 context: allContexts,
             });
         })();
+
+        return {
+            destroy(): void {
+                destroyed = true;
+                if (instance) {
+                    unmount(instance);
+                }
+            },
+        };
     }
 
     function pushUpdate(isFocusable: boolean): void {

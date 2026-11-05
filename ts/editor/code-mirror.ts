@@ -187,8 +187,9 @@ export function openCodeMirror(
 export function setupCodeMirror(
     editor: CodeMirror.Editor,
     code: Readable<string>,
-): { subscribe(): void; unsubscribe(): void } {
-    const { subscribe, unsubscribe } = storeSubscribe(
+): { subscribe(): void; unsubscribe(): void; destroy(): void } {
+    let destroyed = false;
+    const { subscribe: storeSubscribeNow, unsubscribe } = storeSubscribe(
         code,
         (value: string): void => {
             if (editor.getValue() !== value) {
@@ -206,6 +207,12 @@ export function setupCodeMirror(
         },
         false,
     );
+
+    function subscribe(): void {
+        if (!destroyed) {
+            storeSubscribeNow();
+        }
+    }
 
     // TODO passing in the tabindex option does not do anything: bug?
     editor.getInputField().tabIndex = 0;
@@ -235,5 +242,15 @@ export function setupCodeMirror(
     });
 
     subscribe();
-    return { subscribe, unsubscribe };
+    return {
+        subscribe,
+        unsubscribe,
+        /* The code store may outlive the editor (overlay stores live as long
+         * as the field list), and closing an overlay blurs the editor, which
+         * would resubscribe. Without this, every closed editor stays pinned. */
+        destroy(): void {
+            destroyed = true;
+            unsubscribe();
+        },
+    };
 }

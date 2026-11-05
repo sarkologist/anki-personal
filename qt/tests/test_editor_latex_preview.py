@@ -262,3 +262,19 @@ def test_render_preview_handles_empty_latex(monkeypatch) -> None:
 
     assert not result.ok
     assert result.error_text == "No LaTeX to preview"
+
+
+def test_editor_latex_preview_cache_is_bounded() -> None:
+    from aqt.editor import LATEX_PREVIEW_CACHE_SIZE, Editor
+
+    class _Editor:
+        _latex_preview_cache = Editor._new_latex_preview_cache()
+
+    editor = _Editor()
+    result = editor_latex_preview.LegacyLatexPreviewResult(src="x.png")
+    for i in range(LATEX_PREVIEW_CACHE_SIZE + 10):
+        Editor._remember_latex_preview(editor, f"key{i}", result)  # type: ignore
+
+    assert len(editor._latex_preview_cache) == LATEX_PREVIEW_CACHE_SIZE
+    assert "key0" not in editor._latex_preview_cache
+    assert f"key{LATEX_PREVIEW_CACHE_SIZE + 9}" in editor._latex_preview_cache

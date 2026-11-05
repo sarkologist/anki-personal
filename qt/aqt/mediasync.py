@@ -171,7 +171,12 @@ class MediaSyncDialog(QDialog):
             return
 
         aqt.dialogs.markClosed("sync_log")
+        # The hook lists are global, so they would keep every closed dialog
+        # alive; a later open creates a fresh dialog anyway.
+        gui_hooks.media_sync_did_progress.remove(self._on_log_entry)
+        gui_hooks.media_sync_did_start_or_stop.remove(self._on_start_stop)
         QDialog.reject(self)
+        self.mw.deferred_delete_and_garbage_collect(self)
 
     def reopen(
         self, mw: aqt.AnkiQt, syncer: Any, close_when_done: bool = False
@@ -193,6 +198,5 @@ class MediaSyncDialog(QDialog):
 
     def _on_start_stop(self, running: bool) -> None:
         if not running and self._close_when_done:
-            aqt.dialogs.markClosed("sync_log")
             self._close_when_done = False
-            self.close()
+            self.reject()
