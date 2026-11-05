@@ -1674,6 +1674,9 @@ class ConfigEditor(QDialog):
     def onClose(self) -> None:
         saveGeom(self, "addonconf")
         saveSplitter(self.form.splitter, "addonconf")
+        # the help webview's global hooks would otherwise pin this dialog
+        self.form.help.cleanup()
+        aqt.mw.deferred_delete_and_garbage_collect(self)
 
     def reject(self) -> None:
         self.onClose()

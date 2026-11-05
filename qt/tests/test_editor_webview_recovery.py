@@ -10,18 +10,37 @@ These exercise ``Editor.recover_webview_after_crash`` and
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Callable
+
+import pytest
 
 from aqt import editor as editor_module
 from aqt.editor import Editor
 
 
+@pytest.fixture(autouse=True)
+def _fake_sip(monkeypatch) -> None:
+    # the fake webviews below are not sip wrappers
+    monkeypatch.setattr(
+        editor_module, "sip", SimpleNamespace(isdeleted=lambda obj: False)
+    )
+
+
 class _FakeProgress:
     def __init__(self) -> None:
         self.scheduled: list[tuple[int, Callable[[], None]]] = []
+        # timer() objects live until their parent is destroyed
+        self.parented_timers = 0
 
     def timer(
         self, ms: int, func: Callable[[], None], repeat: bool, parent: Any = None
+    ) -> None:
+        self.scheduled.append((ms, func))
+        self.parented_timers += 1
+
+    def single_shot(
+        self, ms: int, func: Callable[[], None], requires_collection: bool = True
     ) -> None:
         self.scheduled.append((ms, func))
 
@@ -236,3 +255,17 @@ def test_refresh_bails_if_web_not_visible(monkeypatch) -> None:
     _run_scheduled(editor.mw)
 
     assert (web.updated, web.repainted) == (0, 0)
+
+
+def test_refresh_does_not_accumulate_timers(monkeypatch) -> None:
+    # The Browser refreshes on every row change and focus change; a timer
+    # parented to the long-lived webview per call would pile up for hours.
+    monkeypatch.setattr(
+        editor_module.QApplication, "focusWidget", staticmethod(lambda: None)
+    )
+    editor = _RefreshEditor(web=_FakeWeb())
+
+    for _ in range(3):
+        Editor.refresh_web_view_surface(editor)
+
+    assert editor.mw.progress.parented_timers == 0

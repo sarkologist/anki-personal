@@ -130,3 +130,31 @@ describe("setupCodeMirror undo history", () => {
         expect(mathjaxElement.dataset.mathjax).toBe("x");
     });
 });
+
+describe("setupCodeMirror teardown", () => {
+    // Overlay code stores outlive their CodeMirror; a live subscription pins the
+    // destroyed editor and makes every later `code.set` drive it.
+    test("destroy stops the store from driving the editor", () => {
+        const code = writable("x");
+        const editor = makeEditor();
+        const access = setupCodeMirror(editor, code);
+
+        access.destroy();
+        code.set("y");
+
+        expect(editor.getValue()).toBe("x");
+    });
+
+    test("a blur after destroy does not resubscribe", () => {
+        const code = writable("x");
+        const editor = makeEditor();
+        const access = setupCodeMirror(editor, code);
+
+        CodeMirror.signal(editor, "focus", editor, new FocusEvent("focus"));
+        access.destroy();
+        CodeMirror.signal(editor, "blur", editor, new FocusEvent("blur"));
+        code.set("y");
+
+        expect(editor.getValue()).toBe("x");
+    });
+});

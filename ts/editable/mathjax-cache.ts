@@ -30,13 +30,27 @@ export type MathjaxConversion = [string, string];
 type Bucket = LRUCache<string, MathjaxConversion>;
 
 const buckets = new Map<string, Bucket>();
+/**
+ * The template version only ever increases, so once a newer one is seen the
+ * older buckets can never be hit again; keeping them would grow the cache by up
+ * to a full bucket of SVGs per notetype switch.
+ */
+let currentTemplateScriptVersion = -Infinity;
 
 function bucketFor(
     fontSize: number,
     block: boolean,
     templateScriptVersion: number,
-): Bucket {
-    const key = `${fontSize}:${block}:${templateScriptVersion}`;
+): Bucket | null {
+    if (templateScriptVersion < currentTemplateScriptVersion) {
+        // A render that started before a notetype switch: don't cache it.
+        return null;
+    }
+    if (templateScriptVersion > currentTemplateScriptVersion) {
+        currentTemplateScriptVersion = templateScriptVersion;
+        buckets.clear();
+    }
+    const key = `${fontSize}:${block}`;
     let bucket = buckets.get(key);
     if (!bucket) {
         bucket = new LRUCache<string, MathjaxConversion>({ max: MAX_ENTRIES_PER_BUCKET });
@@ -58,13 +72,13 @@ export function getCachedMathjaxConversion(
     compute: () => MathjaxConversion,
 ): MathjaxConversion {
     const bucket = bucketFor(fontSize, block, templateScriptVersion);
-    const cached = bucket.get(mathjax);
+    const cached = bucket?.get(mathjax);
     if (cached) {
         return cached;
     }
 
     const conversion = compute();
-    bucket.set(mathjax, conversion);
+    bucket?.set(mathjax, conversion);
     return conversion;
 }
 
@@ -93,4 +107,10 @@ export async function getCachedMathjaxConversionAfterLoad(
 /** Test seam: drop all cached conversions. */
 export function resetMathjaxCache(): void {
     buckets.clear();
+    currentTemplateScriptVersion = -Infinity;
+}
+
+/** Test seam: number of live (font size, math style) buckets. */
+export function mathjaxCacheBucketCount(): number {
+    return buckets.size;
 }

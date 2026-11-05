@@ -88,8 +88,21 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const dispatch = createEventDispatcher();
 
-    onMount(async () => {
+    let destroyed = false;
+
+    onMount(() => {
+        void setup();
+        return () => {
+            destroyed = true;
+            storeAccess?.destroy();
+        };
+    });
+
+    async function setup(): Promise<void> {
         const editor = await editorPromise;
+        if (destroyed) {
+            return;
+        }
         storeAccess = setupCodeMirror(editor, code);
         editor.on("change", () => dispatch("change", editor.getValue()));
         editor.on("focus", (codeMirror, event) =>
@@ -103,7 +116,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                 dispatch("tab", { codeMirror, event });
             }
         });
-    });
+    }
 </script>
 
 <div class="code-mirror">
