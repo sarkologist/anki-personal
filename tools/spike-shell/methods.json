@@ -1,0 +1,842 @@
+{
+"abort_media_sync": [
+1,
+1
+],
+"abort_sync": [
+1,
+7
+],
+"add_custom_undo_entry": [
+3,
+10
+],
+"add_deck": [
+7,
+1
+],
+"add_deck_legacy": [
+7,
+2
+],
+"add_media_file": [
+41,
+1
+],
+"add_note": [
+25,
+1
+],
+"add_note_tags": [
+45,
+7
+],
+"add_notes": [
+25,
+2
+],
+"add_notetype": [
+23,
+0
+],
+"add_notetype_legacy": [
+23,
+2
+],
+"add_or_update_deck_config_legacy": [
+11,
+0
+],
+"add_or_update_deck_legacy": [
+7,
+3
+],
+"add_or_update_filtered_deck": [
+7,
+20
+],
+"add_or_update_notetype": [
+23,
+4
+],
+"after_note_updates": [
+25,
+9
+],
+"all_browser_columns": [
+29,
+6
+],
+"all_deck_config_legacy": [
+11,
+2
+],
+"all_tags": [
+45,
+1
+],
+"all_tts_voices": [
+27,
+1
+],
+"ankihub_login": [
+17,
+0
+],
+"ankihub_logout": [
+17,
+1
+],
+"answer_card": [
+13,
+4
+],
+"browser_row_for_id": [
+29,
+7
+],
+"build_search_string": [
+29,
+0
+],
+"bury_or_suspend_cards": [
+13,
+14
+],
+"card_stats": [
+43,
+0
+],
+"cards_of_note": [
+25,
+12
+],
+"change_notetype": [
+23,
+15
+],
+"check_database": [
+3,
+6
+],
+"check_for_update": [
+19,
+1
+],
+"check_media": [
+41,
+0
+],
+"clear_unused_tags": [
+45,
+0
+],
+"close_collection": [
+3,
+1
+],
+"cloze_numbers_in_note": [
+25,
+8
+],
+"compare_answer": [
+27,
+15
+],
+"complete_tag": [
+45,
+10
+],
+"compute_fsrs_params": [
+13,
+30
+],
+"compute_fsrs_params_from_items": [
+13,
+0
+],
+"compute_memory_state": [
+13,
+37
+],
+"compute_optimal_retention": [
+13,
+32
+],
+"congrats_info": [
+13,
+11
+],
+"counts_for_deck_today": [
+13,
+10
+],
+"custom_study": [
+13,
+27
+],
+"custom_study_defaults": [
+13,
+28
+],
+"deck_tree": [
+7,
+4
+],
+"deck_tree_legacy": [
+7,
+5
+],
+"decode_iri_paths": [
+27,
+12
+],
+"default_deck_for_notetype": [
+25,
+4
+],
+"defaults_for_adding": [
+25,
+3
+],
+"describe_next_states": [
+13,
+24
+],
+"download_release": [
+33,
+1
+],
+"empty_filtered_deck": [
+13,
+15
+],
+"empty_trash": [
+41,
+3
+],
+"encode_iri_paths": [
+27,
+11
+],
+"evaluate_params": [
+13,
+35
+],
+"evaluate_params_legacy": [
+13,
+36
+],
+"export_anki_package": [
+39,
+4
+],
+"export_card_csv": [
+39,
+8
+],
+"export_collection_package": [
+39,
+1
+],
+"export_note_csv": [
+39,
+7
+],
+"extend_limits": [
+13,
+9
+],
+"extract_av_tags": [
+27,
+3
+],
+"extract_cloze_for_typing": [
+27,
+16
+],
+"extract_latex": [
+27,
+4
+],
+"extract_static_media_files": [
+41,
+5
+],
+"field_names_for_notes": [
+25,
+10
+],
+"filtered_deck_order_labels": [
+7,
+21
+],
+"find_and_replace": [
+29,
+5
+],
+"find_and_replace_tag": [
+45,
+9
+],
+"format_timespan": [
+35,
+1
+],
+"full_upload_or_download": [
+1,
+6
+],
+"get_all_config": [
+9,
+4
+],
+"get_all_decks_legacy": [
+7,
+6
+],
+"get_aux_notetype_config_key": [
+23,
+12
+],
+"get_aux_template_config_key": [
+23,
+13
+],
+"get_card": [
+5,
+0
+],
+"get_change_notetype_info": [
+23,
+14
+],
+"get_cloze_field_ords": [
+23,
+18
+],
+"get_config_bool": [
+9,
+5
+],
+"get_config_json": [
+9,
+0
+],
+"get_config_string": [
+9,
+7
+],
+"get_csv_metadata": [
+39,
+5
+],
+"get_current_deck": [
+7,
+23
+],
+"get_custom_colours": [
+3,
+15
+],
+"get_deck": [
+7,
+8
+],
+"get_deck_and_child_names": [
+7,
+14
+],
+"get_deck_config": [
+11,
+1
+],
+"get_deck_config_legacy": [
+11,
+3
+],
+"get_deck_configs_for_update": [
+11,
+6
+],
+"get_deck_id_by_name": [
+7,
+7
+],
+"get_deck_legacy": [
+7,
+12
+],
+"get_deck_names": [
+7,
+13
+],
+"get_empty_cards": [
+27,
+5
+],
+"get_field_names": [
+23,
+16
+],
+"get_graph_preferences": [
+43,
+3
+],
+"get_ignored_before_count": [
+11,
+8
+],
+"get_image_for_occlusion": [
+37,
+0
+],
+"get_image_occlusion_fields": [
+37,
+2
+],
+"get_image_occlusion_note": [
+37,
+1
+],
+"get_import_anki_package_presets": [
+39,
+3
+],
+"get_latest_release": [
+33,
+0
+],
+"get_note": [
+25,
+6
+],
+"get_notetype": [
+23,
+6
+],
+"get_notetype_id_by_name": [
+23,
+10
+],
+"get_notetype_legacy": [
+23,
+7
+],
+"get_notetype_names": [
+23,
+8
+],
+"get_notetype_names_and_counts": [
+23,
+9
+],
+"get_optimal_retention_parameters": [
+13,
+31
+],
+"get_or_create_filtered_deck": [
+7,
+19
+],
+"get_preferences": [
+9,
+9
+],
+"get_queued_cards": [
+13,
+3
+],
+"get_retention_workload": [
+11,
+9
+],
+"get_review_logs": [
+43,
+1
+],
+"get_scheduling_states": [
+13,
+23
+],
+"get_single_notetype_of_notes": [
+25,
+13
+],
+"get_stock_notetype_legacy": [
+23,
+5
+],
+"get_undo_status": [
+3,
+7
+],
+"grade_now": [
+13,
+20
+],
+"graphs": [
+43,
+2
+],
+"help_page_link": [
+21,
+0
+],
+"html_to_text_line": [
+27,
+14
+],
+"i18n_resources": [
+35,
+2
+],
+"import_anki_package": [
+39,
+2
+],
+"import_collection_package": [
+39,
+0
+],
+"import_csv": [
+39,
+6
+],
+"import_json_file": [
+39,
+9
+],
+"import_json_string": [
+39,
+10
+],
+"join_search_nodes": [
+29,
+3
+],
+"latest_progress": [
+3,
+4
+],
+"merge_undo_entries": [
+3,
+11
+],
+"new_deck": [
+7,
+0
+],
+"new_deck_config_legacy": [
+11,
+4
+],
+"new_deck_legacy": [
+7,
+15
+],
+"new_note": [
+25,
+0
+],
+"note_fields_check": [
+25,
+11
+],
+"open_collection": [
+3,
+0
+],
+"rebuild_filtered_deck": [
+13,
+16
+],
+"redo": [
+3,
+9
+],
+"remove_cards": [
+5,
+2
+],
+"remove_config": [
+9,
+3
+],
+"remove_deck_config": [
+11,
+5
+],
+"remove_decks": [
+7,
+16
+],
+"remove_note_tags": [
+45,
+8
+],
+"remove_notes": [
+25,
+7
+],
+"remove_notetype": [
+23,
+11
+],
+"remove_tags": [
+45,
+2
+],
+"rename_deck": [
+7,
+18
+],
+"rename_tags": [
+45,
+6
+],
+"render_existing_card": [
+27,
+6
+],
+"render_markdown": [
+27,
+10
+],
+"render_uncommitted_card": [
+27,
+7
+],
+"render_uncommitted_card_legacy": [
+27,
+8
+],
+"reparent_decks": [
+7,
+17
+],
+"reparent_tags": [
+45,
+5
+],
+"replace_search_node": [
+29,
+4
+],
+"reposition_defaults": [
+13,
+29
+],
+"restore_buried_and_suspended_cards": [
+13,
+12
+],
+"restore_notetype_to_stock": [
+23,
+17
+],
+"restore_trash": [
+41,
+4
+],
+"sched_timing_today": [
+13,
+5
+],
+"schedule_cards_as_new": [
+13,
+17
+],
+"schedule_cards_as_new_defaults": [
+13,
+18
+],
+"search_cards": [
+29,
+1
+],
+"search_notes": [
+29,
+2
+],
+"set_active_browser_columns": [
+29,
+8
+],
+"set_config_bool": [
+9,
+6
+],
+"set_config_json": [
+9,
+1
+],
+"set_config_json_no_undo": [
+9,
+2
+],
+"set_config_string": [
+9,
+8
+],
+"set_current_deck": [
+7,
+22
+],
+"set_custom_certificate": [
+1,
+8
+],
+"set_deck": [
+5,
+3
+],
+"set_deck_collapsed": [
+7,
+11
+],
+"set_due_date": [
+13,
+19
+],
+"set_flag": [
+5,
+4
+],
+"set_graph_preferences": [
+43,
+4
+],
+"set_load_balancer_enabled": [
+3,
+14
+],
+"set_preferences": [
+9,
+10
+],
+"set_tag_collapsed": [
+45,
+3
+],
+"set_wants_abort": [
+3,
+5
+],
+"simulate_fsrs_review": [
+13,
+33
+],
+"simulate_fsrs_workload": [
+13,
+34
+],
+"sort_cards": [
+13,
+21
+],
+"sort_deck": [
+13,
+22
+],
+"state_is_leech": [
+13,
+25
+],
+"strip_av_tags": [
+27,
+9
+],
+"strip_html": [
+27,
+0
+],
+"studied_today": [
+13,
+6
+],
+"studied_today_message": [
+13,
+7
+],
+"sync_collection": [
+1,
+5
+],
+"sync_login": [
+1,
+3
+],
+"sync_media": [
+1,
+0
+],
+"sync_status": [
+1,
+4
+],
+"tag_tree": [
+45,
+4
+],
+"translate_string": [
+35,
+0
+],
+"trash_media_files": [
+41,
+2
+],
+"unbury_deck": [
+13,
+13
+],
+"undo": [
+3,
+8
+],
+"update_cards": [
+5,
+1
+],
+"update_deck": [
+7,
+9
+],
+"update_deck_configs": [
+11,
+7
+],
+"update_deck_legacy": [
+7,
+10
+],
+"update_image_occlusion_note": [
+37,
+5
+],
+"update_notes": [
+25,
+5
+],
+"update_notetype": [
+23,
+1
+],
+"update_notetype_legacy": [
+23,
+3
+],
+"update_stats": [
+13,
+8
+],
+"upgrade_scheduler": [
+13,
+26
+],
+"write_tts_stream": [
+27,
+2
+]
+}

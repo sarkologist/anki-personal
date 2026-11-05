@@ -1,0 +1,15 @@
+[package]
+name = "spike-shell"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+anki = { workspace = true, features = ["rustls"] }
+anki_proto.workspace = true
+prost.workspace = true
+serde_json.workspace = true
+tao.workspace = true
+# rslib relies on io-util being enabled by another workspace member
+tokio = { workspace = true, features = ["io-util"] }
+wry.workspace = true

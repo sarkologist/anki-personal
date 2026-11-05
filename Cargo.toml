@@ -21,6 +21,7 @@ members = [
   "rslib/proto",
   "rslib/sync",
   "tools/minilints",
+  "tools/spike-shell",
 ]
 resolver = "2"
 
@@ -38,6 +39,8 @@ version = "5.2.0"
 # path = "../open-spaced-repetition/fsrs-rs"
 
 [workspace.dependencies]
+tao = "0.37.2"
+wry = "0.57.1"
 # local
 anki = { path = "rslib" }
 anki_i18n = { path = "rslib/i18n" }
