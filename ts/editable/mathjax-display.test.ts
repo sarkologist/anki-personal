@@ -16,7 +16,7 @@ function fakeMathjax() {
             viewBox: { baseVal: { height: 20 } },
             innerHTML: "",
             children: [{}],
-            insertBefore: () => {},
+            insertBefore: () => undefined,
             outerHTML: "<svg></svg>",
             querySelector: () => null,
         };
