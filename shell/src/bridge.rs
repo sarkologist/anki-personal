@@ -40,9 +40,21 @@ pub fn init_script() -> String {
         return false;
     }};
     window.pycmdPromise = (arg) => new Promise((resolve) => window.pycmd(arg, resolve));
-    // as Qt's bridge script, which runs at DocumentReady
     if (window.top === window) {{
+        // as Qt's bridge script, which runs at DocumentReady
         document.addEventListener("DOMContentLoaded", () => window.pycmd("domDone"));
+        // links to the web open in the browser, not in place of the page
+        document.addEventListener("click", (event) => {{
+            const link = event.target instanceof Element && event.target.closest("a[href]");
+            if (!link || event.defaultPrevented) {{
+                return;
+            }}
+            const url = new URL(link.href, location.href);
+            if (["http:", "https:", "mailto:"].includes(url.protocol)) {{
+                event.preventDefault();
+                window.pycmd("openUrl:" + url.href);
+            }}
+        }});
     }}
 }})();"#,
         path = crate::protocol::BRIDGE_PATH,

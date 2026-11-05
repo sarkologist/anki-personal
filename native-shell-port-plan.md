@@ -332,9 +332,13 @@ checks in WKWebView. How to build, run and check it is in `shell/README.md`.
   `/_shell/bridge`, chained so commands arrive in order as on Qt's channel.
   Requests must carry an `X-Anki-Bridge` header and, if they have an origin,
   come from `anki://localhost`. A no-cors request from other content (an
-  iframe in a field) can't send the header. Webviews only navigate to
-  `anki://localhost/`; other links open in the browser
-  (`acceptNavigationRequest`). `domDone` is sent at `DOMContentLoaded`, and
+  iframe in a field) can't send the header.
+- **Navigation:** webviews navigate only to Anki's pages, plus the web for
+  frames in cards and fields (YouTube embeds). Link clicks in the main frame
+  go to the browser through an `openUrl` bridge command
+  (`acceptNavigationRequest`). Tauri's navigation hook runs for every frame
+  and can't tell them apart, so a script-driven main-frame navigation to the
+  web isn't blocked. Such a page can't reach the bridge or the API. `domDone` is sent at `DOMContentLoaded`, and
   evals are queued until then (`_queueAction`). Unknown commands are logged
   and counted. The editor sends `editorState` on load, which nothing handles
   yet (phase 3).
@@ -344,7 +348,9 @@ checks in WKWebView. How to build, run and check it is in `shell/README.md`.
     meanwhile (AnkiConnect) aren't reverted.
   - Before the editor closes, loads another note, or the app quits, the shell
     runs `saveNow()` and waits for it over the ordered bridge
-    (`call_after_note_saved`), with a 2 s timeout. Without this, edits made
+    (`call_after_note_saved`), with a 2 s timeout. Quit is a custom menu
+    item, because the predefined one sends `terminate:`, which skips
+    Tauri's `ExitRequested`. Without this, edits made
     within the 600 ms save debounce were lost. `shell/harness/editor-save.js`
     checks it.
   - `escape_media_filenames` isn't applied on load yet.

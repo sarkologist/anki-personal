@@ -63,8 +63,10 @@ fn store(
     if skip_hash == Some(md5_hex(&bytes).as_str()) {
         return Ok(None);
     }
-    if delete_existing {
-        delete_media_file(ctx, filename)?;
+    // a name that isn't a plain file name is normalized by add_media_file,
+    // so there's nothing at that name to replace
+    if delete_existing && is_plain_name(filename) {
+        trash(ctx, filename)?;
     }
     let name: anki_proto::generic::String = ctx.call(
         "add_media_file",
@@ -123,12 +125,23 @@ pub(crate) fn media_dir_path(ctx: &Ctx) -> Result<Value> {
     Ok(json!(std::path::absolute(media_dir(ctx)?)?))
 }
 
+/// rslib joins media names onto the media folder unchecked (as does the
+/// add-on), so "../collection.anki2" would trash the collection.
+fn is_plain_name(filename: &str) -> bool {
+    !filename.is_empty()
+        && filename != "."
+        && filename != ".."
+        && !filename.contains(['/', '\\', '\0'])
+}
+
 pub(crate) fn delete_media_file(ctx: &Ctx, filename: &str) -> Result<()> {
-    // rslib joins the name onto the media folder unchecked (as does the
-    // add-on), so "../collection.anki2" would trash the collection
-    if filename.is_empty() || filename == ".." || filename.contains(['/', '\\', '\0']) {
+    if !is_plain_name(filename) {
         return Err(format!("invalid media filename: {filename}").into());
     }
+    trash(ctx, filename)
+}
+
+fn trash(ctx: &Ctx, filename: &str) -> Result<()> {
     ctx.run(
         "trash_media_files",
         &anki_proto::media::TrashMediaFilesRequest {

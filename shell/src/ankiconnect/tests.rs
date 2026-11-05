@@ -701,6 +701,17 @@ fn media_names_cannot_leave_the_media_folder() {
         assert!(msg.contains("invalid media filename"), "{name}: {msg}");
     }
     assert!(collection.exists());
+    // storing still works, under the normalized name, as with the add-on
+    let stored = ok(
+        &shell,
+        "storeMediaFile",
+        json!({"filename": "../sub/x.txt", "data": "aGk="}),
+    );
+    assert!(
+        stored.as_str().is_some_and(|n| !n.contains('/')),
+        "{stored}"
+    );
+    assert!(collection.exists());
 }
 
 #[test]

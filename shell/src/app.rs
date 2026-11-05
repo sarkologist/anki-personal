@@ -198,6 +198,8 @@ pub struct Ui {
     pub status: Mutex<String>,
     /// Set once the editor has been saved for quitting.
     pub exiting: std::sync::atomic::AtomicBool,
+    pub exit_code: std::sync::atomic::AtomicI32,
+    seq: std::sync::atomic::AtomicU64,
 }
 
 impl Ui {
@@ -233,13 +235,9 @@ impl Ui {
                 .title(title)
                 .inner_size(w, h)
                 .initialization_script(crate::bridge::init_script())
-                .on_navigation(|url| {
-                    let allowed = crate::protocol::allowed_navigation(url);
-                    if !allowed && ["http", "https", "mailto"].contains(&url.scheme()) {
-                        let _ = std::process::Command::new("open").arg(url.as_str()).spawn();
-                    }
-                    allowed
-                });
+                // runs for subframes too, so it can't open links itself; the
+                // bridge script sends link clicks as openUrl
+                .on_navigation(crate::protocol::allowed_navigation);
         if self.geometry.is_some() {
             builder = builder.position(x, y);
         }
@@ -319,6 +317,9 @@ impl Ui {
     /// `Editor.call_after_note_saved`. If the page doesn't answer, `cmd`
     /// runs anyway after a timeout.
     pub fn after_editor_saved(&self, cmd: &str) {
+        // a token per request, so a late timeout can't take a newer request
+        let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let cmd = &format!("{cmd}:{seq}");
         self.shell.bridge.add_pending(cmd.to_string());
         self.eval(
             EDITOR,
@@ -543,8 +544,9 @@ fn register_bridge(ui: &Arc<Ui>) {
     });
     // the second halves of after_editor_saved
     let u = ui.clone();
-    bridge.register("editorLoad", move |shell, _, nid| {
-        if shell.bridge.take_pending(&format!("editorLoad:{nid}")) {
+    bridge.register("editorLoad", move |shell, _, args| {
+        if shell.bridge.take_pending(&format!("editorLoad:{args}")) {
+            let nid = args.split(':').next().unwrap_or_default();
             if let Err(err) = nid
                 .parse()
                 .map_err(anyhow::Error::from)
@@ -556,8 +558,8 @@ fn register_bridge(ui: &Arc<Ui>) {
         Value::Null
     });
     let u = ui.clone();
-    bridge.register("editorClose", move |shell, _, _| {
-        if shell.bridge.take_pending("editorClose") {
+    bridge.register("editorClose", move |shell, _, args| {
+        if shell.bridge.take_pending(&format!("editorClose:{args}")) {
             if let Some(window) = u.app.get_webview_window(EDITOR) {
                 let _ = window.destroy();
             }
@@ -565,10 +567,20 @@ fn register_bridge(ui: &Arc<Ui>) {
         Value::Null
     });
     let u = ui.clone();
-    bridge.register("editorExit", move |shell, _, _| {
-        if shell.bridge.take_pending("editorExit") {
+    bridge.register("editorExit", move |shell, _, args| {
+        if shell.bridge.take_pending(&format!("editorExit:{args}")) {
             u.exiting.store(true, std::sync::atomic::Ordering::SeqCst);
-            u.app.exit(0);
+            u.app
+                .exit(u.exit_code.load(std::sync::atomic::Ordering::SeqCst));
+        }
+        Value::Null
+    });
+    bridge.register("openUrl", |_, _, url| {
+        match url.parse::<tauri::Url>() {
+            Ok(url) if ["http", "https", "mailto"].contains(&url.scheme()) => {
+                let _ = std::process::Command::new("open").arg(url.as_str()).spawn();
+            }
+            _ => tracing::warn!(url, "not opening link"),
         }
         Value::Null
     });
@@ -605,7 +617,13 @@ fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     let app_menu = SubmenuBuilder::new(app, "Anki")
         .item(&PredefinedMenuItem::about(app, None, None)?)
         .separator()
-        .item(&PredefinedMenuItem::quit(app, None)?)
+        // not PredefinedMenuItem::quit: its terminate: skips ExitRequested,
+        // so the editor's pending edits couldn't be saved
+        .item(
+            &MenuItemBuilder::with_id("quit", "Quit Anki")
+                .accelerator("CmdOrCtrl+Q")
+                .build(app)?,
+        )
         .build()?;
     let edit = SubmenuBuilder::new(app, "Edit")
         .undo()
@@ -682,13 +700,17 @@ pub fn run(args: Args) -> Result<()> {
         geometry: args.geometry,
         background: args.background,
         exiting: Default::default(),
+        exit_code: Default::default(),
+        seq: Default::default(),
         status: Mutex::new(String::new()),
     });
     register_bridge(&ui);
     app.set_menu(build_menu(&app)?)?;
     let u = ui.clone();
-    app.on_menu_event(move |_, event| {
-        if event.id() == "reimport" {
+    app.on_menu_event(move |app, event| {
+        if event.id() == "quit" {
+            app.exit(0);
+        } else if event.id() == "reimport" {
             if let Err(err) = u.reimport() {
                 *u.status.lock().unwrap() = format!("Re-import failed: {err:#}");
             }
@@ -736,12 +758,16 @@ pub fn run(args: Args) -> Result<()> {
             api.prevent_close();
             exit_ui.after_editor_saved("editorClose");
         }
-        RunEvent::ExitRequested { api, .. }
+        RunEvent::ExitRequested { api, code, .. }
             if !exit_ui.exiting.load(std::sync::atomic::Ordering::SeqCst)
                 && exit_ui.editors.note(EDITOR).is_some()
                 && app.get_webview_window(EDITOR).is_some() =>
         {
             api.prevent_exit();
+            // e.g. a test's result, to exit with once the editor is saved
+            exit_ui
+                .exit_code
+                .store(code.unwrap_or(0), std::sync::atomic::Ordering::SeqCst);
             exit_ui.after_editor_saved("editorExit");
         }
         RunEvent::WindowEvent {

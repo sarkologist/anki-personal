@@ -184,10 +184,16 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
     }
 }
 
-/// Webviews only show Anki's own pages; other links open in the browser
-/// (`AnkiWebPage.acceptNavigationRequest`).
+/// Where webviews may navigate: Anki's own pages, and the web for frames in
+/// cards and fields (a YouTube embed, say). The check can't tell frames
+/// apart, so link clicks in the main frame go to the browser through the
+/// bridge script instead (`AnkiWebPage.acceptNavigationRequest`).
 pub fn allowed_navigation(url: &tauri::Url) -> bool {
-    url.scheme() == "anki" && url.host_str() == Some("localhost")
+    match url.scheme() {
+        "anki" => url.host_str() == Some("localhost"),
+        "http" | "https" | "about" | "data" | "blob" => true,
+        _ => false,
+    }
 }
 
 /// Old top-level `/_anki/foo.css` style references.
@@ -619,15 +625,17 @@ mod test {
     }
 
     #[test]
-    fn only_anki_pages_may_be_navigated_to() {
+    fn navigation_is_limited_to_anki_pages_and_web_frames() {
         assert!(allowed_navigation(
             &"anki://localhost/_anki/legacyPageData?id=main"
                 .parse()
                 .unwrap()
         ));
-        assert!(!allowed_navigation(
-            &"https://example.com/".parse().unwrap()
+        // frames in cards and fields
+        assert!(allowed_navigation(
+            &"https://www.youtube.com/embed/x".parse().unwrap()
         ));
+        assert!(allowed_navigation(&"about:srcdoc".parse().unwrap()));
         assert!(!allowed_navigation(&"anki://elsewhere/".parse().unwrap()));
         assert!(!allowed_navigation(&"file:///etc/hosts".parse().unwrap()));
     }
