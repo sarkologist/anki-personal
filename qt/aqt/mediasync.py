@@ -199,4 +199,6 @@ class MediaSyncDialog(QDialog):
     def _on_start_stop(self, running: bool) -> None:
         if not running and self._close_when_done:
             self._close_when_done = False
-            self.reject()
+            # Defer: reject() unhooks us, and removing a hook while the hook
+            # list is being iterated would skip the next callback.
+            self.mw.progress.single_shot(0, self.reject, False)

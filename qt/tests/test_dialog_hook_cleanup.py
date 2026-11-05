@@ -13,10 +13,23 @@ from aqt import gui_hooks, mediasync
 from aqt.qt import QApplication, QMainWindow, QObject
 
 
+class _FakeProgress:
+    def __init__(self) -> None:
+        self.pending: list[Any] = []
+
+    def single_shot(self, ms: int, func: Any, requires_collection: bool = True) -> None:
+        self.pending.append(func)
+
+    def run_pending(self) -> None:
+        while self.pending:
+            self.pending.pop(0)()
+
+
 class _FakeMw(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.deleted: list[QObject] = []
+        self.progress = _FakeProgress()
 
     def deferred_delete_and_garbage_collect(self, obj: QObject) -> None:
         self.deleted.append(obj)
@@ -74,9 +87,17 @@ def test_media_sync_dialog_closing_when_done_releases_hooks_once(
     monkeypatch,
 ) -> None:
     mw, dialog = _media_sync_dialog(monkeypatch, _Syncer(), close_when_done=True)
+    later_hook_calls: list[bool] = []
+    later_hook = later_hook_calls.append
+    gui_hooks.media_sync_did_start_or_stop.append(later_hook)
+    try:
+        gui_hooks.media_sync_did_start_or_stop(False)
+    finally:
+        gui_hooks.media_sync_did_start_or_stop.remove(later_hook)
+    mw.progress.run_pending()
 
-    dialog._on_start_stop(False)
-
+    # unhooking from inside the hook call must not skip hooks after ours
+    assert later_hook_calls == [False]
     assert not _hooked(dialog)
     assert mw.deleted == [dialog]
 
