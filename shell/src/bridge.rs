@@ -23,6 +23,11 @@ pub type Handler = Box<dyn Fn(&Shell, &str, &str) -> Value + Send + Sync>;
 pub fn init_script() -> String {
     format!(
         r#"(() => {{
+    // installed in every frame; web frames in cards (a YouTube embed) get
+    // nothing
+    if (location.protocol !== "anki:") {{
+        return;
+    }}
     let chain = Promise.resolve();
     const send = (arg) => fetch("/{path}", {{
         method: "POST",
@@ -40,6 +45,22 @@ pub fn init_script() -> String {
         return false;
     }};
     window.pycmdPromise = (arg) => new Promise((resolve) => window.pycmd(arg, resolve));
+    // The main window's own pages got a capability in their URL, which
+    // their API calls must carry; only this document can read it.
+    const cap = window.top === window && new URLSearchParams(location.search).get("{cap_param}");
+    if (cap) {{
+        const fetch = window.fetch.bind(window);
+        window.fetch = (input, init) => {{
+            const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+            if (url.origin === location.origin && url.pathname.startsWith("/_anki/")) {{
+                init = {{ ...(init || {{}}) }};
+                const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined));
+                headers.set("{cap_header}", cap);
+                init.headers = headers;
+            }}
+            return fetch(input, init);
+        }};
+    }}
     if (window.top === window) {{
         // as Qt's bridge script, which runs at DocumentReady
         document.addEventListener("DOMContentLoaded", () => window.pycmd("domDone"));
@@ -59,6 +80,8 @@ pub fn init_script() -> String {
 }})();"#,
         path = crate::protocol::BRIDGE_PATH,
         header = crate::protocol::BRIDGE_HEADER,
+        cap_param = crate::pages::CAP_PARAM,
+        cap_header = crate::pages::CAP_HEADER,
     )
 }
 
@@ -86,7 +109,10 @@ impl Bridge {
     pub fn dispatch(&self, shell: &Shell, label: &str, cmd: &str) -> Value {
         let (name, rest) = cmd.split_once(':').unwrap_or((cmd, ""));
         if let Some(handler) = self.handlers.read().unwrap().get(name) {
-            return handler(shell, label, rest);
+            tracing::trace!(label, name, "bridge command");
+            let out = handler(shell, label, rest);
+            tracing::trace!(label, name, "bridge command done");
+            return out;
         }
         tracing::warn!(label, name, "unknown bridge command");
         *self

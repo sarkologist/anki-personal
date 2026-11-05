@@ -10,6 +10,10 @@ use std::path::Path;
 use std::sync::Mutex;
 
 pub const ORIGIN: &str = "anki://localhost/";
+/// The URL parameter carrying a page's capability (`Page::cap`).
+pub const CAP_PARAM: &str = "cap";
+/// The header its API calls send it in (added by the bridge script).
+pub const CAP_HEADER: &str = "X-Anki-Page-Cap";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WebviewKind {
@@ -25,6 +29,8 @@ pub enum WebviewKind {
     ImportAnkiPackage,
     ImportLog,
     CardLayout,
+    /// A [crate::main_window::ask] window.
+    Dialog,
 }
 
 impl WebviewKind {
@@ -51,6 +57,9 @@ pub struct Page {
     pub kind: WebviewKind,
     /// HTML served at `/_anki/legacyPageData`, if the shell assembled one.
     pub html: Option<String>,
+    /// For the main window's own pages: the capability their document got
+    /// in its URL, which its API calls must carry (see `protocol.rs`).
+    pub cap: Option<String>,
 }
 
 /// Webview label -> page.
@@ -59,10 +68,20 @@ pub struct Pages(Mutex<HashMap<String, Page>>);
 
 impl Pages {
     pub fn set(&self, label: &str, kind: WebviewKind, html: Option<String>) {
+        self.set_with_cap(label, kind, html, None);
+    }
+
+    pub fn set_with_cap(
+        &self,
+        label: &str,
+        kind: WebviewKind,
+        html: Option<String>,
+        cap: Option<String>,
+    ) {
         self.0
             .lock()
             .unwrap()
-            .insert(label.to_string(), Page { kind, html });
+            .insert(label.to_string(), Page { kind, html, cap });
     }
 
     pub fn get(&self, label: &str) -> Option<Page> {
@@ -98,7 +117,7 @@ pub fn std_html(web: &Path, body: &str, css: &[&str], js: &[&str], default_css: 
     }
     format!(
         "<!doctype html><html class=\"mac\" dir=\"ltr\" data-bs-theme=\"light\">\
-         <head><meta charset=\"utf-8\"><title></title>{head}</head>\
+         <head><base href=\"{ORIGIN}\"><meta charset=\"utf-8\"><title></title>{head}</head>\
          <body class=\"isMac\">{scripts}{body}</body></html>"
     )
 }
@@ -121,6 +140,17 @@ pub fn editor_html(web: &Path) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn pages_resolve_media_against_the_server_root() {
+        // card images are relative (`<img src="pic.png">`), and the page
+        // itself is served from /_anki/legacyPageData
+        let html = std_html(Path::new("/nonexistent"), "", &[], &[], false);
+        assert!(
+            html.contains(&format!("<head><base href=\"{ORIGIN}\">")),
+            "{html}"
+        );
+    }
 
     #[test]
     fn only_trusted_pages_get_the_full_api() {

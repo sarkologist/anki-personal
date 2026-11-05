@@ -1,0 +1,535 @@
+// Copyright: Ankitects Pty Ltd and contributors
+// License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+
+//! LaTeX on cards (`[latex]`, `[$]`, `[$$]`) rendered to images, as
+//! pylib/anki/latex.py does from its `card_did_render` hook.
+
+use std::cell::OnceCell;
+use std::ffi::OsString;
+use std::fs;
+use std::fs::File;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
+use anki::prelude::I18n;
+use anki_proto::card_rendering::ExtractLatexRequest;
+use anki_proto::card_rendering::ExtractLatexResponse;
+use anki_proto::card_rendering::ExtractedLatex;
+use anki_proto::config::config_key::Bool as BoolKey;
+use anki_proto::config::GetConfigBoolRequest;
+use anki_proto::generic;
+use anki_proto::i18n::I18nResourcesRequest;
+use anki_proto::media::AddMediaFileRequest;
+use anki_proto::notetypes::Notetype;
+use anki_proto::notetypes::NotetypeId;
+use anyhow::Context;
+use anyhow::Result;
+
+use crate::api::Api;
+
+const PNG_COMMANDS: [&[&str]; 2] = [
+    &["latex", "-interaction=nonstopmode", "tmp.tex"],
+    &[
+        "dvipng",
+        "-bg",
+        "Transparent",
+        "-D",
+        "200",
+        "-T",
+        "tight",
+        "tmp.dvi",
+        "-o",
+        "tmp.png",
+    ],
+];
+
+const SVG_COMMANDS: [&[&str]; 2] = [
+    &["latex", "-interaction=nonstopmode", "tmp.tex"],
+    &[
+        "dvisvgm",
+        "--no-fonts",
+        "--exact",
+        "-Z",
+        "2",
+        "tmp.dvi",
+        "-o",
+        "tmp.svg",
+    ],
+];
+
+/// Standard TeX install locations, which a GUI app's minimal PATH lacks.
+const MAC_TEX_DIRS: [&str; 2] = ["/usr/texbin", "/Library/TeX/texbin"];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LatexConfig {
+    pub latex_pre: String,
+    pub latex_post: String,
+    pub svg: bool,
+}
+
+/// The notetype's LaTeX header/footer and svg flag (from the backend's
+/// get_notetype: Notetype.config latex_pre / latex_post / latex_svg).
+pub fn latex_config(api: &Api, notetype_id: i64) -> Result<LatexConfig> {
+    let notetype: Notetype = api.call("get_notetype", &NotetypeId { ntid: notetype_id })?;
+    let config = notetype.config.unwrap_or_default();
+    Ok(LatexConfig {
+        latex_pre: config.latex_pre,
+        latex_post: config.latex_post,
+        svg: config.latex_svg,
+    })
+}
+
+/// latex.py's render_latex_returning_errors: rewrite LaTeX in `html` into
+/// <img> tags (backend extract_latex, expand_clozes=false), generate any image
+/// missing from `media_dir`, and return (html, errors). Errors are HTML
+/// messages as latex.py builds them (tr strings + escaped log).
+pub fn render_latex(
+    api: &Api,
+    media_dir: &Path,
+    html: &str,
+    cfg: &LatexConfig,
+) -> (String, Vec<String>) {
+    match try_render_latex(api, media_dir, html, cfg) {
+        Ok(out) => out,
+        // latex.py would raise; keep the card and show why
+        Err(err) => (html.to_string(), vec![html_escape(&format!("{err:#}"))]),
+    }
+}
+
+fn try_render_latex(
+    api: &Api,
+    media_dir: &Path,
+    html: &str,
+    cfg: &LatexConfig,
+) -> Result<(String, Vec<String>)> {
+    let out: ExtractLatexResponse = api.call(
+        "extract_latex",
+        &ExtractLatexRequest {
+            text: html.to_string(),
+            svg: cfg.svg,
+            expand_clozes: false,
+        },
+    )?;
+    let mut errors = vec![];
+    if out.latex.is_empty() {
+        return Ok((out.text, errors));
+    }
+    let enabled: generic::Bool = api.call(
+        "get_config_bool",
+        &GetConfigBoolRequest {
+            key: BoolKey::RenderLatex as i32,
+        },
+    )?;
+    let tr = OnceCell::new();
+    let tr = || tr.get_or_init(|| backend_tr(api));
+    for latex in &out.latex {
+        if media_dir.join(&latex.filename).exists() {
+            continue;
+        }
+        if !enabled.val {
+            errors.push(tr().preferences_latex_generation_disabled().into_owned());
+            return Ok((out.text, errors));
+        }
+        match save_latex_image(api, tr, latex, cfg) {
+            Ok(None) => {}
+            Ok(Some(err)) => errors.push(err),
+            // latex.py would raise; report it with the other errors
+            Err(err) => errors.push(html_escape(&format!("{err:#}"))),
+        }
+    }
+    Ok((out.text, errors))
+}
+
+/// Translations in the backend's languages.
+fn backend_tr(api: &Api) -> I18n {
+    let langs = api
+        .call::<generic::Json>(
+            "i18n_resources",
+            &I18nResourcesRequest {
+                modules: vec!["media".into()],
+            },
+        )
+        .ok()
+        .and_then(|json| serde_json::from_slice::<serde_json::Value>(&json.json).ok())
+        .and_then(|json| serde_json::from_value::<Vec<String>>(json["langs"].clone()).ok());
+    match langs {
+        Some(langs) => I18n::new(&langs),
+        None => I18n::template_only(),
+    }
+}
+
+/// Render one image into the media folder. Returns latex.py's error message
+/// if a command fails.
+fn save_latex_image<'a>(
+    api: &Api,
+    tr: impl FnOnce() -> &'a I18n,
+    extracted: &ExtractedLatex,
+    cfg: &LatexConfig,
+) -> Result<Option<String>> {
+    let ext = if cfg.svg { "svg" } else { "png" };
+    let dir = render_dir()?;
+    let tex = dir.join("tmp.tex");
+    let log_path = dir.join("latex_log.txt");
+    fs::write(
+        &tex,
+        tex_source(&cfg.latex_pre, &extracted.latex_body, &cfg.latex_post),
+    )
+    .with_context(|| format!("writing {}", tex.display()))?;
+    let log =
+        File::create(&log_path).with_context(|| format!("creating {}", log_path.display()))?;
+    let path = tex_path();
+    for command in latex_commands(cfg.svg) {
+        if !run(command, &dir, &path, &log)? {
+            // keep the folder, so the paths in the message stay valid
+            return Ok(Some(err_msg(tr(), command[0], &tex, &log_path)));
+        }
+    }
+    let image = dir.join(format!("tmp.{ext}"));
+    let data = fs::read(&image).with_context(|| format!("reading {}", image.display()))?;
+    let _: generic::String = api.call(
+        "add_media_file",
+        &AddMediaFileRequest {
+            desired_name: extracted.filename.clone(),
+            data,
+        },
+    )?;
+    let _ = fs::remove_dir_all(&dir);
+    Ok(None)
+}
+
+/// Whether the command ran and succeeded (a missing binary counts as a
+/// failure, as in anki.utils.call).
+fn run(command: &[&str], dir: &Path, path: &OsString, log: &File) -> Result<bool> {
+    let status = Command::new(command[0])
+        .args(&command[1..])
+        .current_dir(dir)
+        .env("PATH", path)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log.try_clone()?)
+        .status();
+    Ok(status.is_ok_and(|status| status.success()))
+}
+
+/// A fresh folder per render, so overlapping renders don't share tmp.tex.
+fn render_dir() -> Result<PathBuf> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = std::env::temp_dir().join("anki-latex");
+    fs::create_dir_all(&parent).with_context(|| format!("creating {}", parent.display()))?;
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = parent.join(format!("{}-{n}", std::process::id()));
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            // left by an earlier process with the same pid
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err).with_context(|| format!("creating {}", dir.display())),
+        }
+    }
+}
+
+fn latex_commands(svg: bool) -> [&'static [&'static str]; 2] {
+    if svg {
+        SVG_COMMANDS
+    } else {
+        PNG_COMMANDS
+    }
+}
+
+fn tex_source(header: &str, body: &str, footer: &str) -> String {
+    format!("{header}\n{body}\n{footer}")
+}
+
+/// The inherited PATH plus the standard TeX locations, as latex.py does.
+fn tex_path() -> OsString {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = std::env::split_paths(&inherited)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .chain(MAC_TEX_DIRS.iter().map(PathBuf::from));
+    std::env::join_paths(dirs).unwrap_or(inherited)
+}
+
+/// latex.py's _err_msg.
+fn err_msg(tr: &I18n, cmd: &str, tex: &Path, log: &Path) -> String {
+    let mut msg = format!("{}<br>", tr.media_error_executing(cmd));
+    msg += &format!("{}<br>", tr.media_generated_file(tex.display().to_string()));
+    let log = fs::read(log)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|log| !log.is_empty());
+    match log {
+        Some(log) => msg += &format!("<small><pre>{}</pre></small>", html_escape(&log)),
+        None => msg += &tr.media_have_you_installed_latex_and_dvipngdvisvgm(),
+    }
+    msg
+}
+
+/// Python's html.escape(quote=True).
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod test {
+    use std::path::PathBuf;
+
+    use anki_proto::config::SetConfigBoolRequest;
+    use anki_proto::generic::Empty;
+    use anki_proto::notetypes::NotetypeNames;
+
+    use super::*;
+    use crate::profile::open_collection;
+    use crate::profile::ProfilePaths;
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        api: Api,
+        media: PathBuf,
+    }
+
+    fn collection(render_latex: bool) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProfilePaths::new(dir.path(), "User 1");
+        std::fs::create_dir_all(&paths.folder).unwrap();
+        let api = Api::new(vec!["en".into()]).unwrap();
+        open_collection(&api, &paths).unwrap();
+        let _: Empty = api
+            .call(
+                "set_config_bool",
+                &SetConfigBoolRequest {
+                    key: BoolKey::RenderLatex as i32,
+                    value: render_latex,
+                    undoable: false,
+                },
+            )
+            .unwrap();
+        Fixture {
+            media: paths.media(),
+            _dir: dir,
+            api,
+        }
+    }
+
+    fn stock_config(api: &Api) -> LatexConfig {
+        let names: NotetypeNames = api.call("get_notetype_names", &Empty {}).unwrap();
+        latex_config(api, names.entries[0].id).unwrap()
+    }
+
+    fn media_files(media: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(media)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The real-render tests need a TeX install; skip them without one.
+    fn have_tools(tools: &[&str]) -> bool {
+        let found = tools
+            .iter()
+            .all(|tool| std::env::split_paths(&tex_path()).any(|dir| dir.join(tool).is_file()));
+        if !found {
+            eprintln!("skipping: {tools:?} not found");
+        }
+        found
+    }
+
+    #[test]
+    fn commands_match_latex_py() {
+        assert_eq!(
+            latex_commands(false),
+            [
+                &["latex", "-interaction=nonstopmode", "tmp.tex"][..],
+                &[
+                    "dvipng",
+                    "-bg",
+                    "Transparent",
+                    "-D",
+                    "200",
+                    "-T",
+                    "tight",
+                    "tmp.dvi",
+                    "-o",
+                    "tmp.png"
+                ][..],
+            ]
+        );
+        assert_eq!(
+            latex_commands(true),
+            [
+                &["latex", "-interaction=nonstopmode", "tmp.tex"][..],
+                &[
+                    "dvisvgm",
+                    "--no-fonts",
+                    "--exact",
+                    "-Z",
+                    "2",
+                    "tmp.dvi",
+                    "-o",
+                    "tmp.svg"
+                ][..],
+            ]
+        );
+    }
+
+    #[test]
+    fn tex_file_is_header_body_footer() {
+        assert_eq!(
+            tex_source("\\begin{document}", "$x$", "\\end{document}"),
+            "\\begin{document}\n$x$\n\\end{document}"
+        );
+    }
+
+    #[test]
+    fn path_includes_mac_tex_locations() {
+        let path = tex_path();
+        let dirs: Vec<_> = std::env::split_paths(&path).collect();
+        assert!(dirs.contains(&PathBuf::from("/Library/TeX/texbin")));
+        assert!(dirs.contains(&PathBuf::from("/usr/texbin")));
+    }
+
+    #[test]
+    fn log_is_escaped_like_python_html_escape() {
+        assert_eq!(
+            html_escape(r#"<a href="x">'&"#),
+            "&lt;a href=&quot;x&quot;&gt;&#x27;&amp;"
+        );
+    }
+
+    #[test]
+    fn missing_log_suggests_installing_latex() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("latex_log.txt");
+        std::fs::write(&log, "").unwrap();
+        let tex = dir.path().join("tmp.tex");
+        let msg = err_msg(&I18n::template_only(), "latex", &tex, &log);
+        assert_eq!(
+            msg,
+            format!(
+                "Error executing latex.<br>Generated file: {}<br>\
+                 Have you installed latex and dvipng/dvisvgm?",
+                tex.display()
+            )
+        );
+    }
+
+    #[test]
+    fn notetype_config_comes_from_the_backend() {
+        let fx = collection(true);
+        let cfg = stock_config(&fx.api);
+        assert!(cfg.latex_pre.contains("\\documentclass"), "{cfg:?}");
+        assert!(cfg.latex_post.contains("\\end{document}"), "{cfg:?}");
+        assert!(!cfg.svg);
+    }
+
+    #[test]
+    fn disabled_generation_reports_and_stops() {
+        let fx = collection(false);
+        let cfg = stock_config(&fx.api);
+        let (html, errors) = render_latex(&fx.api, &fx.media, "[$]x[/$] [$]y[/$]", &cfg);
+        assert!(html.contains("src=\"latex-"), "{html}");
+        assert_eq!(
+            errors,
+            ["LaTeX image generation is disabled in the preferences."]
+        );
+        assert!(media_files(&fx.media).is_empty());
+    }
+
+    #[test]
+    fn existing_image_is_not_regenerated() {
+        let fx = collection(false);
+        let cfg = stock_config(&fx.api);
+        let (html, _) = render_latex(&fx.api, &fx.media, "[$]x^2[/$]", &cfg);
+        let name = html
+            .split("src=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        std::fs::write(fx.media.join(name), b"existing").unwrap();
+        // generation is disabled, so any attempt would report an error
+        let (again, errors) = render_latex(&fx.api, &fx.media, "[$]x^2[/$]", &cfg);
+        assert_eq!(again, html);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(std::fs::read(fx.media.join(name)).unwrap(), b"existing");
+    }
+
+    fn render_x_squared(svg: bool) -> (Fixture, String, Vec<String>) {
+        let fx = collection(true);
+        let cfg = LatexConfig {
+            svg,
+            ..stock_config(&fx.api)
+        };
+        let (html, errors) = render_latex(&fx.api, &fx.media, "[$]x^2[/$]", &cfg);
+        (fx, html, errors)
+    }
+
+    #[test]
+    fn renders_png_into_media_folder() {
+        if !have_tools(&["latex", "dvipng"]) {
+            return;
+        }
+        let (fx, html, errors) = render_x_squared(false);
+        assert!(errors.is_empty(), "{errors:?}");
+        let files = media_files(&fx.media);
+        assert_eq!(files.len(), 1, "{files:?}");
+        let name = &files[0];
+        assert!(name.starts_with("latex-") && name.ends_with(".png"));
+        assert!(html.contains(&format!("src=\"{name}\"")), "{html}");
+        let data = std::fs::read(fx.media.join(name)).unwrap();
+        assert!(data.starts_with(b"\x89PNG"));
+    }
+
+    #[test]
+    fn renders_svg_into_media_folder() {
+        if !have_tools(&["latex", "dvisvgm"]) {
+            return;
+        }
+        let (fx, html, errors) = render_x_squared(true);
+        assert!(errors.is_empty(), "{errors:?}");
+        let files = media_files(&fx.media);
+        assert_eq!(files.len(), 1, "{files:?}");
+        let name = &files[0];
+        assert!(name.starts_with("latex-") && name.ends_with(".svg"));
+        assert!(html.contains(&format!("src=\"{name}\"")), "{html}");
+        let data = std::fs::read_to_string(fx.media.join(name)).unwrap();
+        assert!(data.contains("<svg"));
+    }
+
+    #[test]
+    fn broken_latex_reports_the_log() {
+        if !have_tools(&["latex"]) {
+            return;
+        }
+        let fx = collection(true);
+        let cfg = stock_config(&fx.api);
+        let (_, errors) = render_latex(&fx.api, &fx.media, "[$]\\nosuchmacro[/$]", &cfg);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        // the backend's translations wrap arguments in Unicode isolation marks
+        let err = errors[0].replace(['\u{2068}', '\u{2069}'], "");
+        assert!(
+            err.starts_with("Error executing latex.<br>Generated file: "),
+            "{err}"
+        );
+        assert!(err.contains("tmp.tex<br><small><pre>"), "{err}");
+        assert!(err.contains("Undefined control sequence"), "{err}");
+        assert!(media_files(&fx.media).is_empty());
+    }
+}

@@ -21,12 +21,16 @@ use serde_json::Value;
 
 use crate::app::Ui;
 
+/// How long a test may run; `ANKI_SHELL_TEST_TIMEOUT` (seconds) overrides it,
+/// for runs with the screen locked, when WebKit throttles the hidden pages'
+/// timers.
 const TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone)]
 pub struct TestRun {
     pub script: PathBuf,
-    /// "editor" (needs `note`) or "home".
+    /// "editor" (needs `note`), "main" (the deck browser, then every page
+    /// the main window loads) or "home".
     pub page: String,
     /// 0 creates a Cloze note with the text "alpha beta gamma".
     pub note: Option<i64>,
@@ -71,6 +75,162 @@ fn create_test_note(shell: &crate::Shell) -> Result<i64> {
     Ok(added.note_id)
 }
 
+/// For the "main" page: the script runs again on each page the main window
+/// loads, with `testStage` counting them; a result with `next: true` waits
+/// for the next page instead of ending the test.
+static MAIN_SCRIPT: std::sync::Mutex<Option<(String, u32, i64)>> = std::sync::Mutex::new(None);
+
+/// The main window loaded a page (its `domDone`).
+pub fn main_page_loaded(ui: &Ui) {
+    let mut guard = MAIN_SCRIPT.lock().unwrap();
+    let Some((script, stage, deck)) = guard.as_mut() else {
+        return;
+    };
+    let js = wrap(script, None).replace(
+        "const testNote = 0;",
+        &format!(
+            "const testNote = 0;\n    const testStage = {stage};\n    const testDeck = {deck};"
+        ),
+    );
+    *stage += 1;
+    ui.eval(crate::app::MAIN, js);
+}
+
+/// Notes for the "main" page in a deck of their own, which becomes the
+/// current deck: Basic, Basic (type in the answer), and a Basic note with
+/// a sound and a TTS tag on the front.
+fn create_test_deck(shell: &crate::Shell) -> Result<i64> {
+    use anki_proto::notes::AddNoteRequest;
+    use anki_proto::notes::AddNoteResponse;
+    use anki_proto::notes::Note;
+    let deck: anki_proto::decks::Deck =
+        shell.api.call("new_deck", &anki_proto::generic::Empty {})?;
+    // earlier runs' decks
+    let names: anki_proto::decks::DeckNames = shell.api.call(
+        "get_deck_names",
+        &anki_proto::decks::GetDeckNamesRequest {
+            skip_empty_default: false,
+            include_filtered: true,
+        },
+    )?;
+    let old: Vec<i64> = names
+        .entries
+        .iter()
+        .filter(|e| e.name.starts_with("shell test "))
+        .map(|e| e.id)
+        .collect();
+    if !old.is_empty() {
+        let _: anki_proto::collection::OpChangesWithCount = shell
+            .api
+            .call("remove_decks", &anki_proto::decks::DeckIds { dids: old })?;
+    }
+    // its own preset, so the profile's daily limits don't hide the cards
+    let conf: anki_proto::generic::Json = shell
+        .api
+        .call("new_deck_config_legacy", &anki_proto::generic::Empty {})?;
+    let mut conf: Value = serde_json::from_slice(&conf.json)?;
+    conf["name"] = json!("shell test");
+    conf["new"]["perDay"] = json!(9999);
+    conf["rev"]["perDay"] = json!(9999);
+    let conf_id: anki_proto::deck_config::DeckConfigId = shell.api.call(
+        "add_or_update_deck_config_legacy",
+        &anki_proto::generic::Json {
+            json: serde_json::to_vec(&conf)?,
+        },
+    )?;
+    let mut deck = anki_proto::decks::Deck {
+        name: format!("shell test {}", chrono::Utc::now().timestamp_millis()),
+        ..deck
+    };
+    if let Some(anki_proto::decks::deck::Kind::Normal(normal)) = deck.kind.as_mut() {
+        normal.config_id = conf_id.dcid;
+    }
+    let added: anki_proto::collection::OpChangesWithId = shell.api.call("add_deck", &deck)?;
+    let did = added.id;
+    let notes: &[(&str, i32, &[&str])] = &[
+        ("Basic", 0, &["shell front one", "shell back one"]),
+        ("Basic (type in the answer)", 3, &["shell capital", "Paris"]),
+        ("Basic", 0, &["shell latex [$]x^2[/$]", "shell back four"]),
+        (
+            "Basic",
+            0,
+            &[
+                "shell sound [sound:shell-test.wav][anki:tts lang=en_US]hello[/anki:tts]",
+                "shell back three",
+            ],
+        ),
+    ];
+    for (notetype, stock, fields) in notes {
+        let ntid = stock_notetype(shell, notetype, *stock)?;
+        let mut note: Note = shell.api.call("new_note", &ntid)?;
+        for (i, f) in fields.iter().enumerate() {
+            note.fields[i] = f.to_string();
+        }
+        let _: AddNoteResponse = shell.api.call(
+            "add_note",
+            &AddNoteRequest {
+                note: Some(note),
+                deck_id: did,
+            },
+        )?;
+    }
+    let _: anki_proto::generic::String = shell.api.call(
+        "add_media_file",
+        &anki_proto::media::AddMediaFileRequest {
+            desired_name: "shell-test.wav".into(),
+            data: silent_wav(),
+        },
+    )?;
+    let _: anki_proto::collection::OpChanges = shell
+        .api
+        .call("set_current_deck", &anki_proto::decks::DeckId { did })?;
+    Ok(did)
+}
+
+/// The notetype called `name`, or a new stock one of `kind`
+/// (`StockNotetype.Kind`) if the collection has none.
+fn stock_notetype(
+    shell: &crate::Shell,
+    name: &str,
+    kind: i32,
+) -> Result<anki_proto::notetypes::NotetypeId> {
+    if let Ok(id) = shell.api.call(
+        "get_notetype_id_by_name",
+        &anki_proto::generic::String { val: name.into() },
+    ) {
+        return Ok(id);
+    }
+    let json: anki_proto::generic::Json = shell.api.call(
+        "get_stock_notetype_legacy",
+        &anki_proto::notetypes::StockNotetype { kind },
+    )?;
+    let added: anki_proto::collection::OpChangesWithId = shell.api.call(
+        "add_notetype_legacy",
+        &anki_proto::generic::Json { json: json.json },
+    )?;
+    Ok(anki_proto::notetypes::NotetypeId { ntid: added.id })
+}
+
+/// 0.3 s of 8 kHz 8-bit mono silence.
+fn silent_wav() -> Vec<u8> {
+    let samples = 2400u32;
+    let mut out = Vec::with_capacity(44 + samples as usize);
+    out.extend(b"RIFF");
+    out.extend((36 + samples).to_le_bytes());
+    out.extend(b"WAVEfmt ");
+    out.extend(16u32.to_le_bytes());
+    out.extend(1u16.to_le_bytes()); // PCM
+    out.extend(1u16.to_le_bytes()); // mono
+    out.extend(8000u32.to_le_bytes());
+    out.extend(8000u32.to_le_bytes()); // bytes per second
+    out.extend(1u16.to_le_bytes()); // block align
+    out.extend(8u16.to_le_bytes()); // bits per sample
+    out.extend(b"data");
+    out.extend(samples.to_le_bytes());
+    out.extend(std::iter::repeat(128u8).take(samples as usize));
+    out
+}
+
 fn wrap(script: &str, note: Option<i64>) -> String {
     format!(
         r#"(async () => {{
@@ -97,7 +257,9 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
     let u = ui.clone();
     ui.shell.bridge.register("test", move |shell, _, args| {
         let msg: Value = serde_json::from_str(args).unwrap_or(Value::Null);
-        if msg["done"] == json!(true) {
+        if msg["done"] == json!(true) && msg["result"]["next"] == json!(true) {
+            println!("TEST stage {}", msg["result"]);
+        } else if msg["done"] == json!(true) {
             let result = &msg["result"];
             println!("TEST {result}");
             let unknown = shell.bridge.unknown_commands();
@@ -111,6 +273,37 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
         }
         Value::Null
     });
+    // open dialogs, and answering the oldest (`{"button": 0, "fields": {}}`)
+    let u = ui.clone();
+    ui.shell.bridge.register("testDialogs", move |_, _, _| {
+        json!(crate::main_window::open_dialogs(&u))
+    });
+    let u = ui.clone();
+    ui.shell.bridge.register("testDialog", move |_, _, answer| {
+        match crate::main_window::open_dialogs(&u).first() {
+            Some((label, _)) => {
+                crate::main_window::dialog_answered(&u, label, answer);
+                json!(true)
+            }
+            None => json!(false),
+        }
+    });
+    // the open windows' labels
+    let u = ui.clone();
+    ui.shell.bridge.register("testWindows", move |_, _, _| {
+        use tauri::Manager;
+        let mut labels: Vec<String> = u.app.webview_windows().keys().cloned().collect();
+        labels.sort();
+        json!(labels)
+    });
+    // read-only SQL, for checking what a test changed
+    ui.shell.bridge.register("testQuery", |shell, _, sql| {
+        shell
+            .api
+            .query(sql, &[])
+            .map(|rows| json!(rows))
+            .unwrap_or_else(|e| json!({ "error": e.message }))
+    });
     // the fields as saved in the collection, for checking edits
     ui.shell.bridge.register("testNote", |shell, _, nid| {
         let note: Result<anki_proto::notes::Note, _> = shell.api.call(
@@ -123,7 +316,11 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
     });
     let u = ui.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(TIMEOUT);
+        let timeout = std::env::var("ANKI_SHELL_TEST_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map_or(TIMEOUT, Duration::from_secs);
+        std::thread::sleep(timeout);
         println!("TEST timeout");
         u.app.exit(2);
     });
@@ -151,9 +348,22 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
             });
             ui.open_editor(nid)?;
         }
+        "main" => {
+            anyhow::ensure!(
+                ui.shell.open_profile_paths().is_some(),
+                "no profile open: {}",
+                ui.status.lock().unwrap()
+            );
+            let did = create_test_deck(&ui.shell)?;
+            println!("TEST deck {did}");
+            *MAIN_SCRIPT.lock().unwrap() = Some((script, 0, did));
+            ui.show_main()?;
+        }
         _ => {
+            // runs on the home page, and again on each page after it (a
+            // full sync download shows the deck browser)
+            *MAIN_SCRIPT.lock().unwrap() = Some((script, 0, 0));
             ui.show_home()?;
-            ui.eval(crate::app::MAIN, wrap(&script, None));
         }
     }
     Ok(())

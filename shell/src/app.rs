@@ -14,10 +14,6 @@ use anyhow::Context;
 use anyhow::Result;
 use serde_json::json;
 use serde_json::Value;
-use tauri::menu::MenuBuilder;
-use tauri::menu::MenuItemBuilder;
-use tauri::menu::PredefinedMenuItem;
-use tauri::menu::SubmenuBuilder;
 use tauri::AppHandle;
 use tauri::Manager;
 use tauri::RunEvent;
@@ -55,6 +51,8 @@ pub struct Args {
     /// Run without taking focus: no Dock icon, never activated, windows
     /// open unfocused. Implied by --test and --bench.
     pub background: bool,
+    /// Sync on open and close even in the background (sync tests).
+    pub auto_sync: bool,
 }
 
 impl Args {
@@ -73,6 +71,7 @@ impl Args {
             bench: false,
             geometry: None,
             background: false,
+            auto_sync: false,
         };
         let mut test_script = None;
         let mut test_page = String::from("editor");
@@ -95,6 +94,7 @@ impl Args {
                 "--test-note" => test_note = Some(value()?.parse()?),
                 "--bench" => args.bench = true,
                 "--background" => args.background = true,
+                "--auto-sync" => args.auto_sync = true,
                 "--geometry" => {
                     let v: Vec<f64> = value()?
                         .split(',')
@@ -195,11 +195,18 @@ pub struct Ui {
     pub settings: Mutex<Settings>,
     pub geometry: Option<(f64, f64, f64, f64)>,
     pub background: bool,
+    pub auto_sync_in_background: bool,
+    /// A --test run: test scripts may send synthetic key presses.
+    pub test_mode: bool,
     pub status: Mutex<String>,
     /// Set once the editor has been saved for quitting.
     pub exiting: std::sync::atomic::AtomicBool,
     pub exit_code: std::sync::atomic::AtomicI32,
     seq: std::sync::atomic::AtomicU64,
+    pub main: crate::main_window::MainWindow,
+    pub menus: Mutex<Option<crate::menus::Menus>>,
+    /// Set once the close sync has run (or wasn't wanted).
+    pub close_synced: std::sync::atomic::AtomicBool,
 }
 
 impl Ui {
@@ -212,17 +219,26 @@ impl Ui {
         kind: WebviewKind,
         content: Content,
     ) -> Result<()> {
+        // The main window's own pages get a fresh capability in their URL;
+        // the document being replaced (the reviewer, with card JS) runs on
+        // for a moment and must not get their API (see `protocol.rs`).
+        let cap = (kind == WebviewKind::Main && matches!(content, Content::Route(_)))
+            .then(|| data_encoding::BASE64URL_NOPAD.encode(&rand::random::<[u8; 16]>()));
         let url = match &content {
             Content::Html(_) => pages::legacy_page_url(label),
-            Content::Route(route) => format!("{}{route}", pages::ORIGIN),
+            Content::Route(route) => match &cap {
+                Some(cap) => format!("{}{route}?{}={cap}", pages::ORIGIN, pages::CAP_PARAM),
+                None => format!("{}{route}", pages::ORIGIN),
+            },
         };
-        self.shell.pages.set(
+        self.shell.pages.set_with_cap(
             label,
             kind,
             match content {
                 Content::Html(html) => Some(html),
                 Content::Route(_) => None,
             },
+            cap,
         );
         self.evals.reset(label);
         if let Some(window) = self.app.get_webview_window(label) {
@@ -234,10 +250,18 @@ impl Ui {
             WebviewWindowBuilder::new(&self.app, label, WebviewUrl::CustomProtocol(url.parse()?))
                 .title(title)
                 .inner_size(w, h)
-                .initialization_script(crate::bridge::init_script())
+                .initialization_script_for_all_frames(crate::bridge::init_script())
                 // runs for subframes too, so it can't open links itself; the
                 // bridge script sends link clicks as openUrl
                 .on_navigation(crate::protocol::allowed_navigation);
+        if label == MAIN {
+            builder = builder
+                .initialization_script_for_all_frames(crate::shortcuts::key_script(
+                    &self.main.key_token,
+                    self.test_mode,
+                ))
+                .initialization_script(crate::main_window::TOOLTIP_SCRIPT);
+        }
         if self.geometry.is_some() {
             builder = builder.position(x, y);
         }
@@ -254,6 +278,49 @@ impl Ui {
 
     fn settings(&self) -> std::sync::MutexGuard<'_, Settings> {
         self.settings.lock().unwrap()
+    }
+
+    /// A small window for [crate::main_window::ask], in front of the main
+    /// window.
+    pub fn open_dialog_window(
+        &self,
+        label: &str,
+        title: &str,
+        html: String,
+        height: f64,
+    ) -> Result<()> {
+        self.shell.pages.set(label, WebviewKind::Dialog, Some(html));
+        self.evals.reset(label);
+        let url = pages::legacy_page_url(label);
+        let mut builder =
+            WebviewWindowBuilder::new(&self.app, label, WebviewUrl::CustomProtocol(url.parse()?))
+                .title(title)
+                .inner_size(460.0, height.clamp(160.0, 600.0))
+                .resizable(true)
+                .minimizable(false)
+                .initialization_script_for_all_frames(crate::bridge::init_script())
+                .on_navigation(crate::protocol::allowed_navigation);
+        if let Some(main) = self.app.get_webview_window(MAIN) {
+            if let (Ok(pos), Ok(size)) = (main.outer_position(), main.outer_size()) {
+                let scale = main.scale_factor().unwrap_or(1.0);
+                let x = pos.x as f64 / scale + (size.width as f64 / scale - 460.0) / 2.0;
+                let y = pos.y as f64 / scale + 120.0;
+                builder = builder.position(x, y);
+            }
+        }
+        if self.background {
+            builder = builder.focused(false);
+        }
+        let window = builder.build()?;
+        #[cfg(target_os = "macos")]
+        if self.background {
+            send_to_back(&window)?;
+        }
+        Ok(())
+    }
+
+    pub fn save_settings_now(&self) {
+        self.save_settings()
     }
 
     fn save_settings(&self) {
@@ -298,7 +365,18 @@ impl Ui {
         *self.status.lock().unwrap() = status;
     }
 
+    /// The deck browser, or the home page explaining why no profile is
+    /// open.
+    pub fn show_main(self: &Arc<Self>) -> Result<()> {
+        if self.shell.open_profile_paths().is_some() {
+            crate::main_window::show_deck_browser(self);
+            return Ok(());
+        }
+        self.show_home()
+    }
+
     pub fn show_home(&self) -> Result<()> {
+        *self.main.state.lock().unwrap() = crate::main_window::MainState::Home;
         let html = home_html(self);
         self.open_window(MAIN, "Anki", WebviewKind::Main, Content::Html(html))
     }
@@ -365,6 +443,9 @@ impl Ui {
 /// rendering. WebKit stops animation frames in windows it thinks are covered,
 /// so occlusion detection is turned off with WebKit SPI
 /// (`_setWindowOcclusionDetectionEnabled:`, macOS 10.13+), if present.
+/// Hidden pages (all of them while the screen is locked) also get their
+/// timers throttled more the longer they stay hidden, which stalls test
+/// scripts, so that's turned off too (WKPreferences SPI).
 #[cfg(target_os = "macos")]
 fn send_to_back(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     let w = window.clone();
@@ -383,6 +464,23 @@ fn send_to_back(window: &tauri::WebviewWindow) -> tauri::Result<()> {
                 objc::send_bool(webview.inner(), sel, false);
             } else {
                 tracing::warn!("can't disable occlusion detection; covered pages may stall");
+            }
+            let config = objc::send_id(webview.inner(), "configuration");
+            let prefs = if config.is_null() {
+                config
+            } else {
+                objc::send_id(config, "preferences")
+            };
+            for sel in [
+                "_setHiddenPageDOMTimerThrottlingEnabled:",
+                "_setHiddenPageDOMTimerThrottlingAutoIncreases:",
+                "_setPageVisibilityBasedProcessSuppressionEnabled:",
+            ] {
+                if !prefs.is_null() && objc::responds_to(prefs, sel) {
+                    objc::send_bool(prefs, sel, false);
+                } else {
+                    tracing::warn!(sel, "WebKit preference missing; hidden pages may stall");
+                }
             }
         }
     })
@@ -410,6 +508,12 @@ mod objc {
         let f: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool =
             std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
         f(obj, sel("respondsToSelector:"), sel(name))
+    }
+
+    pub unsafe fn send_id(obj: *mut c_void, name: &str) -> *mut c_void {
+        let f: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+            std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+        f(obj, sel(name))
     }
 
     pub unsafe fn send(obj: *mut c_void, name: &str, arg: *mut c_void) {
@@ -485,24 +589,35 @@ fn register_bridge(ui: &Arc<Ui>) {
     let u = ui.clone();
     bridge.register("domDone", move |_, label, _| {
         u.evals.dom_done(&u.app, label);
+        crate::main_window::dom_done(&u, label);
         Value::Null
     });
     let u = ui.clone();
-    bridge.register("reimportProfiles", move |_, _, _| {
+    // the home page's buttons; card JS in the main window mustn't reach them
+    bridge.register("reimportProfiles", move |_, label, _| {
+        if !on_home_page(&u, label) {
+            return Value::Null;
+        }
         if let Err(err) = u.reimport() {
             *u.status.lock().unwrap() = format!("Re-import failed: {err:#}");
         }
-        let _ = u.show_home();
+        let _ = u.show_main();
         Value::Null
     });
     let u = ui.clone();
-    bridge.register("retryOpen", move |_, _, _| {
+    bridge.register("retryOpen", move |_, label, _| {
+        if !on_home_page(&u, label) {
+            return Value::Null;
+        }
         u.open_profile(None);
-        let _ = u.show_home();
+        let _ = u.show_main();
         Value::Null
     });
     let u = ui.clone();
-    bridge.register("openEditor", move |_, _, nid| {
+    bridge.register("openEditor", move |_, label, nid| {
+        if !on_home_page(&u, label) {
+            return json!(false);
+        }
         match nid
             .trim()
             .parse()
@@ -517,7 +632,10 @@ fn register_bridge(ui: &Arc<Ui>) {
         }
     });
     let u = ui.clone();
-    bridge.register("openDeckOptions", move |shell, _, _| {
+    bridge.register("openDeckOptions", move |shell, label, _| {
+        if !on_home_page(&u, label) {
+            return Value::Null;
+        }
         let did = current_deck_id(shell).unwrap_or(1);
         let _ = u.open_window(
             "deck-options",
@@ -605,41 +723,17 @@ fn register_bridge(ui: &Arc<Ui>) {
         });
 }
 
+/// The main window shows the home page (no reviewer, so no card JS).
+fn on_home_page(ui: &Ui, label: &str) -> bool {
+    label == MAIN && *ui.main.state.lock().unwrap() == crate::main_window::MainState::Home
+}
+
 fn current_deck_id(shell: &Shell) -> Option<i64> {
     let deck: anki_proto::decks::Deck = shell
         .api
         .call("get_current_deck", &anki_proto::generic::Empty {})
         .ok()?;
     Some(deck.id)
-}
-
-fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    let app_menu = SubmenuBuilder::new(app, "Anki")
-        .item(&PredefinedMenuItem::about(app, None, None)?)
-        .separator()
-        // not PredefinedMenuItem::quit: its terminate: skips ExitRequested,
-        // so the editor's pending edits couldn't be saved
-        .item(
-            &MenuItemBuilder::with_id("quit", "Quit Anki")
-                .accelerator("CmdOrCtrl+Q")
-                .build(app)?,
-        )
-        .build()?;
-    let edit = SubmenuBuilder::new(app, "Edit")
-        .undo()
-        .redo()
-        .separator()
-        .cut()
-        .copy()
-        .paste()
-        .select_all()
-        .build()?;
-    let profiles = SubmenuBuilder::new(app, "Profiles")
-        .item(&MenuItemBuilder::with_id("reimport", "Re-import from Anki").build(app)?)
-        .build()?;
-    MenuBuilder::new(app)
-        .items(&[&app_menu, &edit, &profiles])
-        .build()
 }
 
 /// Test and bench runs create and edit notes, so they need a copy of the
@@ -699,26 +793,26 @@ pub fn run(args: Args) -> Result<()> {
         settings: Mutex::new(settings),
         geometry: args.geometry,
         background: args.background,
+        auto_sync_in_background: args.auto_sync,
+        test_mode: args.test.is_some(),
         exiting: Default::default(),
         exit_code: Default::default(),
         seq: Default::default(),
+        main: Default::default(),
+        menus: Mutex::new(None),
+        close_synced: Default::default(),
         status: Mutex::new(String::new()),
     });
     register_bridge(&ui);
-    app.set_menu(build_menu(&app)?)?;
+    crate::main_window::register(&ui);
+    let (menu, menus) = crate::menus::build(&ui, &app)?;
+    app.set_menu(menu)?;
+    *ui.menus.lock().unwrap() = Some(menus);
     let u = ui.clone();
-    app.on_menu_event(move |app, event| {
-        if event.id() == "quit" {
-            app.exit(0);
-        } else if event.id() == "reimport" {
-            if let Err(err) = u.reimport() {
-                *u.status.lock().unwrap() = format!("Re-import failed: {err:#}");
-            }
-            let _ = u.show_home();
-        }
-    });
+    app.on_menu_event(move |_, event| crate::menus::on_event(&u, event.id().as_ref()));
 
     ui.open_profile(args.profile.as_deref());
+    crate::menus::refresh(&ui);
     if args.ankiconnect {
         let (config, port) = crate::ankiconnect::Config::for_anki_base(&ui.settings().anki_base());
         let port = args.ankiconnect_port.unwrap_or(port);
@@ -732,10 +826,20 @@ pub fn run(args: Args) -> Result<()> {
 
     if let Some(test) = &args.test {
         testchan::start(&ui, test.clone())?;
+        if crate::main_window::wants_auto_sync(&ui) {
+            crate::main_window::sync_now(&ui, None);
+        }
     } else if args.bench {
         crate::bench::start(&ui)?;
     } else {
-        ui.show_home()?;
+        ui.show_main()?;
+        // sync on open (`maybe_auto_sync_on_open_close`), else just the
+        // toolbar's sync indicator
+        if crate::main_window::wants_auto_sync(&ui) {
+            crate::main_window::sync_now(&ui, None);
+        } else {
+            crate::main_window::check_sync_status(&ui);
+        }
     }
 
     let exit_shell = shell.clone();
@@ -770,6 +874,40 @@ pub fn run(args: Args) -> Result<()> {
                 .store(code.unwrap_or(0), std::sync::atomic::Ordering::SeqCst);
             exit_ui.after_editor_saved("editorExit");
         }
+        // not in the middle of a sync (a full sync, or its prompt): quit
+        // once it's over
+        RunEvent::ExitRequested { api, .. } if crate::main_window::is_syncing(&exit_ui) => {
+            api.prevent_exit();
+            exit_ui
+                .main
+                .exit_after_sync
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        // then sync on close, if enabled
+        RunEvent::ExitRequested { api, code, .. }
+            if !exit_ui
+                .close_synced
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+                && exit_ui.shell.open_profile_paths().is_some()
+                && crate::main_window::wants_auto_sync(&exit_ui) =>
+        {
+            api.prevent_exit();
+            let code = code.unwrap_or(0);
+            crate::main_window::sync_now(
+                &exit_ui,
+                Some(Box::new(move |ui| {
+                    // may be called right away, on the main thread
+                    let ui = ui.clone();
+                    std::thread::spawn(move || {
+                        crate::main_window::wait_for_media_sync(
+                            &ui,
+                            std::time::Duration::from_secs(60),
+                        );
+                        ui.app.exit(code);
+                    });
+                })),
+            );
+        }
         RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,
@@ -777,6 +915,10 @@ pub fn run(args: Args) -> Result<()> {
         } => {
             if label == EDITOR {
                 exit_ui.editors.clear(EDITOR);
+                crate::main_window::editor_closed(&exit_ui);
+            }
+            if label.starts_with("dialog-") {
+                crate::main_window::dialog_closed(&exit_ui, &label);
             }
             exit_shell.pages.remove(&label);
             if label == MAIN || app.webview_windows().is_empty() {

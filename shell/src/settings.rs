@@ -8,6 +8,7 @@
 //! sync redirect), so the import can be re-run at any time; it replaces the
 //! imported fields and keeps the shell's own ones.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -33,6 +34,13 @@ pub struct Settings {
     pub profiles: Vec<Profile>,
     /// Unix seconds of the last import.
     pub imported_at: Option<i64>,
+    /// Answer keys 1-4 from the old Anki and its hjkl add-on (imported).
+    pub answer_keys: Vec<Vec<String>>,
+    /// The shell's own shortcut overrides: action -> combos (see
+    /// `crate::shortcuts::DEFAULTS`).
+    pub shortcuts: BTreeMap<String, Vec<String>>,
+    /// Space/Enter rate the card on the answer side (imported; default on).
+    pub spacebar_rates_card: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -61,6 +69,9 @@ pub struct SyncSettings {
 struct Imported {
     profiles: Vec<ImportedProfile>,
     last_loaded: Option<String>,
+    #[serde(default)]
+    answer_keys: BTreeMap<String, String>,
+    spacebar_rates_card: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,6 +172,9 @@ impl Settings {
         {
             self.last_profile = imported.last_loaded;
         }
+        self.answer_keys =
+            crate::shortcuts::import_answer_keys(&self.anki_base(), &imported.answer_keys);
+        self.spacebar_rates_card = imported.spacebar_rates_card;
         self.imported_at = Some(chrono::Utc::now().timestamp());
         Ok(())
     }
@@ -190,7 +204,8 @@ mod test {
         "syncUser": "me@example.com", "hostNum": 10,
         "currentSyncUrl": "https://sync10.ankiweb.net/", "customSyncUrl": "",
         "syncMedia": true, "autoSync": false}, {"name": "Other"}],
-        "lastLoaded": "User 1"}"#;
+        "lastLoaded": "User 1", "answerKeys": {"1": "1", "2": "2", "3": "3", "4": "x"},
+        "spacebarRatesCard": false}"#;
 
     #[test]
     fn import_replaces_profiles_and_keeps_own_fields() {
@@ -219,6 +234,8 @@ mod test {
         );
         assert_eq!(settings.startup_profile(), Some("User 1"));
         assert!(settings.imported_at.is_some());
+        assert_eq!(settings.answer_keys[3], vec!["x"]);
+        assert_eq!(settings.spacebar_rates_card, Some(false));
     }
 
     #[test]
