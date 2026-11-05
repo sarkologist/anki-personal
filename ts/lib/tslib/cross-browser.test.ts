@@ -391,6 +391,36 @@ describe("selection while focus moves (WebKit)", () => {
         expect(saveSelection(editable)).toBeNull();
     });
 
+    test("forgets it once selectionchange reports the selection empty", () => {
+        const webkit = emulateWebKit();
+        const { editable, plain } = fixture;
+        const selection = getSelection(editable)!;
+        webkit.collapse(plain, 3);
+        expect(selection.anchorNode).toBe(plain);
+        webkit.removeAllRanges();
+        // still there for the blur handlers that run before the event
+        expect(selection.rangeCount).toBe(1);
+
+        document.dispatchEvent(new Event("selectionchange"));
+
+        expect(selection.rangeCount).toBe(0);
+        expect(saveSelection(editable)).toBeNull();
+    });
+
+    test("drops a remembered range the text no longer fits", () => {
+        const webkit = emulateWebKit();
+        const { editable, plain } = fixture;
+        const selection = getSelection(editable)!;
+        webkit.collapse(plain, 5);
+        expect(selection.rangeCount).toBe(1);
+        webkit.removeAllRanges();
+
+        plain.data = "x";
+
+        expect(selection.rangeCount).toBe(0);
+        expect(() => getRange(selection)).not.toThrow();
+    });
+
     test("forgets it when cleared through the adapter", () => {
         const webkit = emulateWebKit();
         const { editable, plain } = fixture;

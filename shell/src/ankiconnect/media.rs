@@ -124,6 +124,11 @@ pub(crate) fn media_dir_path(ctx: &Ctx) -> Result<Value> {
 }
 
 pub(crate) fn delete_media_file(ctx: &Ctx, filename: &str) -> Result<()> {
+    // rslib joins the name onto the media folder unchecked (as does the
+    // add-on), so "../collection.anki2" would trash the collection
+    if filename.is_empty() || filename == ".." || filename.contains(['/', '\\', '\0']) {
+        return Err(format!("invalid media filename: {filename}").into());
+    }
     ctx.run(
         "trash_media_files",
         &anki_proto::media::TrashMediaFilesRequest {

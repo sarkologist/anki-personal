@@ -25,6 +25,10 @@ use crate::pages::ORIGIN;
 use crate::Shell;
 
 pub const BRIDGE_PATH: &str = "_shell/bridge";
+/// Sent by the bridge script. A custom header can't be sent by a no-cors
+/// request, so content from other origins (an iframe in a field, say) can't
+/// reach the bridge.
+pub const BRIDGE_HEADER: &str = "X-Anki-Bridge";
 
 /// Backend methods any page with API access may call
 /// (`mediasrv.exposed_backend_list`).
@@ -137,6 +141,16 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
     let post = req.method() == "POST";
     tracing::debug!(label, method = %req.method(), path, "request");
     if post && path == BRIDGE_PATH {
+        let origin = req.headers().get("Origin").and_then(|v| v.to_str().ok());
+        if !req.headers().contains_key(BRIDGE_HEADER)
+            || origin.is_some_and(|o| o != ORIGIN.trim_end_matches('/'))
+        {
+            tracing::warn!(label, ?origin, "rejected bridge call");
+            return text(
+                StatusCode::FORBIDDEN,
+                "bridge calls come from Anki pages only",
+            );
+        }
         let cmd = String::from_utf8_lossy(req.body());
         let out = shell.bridge.dispatch(shell, label, &cmd);
         return respond(StatusCode::OK, "application/json", out.to_string());
@@ -168,6 +182,12 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
         Some(media) => local_file(&media, &path),
         None => text(StatusCode::NOT_FOUND, "collection not open"),
     }
+}
+
+/// Webviews only show Anki's own pages; other links open in the browser
+/// (`AnkiWebPage.acceptNavigationRequest`).
+pub fn allowed_navigation(url: &tauri::Url) -> bool {
+    url.scheme() == "anki" && url.host_str() == Some("localhost")
 }
 
 /// Old top-level `/_anki/foo.css` style references.
@@ -550,21 +570,65 @@ mod test {
         assert!(!reviewer.headers().contains_key(CONTENT_SECURITY_POLICY));
     }
 
+    fn bridge() -> tauri::http::request::Builder {
+        Request::post(format!("anki://localhost/{BRIDGE_PATH}")).header(BRIDGE_HEADER, "1")
+    }
+
     #[test]
     fn bridge_commands_reach_their_handler() {
         let f = fixture();
         f.shell
             .bridge
             .register("key", |_, label, args| serde_json::json!([label, args]));
-        let req = Request::post(format!("anki://localhost/{BRIDGE_PATH}"))
-            .body(b"key:0:12:a:b".to_vec())
-            .unwrap();
+        let req = bridge().body(b"key:0:12:a:b".to_vec()).unwrap();
         let resp = handle(&f.shell, "editor", &req);
         assert_eq!(resp.body(), br#"["editor","0:12:a:b"]"#);
-        let req = Request::post(format!("anki://localhost/{BRIDGE_PATH}"))
-            .body(b"mystery".to_vec())
-            .unwrap();
+        let req = bridge().body(b"mystery".to_vec()).unwrap();
         assert_eq!(handle(&f.shell, "editor", &req).body(), b"null");
         assert_eq!(f.shell.bridge.unknown_commands()["mystery"], 1);
+    }
+
+    #[test]
+    fn bridge_rejects_opaque_and_cross_origin_requests() {
+        let f = fixture();
+        f.shell
+            .bridge
+            .register("key", |_, _, _| serde_json::json!(true));
+        // a no-cors fetch can send text/plain, but not a custom header
+        let req = Request::post(format!("anki://localhost/{BRIDGE_PATH}"))
+            .header(CONTENT_TYPE, "text/plain")
+            .body(b"key:0:1:x".to_vec())
+            .unwrap();
+        assert_eq!(
+            handle(&f.shell, "editor", &req).status(),
+            StatusCode::FORBIDDEN
+        );
+        let req = bridge()
+            .header("Origin", "https://example.com")
+            .body(b"key:0:1:x".to_vec())
+            .unwrap();
+        assert_eq!(
+            handle(&f.shell, "editor", &req).status(),
+            StatusCode::FORBIDDEN
+        );
+        let req = bridge()
+            .header("Origin", "anki://localhost")
+            .body(b"key:0:1:x".to_vec())
+            .unwrap();
+        assert_eq!(handle(&f.shell, "editor", &req).body(), b"true");
+    }
+
+    #[test]
+    fn only_anki_pages_may_be_navigated_to() {
+        assert!(allowed_navigation(
+            &"anki://localhost/_anki/legacyPageData?id=main"
+                .parse()
+                .unwrap()
+        ));
+        assert!(!allowed_navigation(
+            &"https://example.com/".parse().unwrap()
+        ));
+        assert!(!allowed_navigation(&"anki://elsewhere/".parse().unwrap()));
+        assert!(!allowed_navigation(&"file:///etc/hosts".parse().unwrap()));
     }
 }

@@ -23,11 +23,13 @@ function isInside(range: StaticRange, root: ShadowRoot): boolean {
 }
 
 /**
- * The last selection seen inside each shadow root. WebKit empties the
- * document selection while focus moves, before blur fires (when the editor
- * saves the caret), where Chromium's ShadowRoot.getSelection still has it.
+ * The last selection seen inside a shadow root. WebKit empties the document
+ * selection while focus moves, before blur fires (when the editor saves the
+ * caret), where Chromium's ShadowRoot.getSelection still has it. It is kept
+ * only until the next selectionchange event, which comes after the blur
+ * handlers.
  */
-const lastInside = new WeakMap<ShadowRoot, StaticRange>();
+let lastInside: { root: ShadowRoot; range: StaticRange } | null = null;
 
 function remember(root: ShadowRoot, ranges: StaticRange[]): void {
     const range = ranges[ranges.length - 1];
@@ -36,10 +38,31 @@ function remember(root: ShadowRoot, ranges: StaticRange[]): void {
         // an empty selection may be a focus change in progress
         return;
     } else if (isInside(range, root)) {
-        lastInside.set(root, range);
-    } else {
-        lastInside.delete(root);
+        lastInside = { root, range };
+    } else if (lastInside?.root === root) {
+        lastInside = null;
     }
+}
+
+function nodeLength(node: Node): number {
+    return node.nodeType === Node.TEXT_NODE || node.nodeType === Node.COMMENT_NODE
+        ? (node as CharacterData).length
+        : node.childNodes.length;
+}
+
+/** The remembered range for root, if it still fits the document. */
+function remembered(root: ShadowRoot): StaticRange | null {
+    if (lastInside?.root !== root) {
+        return null;
+    }
+
+    const { startContainer, startOffset, endContainer, endOffset } = lastInside.range;
+    const fits = startContainer.isConnected
+        && endContainer.isConnected
+        && startOffset <= nodeLength(startContainer)
+        && endOffset <= nodeLength(endContainer);
+
+    return fits ? lastInside.range : null;
 }
 
 /** The open shadow roots along the focus path, outermost first. */
@@ -59,6 +82,10 @@ function onSelectionChange(): void {
     const selection = document.getSelection();
 
     if (!selection?.getComposedRanges) {
+        return;
+    } else if (selection.rangeCount === 0) {
+        // the blur handlers have run by now
+        lastInside = null;
         return;
     }
 
@@ -89,6 +116,12 @@ class ShadowRootSelection implements Selection {
         private readonly root: ShadowRoot,
     ) {}
 
+    private forget(): void {
+        if (lastInside?.root === this.root) {
+            lastInside = null;
+        }
+    }
+
     private composedRanges(): StaticRange[] {
         const ranges = composedRanges(this.selection, [this.root]);
         remember(this.root, ranges);
@@ -97,10 +130,8 @@ class ShadowRootSelection implements Selection {
             return ranges;
         }
 
-        const last = lastInside.get(this.root);
-        return last?.startContainer.isConnected && last.endContainer.isConnected
-            ? [last]
-            : [];
+        const last = remembered(this.root);
+        return last ? [last] : [];
     }
 
     /** [anchor, focus] of the main range */
@@ -207,17 +238,17 @@ class ShadowRootSelection implements Selection {
     }
 
     removeRange(range: Range): void {
-        lastInside.delete(this.root);
+        this.forget();
         this.selection.removeRange(range);
     }
 
     removeAllRanges(): void {
-        lastInside.delete(this.root);
+        this.forget();
         this.selection.removeAllRanges();
     }
 
     empty(): void {
-        lastInside.delete(this.root);
+        this.forget();
         this.selection.empty();
     }
 

@@ -3,7 +3,9 @@
 
 //! A native macOS shell for Anki: the existing `ts/` pages on the system
 //! WebView, talking to an in-process Rust backend. See
-//! `native-shell-port-plan.md`.
+//! `native-shell-port-plan.md`. macOS only.
+
+#![cfg(target_os = "macos")]
 
 pub mod ankiconnect;
 pub mod api;

@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -167,16 +168,20 @@ def run_stock(collection: Path | None) -> dict:
                 shutil.copytree(media, profile / "collection.media")
         shutil.copytree(HARNESS / "stock/addon/benchctl", base / "addons21/benchctl")
         x, y, w, h = GEOMETRY
+        token = secrets.token_urlsafe(32)
         t0 = time.time()
         proc = subprocess.Popen(
             [python, str(HARNESS / "stock/stock_anki.py"), str(base)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env={**os.environ, "BENCH_GEOM": f"{x},{y},{w},{h}"},
+            env={**os.environ, "BENCH_GEOM": f"{x},{y},{w},{h}", "BENCH_TOKEN": token},
         )  # fmt: skip
 
         def ctl(code: str) -> dict:
             req = urllib.request.Request(
-                "http://127.0.0.1:8790/", data=code.encode(), method="POST"
+                "http://127.0.0.1:8790/",
+                data=code.encode(),
+                method="POST",
+                headers={"X-Bench-Token": token},
             )
             return json.loads(urllib.request.urlopen(req, timeout=70).read())
 

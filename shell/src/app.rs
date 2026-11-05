@@ -5,6 +5,7 @@
 //! profile lifecycle.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -34,6 +35,8 @@ use crate::testchan;
 use crate::Shell;
 
 pub const MAIN: &str = "main";
+pub const EDITOR: &str = "editor";
+const EDITOR_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct Args {
@@ -42,8 +45,9 @@ pub struct Args {
     pub anki_base: Option<PathBuf>,
     pub profile: Option<String>,
     pub web: Option<PathBuf>,
-    /// None disables AnkiConnect.
+    /// The AnkiConnect port; None means the add-on's setting (or 8765).
     pub ankiconnect_port: Option<u16>,
+    pub ankiconnect: bool,
     pub import: bool,
     pub test: Option<testchan::TestRun>,
     pub bench: bool,
@@ -62,7 +66,8 @@ impl Args {
             anki_base: None,
             profile: None,
             web: None,
-            ankiconnect_port: Some(8765),
+            ankiconnect_port: None,
+            ankiconnect: true,
             import: false,
             test: None,
             bench: false,
@@ -81,7 +86,8 @@ impl Args {
                 "--web" => args.web = Some(value()?.into()),
                 "--ankiconnect-port" => {
                     let port: u16 = value()?.parse()?;
-                    args.ankiconnect_port = (port != 0).then_some(port);
+                    args.ankiconnect = port != 0;
+                    args.ankiconnect_port = Some(port);
                 }
                 "--import" => args.import = true,
                 "--test" => test_script = Some(PathBuf::from(value()?)),
@@ -190,6 +196,8 @@ pub struct Ui {
     pub geometry: Option<(f64, f64, f64, f64)>,
     pub background: bool,
     pub status: Mutex<String>,
+    /// Set once the editor has been saved for quitting.
+    pub exiting: std::sync::atomic::AtomicBool,
 }
 
 impl Ui {
@@ -224,7 +232,14 @@ impl Ui {
             WebviewWindowBuilder::new(&self.app, label, WebviewUrl::CustomProtocol(url.parse()?))
                 .title(title)
                 .inner_size(w, h)
-                .initialization_script(crate::bridge::init_script());
+                .initialization_script(crate::bridge::init_script())
+                .on_navigation(|url| {
+                    let allowed = crate::protocol::allowed_navigation(url);
+                    if !allowed && ["http", "https", "mailto"].contains(&url.scheme()) {
+                        let _ = std::process::Command::new("open").arg(url.as_str()).spawn();
+                    }
+                    allowed
+                });
         if self.geometry.is_some() {
             builder = builder.position(x, y);
         }
@@ -290,8 +305,43 @@ impl Ui {
         self.open_window(MAIN, "Anki", WebviewKind::Main, Content::Html(html))
     }
 
+    /// Show note `nid` in the editor window, saving the shown note first.
     pub fn open_editor(&self, nid: i64) -> Result<()> {
-        let label = "editor";
+        if self.editors.note(EDITOR).is_some() && self.app.get_webview_window(EDITOR).is_some() {
+            self.after_editor_saved(&format!("editorLoad:{nid}"));
+            return Ok(());
+        }
+        self.load_editor(nid)
+    }
+
+    /// Flush the editor's pending (debounced) field save, then send `cmd`
+    /// over the bridge, which keeps commands in order; as
+    /// `Editor.call_after_note_saved`. If the page doesn't answer, `cmd`
+    /// runs anyway after a timeout.
+    pub fn after_editor_saved(&self, cmd: &str) {
+        self.shell.bridge.add_pending(cmd.to_string());
+        self.eval(
+            EDITOR,
+            format!(
+                "(() => {{ try {{ saveNow(); }} catch (e) {{ console.error(e); }} \
+                 pycmd({}); }})()",
+                serde_json::to_string(cmd).unwrap()
+            ),
+        );
+        let shell = self.shell.clone();
+        let cmd = cmd.to_string();
+        std::thread::spawn(move || {
+            std::thread::sleep(EDITOR_SAVE_TIMEOUT);
+            if shell.bridge.take_pending(&cmd) {
+                tracing::warn!(cmd, "editor save timed out; continuing");
+                shell.bridge.add_pending(cmd.clone());
+                shell.bridge.dispatch(&shell, EDITOR, &cmd);
+            }
+        });
+    }
+
+    fn load_editor(&self, nid: i64) -> Result<()> {
+        let label = EDITOR;
         let js = crate::editor::load_note_js(&self.shell, &self.editors, label, nid)?;
         self.open_window(
             label,
@@ -316,10 +366,14 @@ impl Ui {
 /// (`_setWindowOcclusionDetectionEnabled:`, macOS 10.13+), if present.
 #[cfg(target_os = "macos")]
 fn send_to_back(window: &tauri::WebviewWindow) -> tauri::Result<()> {
-    if let Ok(ns_window) = window.ns_window() {
-        // SAFETY: an NSWindow
-        unsafe { objc::send(ns_window, "orderBack:", std::ptr::null_mut()) };
-    }
+    let w = window.clone();
+    // AppKit only on the main thread; callers may be on bridge threads
+    window.run_on_main_thread(move || {
+        if let Ok(ns_window) = w.ns_window() {
+            // SAFETY: an NSWindow, on the main thread
+            unsafe { objc::send(ns_window, "orderBack:", std::ptr::null_mut()) };
+        }
+    })?;
     window.with_webview(|webview| {
         let sel = "_setWindowOcclusionDetectionEnabled:";
         // SAFETY: inner() is the WKWebView
@@ -483,6 +537,41 @@ fn register_bridge(ui: &Arc<Ui>) {
     bridge.register("saveFields", move |shell, label, args| {
         crate::editor::save_fields(shell, &u.editors, label, args)
     });
+    let u = ui.clone();
+    bridge.register("saveTags", move |shell, label, args| {
+        crate::editor::save_tags(shell, &u.editors, label, args)
+    });
+    // the second halves of after_editor_saved
+    let u = ui.clone();
+    bridge.register("editorLoad", move |shell, _, nid| {
+        if shell.bridge.take_pending(&format!("editorLoad:{nid}")) {
+            if let Err(err) = nid
+                .parse()
+                .map_err(anyhow::Error::from)
+                .and_then(|nid| u.load_editor(nid))
+            {
+                tracing::warn!(%err, "opening editor failed");
+            }
+        }
+        Value::Null
+    });
+    let u = ui.clone();
+    bridge.register("editorClose", move |shell, _, _| {
+        if shell.bridge.take_pending("editorClose") {
+            if let Some(window) = u.app.get_webview_window(EDITOR) {
+                let _ = window.destroy();
+            }
+        }
+        Value::Null
+    });
+    let u = ui.clone();
+    bridge.register("editorExit", move |shell, _, _| {
+        if shell.bridge.take_pending("editorExit") {
+            u.exiting.store(true, std::sync::atomic::Ordering::SeqCst);
+            u.app.exit(0);
+        }
+        Value::Null
+    });
     for quiet in ["focus", "noteLoaded"] {
         bridge.register(quiet, |_, _, _| Value::Null);
     }
@@ -535,12 +624,25 @@ fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         .build()
 }
 
+/// Test and bench runs create and edit notes, so they need a copy of the
+/// profiles, not the live ones.
+fn check_scratch_base(args: &Args, anki_base: &Path) -> Result<()> {
+    if (args.test.is_some() || args.bench) && anki_base == crate::settings::default_anki_base() {
+        anyhow::bail!(
+            "--test and --bench change the collection; pass --anki-base with a copy of {}",
+            anki_base.display()
+        );
+    }
+    Ok(())
+}
+
 pub fn run(args: Args) -> Result<()> {
     let web = find_web(&args)?;
     let mut settings = Settings::load(&args.settings)?;
     if let Some(base) = &args.anki_base {
         settings.anki_base = Some(base.clone());
     }
+    check_scratch_base(&args, &settings.anki_base())?;
     if args.import || settings.profiles.is_empty() {
         if let Err(err) = settings.import_from_anki() {
             tracing::warn!("{err:#}");
@@ -579,6 +681,7 @@ pub fn run(args: Args) -> Result<()> {
         settings: Mutex::new(settings),
         geometry: args.geometry,
         background: args.background,
+        exiting: Default::default(),
         status: Mutex::new(String::new()),
     });
     register_bridge(&ui);
@@ -594,8 +697,10 @@ pub fn run(args: Args) -> Result<()> {
     });
 
     ui.open_profile(args.profile.as_deref());
-    if let Some(port) = args.ankiconnect_port {
-        crate::ankiconnect::spawn(shell.clone(), port);
+    if args.ankiconnect {
+        let (config, port) = crate::ankiconnect::Config::for_anki_base(&ui.settings().anki_base());
+        let port = args.ankiconnect_port.unwrap_or(port);
+        crate::ankiconnect::spawn(shell.clone(), port, config);
     }
     let backup_shell = shell.clone();
     std::thread::spawn(move || loop {
@@ -612,6 +717,7 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     let exit_shell = shell.clone();
+    let exit_ui = ui.clone();
     let background = args.background;
     tauri_app.run(move |app, event| match event {
         #[cfg(target_os = "macos")]
@@ -621,11 +727,31 @@ pub fn run(args: Args) -> Result<()> {
                 let _ = send_to_back(window);
             }
         }
+        // save the editor's pending edits before it goes away
+        RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == EDITOR && exit_ui.editors.note(EDITOR).is_some() => {
+            api.prevent_close();
+            exit_ui.after_editor_saved("editorClose");
+        }
+        RunEvent::ExitRequested { api, .. }
+            if !exit_ui.exiting.load(std::sync::atomic::Ordering::SeqCst)
+                && exit_ui.editors.note(EDITOR).is_some()
+                && app.get_webview_window(EDITOR).is_some() =>
+        {
+            api.prevent_exit();
+            exit_ui.after_editor_saved("editorExit");
+        }
         RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,
             ..
         } => {
+            if label == EDITOR {
+                exit_ui.editors.clear(EDITOR);
+            }
             exit_shell.pages.remove(&label);
             if label == MAIN || app.webview_windows().is_empty() {
                 app.exit(0);
@@ -637,4 +763,19 @@ pub fn run(args: Args) -> Result<()> {
         _ => {}
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_and_bench_runs_refuse_the_live_profiles() {
+        let live = crate::settings::default_anki_base();
+        let args = |extra: &[&str]| Args::parse(extra.iter().map(|s| s.to_string())).unwrap();
+        assert!(check_scratch_base(&args(&["--test", "x.js"]), &live).is_err());
+        assert!(check_scratch_base(&args(&["--bench"]), &live).is_err());
+        assert!(check_scratch_base(&args(&["--test", "x.js"]), Path::new("/tmp/copy")).is_ok());
+        assert!(check_scratch_base(&args(&[]), &live).is_ok());
+    }
 }

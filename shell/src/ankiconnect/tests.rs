@@ -687,3 +687,51 @@ fn request_permission() {
         json!({"permission": "denied"})
     );
 }
+
+#[test]
+fn media_names_cannot_leave_the_media_folder() {
+    let (_dir, shell) = temp_shell();
+    let collection = shell.open_profile_paths().unwrap().collection();
+    for name in [
+        "../collection.anki2",
+        "sub/../../collection.anki2",
+        "/etc/hosts",
+    ] {
+        let msg = err(&shell, "deleteMediaFile", json!({ "filename": name }));
+        assert!(msg.contains("invalid media filename"), "{name}: {msg}");
+    }
+    assert!(collection.exists());
+}
+
+#[test]
+fn the_add_ons_own_settings_are_used() {
+    let dir = tempfile::tempdir().unwrap();
+    // no add-on: the defaults
+    let (config, port) = super::Config::for_anki_base(dir.path());
+    assert_eq!(port, 8765);
+    assert_eq!(config.api_key, None);
+
+    let addon = dir.path().join("addons21/2055492159");
+    std::fs::create_dir_all(&addon).unwrap();
+    std::fs::write(
+        addon.join("config.json"),
+        r#"{"apiKey": "secret", "webBindPort": 8766,
+            "webCorsOriginList": ["http://localhost", "https://example.com"],
+            "ignoreOriginList": ["https://ignored.example"]}"#,
+    )
+    .unwrap();
+    // meta.json holds the user's edits, as Anki's add-on manager stores them
+    std::fs::write(
+        addon.join("meta.json"),
+        r#"{"config": {"apiKey": "edited"}}"#,
+    )
+    .unwrap();
+
+    let (config, port) = super::Config::for_anki_base(dir.path());
+    assert_eq!(port, 8766);
+    assert_eq!(config.api_key.as_deref(), Some("edited"));
+    assert!(config
+        .cors_origins
+        .contains(&"https://example.com".to_string()));
+    assert_eq!(config.ignore_origins, vec!["https://ignored.example"]);
+}

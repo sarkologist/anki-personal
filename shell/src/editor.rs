@@ -28,6 +28,10 @@ impl Editors {
         self.0.lock().unwrap().get(label).cloned()
     }
 
+    pub fn clear(&self, label: &str) {
+        self.0.lock().unwrap().remove(label);
+    }
+
     fn set(&self, label: &str, note: Note) {
         self.0.lock().unwrap().insert(label.to_string(), note);
     }
@@ -129,6 +133,17 @@ fn munge_html(txt: &str) -> String {
     }
 }
 
+/// The note shown in `label`, as currently stored, if it is `nid`. Saves
+/// start from the stored note, so changes made elsewhere while the editor
+/// is open (AnkiConnect, say) aren't reverted.
+fn current_note(shell: &Shell, editors: &Editors, label: &str, nid: i64) -> Option<Note> {
+    if editors.note(label).map(|n| n.id) != Some(nid) {
+        tracing::debug!("ignored late save");
+        return None;
+    }
+    shell.api.call("get_note", &NoteId { nid }).ok()
+}
+
 /// `key:<ord>:<nid>:<html>` and `blur:...`: save one field of the note.
 pub fn save_field(shell: &Shell, editors: &Editors, label: &str, args: &str) -> Value {
     let mut parts = args.splitn(3, ':');
@@ -139,13 +154,9 @@ pub fn save_field(shell: &Shell, editors: &Editors, label: &str, args: &str) -> 
     let (Ok(ord), nid) = (ord.parse::<usize>(), nid.parse::<i64>().unwrap_or(0)) else {
         return Value::Null;
     };
-    let Some(mut note) = editors.note(label) else {
+    let Some(mut note) = current_note(shell, editors, label, nid) else {
         return Value::Null;
     };
-    if note.id != nid {
-        tracing::debug!("ignored late field save");
-        return Value::Null;
-    }
     let Some(field) = note.fields.get_mut(ord) else {
         return Value::Null;
     };
@@ -166,15 +177,32 @@ pub fn save_fields(shell: &Shell, editors: &Editors, label: &str, args: &str) ->
         tracing::warn!("ignored malformed field batch");
         return Value::Null;
     };
-    let Some(mut note) = editors.note(label) else {
+    let Some(mut note) = current_note(shell, editors, label, nid) else {
         return Value::Null;
     };
-    if note.id != nid || fields.len() != note.fields.len() {
+    if fields.len() != note.fields.len() {
         return Value::Null;
     }
     note.fields = fields.iter().map(|f| munge_html(f)).collect();
     save_note(shell, editors, label, note);
     json!(true)
+}
+
+/// `saveTags:<json list>`, for the note shown.
+pub fn save_tags(shell: &Shell, editors: &Editors, label: &str, args: &str) -> Value {
+    let Ok(tags) = serde_json::from_str::<Vec<String>>(args) else {
+        tracing::warn!("ignored malformed tags");
+        return Value::Null;
+    };
+    let Some(nid) = editors.note(label).map(|n| n.id) else {
+        return Value::Null;
+    };
+    let Some(mut note) = current_note(shell, editors, label, nid) else {
+        return Value::Null;
+    };
+    note.tags = tags;
+    save_note(shell, editors, label, note);
+    Value::Null
 }
 
 fn save_note(shell: &Shell, editors: &Editors, label: &str, note: Note) {
@@ -200,5 +228,87 @@ mod test {
         assert_eq!(munge_html("<br>"), "");
         assert_eq!(munge_html("<div><br></div>"), "");
         assert_eq!(munge_html("a\0b"), "ab");
+    }
+}
+
+#[cfg(test)]
+mod store_test {
+    use anki_proto::notes::AddNoteRequest;
+    use anki_proto::notes::AddNoteResponse;
+
+    use super::*;
+    use crate::api::Api;
+    use crate::profile::ProfilePaths;
+
+    fn shell_with_note() -> (tempfile::TempDir, Shell, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = Shell::new(Api::new(vec!["en".into()]).unwrap(), Default::default());
+        shell
+            .open_profile(ProfilePaths::new(dir.path(), "User 1"))
+            .unwrap();
+        let ntid: NotetypeId = shell
+            .api
+            .call(
+                "get_notetype_id_by_name",
+                &anki_proto::generic::String {
+                    val: "Basic".into(),
+                },
+            )
+            .unwrap();
+        let mut note: Note = shell.api.call("new_note", &ntid).unwrap();
+        note.fields = vec!["front".into(), "back".into()];
+        let added: AddNoteResponse = shell
+            .api
+            .call(
+                "add_note",
+                &AddNoteRequest {
+                    note: Some(note),
+                    deck_id: 1,
+                },
+            )
+            .unwrap();
+        (dir, shell, added.note_id)
+    }
+
+    fn stored(shell: &Shell, nid: i64) -> Note {
+        shell.api.call("get_note", &NoteId { nid }).unwrap()
+    }
+
+    #[test]
+    fn field_saves_keep_changes_made_elsewhere() {
+        let (_dir, shell, nid) = shell_with_note();
+        let editors = Editors::default();
+        load_note_js(&shell, &editors, "editor", nid).unwrap();
+        // e.g. AnkiConnect's addTags/updateNoteFields while the editor is open
+        let mut other = stored(&shell, nid);
+        other.tags = vec!["added".into()];
+        other.fields[1] = "changed back".into();
+        let _: anki_proto::collection::OpChanges = shell
+            .api
+            .call(
+                "update_notes",
+                &UpdateNotesRequest {
+                    notes: vec![other],
+                    skip_undo_entry: false,
+                },
+            )
+            .unwrap();
+
+        save_field(&shell, &editors, "editor", &format!("0:{nid}:new front"));
+
+        let note = stored(&shell, nid);
+        assert_eq!(note.fields, vec!["new front", "changed back"]);
+        assert_eq!(note.tags, vec!["added"]);
+    }
+
+    #[test]
+    fn tags_are_saved() {
+        let (_dir, shell, nid) = shell_with_note();
+        let editors = Editors::default();
+        load_note_js(&shell, &editors, "editor", nid).unwrap();
+
+        save_tags(&shell, &editors, "editor", r#"["one", "two"]"#);
+
+        assert_eq!(stored(&shell, nid).tags, vec!["one", "two"]);
     }
 }

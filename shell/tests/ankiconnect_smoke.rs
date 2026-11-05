@@ -1,6 +1,8 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
+#![cfg(target_os = "macos")]
+
 //! The AnkiConnect server over real HTTP, running the kind of workflow the
 //! user's automations do.
 
@@ -280,5 +282,5 @@ fn a_busy_port_is_reported_not_fatal() {
     let addr = taken.local_addr().unwrap();
     assert!(anki_shell::ankiconnect::serve(shell.clone(), addr).is_err());
     // spawn only logs
-    anki_shell::ankiconnect::spawn(shell, addr.port());
+    anki_shell::ankiconnect::spawn(shell, addr.port(), Default::default());
 }

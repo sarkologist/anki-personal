@@ -60,24 +60,76 @@ impl Default for Config {
     }
 }
 
+/// AnkiConnect's AnkiWeb id, its folder in `addons21`.
+const ADDON_FOLDER: &str = "2055492159";
+
 impl Config {
+    /// The add-on's settings in the old Anki, if it's installed (its
+    /// `config.json`, with the user's edits from `meta.json` on top), plus
+    /// the port to listen on. Then the `ANKICONNECT_CORS_ORIGIN` override.
+    pub fn for_anki_base(anki_base: &std::path::Path) -> (Self, u16) {
+        let folder = anki_base.join("addons21").join(ADDON_FOLDER);
+        let read = |name: &str| -> Value {
+            std::fs::read(folder.join(name))
+                .ok()
+                .and_then(|data| serde_json::from_slice(&data).ok())
+                .unwrap_or(Value::Null)
+        };
+        let mut settings = read("config.json");
+        if let (Value::Object(settings), Value::Object(edits)) =
+            (&mut settings, &read("meta.json")["config"])
+        {
+            settings.extend(edits.clone());
+        }
+        let strings = |key: &str| -> Option<Vec<String>> {
+            settings[key].as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+        };
+        let mut config = Config {
+            api_key: settings["apiKey"]
+                .as_str()
+                .filter(|key| !key.is_empty())
+                .map(str::to_string),
+            ..Config::default()
+        };
+        if let Some(origins) = strings("webCorsOriginList") {
+            config.cors_origins = origins;
+        }
+        if let Some(origins) = strings("ignoreOriginList") {
+            config.ignore_origins = origins;
+        }
+        let port = settings["webBindPort"]
+            .as_u64()
+            .and_then(|p| u16::try_from(p).ok())
+            .unwrap_or(8765);
+        (config.with_env(), port)
+    }
+
     /// The defaults, plus the add-on's `ANKICONNECT_CORS_ORIGIN` override.
     pub fn from_env() -> Self {
-        let mut config = Config::default();
+        Config::default().with_env()
+    }
+
+    fn with_env(mut self) -> Self {
+        let config = &mut self;
         if let Ok(origin) = std::env::var("ANKICONNECT_CORS_ORIGIN") {
             if !origin.is_empty() {
                 config.cors_origins.push(origin);
             }
         }
-        config
+        self
     }
 }
 
 /// Serve on 127.0.0.1:`port` in a background thread. A port that's taken
 /// (usually by the old Anki's AnkiConnect) is logged, not fatal.
-pub fn spawn(shell: Arc<Shell>, port: u16) {
+pub fn spawn(shell: Arc<Shell>, port: u16, config: Config) {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    match serve_with(shell, addr, Config::from_env()) {
+    match serve_with(shell, addr, config) {
         Ok(addr) => tracing::info!(%addr, "AnkiConnect listening"),
         Err(err) => tracing::warn!(%addr, %err, "AnkiConnect not started"),
     }

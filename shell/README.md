@@ -32,12 +32,13 @@ Options:
   `~/Library/Application Support/AnkiShell/settings.json`)
 - `--anki-base PATH`: another Anki base folder, e.g. a copy for testing
 - `--profile NAME`
-- `--ankiconnect-port N`: the native AnkiConnect port (default 8765, 0 to
-  disable). If the old Anki's AnkiConnect has the port, the shell logs it
+- `--ankiconnect-port N`: the native AnkiConnect port (0 disables it). The
+  default, the API key and the CORS origins come from the AnkiConnect
+  add-on's settings in the old Anki, or the add-on's defaults (8765). If the old Anki's AnkiConnect has the port, the shell logs it
   and carries on without one.
 - `--import`: re-import profiles at startup
 - `--background`: never take focus, and keep windows behind other windows
-  (implied by `--test` and `--bench`)
+  (implied by `--test` and `--bench`).
 - `--geometry x,y,width,height`
 
 ## Checks
@@ -53,7 +54,9 @@ Options:
   ```
 
   `--test-note 0` creates a fresh cloze note. The exit status is 0 on
-  success. `harness/editor-typing.js` measures keystroke-to-paint latency on
+  success. `--test` and `--bench` refuse to run on the live Anki folder.
+  `harness/editor-save.js` checks that edits made just before a note switch
+  are saved. `harness/editor-typing.js` measures keystroke-to-paint latency on
   a given note; it needs an unlocked screen, because macOS hides all windows
   while the screen is locked.
 - `python3 shell/harness/bench.py`: the memory check. It drives the stock

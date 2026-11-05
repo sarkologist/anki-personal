@@ -1,7 +1,11 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-"""Benchmark control: run Python on Anki's main thread over HTTP (localhost)."""
+"""Benchmark control: run Python on Anki's main thread over HTTP (localhost).
+
+Requests must carry the X-Bench-Token header with the BENCH_TOKEN that
+bench.py set, and no Origin header, so web pages in the user's browser can't
+use it to run code."""
 import ctypes
 import ctypes.util
 import json
@@ -45,6 +49,17 @@ def _run_on_main(code: str) -> dict:
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
+        import os
+
+        token = os.environ.get("BENCH_TOKEN")
+        if (
+            not token
+            or self.headers.get("X-Bench-Token") != token
+            or self.headers.get("Origin") is not None
+        ):
+            self.send_response(403)
+            self.end_headers()
+            return
         code = self.rfile.read(int(self.headers["Content-Length"])).decode()
         body = json.dumps(_run_on_main(code)).encode()
         self.send_response(200)

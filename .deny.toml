@@ -18,6 +18,9 @@ ignore = [
   "RUSTSEC-2025-0080", # unic-common
   "RUSTSEC-2025-0094", # unic-ucd-category
   "RUSTSEC-2025-0098", # unic-ucd-version
+  # proc-macro-error is unmaintained (via glib-macros in gtk-rs 0.18). It is
+  # only in Tauri's Linux stack; the native shell is built for macOS only.
+  "RUSTSEC-2024-0370",
 ]
 
 [licenses]

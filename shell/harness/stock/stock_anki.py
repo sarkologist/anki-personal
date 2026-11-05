@@ -10,8 +10,6 @@ import os
 import sys
 
 base = sys.argv[1]
-os.environ.setdefault("QTWEBENGINE_REMOTE_DEBUGGING", "8081")
-os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--remote-allow-origins=*")
 os.environ["ANKI_API_PORT"] = "40001"
 
 import aqt

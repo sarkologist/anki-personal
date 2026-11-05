@@ -26,7 +26,7 @@ pub fn init_script() -> String {
     let chain = Promise.resolve();
     const send = (arg) => fetch("/{path}", {{
         method: "POST",
-        headers: {{ "Content-Type": "text/plain" }},
+        headers: {{ "Content-Type": "text/plain", "{header}": "1" }},
         body: String(arg),
     }}).then((r) => r.json());
     window.pycmd = window.bridgeCommand = function (arg, cb) {{
@@ -45,7 +45,8 @@ pub fn init_script() -> String {
         document.addEventListener("DOMContentLoaded", () => window.pycmd("domDone"));
     }}
 }})();"#,
-        path = crate::protocol::BRIDGE_PATH
+        path = crate::protocol::BRIDGE_PATH,
+        header = crate::protocol::BRIDGE_HEADER,
     )
 }
 
@@ -53,6 +54,9 @@ pub fn init_script() -> String {
 pub struct Bridge {
     handlers: RwLock<HashMap<String, Handler>>,
     unknown: Mutex<BTreeMap<String, usize>>,
+    /// Commands the shell has asked a page to send back (after a save),
+    /// so each runs once: from the page, or after a timeout.
+    pending: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Bridge {
@@ -80,6 +84,15 @@ impl Bridge {
             .entry(name.to_string())
             .or_default() += 1;
         Value::Null
+    }
+
+    pub fn add_pending(&self, cmd: String) {
+        self.pending.lock().unwrap().insert(cmd);
+    }
+
+    /// Whether `cmd` was pending; it no longer is.
+    pub fn take_pending(&self, cmd: &str) -> bool {
+        self.pending.lock().unwrap().remove(cmd)
     }
 
     /// Unhandled command names and how often each was sent.

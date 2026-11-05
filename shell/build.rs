@@ -36,6 +36,7 @@ fn write_method_table() -> Result<()> {
 
 fn main() -> Result<()> {
     write_method_table()?;
+    #[cfg(target_os = "macos")]
     tauri_build::build();
     Ok(())
 }

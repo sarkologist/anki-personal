@@ -298,8 +298,12 @@ The exit criteria are met. The shell opens a copy of the real profile (29,857
 cards). The AnkiConnect smoke test passes, and so do the editor selection
 checks in WKWebView. How to build, run and check it is in `shell/README.md`.
 
-- **Shell:** `shell/` (crate `anki-shell`) uses Tauri 2.11 without
-  `tauri-cli`. `./ninja shell` builds the binary and `shell/bundle.sh`
+- **Shell:** `shell/` (crate `anki-shell`, macOS only: Tauri is a macOS
+  target dependency and the crate is empty elsewhere, so Linux builds don't
+  need gtk/webkit2gtk) uses Tauri 2 without
+  `tauri-cli`. Tauri's Linux-only gtk stack brings in unmaintained
+  `proc-macro-error` (RUSTSEC-2024-0370), which is ignored in `.deny.toml`.
+  `./ninja shell` builds the binary and `shell/bundle.sh`
   assembles an ad-hoc-signed `out/shell/AnkiShell.app` with the web assets in
   `Resources/web`. The backend method table (snake_case name -> service and
   method index) is generated in `build.rs` with `anki_proto_gen`, the same
@@ -326,11 +330,24 @@ checks in WKWebView. How to build, run and check it is in `shell/README.md`.
   phase. `/_addons/` is a 404 until phase 2.
 - **Bridge:** `pycmd`/`bridgeCommand` are a `fetch` POST to
   `/_shell/bridge`, chained so commands arrive in order as on Qt's channel.
-  `domDone` is sent at `DOMContentLoaded`, and evals are queued until then
-  (`_queueAction`). Unknown commands are logged and counted. The editor sends
-  `editorState` on load, which nothing handles yet (phase 3). Editing the
-  current note works: `key:`/`blur:`/`saveFields:` save through
-  `update_notes`. `escape_media_filenames` isn't applied on load yet.
+  Requests must carry an `X-Anki-Bridge` header and, if they have an origin,
+  come from `anki://localhost`. A no-cors request from other content (an
+  iframe in a field) can't send the header. Webviews only navigate to
+  `anki://localhost/`; other links open in the browser
+  (`acceptNavigationRequest`). `domDone` is sent at `DOMContentLoaded`, and
+  evals are queued until then (`_queueAction`). Unknown commands are logged
+  and counted. The editor sends `editorState` on load, which nothing handles
+  yet (phase 3).
+- **Editing the current note:**
+  - `key:`, `blur:`, `saveFields:` and `saveTags:` save through
+    `update_notes`. They start from the note as stored, so changes made
+    meanwhile (AnkiConnect) aren't reverted.
+  - Before the editor closes, loads another note, or the app quits, the shell
+    runs `saveNow()` and waits for it over the ordered bridge
+    (`call_after_note_saved`), with a 2 s timeout. Without this, edits made
+    within the 600 ms save debounce were lost. `shell/harness/editor-save.js`
+    checks it.
+  - `escape_media_filenames` isn't applied on load yet.
 - **Settings:** `~/Library/Application Support/AnkiShell/settings.json`. The
   import runs `shell/scripts/import_prefs.py` (embedded in the binary) with
   an Anki install's Python and `-I`, and reuses
@@ -339,7 +356,9 @@ checks in WKWebView. How to build, run and check it is in `shell/README.md`.
   `hostNum`, `currentSyncUrl`, `customSyncUrl`, `syncMedia` and `autoSync`.
   Re-importing replaces the imported fields and keeps the shell's own
   (`last_profile`).
-- **AnkiConnect:** the action list comes from the actions this user's
+- **AnkiConnect:** it uses the add-on's own settings from the old Anki
+  (`config.json` with the user's `meta.json` edits): `apiKey`, CORS origins
+  and port. The action list comes from the actions this user's
   automations have called (Claude workflow transcripts, `~/anki-eq2mathjax`).
   The Alfred workflows use the separate `alfred_anki_html_bridge` add-on,
   not AnkiConnect, so they wait for phase 3.
@@ -382,6 +401,10 @@ checks in WKWebView. How to build, run and check it is in `shell/README.md`.
     so one undo can revert several edits. It hasn't been compared with
     Chromium yet. Anki has no field undo of its own.
   - Not exercised yet: MathJax/LaTeX overlays, paste, IME.
+  - Firefox 142+ also has `getComposedRanges` without
+    `ShadowRoot.getSelection`, so Gecko now gets the adapter too. Its reads
+    are equivalent, because Gecko doesn't retarget. Anki ships no Gecko
+    webview, so this was left as is.
 - **Test channel and background runs:** there's no WebDriver for WKWebView,
   so `--test <script>` evaluates an async JS body in a real page and checks
   its result. `--test` and `--bench` run in the background:
