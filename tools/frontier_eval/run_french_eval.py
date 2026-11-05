@@ -257,8 +257,9 @@ def run_case(
 ) -> dict[str, Any]:
     target = Target(**case["target"])
     kind = case["kind"]
+    active: CountingClient | ReplayClient = client
     if kind == "audit":
-        client = ReplayClient(client, target, case["candidate"])
+        active = ReplayClient(client, target, case["candidate"])
     decisions: list[dict[str, Any]] = []
     calls: list[dict[str, Any]] = []
 
@@ -281,7 +282,7 @@ def run_case(
                         "error",
                     )
                 }
-                | {"real": client.last_real}
+                | {"real": active.last_real}
             )
 
     started = time.monotonic()
@@ -295,7 +296,7 @@ def run_case(
             lexicon,
             config,
             stop,
-            client,
+            active,
             observe=collect,
             progress=collect,
             lessons={},
@@ -341,7 +342,7 @@ def run_case(
         "failure_reason": None if passed else reason,
         "decisions": decisions,
         "calls": calls,
-        "calls_made": client.count,
+        "calls_made": active.count,
         "elapsed_seconds": round(time.monotonic() - started, 2),
         "draft": record,
         "error": error[:4000] if error else None,
@@ -786,7 +787,7 @@ def compare(old_dir: Path, new_dir: Path) -> tuple[dict[str, Any], str]:
     before = {c["id"]: c for c in old["per_case"]}
     after = {c["id"]: c for c in new["per_case"]}
     shared = sorted(before.keys() & after.keys())
-    result = {
+    result: dict[str, Any] = {
         "wins": [i for i in shared if not before[i]["pass^k"] and after[i]["pass^k"]],
         "regressions": [
             i for i in shared if before[i]["pass^k"] and not after[i]["pass^k"]
