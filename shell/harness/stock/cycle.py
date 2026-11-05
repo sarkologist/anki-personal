@@ -16,6 +16,10 @@ if mw.state != "review":
     r.card = mw.col.get_card(ids[0])
     r.card.start_timer()
     r._initWeb()
+    # the page queues evals until it has loaded, so this runs first
+    r.web.eval(PAGE_TIMING_JS)
+if not hasattr(mw, "_bench_host"):
+    mw._bench_host = {"q": [], "a": []}
 r._showEaseButtons = lambda: None
 r._showAnswerButton = lambda: None
 steps = []
@@ -30,12 +34,14 @@ def step(i=0):
         return
     kind, cid = steps[i]
     try:
+        t0 = time.perf_counter()
         if kind == "q":
             r.card = mw.col.get_card(cid)
             r.card.start_timer()
             r._showQuestion()
         else:
             r._showAnswer()
+        mw._bench_host[kind].append((time.perf_counter() - t0) * 1000)
     except Exception as e:
         mw._bench["errors"].append(repr(e))
     QTimer.singleShot(INTERVAL, lambda: step(i + 1))
