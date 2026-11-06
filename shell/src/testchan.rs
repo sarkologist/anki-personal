@@ -192,7 +192,7 @@ fn create_test_deck(shell: &crate::Shell) -> Result<i64> {
             "Basic",
             0,
             &[
-                "shell sound [sound:shell-test.wav][anki:tts lang=en_US]hello[/anki:tts]",
+                "shell sound [sound:shell-test.wav][anki:tts lang=en_US]okay okay okay[/anki:tts]",
                 "shell back three",
             ],
         ),
