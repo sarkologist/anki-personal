@@ -1470,11 +1470,9 @@ pub fn register(ui: &Arc<Ui>) {
         show_duplicate_list(ui, label);
         Value::Null
     });
-    reg("cards", |ui, _, _| {
-        crate::main_window::message(
-            ui,
-            "Cards (card layout) isn't in the shell yet; use Anki for it.",
-        );
+    // Cards...: the card layout, once the note's edits are saved
+    reg("cards", |ui, label, _| {
+        ui.after_saved(label, "editorCards");
         Value::Null
     });
     reg("fields", |ui, _, _| {
@@ -1638,6 +1636,9 @@ pub fn register(ui: &Arc<Ui>) {
     });
     after("editorChooseNotetype", |ui, _, _| choose_notetype_saved(ui));
     after("editorExit", |ui, _, _| exit_saved(ui));
+    after("editorCards", |ui, label, _| {
+        crate::card_layout::open_from_editor(ui, label)
+    });
 }
 
 fn show_duplicates(ui: &Ui, label: &str) {

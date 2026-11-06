@@ -303,6 +303,7 @@ fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> Option<Value> {
             // a (re)started host starts out on the deck list
             let state = state_name(*ui.main.state.lock().unwrap());
             notify(ui, "set_state", json!({"state": state}));
+            notify(ui, "set_theme", json!({"night": ui.shell.night.get()}));
             crate::browser_window::host_ready(ui);
         }
         "addon_failed" => {

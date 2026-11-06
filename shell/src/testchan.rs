@@ -82,6 +82,101 @@ fn create_test_note(shell: &crate::Shell) -> Result<i64> {
 /// for the next page instead of ending the test.
 static MAIN_SCRIPT: std::sync::Mutex<Option<(String, u32, i64)>> = std::sync::Mutex::new(None);
 
+/// For the other screens (`--test-page preferences`, ...): the window's
+/// label, the script, and how often it ran, as for [MAIN_SCRIPT].
+static SCREEN_SCRIPT: std::sync::Mutex<Option<(String, String, u32)>> = std::sync::Mutex::new(None);
+
+/// Set once the script reported its result.
+static FINISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The exit code when the last window closes: a test that ended without a
+/// result (its window went away) failed.
+pub fn exit_code_for_last_window(ui: &Ui) -> i32 {
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if ui.test_mode && !FINISHED.load(std::sync::atomic::Ordering::SeqCst) {
+        if !REPORTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            println!("TEST ended without a result");
+        }
+        3
+    } else {
+        0
+    }
+}
+
+/// The screens a test can open, by `--test-page` name: their window's
+/// label.
+fn screen_label(page: &str) -> Option<&'static str> {
+    match page {
+        "preferences" => Some(crate::preferences::LABEL),
+        "filtered-deck" => Some(crate::screens::FILTERED_DECK),
+        "custom-study" => Some(crate::screens::CUSTOM_STUDY),
+        "media-check" => Some(crate::screens::MEDIA_CHECK),
+        "empty-cards" => Some(crate::screens::EMPTY_CARDS),
+        "card-layout" => Some(crate::card_layout::LABEL),
+        _ => None,
+    }
+}
+
+/// Filtered decks open as a new one, custom study on the current deck.
+fn open_screen(ui: &Arc<Ui>, page: &str) {
+    match page {
+        "preferences" => crate::preferences::open(ui),
+        "filtered-deck" => crate::screens::open_filtered_deck(ui, 0),
+        "custom-study" => crate::screens::open_custom_study(ui, current_deck(ui)),
+        "media-check" => crate::screens::open_media_check(ui),
+        "empty-cards" => crate::screens::open_empty_cards(ui),
+        "card-layout" => match layout_test_note(&ui.shell) {
+            Ok(note) => crate::card_layout::open(ui, note, 0, ""),
+            Err(err) => println!(
+                "TEST {}",
+                json!({ "ok": false, "error": format!("{err:#}") })
+            ),
+        },
+        _ => {}
+    }
+}
+
+/// The current deck if it's a normal one, else the normal deck with the
+/// most cards (custom study is for normal decks).
+fn current_deck(ui: &Ui) -> i64 {
+    let current = ui
+        .shell
+        .api
+        .call::<anki_proto::decks::Deck>("get_current_deck", &anki_proto::generic::Empty {});
+    if let Ok(deck) = current {
+        if matches!(deck.kind, Some(anki_proto::decks::deck::Kind::Normal(_))) {
+            return deck.id;
+        }
+    }
+    ui.shell
+        .api
+        .query(
+            // cards in a filtered deck have their home deck in odid
+            "select did from cards where odid = 0 group by did order by count() desc limit 1",
+            &[],
+        )
+        .ok()
+        .and_then(|rows| rows.first().and_then(|r| r[0].as_i64()))
+        .unwrap_or(1)
+}
+
+/// A webview loaded a page (its `domDone`): run a screen's script there.
+pub fn page_loaded(ui: &Ui, label: &str) {
+    let mut guard = SCREEN_SCRIPT.lock().unwrap();
+    let Some((screen, script, stage)) = guard.as_mut() else {
+        return;
+    };
+    if screen != label {
+        return;
+    }
+    let js = wrap(script, None).replace(
+        "const testNote = 0;",
+        &format!("const testNote = 0;\n    const testStage = {stage};"),
+    );
+    *stage += 1;
+    ui.eval(label, js);
+}
+
 /// The main window loaded a page (its `domDone`).
 pub fn main_page_loaded(ui: &Ui) {
     let mut guard = MAIN_SCRIPT.lock().unwrap();
@@ -213,6 +308,43 @@ fn stock_notetype(
     Ok(anki_proto::notetypes::NotetypeId { ntid: added.id })
 }
 
+/// For the card layout: a note of a new copy of the stock "Basic (and
+/// reversed card)" notetype, so saving changes no notetype of the user's.
+fn layout_test_note(shell: &crate::Shell) -> Result<anki_proto::notes::Note> {
+    let json: anki_proto::generic::Json = shell.api.call(
+        "get_stock_notetype_legacy",
+        // StockNotetype.Kind.BASIC_AND_REVERSED_CARD
+        &anki_proto::notetypes::StockNotetype { kind: 1 },
+    )?;
+    let mut nt: Value = serde_json::from_slice(&json.json)?;
+    nt["name"] = json!(format!(
+        "shell layout {}",
+        chrono::Utc::now().timestamp_millis()
+    ));
+    let added: anki_proto::collection::OpChangesWithId = shell.api.call(
+        "add_notetype_legacy",
+        &anki_proto::generic::Json {
+            json: serde_json::to_vec(&nt)?,
+        },
+    )?;
+    let mut note: anki_proto::notes::Note = shell.api.call(
+        "new_note",
+        &anki_proto::notetypes::NotetypeId { ntid: added.id },
+    )?;
+    note.fields = vec!["shell front".into(), "shell back".into()];
+    let added: anki_proto::notes::AddNoteResponse = shell.api.call(
+        "add_note",
+        &anki_proto::notes::AddNoteRequest {
+            note: Some(note),
+            deck_id: 1,
+        },
+    )?;
+    Ok(shell.api.call(
+        "get_note",
+        &anki_proto::notes::NoteId { nid: added.note_id },
+    )?)
+}
+
 /// 0.3 s of 8 kHz 8-bit mono silence.
 fn silent_wav() -> Vec<u8> {
     let samples = 2400u32;
@@ -252,6 +384,89 @@ unsafe fn ime_input(webview: *mut std::ffi::c_void, steps: &[(String, String)]) 
             let _: () = msg_send![view, insertText: &*s, replacementRange: none];
         }
     }
+}
+
+fn add_note(shell: &crate::Shell, args: &str) -> Result<Value> {
+    let v: Value = serde_json::from_str(args)?;
+    let ntid: anki_proto::notetypes::NotetypeId = shell.api.call(
+        "get_notetype_id_by_name",
+        &anki_proto::generic::String {
+            val: v["notetype"].as_str().unwrap_or("Basic").into(),
+        },
+    )?;
+    let mut note: anki_proto::notes::Note = shell.api.call("new_note", &ntid)?;
+    for (i, field) in v["fields"].as_array().into_iter().flatten().enumerate() {
+        if let Some(slot) = note.fields.get_mut(i) {
+            *slot = field.as_str().unwrap_or_default().into();
+        }
+    }
+    let added: anki_proto::notes::AddNoteResponse = shell.api.call(
+        "add_note",
+        &anki_proto::notes::AddNoteRequest {
+            note: Some(note),
+            deck_id: v["deck"].as_i64().unwrap_or(1),
+        },
+    )?;
+    Ok(json!(added.note_id))
+}
+
+fn update_note(shell: &crate::Shell, args: &str) -> Result<Value> {
+    let v: Value = serde_json::from_str(args)?;
+    let nid = v["nid"].as_i64().context("nid")?;
+    let mut note: anki_proto::notes::Note = shell
+        .api
+        .call("get_note", &anki_proto::notes::NoteId { nid })?;
+    for (i, field) in v["fields"].as_array().into_iter().flatten().enumerate() {
+        if let Some(slot) = note.fields.get_mut(i) {
+            *slot = field.as_str().unwrap_or_default().into();
+        }
+    }
+    let _: anki_proto::collection::OpChanges = shell.api.call(
+        "update_notes",
+        &anki_proto::notes::UpdateNotesRequest {
+            notes: vec![note],
+            skip_undo_entry: false,
+        },
+    )?;
+    Ok(json!(true))
+}
+
+unsafe fn window_look(
+    ns_window: Option<*mut std::ffi::c_void>,
+    webview: *mut std::ffi::c_void,
+) -> Value {
+    use objc2::msg_send;
+    use objc2::runtime::AnyClass;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSNumber;
+    use objc2_foundation::NSString;
+    let Some(ns_window) = ns_window else {
+        return Value::Null;
+    };
+    let window = ns_window as *mut AnyObject;
+    let color: *mut AnyObject = msg_send![window, backgroundColor];
+    let Some(space) = AnyClass::get(c"NSColorSpace") else {
+        return Value::Null;
+    };
+    let srgb: *mut AnyObject = msg_send![space, sRGBColorSpace];
+    let rgb: *mut AnyObject = msg_send![color, colorUsingColorSpace: srgb];
+    if rgb.is_null() {
+        return Value::Null;
+    }
+    let component = |sel: &str| -> u8 {
+        let v: f64 = match sel {
+            "r" => msg_send![rgb, redComponent],
+            "g" => msg_send![rgb, greenComponent],
+            _ => msg_send![rgb, blueComponent],
+        };
+        (v * 255.0).round() as u8
+    };
+    let key = NSString::from_str("drawsBackground");
+    let draws: *mut NSNumber = msg_send![webview as *mut AnyObject, valueForKey: &*key];
+    json!({
+        "background": [component("r"), component("g"), component("b")],
+        "drawsBackground": draws.as_ref().map(|n| n.as_bool()),
+    })
 }
 
 fn local_http(v: &Value) -> Result<Value> {
@@ -311,7 +526,14 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
         let msg: Value = serde_json::from_str(args).unwrap_or(Value::Null);
         if msg["done"] == json!(true) && msg["result"]["next"] == json!(true) {
             println!("TEST stage {}", msg["result"]);
+            // a screen's script goes on in the window it opens (`in`)
+            if let Some(label) = msg["result"]["in"].as_str() {
+                if let Some((screen, _, _)) = SCREEN_SCRIPT.lock().unwrap().as_mut() {
+                    *screen = label.to_string();
+                }
+            }
         } else if msg["done"] == json!(true) {
+            FINISHED.store(true, std::sync::atomic::Ordering::SeqCst);
             let result = &msg["result"];
             println!("TEST {result}");
             let unknown = shell.bridge.unknown_commands();
@@ -518,6 +740,119 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
         *stash = serde_json::from_str(value).unwrap_or(Value::Null);
         Value::Null
     });
+    // a note: `{"notetype": name, "deck": id (default 1), "fields": [..]}`
+    ui.shell.bridge.register("testAddNote", |shell, _, args| {
+        add_note(shell, args).unwrap_or_else(|e| json!({ "error": format!("{e:#}") }))
+    });
+    // change a note's fields: `{"nid": id, "fields": [..]}`
+    ui.shell
+        .bridge
+        .register("testUpdateNote", |shell, _, args| {
+            update_note(shell, args).unwrap_or_else(|e| json!({ "error": format!("{e:#}") }))
+        });
+    // a media file with this text: `{"name", "text"}` -> the name used
+    ui.shell
+        .bridge
+        .register("testAddMediaFile", |shell, _, args| {
+            let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+            shell
+                .api
+                .call::<anki_proto::generic::String>(
+                    "add_media_file",
+                    &anki_proto::media::AddMediaFileRequest {
+                        desired_name: v["name"].as_str().unwrap_or("shell-test.txt").into(),
+                        data: v["text"].as_str().unwrap_or_default().as_bytes().to_vec(),
+                    },
+                )
+                .map(|name| json!(name.val))
+                .unwrap_or_else(|e| json!({ "error": e.message }))
+        });
+    // LaTeX commands for this run only (`LatexCommands` JSON), so checks
+    // don't run the user's own toolchain
+    ui.shell.bridge.register(
+        "testLatexToolchain",
+        |_, _, args| match serde_json::from_str(args) {
+            Ok(commands) => {
+                crate::latex::set_toolchain(commands);
+                json!(true)
+            }
+            Err(_) => json!(false),
+        },
+    );
+    // close a window as its close button does (CloseRequested)
+    let u = ui.clone();
+    ui.shell.bridge.register("testClose", move |_, _, label| {
+        use tauri::Manager;
+        match u.app.get_webview_window(label) {
+            Some(window) => json!(window.close().is_ok()),
+            None => json!(false),
+        }
+    });
+    // the settings file as the shell has it
+    let u = ui.clone();
+    ui.shell.bridge.register("testSettings", move |_, _, _| {
+        json!(*u.settings.lock().unwrap())
+    });
+    // render LaTeX in `text` as a card would (the first notetype's header),
+    // with the image's contents
+    ui.shell
+        .bridge
+        .register("testRenderLatex", |shell, _, text| {
+            let names: anki_proto::notetypes::NotetypeNames = shell
+                .api
+                .call("get_notetype_names", &anki_proto::generic::Empty {})
+                .unwrap_or_default();
+            let (Some(first), Some(media)) = (names.entries.first(), shell.media_folder()) else {
+                return Value::Null;
+            };
+            let cfg = crate::latex::latex_config(&shell.api, first.id).unwrap_or_default();
+            let (html, errors) = crate::latex::render_latex(&shell.api, &media, text, &cfg);
+            let image = html
+                .split("src=\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .and_then(|name| std::fs::read(media.join(name)).ok())
+                .map(|data| String::from_utf8_lossy(&data).into_owned());
+            json!({ "html": html, "errors": errors, "image": image, "svg": cfg.svg })
+        });
+    // the theme setting (system, light or dark), applied as the shell does
+    let u = ui.clone();
+    ui.shell.bridge.register("testTheme", move |_, _, pref| {
+        let Ok(pref) = serde_json::from_value(json!(pref)) else {
+            return json!(false);
+        };
+        u.settings.lock().unwrap().theme = Some(pref);
+        crate::theme::apply(&u, None);
+        json!(u.shell.night.get())
+    });
+    // the system's appearance changing to `dark` or `light` (what Tauri's
+    // ThemeChanged reports), without changing the user's
+    let u = ui.clone();
+    ui.shell
+        .bridge
+        .register("testSystemAppearance", move |_, _, look| {
+            crate::theme::apply(&u, Some(look == "dark"));
+            json!(u.shell.night.get())
+        });
+    // a window's background ([r, g, b]) and whether its webview draws one
+    let u = ui.clone();
+    ui.shell
+        .bridge
+        .register("testWindowLook", move |_, _, label| {
+            use tauri::Manager;
+            let Some(window) = u.app.get_webview_window(label) else {
+                return Value::Null;
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let w = window.clone();
+            let _ = window.with_webview(move |webview| {
+                // SAFETY: AppKit objects, on the main thread
+                let look = unsafe { window_look(w.ns_window().ok(), webview.inner()) };
+                let _ = tx.send(look);
+            });
+            rx.recv_timeout(Duration::from_secs(5))
+                .unwrap_or(Value::Null)
+        });
     let u = ui.clone();
     ui.shell.bridge.register("testEval", move |_, _, args| {
         let (label, js) = args.split_once('\n').unwrap_or((args, ""));
@@ -606,6 +941,16 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
             println!("TEST deck {did}");
             *MAIN_SCRIPT.lock().unwrap() = Some((script, 0, did));
             ui.show_main()?;
+        }
+        page if screen_label(page).is_some() => {
+            anyhow::ensure!(
+                ui.shell.open_profile_paths().is_some(),
+                "no profile open: {}",
+                ui.status.lock().unwrap()
+            );
+            let label = screen_label(page).unwrap_or_default();
+            *SCREEN_SCRIPT.lock().unwrap() = Some((label.into(), script, 0));
+            open_screen(ui, page);
         }
         _ => {
             // runs on the home page, and again on each page after it (a

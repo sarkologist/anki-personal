@@ -36,6 +36,20 @@ use crate::reviewer::Side;
 use crate::settings::SyncSettings;
 use crate::sync;
 
+/// Windows whose pages keep collection data and write it back (pending
+/// edits, a loaded copy of settings): a full sync replaces the collection
+/// under them, so they must be closed first.
+pub const COLLECTION_WINDOWS: &[&str] = &[
+    "editor",
+    "deck-options",
+    crate::preferences::LABEL,
+    crate::screens::FILTERED_DECK,
+    crate::screens::CUSTOM_STUDY,
+    crate::screens::MEDIA_CHECK,
+    crate::screens::EMPTY_CARDS,
+    crate::card_layout::LABEL,
+];
+
 /// The id of the bottom bar's HTML (served by `legacyPageData`).
 const BOTTOM_PAGE: &str = "main-bottom";
 
@@ -175,7 +189,7 @@ pub fn start_review(ui: &Arc<Ui>) {
     let effects = {
         let spacebar_rates_card = ui.settings.lock().unwrap().spacebar_rates_card;
         let mut r = ui.main.reviewer.lock().unwrap();
-        r.night_mode = false;
+        r.night_mode = ui.shell.night.get();
         r.spacebar_rates_card = spacebar_rates_card.unwrap_or(true);
         r.start(&ui.shell.api, media)
     };
@@ -550,13 +564,34 @@ pub fn tooltip(ui: &Ui, msg: &str) {
     );
 }
 
+/// The deck's options: deck options, or the filtered deck dialog for a
+/// filtered deck (`AnkiQt.onDeckConf`).
 pub fn open_deck_options(ui: &Ui, did: i64) {
+    let deck = ui
+        .shell
+        .api
+        .call::<anki_proto::decks::Deck>("get_deck", &anki_proto::decks::DeckId { did });
+    if deck.is_ok_and(|d| matches!(d.kind, Some(anki_proto::decks::deck::Kind::Filtered(_)))) {
+        crate::screens::open_filtered_deck(ui, did);
+        return;
+    }
     let _ = ui.open_window(
         "deck-options",
         "Deck Options",
         WebviewKind::DeckOptions,
         Content::Route(format!("deck-options/{did}")),
     );
+}
+
+/// Custom study, for normal decks only (as the overview's button).
+fn open_custom_study(ui: &Ui, did: i64) {
+    let deck = ui
+        .shell
+        .api
+        .call::<anki_proto::decks::Deck>("get_deck", &anki_proto::decks::DeckId { did });
+    if deck.is_ok_and(|d| matches!(d.kind, Some(anki_proto::decks::deck::Kind::Normal(_)))) {
+        crate::screens::open_custom_study(ui, did);
+    }
 }
 
 pub fn open_stats(ui: &Ui) {
@@ -599,8 +634,9 @@ const GLOBAL_ACTIONS: &[&str] = &[
     "chooseDeck",
     "stats",
     "sync",
+    "createFiltered",
 ];
-const OVERVIEW_ACTIONS: &[&str] = &["showAnswer", "options"];
+const OVERVIEW_ACTIONS: &[&str] = &["showAnswer", "options", "customStudy"];
 
 fn shortcuts(ui: &Ui) -> crate::shortcuts::Shortcuts {
     let settings = ui.settings.lock().unwrap();
@@ -656,6 +692,8 @@ pub fn action_for_state(ui: &Arc<Ui>, action: &str) {
         (_, "chooseDeck") => choose_deck(ui),
         (_, "stats") => open_stats(ui),
         (_, "sync") => sync_now(ui, None),
+        (_, "createFiltered") => crate::screens::open_filtered_deck(ui, 0),
+        (MainState::Overview, "customStudy") => open_custom_study(ui, current_deck_id(ui)),
         (MainState::Overview, "showAnswer") => start_review(ui),
         (MainState::Overview | MainState::DeckBrowser, "options") => {
             open_deck_options(ui, current_deck_id(ui))
@@ -1309,8 +1347,9 @@ fn full_sync_prompt(
             // As `closeAllWindows` before a full sync: the editor's pending
             // save, or deck options, would write into the replaced
             // collection. When quitting, the editor has been saved already.
-            let open: Vec<&str> = ["editor", "deck-options"]
-                .into_iter()
+            let open: Vec<&str> = COLLECTION_WINDOWS
+                .iter()
+                .copied()
                 .filter(|l| ui.app.get_webview_window(l).is_some())
                 .collect();
             if !open.is_empty() {
@@ -1323,7 +1362,7 @@ fn full_sync_prompt(
                 } else {
                     message(
                         ui,
-                        "Close the editor and the deck options, then sync again for the full sync.",
+                        "Close the other Anki windows (the editor, options, Preferences and tools), then sync again for the full sync.",
                     );
                     finish(ui);
                     return;
@@ -1521,6 +1560,12 @@ pub fn register(ui: &Arc<Ui>) {
         if label == MAIN && matches!(state(ui), MainState::DeckBrowser | MainState::Overview) {
             let did = did.parse().unwrap_or_else(|_| current_deck_id(ui));
             open_deck_options(ui, did);
+        }
+        Value::Null
+    });
+    reg("studymore", |ui, label, _| {
+        if label == MAIN && state(ui) == MainState::Overview {
+            open_custom_study(ui, current_deck_id(ui));
         }
         Value::Null
     });

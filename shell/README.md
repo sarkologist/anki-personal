@@ -7,9 +7,11 @@ findings. Phases 0 to 3 are done: profile, collection, page protocol,
 bridge, settings import, AnkiConnect, reviewing (deck list, overview,
 reviewer, sync, native menus), editing (Add Cards, Edit Current), and a
 plugin host running Chinese/French Frontier, the editor agent pane, the
-Alfred bridge and Suspended Card Priority. Phase 4 has the card browser so
-far; card layout, note types, other add-ons and most dialogs still need the
-old Anki.
+Alfred bridge and Suspended Card Priority. Phase 4 adds the card browser,
+Preferences (with dark mode and the LaTeX commands), filtered decks, custom
+study, Check Media, Empty Cards and the card layout. Other add-ons, and the
+screens the plan defers as unused (Manage Note Types, Fields,
+import/export, ...) still need the old Anki.
 
 ## Reviewing
 
@@ -35,9 +37,35 @@ old Anki.
   (`autoSync`). Sync redirects are kept (`currentSyncUrl`). A profile copy
   (any `--anki-base` other than the default) can only sync with a server on
   this machine (`customSyncUrl` pointing at 127.0.0.1), never AnkiWeb.
-- Not yet: custom study, filtered deck creation, deck descriptions editing,
-  "Set due date", "Forget", "Create copy", recording your own voice, dark
-  mode, and add-ons other than Frontier.
+- Dark mode follows the system's appearance, also when it changes while
+  the shell runs, as in Anki. `"theme": "light"` or `"dark"` in the
+  settings file fixes it instead; the default is the old Anki's theme
+  (imported), else the system. Pages and cards (`.nightMode`) switch at
+  once, and windows show Anki's background colour while a page loads.
+  Add-ons get it too (Frontier's panels take it when they open).
+- Filtered decks: **Tools > Create Filtered Deck…** (`f`) builds one, as
+  in Anki; a filtered deck's Options (the overview's, the deck list's gear,
+  or `o`) reopen the dialog to rebuild it. The overview's **Custom Study**
+  (`c`) has all of Anki's choices, with the tags to include or exclude
+  shown under "Study by card state or tag".
+- **Tools > Check Media** and **Tools > Empty Cards…** work as in Anki
+  (Render LaTeX uses the LaTeX commands from Preferences).
+- Not yet: deck descriptions editing, "Set due date", "Forget", "Create
+  copy", recording your own voice, and add-ons other than those below.
+
+## Preferences
+
+**Anki > Preferences…** (Cmd+,) has what the old Anki's preferences offer
+that the shell uses: the theme, the review and scheduling options, the
+editing and search defaults, backups, and the LaTeX commands. Changes are
+saved as you make them.
+
+- **Theme:** system, light or dark (see "Reviewing").
+- **LaTeX commands:** the commands that turn `tmp.tex` into `tmp.png` or
+  `tmp.svg`, one per line. They start as the ones the "Edit LaTeX
+  toolchain" add-on sets in the old Anki (the profile import reads its
+  file without running it), or latex.py's defaults. "Use Default Commands"
+  goes back to those.
 
 ## Add-ons
 
@@ -99,7 +127,7 @@ needs an Anki install's Python, found as for the profile import
 - Add-ons' browser columns and menus work (Suspended Card Priority's
   Priority column and menu, in the toolbar).
 - Not yet: Create Filtered Deck, Export Notes, Create Copy, Grade Now,
-  Manage Note Types and the card layout (Cards...), dragging in the sidebar
+  Manage Note Types, dragging in the sidebar
   (reparenting decks and tags), reordering columns, the browser's layout
   options, and the agent pane's browser pane.
 
@@ -128,8 +156,12 @@ needs an Anki install's Python, found as for the profile import
   horizontal line (Cmd+Shift+Option+_), lists (Cmd+[ and Cmd+]),
   indent/outdent (Cmd+Shift+] and Cmd+Shift+[), and alignment
   (Cmd+Shift+Option+S/L/R/B).
+- **Cards…** opens the card layout, as in Anki: each card type's front,
+  back and styling, with a live preview (front or back, Fill Empty, night
+  mode), and Add, Remove, Rename, Reposition and Flip for card types.
+  Cmd+Enter saves; Cancel or closing asks before discarding changes.
 - "Show Duplicates" and the Add window's history open the browser on those
-  notes. Not yet: Cards (card layout) and Fields open nothing but a note.
+  notes. Not yet: Fields opens nothing but a note.
 
 ## Build and run
 
@@ -186,6 +218,20 @@ Options:
   pastes come from a scratch pasteboard, never the clipboard.
   `--test harness/editor-add.js --test-page add` drives Add Cards: the
   choosers, sticky fields, adding, history, duplicates and format buttons.
+  `--test harness/preferences.js --test-page preferences` drives the
+  Preferences window (`--test-page` also takes the other screens' names;
+  see `src/testchan.rs`): the theme, a collection preference and the LaTeX
+  commands; the copy's `addons21` needs the "Edit LaTeX toolchain" add-on.
+  `harness/card-layout.js` (`--test-page card-layout`, on a fresh copy of
+  a stock notetype; and `--test-page editor --test-note 0` for the Cards
+  button) checks the card layout.
+  `harness/filtered-deck.js`, `custom-study.js`, `media-check.js` and
+  `empty-cards.js` (`--test-page` with the same names) drive those screens
+  and follow the windows they open; they change the copy (the media check
+  trashes its unused files, Empty Cards deletes its empty cards).
+  `--test harness/dark-mode.js --test-page main` switches the theme and a
+  simulated system appearance through the deck list, overview and
+  reviewer (it changes no system setting).
   `harness/agent-pane.js` (`--test-page add`, and `--test-page editor
   --test-note 0`) drives the agent pane with a real request; it needs the
   add-on in the copy's `addons21` with its provider set to Ollama and a

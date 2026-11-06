@@ -3,6 +3,7 @@
 
 // Globals the native shell calls on its pages.
 
+import { bridgeCommand } from "@tslib/bridgecommand";
 import { onDestroy, onMount } from "svelte";
 
 declare global {
@@ -11,6 +12,8 @@ declare global {
         shellRefresh?: () => void;
         /** Push a new sync state (see `SyncState`) to the toolbar. */
         shellSetSyncState?: (state: unknown) => void;
+        /** Save what's pending before the window closes. */
+        shellFlush?: () => Promise<void>;
     }
 }
 
@@ -38,4 +41,9 @@ export function provideShellGlobal<K extends ShellGlobal>(
             delete globals[name];
         }
     });
+}
+
+/** A bridge command's result. */
+export function shellCommand<T>(command: string): Promise<T> {
+    return new Promise((resolve) => bridgeCommand<T>(command, resolve));
 }

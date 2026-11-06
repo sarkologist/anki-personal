@@ -94,6 +94,16 @@ async function search(text) {
 const deckCards = `select id from cards where did = ${testDeck}`;
 const deckNotes = `select distinct nid from cards where did = ${testDeck}`;
 
+// 0. The theme: the table's frame follows the page (dark mode).
+const night = document.documentElement.classList.contains("night-mode");
+log(`night mode: ${night}`);
+check("the table's frame has the page's theme", doc.documentElement.classList.contains("night-mode"), night);
+const luminance = (el) => {
+    const m = win.getComputedStyle(el).backgroundColor.match(/[\d.]+/g).map(Number);
+    return (0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]) / 255;
+};
+check("its background matches the theme", luminance(doc.body) < 0.5, night);
+
 // 1. The default search: the current deck, the test deck.
 await until("its four cards", () => rows().length === 4 && cells(rows()[0]).some(Boolean));
 check(
@@ -185,6 +195,22 @@ await until(
     "flagged",
     async () => (await scalar(`select count() from cards where flags & 7 = 1 and id in ${inList}`)) === 3,
 );
+// the red row colour, light or dark with the theme (the rows are redrawn
+// after the change; look at one not selected)
+press(rows()[3]);
+await until("one row", () => selectedRows().join() === "3");
+const flaggedRow = await until("a red row", () => rows().find((r) => r.classList.contains("color-3")));
+check(
+    "flag colours follow the theme",
+    [
+        win.getComputedStyle(doc.documentElement).getPropertyValue("--flag-1").trim(),
+        win.getComputedStyle(flaggedRow).backgroundColor !== "rgba(0, 0, 0, 0)",
+    ],
+    [night ? "#f87171" : "#ef4444", true],
+);
+press(rows()[0]);
+press(rows()[2], { shift: true });
+await until("three again", () => selectedRows().length === 3);
 key("Digit1", { meta: true });
 await until(
     "unflagged",
@@ -381,6 +407,14 @@ const shown = () =>
     );
 await until("the card", async () => (await shown()).includes(firstFront));
 check("the previewer shows the card", (await shown()).includes(firstFront), true);
+check(
+    "the previewer's card follows the theme",
+    await inWindow(
+        "browse-preview",
+        "document.getElementById('card').contentDocument.body.classList.contains('nightMode')",
+    ),
+    night,
+);
 const both = await inWindow("browse-preview", "document.getElementById('both').checked");
 await inWindow("browse-preview", "document.getElementById('next').click()");
 if (both) {

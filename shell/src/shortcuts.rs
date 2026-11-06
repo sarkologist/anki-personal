@@ -55,6 +55,9 @@ pub const DEFAULTS: &[(&str, &[&str])] = &[
     ("chooseDeck", &["/"]),
     ("stats", &["t"]),
     ("sync", &["y"]),
+    ("createFiltered", &["f"]),
+    // overview
+    ("customStudy", &["c"]),
 ];
 
 /// Canonical form of a combo as written in the settings: `ctrl+shift+A` is

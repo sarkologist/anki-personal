@@ -19,6 +19,9 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::latex::LatexCommands;
+use crate::theme::ThemePref;
+
 const IMPORT_SCRIPT: &str = include_str!("../scripts/import_prefs.py");
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -47,6 +50,18 @@ pub struct Settings {
     /// What the editor remembers between notes (the profile and meta keys
     /// `lastTextColor`, `lastHighlightColor`, `*TagsCollapsed` in Qt).
     pub editor: EditorPrefs,
+    /// The theme chosen in the shell's preferences; None uses `anki_theme`.
+    pub theme: Option<ThemePref>,
+    /// The old Anki's theme (imported).
+    pub anki_theme: Option<ThemePref>,
+    /// The LaTeX commands set in the shell's preferences; None uses
+    /// `anki_latex_commands`, else latex.py's own.
+    pub latex_commands: Option<LatexCommands>,
+    /// The `pngCommands`/`svgCommands` an enabled add-on sets in the old
+    /// Anki (the "Edit LaTeX toolchain" add-on does), imported.
+    pub anki_latex_commands: Option<LatexCommands>,
+    /// Whether an import has read the LaTeX commands (None is a value).
+    pub latex_imported: bool,
     /// The card browser's layout and search history.
     pub browser: BrowserPrefs,
 }
@@ -103,6 +118,9 @@ struct Imported {
     #[serde(default)]
     answer_keys: BTreeMap<String, String>,
     spacebar_rates_card: Option<bool>,
+    /// `aqt.theme.Theme` as an int
+    theme: Option<i64>,
+    latex_commands: Option<LatexCommands>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +158,18 @@ impl Settings {
         Ok(())
     }
 
+    pub fn theme_pref(&self) -> ThemePref {
+        self.theme.or(self.anki_theme).unwrap_or_default()
+    }
+
+    /// The LaTeX commands to run, where they aren't latex.py's.
+    pub fn latex_toolchain(&self) -> LatexCommands {
+        self.latex_commands
+            .clone()
+            .or_else(|| self.anki_latex_commands.clone())
+            .unwrap_or_default()
+    }
+
     pub fn anki_base(&self) -> PathBuf {
         self.anki_base.clone().unwrap_or_else(default_anki_base)
     }
@@ -160,8 +190,51 @@ impl Settings {
             .map(|p| p.name.as_str())
     }
 
+    /// Settings imported before the theme was: take just the old Anki's
+    /// theme (a full re-import would replace sync logins made here).
+    /// Also the LaTeX commands, if they were imported before the import
+    /// read them.
+    pub fn import_theme_if_missing(&mut self) -> Result<bool> {
+        if !self.backfill_needed() {
+            return Ok(false);
+        }
+        let out = self.run_import()?;
+        self.merge_theme(&out)?;
+        Ok(true)
+    }
+
+    /// Imported, but before the import read the theme or LaTeX commands.
+    fn backfill_needed(&self) -> bool {
+        self.imported_at.is_some() && (self.anki_theme.is_none() || !self.latex_imported)
+    }
+
+    fn merge_theme(&mut self, json: &[u8]) -> Result<()> {
+        let imported: Imported =
+            serde_json::from_slice(json).context("unexpected profile import output")?;
+        if self.anki_theme.is_none() {
+            // "follow the system" if it has none, so this runs once
+            self.anki_theme = Some(
+                imported
+                    .theme
+                    .and_then(ThemePref::from_anki)
+                    .unwrap_or_default(),
+            );
+        }
+        if !self.latex_imported {
+            self.anki_latex_commands = imported.latex_commands.filter(|c| !c.is_empty());
+            self.latex_imported = true;
+        }
+        Ok(())
+    }
+
     /// Run the import and merge it in.
     pub fn import_from_anki(&mut self) -> Result<()> {
+        let out = self.run_import()?;
+        self.merge_import(&out)
+    }
+
+    /// `import_prefs.py`'s output.
+    fn run_import(&self) -> Result<Vec<u8>> {
         let python = match &self.import_python {
             Some(python) => python.clone(),
             None => find_python().context(
@@ -181,7 +254,7 @@ impl Settings {
                 String::from_utf8_lossy(&out.stderr).trim()
             );
         }
-        self.merge_import(&out.stdout)
+        Ok(out.stdout)
     }
 
     fn merge_import(&mut self, json: &[u8]) -> Result<()> {
@@ -206,6 +279,15 @@ impl Settings {
         self.answer_keys =
             crate::shortcuts::import_answer_keys(&self.anki_base(), &imported.answer_keys);
         self.spacebar_rates_card = imported.spacebar_rates_card;
+        // "follow the system" if it has none, so no backfill runs later
+        self.anki_theme = Some(
+            imported
+                .theme
+                .and_then(ThemePref::from_anki)
+                .unwrap_or_default(),
+        );
+        self.anki_latex_commands = imported.latex_commands.filter(|c| !c.is_empty());
+        self.latex_imported = true;
         self.imported_at = Some(chrono::Utc::now().timestamp());
         Ok(())
     }
@@ -236,7 +318,8 @@ mod test {
         "currentSyncUrl": "https://sync10.ankiweb.net/", "customSyncUrl": "",
         "syncMedia": true, "autoSync": false}, {"name": "Other"}],
         "lastLoaded": "User 1", "answerKeys": {"1": "1", "2": "2", "3": "3", "4": "x"},
-        "spacebarRatesCard": false}"#;
+        "spacebarRatesCard": false, "theme": 2,
+        "latexCommands": {"png": [["pdflatex", "tmp.tex"], ["sips", "tmp.pdf"]]}}"#;
 
     #[test]
     fn import_replaces_profiles_and_keeps_own_fields() {
@@ -267,6 +350,79 @@ mod test {
         assert!(settings.imported_at.is_some());
         assert_eq!(settings.answer_keys[3], vec!["x"]);
         assert_eq!(settings.spacebar_rates_card, Some(false));
+        assert_eq!(settings.theme_pref(), ThemePref::Dark);
+        let latex = settings.latex_toolchain();
+        assert_eq!(latex.png.unwrap()[1], vec!["sips", "tmp.pdf"]);
+        assert_eq!(latex.svg, None);
+    }
+
+    #[test]
+    fn an_earlier_import_gets_just_the_theme() {
+        let mut settings = Settings {
+            imported_at: Some(1),
+            profiles: vec![Profile {
+                name: "Kept".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        settings.merge_theme(IMPORTED.as_bytes()).unwrap();
+        assert_eq!(settings.anki_theme, Some(ThemePref::Dark));
+        assert_eq!(
+            settings.latex_toolchain().png.unwrap()[1],
+            vec!["sips", "tmp.pdf"]
+        );
+        assert_eq!(settings.profiles[0].name, "Kept");
+        // none in the old Anki: the system's, so it's asked once only
+        settings.anki_theme = None;
+        settings.latex_imported = false;
+        settings
+            .merge_theme(br#"{"profiles": [], "lastLoaded": null}"#)
+            .unwrap();
+        assert_eq!(settings.anki_theme, Some(ThemePref::System));
+        assert_eq!(settings.anki_latex_commands, None);
+        assert!(!settings.import_theme_if_missing().unwrap());
+    }
+
+    #[test]
+    fn the_shells_own_theme_and_latex_commands_win_over_imported_ones() {
+        let mut settings = Settings {
+            theme: Some(ThemePref::Light),
+            latex_commands: Some(LatexCommands {
+                png: None,
+                svg: Some(vec![vec!["mine".into()]]),
+            }),
+            ..Default::default()
+        };
+        settings.merge_import(IMPORTED.as_bytes()).unwrap();
+        assert_eq!(settings.anki_theme, Some(ThemePref::Dark));
+        assert_eq!(settings.theme_pref(), ThemePref::Light);
+        assert_eq!(
+            settings.latex_toolchain(),
+            settings.latex_commands.clone().unwrap()
+        );
+        // an import without them resets the imported ones only (no theme
+        // there is "follow the system")
+        settings
+            .merge_import(br#"{"profiles": [], "lastLoaded": null}"#)
+            .unwrap();
+        assert_eq!(settings.anki_theme, Some(ThemePref::System));
+        assert_eq!(settings.anki_latex_commands, None);
+        assert_eq!(settings.theme, Some(ThemePref::Light));
+        assert_eq!(Settings::default().theme_pref(), ThemePref::System);
+    }
+
+    #[test]
+    fn a_full_import_needs_no_backfill() {
+        // also when the old Anki has no theme and no LaTeX commands
+        for json in [
+            IMPORTED,
+            r#"{"profiles": [{"name": "User 1"}], "lastLoaded": null}"#,
+        ] {
+            let mut settings = Settings::default();
+            settings.merge_import(json.as_bytes()).unwrap();
+            assert!(!settings.backfill_needed(), "{json}");
+        }
     }
 
     #[test]

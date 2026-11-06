@@ -418,9 +418,13 @@ view are drawn, and they're fetched from the shell in blocks.
     .color-2 {
         background: color-mix(
             in srgb,
-            var(--state-suspended, #ffef9f) 45%,
+            var(--state-suspended, #ffef9f) var(--suspended-mix, 45%),
             transparent
         );
+    }
+    /* dark mode's suspended colour is pale; keep the text readable */
+    :global(:root.night-mode) .color-2 {
+        --suspended-mix: 25%;
     }
     .color-3 {
         background: color-mix(in srgb, var(--flag-1) 30%, transparent);

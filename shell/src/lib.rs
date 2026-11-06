@@ -13,6 +13,7 @@ pub mod bench;
 pub mod bridge;
 pub mod browser;
 pub mod browser_window;
+pub mod card_layout;
 pub mod card_text;
 pub mod editor;
 pub mod editor_window;
@@ -23,13 +24,16 @@ pub mod pages;
 pub mod paste;
 pub mod pasteboard;
 pub mod plugins;
+pub mod preferences;
 pub mod profile;
 pub mod protocol;
 pub mod reviewer;
+pub mod screens;
 pub mod settings;
 pub mod shortcuts;
 pub mod sync;
 pub mod testchan;
+pub mod theme;
 pub mod webkit;
 
 use std::collections::HashMap;
@@ -97,6 +101,8 @@ pub struct Shell {
     pub plugin_gate: RwLock<()>,
     /// What add-ons serve under `/_addons/`.
     pub addon_files: AddonFiles,
+    /// Night mode, for the pages the protocol serves.
+    pub night: theme::Night,
     open: Mutex<Option<ProfilePaths>>,
     frontend: RwLock<HashMap<String, FrontendHandler>>,
 }
@@ -110,6 +116,7 @@ impl Shell {
             bridge: Bridge::default(),
             plugin_gate: RwLock::new(()),
             addon_files: AddonFiles::default(),
+            night: theme::Night::default(),
             open: Mutex::new(None),
             frontend: RwLock::new(HashMap::new()),
         }

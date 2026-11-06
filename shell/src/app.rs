@@ -344,7 +344,9 @@ impl Ui {
         if self.background {
             builder = builder.focused(false);
         }
+        let builder = builder.background_color(crate::theme::canvas(self.shell.night.get()));
         let window = builder.build()?;
+        crate::theme::style_window(&window, self.shell.night.get());
         if self.background {
             send_to_back(&window)?;
         }
@@ -386,7 +388,9 @@ impl Ui {
         if self.background {
             builder = builder.focused(false);
         }
+        let builder = builder.background_color(crate::theme::canvas(self.shell.night.get()));
         let window = builder.build()?;
+        crate::theme::style_window(&window, self.shell.night.get());
         if self.background {
             send_to_back(&window)?;
         }
@@ -418,7 +422,9 @@ impl Ui {
         if self.background {
             builder = builder.focused(false);
         }
+        let builder = builder.background_color(crate::theme::canvas(self.shell.night.get()));
         let window = builder.build()?;
+        crate::theme::style_window(&window, self.shell.night.get());
         if self.background {
             send_to_back(&window)?;
         }
@@ -439,6 +445,7 @@ impl Ui {
         let mut settings = self.settings.lock().unwrap();
         settings.import_from_anki()?;
         settings.save(&self.settings_path)?;
+        crate::latex::set_toolchain(settings.latex_toolchain());
         tracing::info!(
             profiles = settings.profiles.len(),
             "imported profiles from Anki"
@@ -697,6 +704,7 @@ fn register_bridge(ui: &Arc<Ui>) {
     bridge.register("domDone", move |_, label, _| {
         u.evals.dom_done(&u.app, label);
         crate::main_window::dom_done(&u, label);
+        crate::testchan::page_loaded(&u, label);
         Value::Null
     });
     let u = ui.clone();
@@ -708,6 +716,7 @@ fn register_bridge(ui: &Arc<Ui>) {
         if let Err(err) = u.reimport() {
             *u.status.lock().unwrap() = format!("Re-import failed: {err:#}");
         }
+        crate::theme::apply(&u, None);
         let _ = u.show_main();
         Value::Null
     });
@@ -817,6 +826,12 @@ pub fn run(args: Args) -> Result<()> {
             tracing::warn!("{err:#}");
         }
         settings.save(&args.settings)?;
+    } else {
+        match settings.import_theme_if_missing() {
+            Ok(true) => settings.save(&args.settings)?,
+            Ok(false) => {}
+            Err(err) => tracing::warn!("{err:#}"),
+        }
     }
 
     let shell = Arc::new(Shell::new(Api::new(vec!["en".into()])?, web));
@@ -862,11 +877,16 @@ pub fn run(args: Args) -> Result<()> {
         browser: Default::default(),
         paste_trackers: Default::default(),
     });
+    crate::latex::set_toolchain(ui.settings().latex_toolchain());
+    crate::theme::apply(&ui, None);
     register_bridge(&ui);
     crate::editor_window::register(&ui);
     crate::browser_window::register(&ui);
     crate::plugins::ui::register(&ui);
     crate::main_window::register(&ui);
+    crate::preferences::register(&ui);
+    crate::screens::register(&ui);
+    crate::card_layout::register(&ui);
     let (menu, menus) = crate::menus::build(&ui, &app)?;
     app.set_menu(menu)?;
     *ui.menus.lock().unwrap() = Some(menus);
@@ -926,6 +946,25 @@ pub fn run(args: Args) -> Result<()> {
             api.prevent_close();
             crate::editor_window::close(&exit_ui, &label);
         }
+        // the card layout asks before discarding changes
+        RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == crate::card_layout::LABEL
+            && crate::card_layout::close_requested(&exit_ui) =>
+        {
+            api.prevent_close();
+        }
+        // Preferences saves what's being typed first
+        RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == crate::preferences::LABEL => {
+            api.prevent_close();
+            crate::preferences::close_requested(&exit_ui);
+        }
         // closing the main window quits, once the editors are saved (or
         // the user keeps the Add window's input)
         RunEvent::WindowEvent {
@@ -937,6 +976,20 @@ pub fn run(args: Args) -> Result<()> {
             if !crate::editor_window::exit_requested(&exit_ui, 0) {
                 app.exit(0);
             }
+        }
+        // the last window closed (Tauri exits on its own, with no code)
+        // during a test that has no result yet: that's a failure
+        RunEvent::ExitRequested {
+            api, code: None, ..
+        } if crate::testchan::exit_code_for_last_window(&exit_ui) != 0 => {
+            api.prevent_exit();
+            app.exit(3);
+        }
+        // Preferences saves what's being typed, then the exit goes on
+        RunEvent::ExitRequested { api, code, .. }
+            if crate::preferences::exit_requested(&exit_ui, code.unwrap_or(0)) =>
+        {
+            api.prevent_exit();
         }
         RunEvent::ExitRequested { api, code, .. }
             if crate::editor_window::exit_requested(&exit_ui, code.unwrap_or(0)) =>
@@ -982,6 +1035,11 @@ pub fn run(args: Args) -> Result<()> {
             event: tauri::WindowEvent::Focused(focused),
             ..
         } => crate::plugins::ui::window_focused(&exit_ui, &label, focused),
+        // the system's appearance changed (or a forced one was applied)
+        RunEvent::WindowEvent {
+            event: tauri::WindowEvent::ThemeChanged(theme),
+            ..
+        } => crate::theme::system_changed(&exit_ui, theme == tauri::Theme::Dark),
         RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,
@@ -996,7 +1054,7 @@ pub fn run(args: Args) -> Result<()> {
             crate::plugins::ui::window_destroyed(&exit_ui, &label);
             exit_shell.pages.remove(&label);
             if label == MAIN || app.webview_windows().is_empty() {
-                app.exit(0);
+                app.exit(crate::testchan::exit_code_for_last_window(&exit_ui));
             }
         }
         RunEvent::Exit => {

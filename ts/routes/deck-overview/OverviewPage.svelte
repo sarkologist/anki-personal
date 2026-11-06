@@ -181,6 +181,14 @@ screen once nothing is left to study.
     >
         {tr.actionsOptions()}
     </button>
+    {#if !data.filtered}
+        <button
+            title={tr.actionsShortcutKey({ val: "C" })}
+            on:click={() => bridgeCommand("studymore")}
+        >
+            {tr.actionsCustomStudy()}
+        </button>
+    {/if}
     {#if data.filtered}
         <button
             title={tr.actionsShortcutKey({ val: "R" })}

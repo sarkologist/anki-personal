@@ -150,6 +150,12 @@ class Native:
             gui_hooks.operation_did_execute(changes, None)
         elif name == "set_state":
             mw.state = event["state"]
+        elif name in ("set_theme", "theme_did_change"):
+            from aqt.theme import theme_manager
+
+            theme_manager.night_mode = bool(event["night"])
+            if name == "theme_did_change":
+                gui_hooks.theme_did_change()
         elif name == "state_did_change":
             old, mw.state = event.get("old", mw.state), event["new"]
             gui_hooks.state_did_change(mw.state, old)

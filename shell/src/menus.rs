@@ -181,6 +181,13 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
     let app_menu = SubmenuBuilder::new(app, "Anki")
         .item(&PredefinedMenuItem::about(app, None, None)?)
         .separator()
+        .item(&item(
+            app,
+            "preferences",
+            &format!("{}…", tr.preferences_preferences()),
+            Some("CmdOrCtrl+,"),
+        )?)
+        .separator()
         .item(&PredefinedMenuItem::hide(app, None)?)
         .item(&PredefinedMenuItem::hide_others(app, None)?)
         .separator()
@@ -250,7 +257,25 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         auto_advance,
         items: review_items,
     } = card_submenu(ui, app, "Card")?;
+    let create_filtered = item(
+        app,
+        "createFiltered",
+        &titled(ui, &tr.qt_misc_create_filtered_deck(), "createFiltered"),
+        None,
+    )?;
+    let check_media = item(
+        app,
+        "checkMedia",
+        &tr.media_check_check_media_action(),
+        None,
+    )?;
+    let empty_cards = item(app, "emptyCards", &tr.qt_misc_empty_cards(), None)?;
     let tools = SubmenuBuilder::new(app, "Tools")
+        .item(&create_filtered)
+        .separator()
+        .item(&check_media)
+        .item(&empty_cards)
+        .separator()
         .item(&item(app, "addonsRestart", "Restart Add-ons", None)?)
         .item(&item(app, "addonsLog", "Add-on Log", None)?)
         .separator()
@@ -268,7 +293,17 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         flags,
         auto_advance,
         review_items,
-        profile_items: vec![sync, decks, study, browse, choose_deck, stats],
+        profile_items: vec![
+            sync,
+            decks,
+            study,
+            browse,
+            choose_deck,
+            stats,
+            create_filtered,
+            check_media,
+            empty_cards,
+        ],
         sync_logout,
         tools,
         addon_items: vec![],
@@ -412,9 +447,17 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
             if let Err(err) = ui.reimport() {
                 main_window::message(ui, &format!("Re-import failed: {err:#}"));
             }
+            crate::theme::apply(ui, None);
             refresh(ui);
         }
         "syncLogout" => main_window::logout(ui),
+        "preferences" => crate::preferences::open(ui),
+        "checkMedia" if ui.shell.open_profile_paths().is_some() => {
+            crate::screens::open_media_check(ui)
+        }
+        "emptyCards" if ui.shell.open_profile_paths().is_some() => {
+            crate::screens::open_empty_cards(ui)
+        }
         "addonsRestart" => crate::plugins::ui::restart(ui),
         "addonsLog" => crate::plugins::ui::show_log(ui),
         id if id.starts_with(crate::browser_window::MENU_PREFIX) => {
@@ -453,6 +496,7 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
                 "chooseDeck",
                 "stats",
                 "sync",
+                "createFiltered",
             ]
             .contains(&id) => {}
         id => main_window::action_for_state(ui, id),

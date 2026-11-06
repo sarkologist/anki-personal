@@ -64,7 +64,7 @@ pub fn check_shell(build: &mut Build) -> Result<()> {
             deps: inputs![
                 ":pylib:anki",
                 ":qt:aqt:hooks.py",
-                glob!["{shell/plugin_host,pylib/anki}/**"]
+                glob!["{shell/plugin_host,shell/scripts,pylib/anki}/**"]
             ],
         },
     )?;

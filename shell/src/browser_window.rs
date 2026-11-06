@@ -2830,7 +2830,12 @@ fn render_preview(ui: &Arc<Ui>) {
     );
     let q = prepare(&rendered.question_and_style());
     let a = prepare(&rendered.answer_and_style());
-    let body_class = format!("card card{} isMac", card.template_idx + 1);
+    let night = if ui.shell.night.get() {
+        " nightMode night_mode"
+    } else {
+        ""
+    };
+    let body_class = format!("card card{} isMac{night}", card.template_idx + 1);
     let show = if answer {
         format!(
             "w._showQuestion({q}, {a}, {c}); w._showAnswer({a}); {icons}",

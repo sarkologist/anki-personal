@@ -257,9 +257,15 @@ Exit: a week of adding and editing only in the shell.
 - [x] Card browser: table, sidebar, search, column config including the plugin
       column API (suspended_card_priority), find/replace, duplicates,
       previewer, card info.
-- [ ] Card layout, notetypes, fields, filtered decks, custom study,
-      preferences, import/export, media check, empty cards, LaTeX toolchain
-      setting.
+- [x] Dark mode.
+- [x] Preferences and the LaTeX toolchain setting.
+- [x] Filtered decks and custom study.
+- [x] Media check and empty cards.
+- [x] Card layout.
+- Deferred, as unused (see "Phase 4: the other screens"): Manage Note
+  Types, Fields, import/export, deck description editing, Create copy,
+  and recording your own voice. (Set due date and Reset are in the
+  browser, not the reviewer.)
 
 Exit: the old Anki is no longer opened for a month, then it is retired.
 
@@ -1138,7 +1144,225 @@ running unchanged in the plugin host.
   - the browser's other windows aren't `browser-*`, which its page could
     frame; reopening on a card searches the default search first; saved
     searches ask before overwriting one.
+- **Dark mode** (after the merge with phase 4's dark mode): the table's
+  page and the browser's dialogs get the night markers like every page,
+  the row colours are Anki's flag and state colours, which switch with
+  them (the pale dark-mode suspended colour mixed in less), and the
+  previewer's card body gets `nightMode`. `browser.js` checks the frame's
+  theme, a flagged row's colour and the previewer in both themes.
 - **Memory** (`harness/bench.py`, release builds, three runs each): main's
   binary 184, 191 and 185 MB after 240 cards, this one 202, 192 and 190; idle
   130-136 MB for both. The reviewer path is unchanged; the spread is run to
   run.
+
+### Phase 4: dark mode (2026-11-06)
+
+The shell was always light; the old Anki follows the system (`_global.theme`
+is 0), and macOS is dark here.
+
+- **Theme** (`src/theme.rs`): system, light or dark (`theme` in the
+  settings file; the profile import takes the old Anki's as `anki_theme`,
+  and the shell's own wins). Settings imported before this get just the
+  theme, once, at startup: a full re-import would replace sync logins
+  made in the shell. Night mode is that, or for "system" the
+  global `AppleInterfaceStyle`, read directly since the windows' own
+  appearance follows a forced theme. Windows get the matching appearance
+  (`AppHandle::set_theme`). A change of the system's appearance arrives as
+  Tauri's `ThemeChanged`, and is handled off the main thread, since it
+  takes the settings and reviewer locks; a newer event supersedes a thread
+  still waiting, so quick flips can't land out of order.
+- **Pages:** the protocol adds Qt's markers to every HTML page it serves:
+  `night-mode` and `data-bs-theme="dark"` on `<html>` (what
+  `theme_manager` and the ts/ pages' `pageTheme` use), and
+  `nightMode`/`night_mode` on `<body>`. That covers the SvelteKit shell,
+  the assembled pages (`legacyPageData`) and add-on panels, so a page
+  never loads light and then switches. Open pages, and their same-origin
+  frames (the reviewer's bars), get Qt's `on_theme_did_change` script. The
+  reviewer's card body gets `nightMode night_mode` with each card. The deck
+  description's frame is drawn again, since its colours are copied in.
+  Sandboxed frames (add-on web views in the editor) can't be reached, so
+  they keep the theme they loaded in until they reload.
+- **Add-ons:** the plugin host's `theme_manager.night_mode` was always
+  false. The host now gets `set_theme` when it starts and
+  `theme_did_change` (which fires the hook) on changes. Frontier reads it
+  when a panel opens, as in Qt, so its panels are dark.
+- **No white flash:** each window gets Anki's canvas colour
+  (`#f5f5f5`/`#2c2c2c`) as its background, at creation and on changes;
+  wry turns the WKWebView's own background off (`drawsBackground`), so
+  that colour shows until a page draws.
+- **Checks:** `harness/dark-mode.js` (`--test-page main`): the setting
+  and a simulated system appearance switching the open deck list live;
+  the overview and reviewer, with both bars, served dark; the card body's
+  classes switching with a card shown; the window's background and the
+  webview's `drawsBackground`, read from AppKit. Unit tests cover the
+  markers, the protocol's theming, the preference and the import.
+  `main-flow.js` and `editor-add.js` still pass in dark mode.
+  `plugin_host/tests/test_host.py` checks add-ons see the theme.
+- **Review** (an independent Opus pass), fixed: Frontier's panels stayed
+  light (the host's theme), the deck description kept the old colours
+  after a switch, the reviewer could copy the old value during a switch,
+  quick system flips could apply out of order, and earlier installs had
+  no imported theme.
+
+### Phase 4: the other screens (2026-11-06)
+
+What the user uses, from the old Anki's `prefs21.db` and a copy of the
+collection (read only). Qt saves a window's geometry under a key with the
+Qt version, and the daily Anki (25.9.2) runs Qt 6.11, so a 6.11 key means
+the window was opened recently:
+
+| Screen                         | Evidence                                               | Plan  |
+| ------------------------------ | ------------------------------------------------------ | ----- |
+| Card layout                    | `CardLayoutGeometry6.11`                               | port  |
+| Filtered deck                  | `dyndeckconfGeometry6.11`; 69 filtered reviews in 2026 | port  |
+| Custom study                   | (no geometry key); the filtered reviews                | port  |
+| Media check, empty cards       | `checkmediadb…6.11`, `emptycards…6.11`                 | port  |
+| Preferences                    | non-default settings                                   | port  |
+| Dark mode                      | `theme` 0 (follow system), and macOS is dark           | port  |
+| LaTeX toolchain                | "Edit LaTeX toolchain" enabled, custom pipeline        | port  |
+| Manage Note Types, its options | `models…6.6`, `modelopts…6.6` (not since)              | defer |
+| Fields                         | no trace (the dialog saves no geometry)                | defer |
+| Import                         | `import…6.6`; last bulk import in 2017                 | defer |
+| Export                         | an `exportDirectory`, nothing recent                   | defer |
+| Deck description editing       | every deck description is empty                        | defer |
+| Set due date, Forget           | no manual revlog entries, ever                         | defer |
+| Create copy, record own voice  | no trace                                               | defer |
+
+Deferred screens stay in the old Anki. The change-notetype and import pages
+already exist in `ts/`; hosting them is small when they're wanted.
+
+- **Dark mode:** see "Phase 4: dark mode" above; Preferences sets
+  its theme.
+- **Preferences** (`src/preferences.rs`, `ts/routes/preferences`): a new
+  page, saved as you go. The collection's preferences go through
+  `get_preferences`/`set_preferences`, which only this page gets (a
+  per-kind list, `WebviewKind::own_backend`). The theme and LaTeX commands
+  go through two bridge commands accepted only from this window. Left out:
+  language, UI size and style, the Qt-only distractions settings, and the
+  sync options, which are imported from the old Anki.
+- **LaTeX toolchain:** the user's add-on replaces latex.py's commands with
+  pdflatex, pdfcrop (`--gscmd /usr/local/bin/gs`) and `sips` (PNG) or
+  pdf2svg (SVG). The shell rendered with latex and dvipng/dvisvgm, so new
+  images would have looked different from the old ones.
+  - The profile import reads the commands from any enabled add-on that
+    assigns `latex.pngCommands`/`svgCommands` at module level. It parses
+    the files with `ast` and never runs them.
+  - Preferences shows them one per line, shell-quoted; a line with an
+    unmatched quote is refused. The shell's own commands win over the
+    imported ones, and "Use Default Commands" clears them.
+  - Checked with the user's pipeline on the copy: an SVG came out of
+    pdflatex, pdfcrop and pdf2svg. The pipeline includes a debugging
+    `cp tmp.pdf ~/tmp.pdf`, so every SVG render rewrites that file, as in
+    the old Anki.
+- **Saving:** each change is saved shortly after typing stops, one save at
+  a time. Closing the window or quitting first runs the page's flush
+  (2 s at most), since a closing webview runs no more timers. Number
+  boxes are clamped as Qt's spin boxes: the backend stores the rollover
+  in a byte, so 300 would wrap to 44. A save refreshes the deck list and
+  the undo menu, but not the reviewer's card, whose redraw would replay
+  its audio. A full sync closes the window, which holds a copy of the
+  settings. Each save is an undoable "Update Preferences" step.
+- **Review** (two independent Opus passes), fixed: edits lost on close
+  and quit, saves landing out of order, an emptied number box failing
+  every later save, no refresh after a save, Preferences left open over a
+  full sync, re-import not reapplying the commands and theme, the theme
+  handler locking on the main thread, odd add-on files failing the whole
+  import, and add-on panel pages not themed.
+- **Build trap:** after a rebuilt SvelteKit bundle, one chunk on disk came
+  from an earlier build (another `__sveltekit_*` global), and every page
+  failed to start. Removing `out/sveltekit` and
+  `out/qt/_aqt/data/web/sveltekit` and building again fixed it (the build
+  doesn't prune old outputs).
+- **Checks:** `harness/preferences.js` (`--test-page preferences`, a new
+  test mode that opens a screen's window and runs the script there on
+  each load). It checks the imported commands, dark mode in the open page
+  and in a newly loaded one, a collection preference in the collection,
+  the refused line, a render with custom commands, and the reset. Unit
+  tests cover the theme markers, the protocol's theming and per-page API,
+  the toolchain in `latex.rs`, the command text, and the import
+  (`plugin_host/tests/test_import_prefs.py`).
+- **Filtered decks, custom study, Check Media, Empty Cards**
+  (`src/screens.rs`, `ts/routes/{filtered-deck,custom-study,media-check,empty-cards}`):
+  new Svelte pages. Each gets only its own backend calls (`own_backend`);
+  what needs the shell (moving the main window on, LaTeX, the media
+  folder) goes through bridge commands accepted only from that window.
+  - Filtered deck: `FilteredDeckConfigDialog`'s form. Tools > Create
+    Filtered Deck… (`f`) builds a new one; the deck options of a filtered
+    deck (overview, deck list gear, `o`) open it instead, as
+    `onDeckConf`. A search that matches nothing shows the backend's error
+    and keeps the dialog. Building shows the deck's overview. Left out:
+    the Search and hint buttons, which open the browser.
+  - Custom study: all six choices with Qt's ranges. The tag lists
+    (`taglimit.py`) are shown under "Study by card state or tag" rather
+    than in a second dialog. The overview has the button (`c`) for normal
+    decks.
+  - Check Media: the report, then Qt's buttons (Delete Unused with a
+    confirmation, Tag Missing, Render LaTeX, Empty Trash, Restore Deleted,
+    View Files). Render LaTeX is `render_all_latex` in Rust, with the
+    toolchain; its first failure is shown as text. The report is run
+    again after each action.
+  - Empty Cards: the backend's HTML report is parsed into text (its
+    notetype and card names are the user's), and Delete keeps a note's
+    first card if asked, as `_delete_cards`.
+  - A full sync closes all four, as it does the editor and deck options.
+- **Review** (an independent Opus pass), fixed:
+  - Cancel and Escape did nothing in the filtered deck dialog: a second
+    `screenClose` registration replaced the first.
+  - Render LaTeX didn't expand clozes, as `media.py` and the media check
+    do, so `[$]{{c1::x}}[/$]` images stayed missing while it reported
+    "All LaTeX rendered".
+  - A second Enter after a successful build or custom study submitted
+    again (a second deck, or twice the limit increase).
+  - The windows aren't modal as Qt's media check was, so Delete Unused
+    checks again first, and Empty Cards deletes only cards a fresh report
+    still has.
+  - Custom study's limit changes show the deck they changed, and opening
+    a screen that's already open focuses it instead of reloading it.
+- **Checks:** `harness/filtered-deck.js` (refused search, build, the
+  overview, Options reopening it, rebuild with a new limit),
+  `custom-study.js` (ranges, cramming into the session deck),
+  `media-check.js` (unused and missing files, tagging, rendering with
+  scratch commands, delete/restore/empty trash) and `empty-cards.js`, all
+  against the collection. A screen's script follows the windows it opens
+  (`{next: true, in: label}`), and a test whose last window closes
+  without a result now fails (it used to exit 0). Vitest covers the pages'
+  logic; `screens.rs` tests `render_all_latex`.
+- **Card layout** (`src/card_layout.rs`, `ts/routes/card-layout`): a new
+  page, opened by the editor's Cards… once the note's edits are saved
+  (`after_saved`), on the editor's note, including Add mode's unsaved one.
+  - Front, back and styling are edited as text; the preview follows after
+    a 200 ms pause. Card types can be added (a copy of the current one),
+    removed (with its card count), renamed, repositioned and flipped;
+    adding or removing warns of the full sync. Saving is
+    `update_notetype`; then the editor and reviewer redraw.
+  - The preview shows card templates, so it's a frame served with `CSP:
+    sandbox` and the iframe's `sandbox`: an opaque origin, whose requests
+    the protocol refuses and which can't reach into the page, which may
+    save the notetype. The shell renders each side as the reviewer does
+    (`render_uncommitted_card` with the edited template and styling, then
+    LaTeX, play buttons, and Qt's sample type box), and the page posts it
+    to the frame. MathJax's fonts load there.
+  - Left out: Deck Override, Browser Appearance, Restore to Default, Copy
+    Info, Add Field (Fields is deferred), the template search box, audio
+    in the preview, and the mobile class.
+  - Qt's dialog is application-modal; this window isn't. So a second
+    Cards… focuses the open one, and saving keeps notetype changes made
+    meanwhile (a sticky pin in Add, a sync): if the notetype's mtime
+    moved, the window's templates and styling go into the current copy.
+    Quitting with unsaved changes drops them, as closing the main window
+    does for other windows.
+  - Review (an independent Opus pass), fixed: after switching card types
+    the textarea could keep what was typed for another (Svelte left the
+    DOM alone when the new text equalled the last one drawn), so the next
+    keystroke overwrote that card type; a saved cloze note previewed every
+    cloze as cloze 1 (the template's ord 0 found its first card; as
+    `ephemeral_card`, the ord is now the cloze's); new card type names
+    kept Fluent's invisible isolation marks; a second Cards… reloaded the
+    window and its changes away; repositioning didn't warn of the full
+    sync; a second save could follow the first.
+  - Checks: `harness/card-layout.js` on a fresh copy of a stock notetype
+    (the preview following edits, sides and night mode; the frame's
+    isolation; renaming, adding and removing card types; the discard
+    prompt; the saved templates in the collection) and, in Edit Current,
+    the Cards button. Unit tests render previews (edited template and
+    styling, the sample type box) and check the frame is sandboxed.

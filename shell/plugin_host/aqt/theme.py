@@ -5,7 +5,8 @@ from __future__ import annotations
 
 
 class ThemeManager:
-    # the shell has no dark mode yet
+    # the shell's: set when the host starts and when it changes
+    # (`set_theme`, `theme_did_change`)
     night_mode = False
 
 
