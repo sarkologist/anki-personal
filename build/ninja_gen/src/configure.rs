@@ -9,10 +9,15 @@ use crate::build::FilesHandle;
 use crate::cargo::CargoBuild;
 use crate::cargo::RustOutput;
 use crate::glob;
+use crate::input::watched_dirs;
 use crate::inputs;
 use crate::Build;
 
-pub struct ConfigureBuild {}
+pub struct ConfigureBuild {
+    /// Reconfigure when a globbed folder's listing changes. Needs n2: see
+    /// [watched_dirs].
+    pub watch_globbed_dirs: bool,
+}
 
 impl BuildAction for ConfigureBuild {
     fn command(&self) -> &str {
@@ -23,6 +28,11 @@ impl BuildAction for ConfigureBuild {
         build.add_inputs("cmd", inputs![":build:configure_bin"]);
         // reconfigure when external inputs change
         build.add_inputs("", inputs!["$builddir/env", ".version", ".git"]);
+        // and when a globbed directory gains, loses or renames a file. This
+        // must run after all globs are resolved, so the action is added last.
+        if self.watch_globbed_dirs {
+            build.add_inputs("", inputs![watched_dirs()]);
+        }
         build.add_outputs("", ["build.ninja"])
     }
 

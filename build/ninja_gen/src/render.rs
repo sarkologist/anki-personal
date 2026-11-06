@@ -9,6 +9,7 @@ use anyhow::Result;
 use itertools::Itertools;
 
 use crate::archives::with_exe;
+use crate::configure::ConfigureBuild;
 use crate::input::space_separated;
 use crate::Build;
 
@@ -57,7 +58,10 @@ impl Build {
         buf
     }
 
-    pub fn write_build_file(&self) -> Result<()> {
+    pub fn write_build_file(&mut self) -> Result<()> {
+        // added last, as its inputs include the directories of every resolved glob
+        let watch_globbed_dirs = self.have_n2;
+        self.add_action("build:configure", ConfigureBuild { watch_globbed_dirs })?;
         create_dir_all(&self.buildroot)?;
         let path = self.buildroot.join("build.ninja");
         let contents = self.render().into_bytes();
