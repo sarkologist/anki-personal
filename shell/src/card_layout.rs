@@ -76,6 +76,13 @@ pub fn open_from_editor(ui: &Arc<Ui>, label: &str) {
 }
 
 pub fn open(ui: &Ui, note: Note, ord: u32, editor: &str) {
+    // one at a time (Qt's is modal): keep the open one and its changes
+    if let Some(window) = ui.app.get_webview_window(LABEL) {
+        if !ui.background {
+            let _ = window.set_focus();
+        }
+        return;
+    }
     *SESSION.lock().unwrap() = Some(Session {
         note,
         ord,
@@ -287,9 +294,24 @@ fn render_side(
     api: &Api,
     media: &std::path::Path,
     note: &Note,
-    template: Template,
+    mut template: Template,
     args: &RenderArgs,
 ) -> Result<String> {
+    // A cloze notetype's one template has ord 0, which for a saved note
+    // finds its first card: the card shown is the cloze chosen
+    // (`Note.ephemeral_card`'s "may differ in cloze case").
+    let notetype: anki_proto::notetypes::Notetype = api.call(
+        "get_notetype",
+        &anki_proto::notetypes::NotetypeId {
+            ntid: note.notetype_id,
+        },
+    )?;
+    let cloze = notetype.config.is_some_and(|c| {
+        c.kind == anki_proto::notetypes::notetype::config::Kind::Cloze as i32
+    });
+    if cloze {
+        template.ord = Some(anki_proto::generic::UInt32 { val: args.ord });
+    }
     let out: RenderCardResponse = api.call(
         "render_uncommitted_card",
         &RenderUncommittedCardRequest {
@@ -430,6 +452,41 @@ mod test {
         // the sample comparison, after the answer line
         assert!(a.contains("<hr id=answer><code id=typeans>"), "{a}");
         assert!(!a.contains("[[type:"), "{a}");
+    }
+
+    #[test]
+    fn a_saved_cloze_note_previews_the_cloze_chosen() {
+        let (_dir, api, media) = collection();
+        let names: NotetypeNames = api.call("get_notetype_names", &Empty {}).unwrap();
+        let ntid = names.entries.iter().find(|e| e.name == "Cloze").unwrap().id;
+        let mut note: Note = api
+            .call("new_note", &anki_proto::notetypes::NotetypeId { ntid })
+            .unwrap();
+        note.fields[0] = "{{c1::one}} {{c2::two}}".into();
+        let added: anki_proto::notes::AddNoteResponse = api
+            .call(
+                "add_note",
+                &anki_proto::notes::AddNoteRequest {
+                    note: Some(note),
+                    deck_id: 1,
+                },
+            )
+            .unwrap();
+        let note: Note = api
+            .call("get_note", &anki_proto::notes::NoteId { nid: added.note_id })
+            .unwrap();
+        let notetype: anki_proto::notetypes::Notetype = api
+            .call("get_notetype", &anki_proto::notetypes::NotetypeId { ntid })
+            .unwrap();
+        let template = notetype.templates[0].clone();
+        let second = RenderArgs {
+            ord: 1,
+            css: String::new(),
+            ..args(false)
+        };
+        let q = render_side(&api, &media, &note, template, &second).unwrap();
+        // cloze 2 is the one hidden
+        assert!(q.contains(r#"data-ordinal="2">[...]</span>"#), "{q}");
     }
 
     #[test]

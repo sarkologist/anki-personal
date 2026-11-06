@@ -135,6 +135,19 @@ await until(
 document.querySelector("#add-card-type").click();
 (await answer()).done();
 await until("a third card type", () => document.querySelectorAll("#card option").length === 3);
+// its name has no invisible isolation marks (they'd be saved)
+check("the new card type's name", document.querySelector("#card option:nth-child(3)").textContent, "3: Card 3");
+// it starts as a copy of the card shown; typing into it and switching
+// back shows the first card's own front, not what was typed
+document.querySelector("#tab-front").click();
+await until("the copied front", () => template().value === "{{Back}}");
+type("{{Back}} copy");
+// card 2's front is what card 3's was before typing
+set("#card", "1");
+await sleep(300);
+check("switching shows the other card's front", template().value, "{{Back}}");
+set("#card", "2");
+await until("card 3's front", () => template().value === "{{Back}} copy");
 document.querySelector("#remove-card-type").click();
 (await answer()).done();
 await until("two again", () => document.querySelectorAll("#card option").length === 2);

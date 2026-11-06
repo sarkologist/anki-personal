@@ -1174,6 +1174,21 @@ already exist in `ts/`; hosting them is small when they're wanted.
   - Left out: Deck Override, Browser Appearance, Restore to Default, Copy
     Info, Add Field (Fields is deferred), the template search box, audio
     in the preview, and the mobile class.
+  - Qt's dialog is application-modal; this window isn't. So a second
+    Cards… focuses the open one, and saving keeps notetype changes made
+    meanwhile (a sticky pin in Add, a sync): if the notetype's mtime
+    moved, the window's templates and styling go into the current copy.
+    Quitting with unsaved changes drops them, as closing the main window
+    does for other windows.
+  - Review (an independent Opus pass), fixed: after switching card types
+    the textarea could keep what was typed for another (Svelte left the
+    DOM alone when the new text equalled the last one drawn), so the next
+    keystroke overwrote that card type; a saved cloze note previewed every
+    cloze as cloze 1 (the template's ord 0 found its first card; as
+    `ephemeral_card`, the ord is now the cloze's); new card type names
+    kept Fluent's invisible isolation marks; a second Cards… reloaded the
+    window and its changes away; repositioning didn't warn of the full
+    sync; a second save could follow the first.
   - Checks: `harness/card-layout.js` on a fresh copy of a stock notetype
     (the preview following edits, sides and night mode; the frame's
     isolation; renaming, adding and removing card types; the discard

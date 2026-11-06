@@ -74,7 +74,7 @@ impl WebviewKind {
     pub fn own_backend(self) -> &'static [&'static str] {
         match self {
             WebviewKind::Preferences => &["get_preferences", "set_preferences"],
-            WebviewKind::CardLayoutEditor => &["update_notetype"],
+            WebviewKind::CardLayoutEditor => &["get_notetype", "update_notetype"],
             WebviewKind::FilteredDeck => &[
                 "get_or_create_filtered_deck",
                 "add_or_update_filtered_deck",

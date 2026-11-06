@@ -9,9 +9,10 @@ shell/src/card_layout.rs) and this page posts it there.
 -->
 <script lang="ts">
     import type { Notetype, Notetype_Template } from "@generated/anki/notetypes_pb";
-    import { updateNotetype } from "@generated/backend";
+    import { getNotetype, updateNotetype } from "@generated/backend";
     import * as tr from "@generated/ftl";
     import { bridgeCommand } from "@tslib/bridgecommand";
+    import { withoutUnicodeIsolation } from "@tslib/i18n";
     import { onDestroy, onMount } from "svelte";
 
     import Dialog from "$lib/shell/Dialog.svelte";
@@ -34,6 +35,7 @@ shell/src/card_layout.rs) and this page posts it there.
     export let night: boolean;
 
     const cloze = isCloze(notetype);
+    const loadedMtime = notetype.mtimeSecs;
     const config = notetype.config!;
 
     interface Card {
@@ -67,7 +69,11 @@ shell/src/card_layout.rs) and this page posts it there.
     let previewNight = night;
     let dirty = false;
     let error = "";
+    let renderError = "";
     let busy = false;
+    /** Bumped when a change other than typing alters the text shown, so
+    the textarea is drawn again (it keeps what's typed otherwise). */
+    let version = 0;
 
     function text(tab: Tab, template: Notetype_Template): string {
         if (tab === "front") {
@@ -122,9 +128,10 @@ shell/src/card_layout.rs) and this page posts it there.
             error?: string;
         }>(`clayoutRender:${JSON.stringify(args)}`);
         if (out.error) {
-            error = out.error;
+            renderError = out.error;
             return;
         }
+        renderError = "";
         frame?.contentWindow?.postMessage(
             { html: out.html, bodyClass: out.bodyClass, night: previewNight },
             "*",
@@ -160,6 +167,7 @@ shell/src/card_layout.rs) and this page posts it there.
     function changed(): void {
         notetype = notetype;
         dirty = true;
+        version++;
     }
 
     async function addCardType(): Promise<void> {
@@ -169,8 +177,9 @@ shell/src/card_layout.rs) and this page posts it there.
             message: `${tr.cardTemplatesThisWillCreateCardProceed({ count: notes ?? 0 })}\n\n${tr.qtMiscTheRequestedChangeWillRequireA()}`,
             confirm: tr.cardTemplatesAddCardType().replace("...", ""),
             action: () => {
+                // without Fluent's isolation marks, which would be saved
                 const name = newCardName(notetype.templates, (n) =>
-                    tr.cardTemplatesCard({ val: n }),
+                    withoutUnicodeIsolation(tr.cardTemplatesCard({ val: n })),
                 );
                 notetype.templates.push(newTemplate(name, template));
                 selected = notetype.templates.length - 1;
@@ -185,6 +194,7 @@ shell/src/card_layout.rs) and this page posts it there.
             return;
         }
         const index = card.index;
+        const name = template.name;
         const existing = template.ord?.val;
         const count =
             existing === undefined
@@ -195,7 +205,7 @@ shell/src/card_layout.rs) and this page posts it there.
         open({
             title: tr.cardTemplatesRemoveCardType().replace("...", ""),
             message: `${tr.cardTemplatesDeleteTheAsCardTypeAnd({
-                template: template.name,
+                template: name,
                 // Qt passes the counted phrase
                 cards: tr.cardTemplatesCardCount({ count }) as unknown as number,
             })}\n\n${tr.qtMiscTheRequestedChangeWillRequireA()}`,
@@ -230,14 +240,15 @@ shell/src/card_layout.rs) and this page posts it there.
         const index = card.index;
         open({
             title: tr.cardTemplatesRepositionCardType().replace("...", ""),
-            message: tr.cardTemplatesEnterNewCardPosition1({
+            message: `${tr.cardTemplatesEnterNewCardPosition1({
                 val: notetype.templates.length,
-            }),
+            })}\n\n${tr.qtMiscTheRequestedChangeWillRequireA()}`,
             input: String(index + 1),
             inputType: "number",
             confirm: tr.actionsReposition(),
             action: (position) => {
-                const n = Number(position);
+                // an emptied box changes nothing, as in Qt
+                const n = position === "" || position == null ? NaN : Number(position);
                 if (Number.isFinite(n)) {
                     selected = reposition(notetype.templates, index, n);
                     changed();
@@ -264,12 +275,23 @@ shell/src/card_layout.rs) and this page posts it there.
             return;
         }
         busy = true;
+        error = "";
         try {
-            await updateNotetype(notetype, quiet);
+            // Changed elsewhere meanwhile (a sticky pin, a sync)? Keep that,
+            // with this window's templates and styling.
+            const current = await getNotetype({ ntid: notetype.id }, quiet);
+            let toSave = notetype;
+            if (current.mtimeSecs !== loadedMtime) {
+                toSave = current.clone();
+                toSave.templates = notetype.templates;
+                toSave.config!.css = config.css;
+            }
+            await updateNotetype(toSave, quiet);
+            // still busy: the window closes, and a second save would make
+            // new card types' cards again
             bridgeCommand("clayoutSaved");
         } catch (err) {
             error = errorMessage(err);
-        } finally {
             busy = false;
         }
     }
@@ -360,12 +382,14 @@ shell/src/card_layout.rs) and this page posts it there.
                     {tr.cardTemplatesTemplateStyling()}
                 </button>
             </div>
+            {#key `${card.index}:${tab}:${version}`}
             <textarea
                 id="template"
                 spellcheck="false"
                 value={text(tab, template)}
                 on:input={edit}
             ></textarea>
+            {/key}
         </section>
 
         <section class="preview">
@@ -394,6 +418,9 @@ shell/src/card_layout.rs) and this page posts it there.
                     {tr.cardTemplatesNightMode()}
                 </label>
             </div>
+            {#if renderError}
+                <div class="error" role="alert" id="render-error">{renderError}</div>
+            {/if}
             <iframe
                 bind:this={frame}
                 id="preview"
