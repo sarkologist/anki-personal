@@ -935,9 +935,9 @@ pub fn run(args: Args) -> Result<()> {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
-        } if label == crate::preferences::LABEL && crate::preferences::wants_flush(&exit_ui) => {
+        } if label == crate::preferences::LABEL => {
             api.prevent_close();
-            crate::preferences::close(&exit_ui);
+            crate::preferences::close_requested(&exit_ui);
         }
         // closing the main window quits, once the editors are saved (or
         // the user keeps the Add window's input)
@@ -950,6 +950,12 @@ pub fn run(args: Args) -> Result<()> {
             if !crate::editor_window::exit_requested(&exit_ui, 0) {
                 app.exit(0);
             }
+        }
+        // Preferences saves what's being typed, then the exit goes on
+        RunEvent::ExitRequested { api, code, .. }
+            if crate::preferences::exit_requested(&exit_ui, code.unwrap_or(0)) =>
+        {
+            api.prevent_exit();
         }
         RunEvent::ExitRequested { api, code, .. }
             if crate::editor_window::exit_requested(&exit_ui, code.unwrap_or(0)) =>

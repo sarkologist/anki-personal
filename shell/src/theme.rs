@@ -82,6 +82,10 @@ pub fn system_dark() -> bool {
 /// pages served from now on, and the pages already open. `system_dark` is
 /// the system's appearance if known (from a theme change event).
 pub fn apply(ui: &std::sync::Arc<crate::app::Ui>, system_dark: Option<bool>) {
+    // one at a time: a system change and a preference change at once could
+    // otherwise leave the older outcome
+    static APPLYING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = APPLYING.lock().unwrap();
     let pref = ui.settings.lock().unwrap().theme_pref();
     ui.app.set_theme(pref.window_theme());
     let night = pref.night_mode(system_dark.unwrap_or_else(self::system_dark));

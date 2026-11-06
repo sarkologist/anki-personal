@@ -311,7 +311,7 @@ Changes are saved as they're made, as on macOS.
                 rows="4"
                 spellcheck="false"
                 bind:value={latexPng}
-                on:input={latexChanged}
+                on:change={latexChanged}
             ></textarea>
         </label>
         <label class="block">
@@ -321,7 +321,7 @@ Changes are saved as they're made, as on macOS.
                 rows="4"
                 spellcheck="false"
                 bind:value={latexSvg}
-                on:input={latexChanged}
+                on:change={latexChanged}
             ></textarea>
         </label>
         {#if latexError}

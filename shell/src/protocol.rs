@@ -475,7 +475,6 @@ fn local_file(root: &Path, path: &str) -> HttpResponse {
     resp
 }
 
-/// `root/path` (guarded), as is.
 /// An HTML response in the current theme (an add-on's panel page).
 fn themed(mut resp: HttpResponse, night: bool) -> HttpResponse {
     if night && resp.status() == StatusCode::OK && resp.headers()[CONTENT_TYPE] == "text/html" {
@@ -485,6 +484,7 @@ fn themed(mut resp: HttpResponse, night: bool) -> HttpResponse {
     resp
 }
 
+/// `root/path` (guarded), as is.
 fn file_response(root: &Path, path: &str) -> HttpResponse {
     let Some(full) = safe_join(root, path) else {
         return text(StatusCode::FORBIDDEN, format!("invalid path: {path}"));

@@ -1083,6 +1083,25 @@ already exist in `ts/`; hosting them is small when they're wanted.
     pdflatex, pdfcrop and pdf2svg. The pipeline includes a debugging
     `cp tmp.pdf ~/tmp.pdf`, so every SVG render rewrites that file, as in
     the old Anki.
+- **Saving:** each change is saved shortly after typing stops, one save at
+  a time. Closing the window or quitting first runs the page's flush
+  (2 s at most), since a closing webview runs no more timers. Number
+  boxes are clamped as Qt's spin boxes: the backend stores the rollover
+  in a byte, so 300 would wrap to 44. A save refreshes the deck list and
+  the undo menu, but not the reviewer's card, whose redraw would replay
+  its audio. A full sync closes the window, which holds a copy of the
+  settings. Each save is an undoable "Update Preferences" step.
+- **Review** (two independent Opus passes), fixed: edits lost on close
+  and quit, saves landing out of order, an emptied number box failing
+  every later save, no refresh after a save, Preferences left open over a
+  full sync, re-import not reapplying the commands and theme, the theme
+  handler locking on the main thread, odd add-on files failing the whole
+  import, and add-on panel pages not themed.
+- **Build trap:** after a rebuilt SvelteKit bundle, one chunk on disk came
+  from an earlier build (another `__sveltekit_*` global), and every page
+  failed to start. Removing `out/sveltekit` and
+  `out/qt/_aqt/data/web/sveltekit` and building again fixed it (the build
+  doesn't prune old outputs).
 - **Checks:** `harness/preferences.js` (`--test-page preferences`, a new
   test mode that opens a screen's window and runs the script there on
   each load). It checks the imported commands, dark mode in the open page
