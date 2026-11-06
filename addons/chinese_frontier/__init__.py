@@ -12,6 +12,9 @@ def _install() -> None:
     except ImportError:
         return
     if aqt.mw is not None:
+        from . import panels
+
+        panels.install()
         from .runtime import install
 
         install()

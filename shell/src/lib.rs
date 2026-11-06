@@ -17,6 +17,7 @@ pub mod latex;
 pub mod main_window;
 pub mod menus;
 pub mod pages;
+pub mod plugins;
 pub mod profile;
 pub mod protocol;
 pub mod reviewer;
@@ -41,6 +42,42 @@ use crate::profile::ProfilePaths;
 pub type FrontendHandler =
     Box<dyn Fn(&Shell, &str, &[u8]) -> Result<Vec<u8>, String> + Send + Sync>;
 
+/// `/_addons/<module>/<path>`: files in the old Anki's `addons21` folder
+/// that an add-on allowed with `setWebExports` (as `mediasrv.py`).
+#[derive(Default)]
+pub struct AddonFiles {
+    folder: RwLock<Option<PathBuf>>,
+    exports: RwLock<HashMap<String, regex::Regex>>,
+}
+
+impl AddonFiles {
+    pub fn set_folder(&self, folder: Option<PathBuf>) {
+        *self.folder.write().unwrap() = folder;
+        self.exports.write().unwrap().clear();
+    }
+
+    pub fn set_exports(&self, module: &str, pattern: &str) {
+        // Python's re.fullmatch
+        match regex::Regex::new(&format!("^(?:{pattern})$")) {
+            Ok(re) => {
+                self.exports.write().unwrap().insert(module.into(), re);
+            }
+            Err(err) => tracing::warn!(module, %err, "bad web exports pattern"),
+        }
+    }
+
+    /// The add-on's folder and the path within it, if exported.
+    pub fn resolve(&self, path: &str) -> Option<(PathBuf, String)> {
+        let (module, rest) = path.split_once('/')?;
+        let exports = self.exports.read().unwrap();
+        if !exports.get(module)?.is_match(rest) {
+            return None;
+        }
+        let folder = self.folder.read().unwrap().clone()?;
+        Some((folder.join(module), rest.to_string()))
+    }
+}
+
 /// State shared by the protocol handler, the bridge, AnkiConnect and the
 /// windows.
 pub struct Shell {
@@ -49,6 +86,11 @@ pub struct Shell {
     pub web: PathBuf,
     pub pages: Pages,
     pub bridge: Bridge,
+    /// The plugin host's backend calls hold this for reading; a full sync,
+    /// which closes and reopens the collection, holds it for writing.
+    pub plugin_gate: RwLock<()>,
+    /// What add-ons serve under `/_addons/`.
+    pub addon_files: AddonFiles,
     open: Mutex<Option<ProfilePaths>>,
     frontend: RwLock<HashMap<String, FrontendHandler>>,
 }
@@ -60,6 +102,8 @@ impl Shell {
             web,
             pages: Pages::default(),
             bridge: Bridge::default(),
+            plugin_gate: RwLock::new(()),
+            addon_files: AddonFiles::default(),
             open: Mutex::new(None),
             frontend: RwLock::new(HashMap::new()),
         }

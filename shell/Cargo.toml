@@ -33,6 +33,7 @@ data-encoding.workspace = true
 dirs.workspace = true
 globset.workspace = true
 htmlescape.workspace = true
+libc.workspace = true
 prost.workspace = true
 rand.workspace = true
 regex.workspace = true

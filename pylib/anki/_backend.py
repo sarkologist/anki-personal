@@ -14,7 +14,7 @@ from weakref import ref
 from markdown import markdown
 
 import anki.buildinfo
-from anki import _rsbridge, backend_pb2, i18n_pb2
+from anki import backend_pb2, i18n_pb2
 from anki._backend_generated import RustBackendGenerated
 from anki._fluent import GeneratedTranslations
 from anki.dbproxy import Row as DBRow
@@ -44,13 +44,22 @@ from .errors import (
     UndoEmpty,
 )
 
-# the following comment is required to suppress a warning that only shows up
-# when there are other pylint failures
-if _rsbridge.buildhash() != anki.buildinfo.buildhash:
-    raise Exception(
-        f"""rsbridge and anki build hashes do not match:
+_rsbridge_error: ImportError | None = None
+try:
+    from anki import _rsbridge
+except ImportError as exc:
+    # The native shell's plugin host has none: its RemoteBackend
+    # (anki.remote) calls the shell's backend instead.
+    _rsbridge = None  # type: ignore[assignment]
+    _rsbridge_error = exc
+else:
+    # the following comment is required to suppress a warning that only shows up
+    # when there are other pylint failures
+    if _rsbridge.buildhash() != anki.buildinfo.buildhash:
+        raise Exception(
+            f"""rsbridge and anki build hashes do not match:
 {_rsbridge.buildhash()} vs {anki.buildinfo.buildhash}"""
-    )
+        )
 
 
 class RustBackend(RustBackendGenerated):
@@ -86,6 +95,8 @@ class RustBackend(RustBackendGenerated):
             preferred_langs=langs,
             server=server,
         )
+        if _rsbridge is None:
+            raise Exception("pylib's _rsbridge didn't load") from _rsbridge_error
         self._backend = _rsbridge.open_backend(init_msg.SerializeToString())
 
     @staticmethod

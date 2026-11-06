@@ -16,27 +16,10 @@ from anki.cards import CardId
 from anki.collection import OpChanges
 from aqt import gui_hooks, mw
 from aqt.operations import CollectionOp, QueryOp
-from aqt.qt import (
-    QAction,
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
-    QLabel,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QPushButton,
-    Qt,
-    QTextEdit,
-    QTimer,
-    QVBoxLayout,
-    qconnect,
-)
+from aqt.qt import QAction, QTimer, qconnect
 from aqt.utils import showInfo, tooltip
 
-from . import categories
+from . import categories, panels
 from .attention import EDIT, STALLED, Attention, rejections
 from .attention_ui import AttentionNotice
 from .collection import (
@@ -68,6 +51,7 @@ from .core import FEEDBACK_REASONS
 from .diagnostics import Diagnostics
 from .generation import GenerationResult, generate
 from .lexicon import Lexicon
+from .panels import Panel, field
 from .preparation import buffer_size, preparation_needed, previous_lessons, read_lesson
 from .providers import (
     CALL_BUDGET,
@@ -81,6 +65,10 @@ from .state import State, vocabulary_version
 from .telemetry import error_location, import_calls, observe, recover
 
 MODULE = __name__.split(".")[0]
+PROVIDERS = [
+    {"value": "codex", "label": "Codex subscription"},
+    {"value": "claude", "label": "Claude subscription"},
+]
 
 
 def resolve_attention(col: Any, item: Attention) -> OpChanges:
@@ -93,6 +81,7 @@ def resolve_attention(col: Any, item: Attention) -> OpChanges:
 
 class Controller:
     notice: AttentionNotice | None = None
+    settings_panel: Panel | None = None
 
     def __init__(self) -> None:
         self.epoch = 0
@@ -675,109 +664,121 @@ class Controller:
         key = next(
             (t[len(KEY_PREFIX) :] for t in target.tags if t.startswith(KEY_PREFIX)), ""
         )
-        dialog = QDialog(mw)
-        dialog.setWindowTitle("Fix this sentence")
-        layout = QVBoxLayout(dialog)
-        explanation = QLabel(
-            "What's wrong with it? The card is suspended until a new sentence fixes "
-            "it, and later checks keep your feedback. Leave everything blank for a "
-            "different sentence."
-            if generated
-            else "This card is suspended now and replaced by a new sentence card, "
-            "with its schedule, once a sentence passes review. Your note is not "
-            "edited; its other cards keep their sentence."
-        )
-        explanation.setWordWrap(True)
-        layout.addWidget(explanation)
-        if repairs >= MAX_REPAIRS:
-            warning = QLabel(
-                f"This sentence has been replaced {repairs} times. It will now be "
-                "tagged chinese-frontier::manual for you to edit instead."
-            )
-            warning.setWordWrap(True)
-            layout.addWidget(warning)
-        word_box = QComboBox()
-        meaning = QLineEdit()
-        if fix is not None:
-            details = QFormLayout()
-            word_box.setEditable(True)
-            word_box.addItems(list(fix.words))
-            meaning.setText(fix.meaning)
-            details.addRow("Target", word_box)
-            details.addRow("Meaning", meaning)
-            layout.addLayout(details)
-        boxes = {}
-        for key, label in FEEDBACK_REASONS.items():
-            boxes[key] = QCheckBox(label)
-            layout.addWidget(boxes[key])
-        form = QFormLayout()
-        avoid = QLineEdit()
-        avoid.setPlaceholderText("e.g. 认为 打算")
-        answered = QLineEdit()
-        answered.setPlaceholderText("The new sentence will rule it out")
-        form.addRow("Words to avoid", avoid)
-        form.addRow("I answered", answered)
-        learnt = categories.learnt_fields(mw.col, layout, form)
-        layout.addLayout(form)
-        note = QTextEdit()
-        note.setAcceptRichText(False)
-        note.setPlaceholderText("Anything else")
-        note.setMaximumHeight(80)
-        layout.addWidget(note)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        qconnect(buttons.accepted, dialog.accept)
-        qconnect(buttons.rejected, dialog.reject)
-        layout.addWidget(buttons)
-        if not dialog.exec():
-            return
-        extra, values = learnt()
-        reasons = (
-            *(key for key, box in boxes.items() if box.isChecked()),
-            *extra,
-        )
-        words = tuple(
-            re.split(r"[\s,，、;；]+", avoid.text().strip())
-            if avoid.text().strip()
-            else ()
-        )
-        text = note.toPlainText()
-        word = answered.text()
-        if fix is not None:
-            self.submit_fix(
-                card_id,
-                word=word_box.currentText(),
-                definition=meaning.text(),
-                reasons=reasons,
-                note=text,
-                avoid_words=words,
-                answered=word,
-                values=values,
-            )
-            return
         note_id = target.id
-
-        def done(result: Any) -> None:
-            self.state.retry_now(key)
-            self.save_state()
-            if result.handed_over:
-                tooltip("Tagged chinese-frontier::manual for you to edit.")
-            else:
-                self.tick(force=True)
-
-        CollectionOp(
-            parent=mw,
-            op=lambda col: record_feedback(
-                col,
-                note_id,
-                reasons=reasons,
-                note=text,
-                avoid_words=words,
-                answered=word,
-                values=values,
+        body = [
+            field(
+                "text",
+                text="What's wrong with it? The card is suspended until a new sentence "
+                "fixes it, and later checks keep your feedback. Leave everything blank "
+                "for a different sentence."
+                if generated
+                else "This card is suspended now and replaced by a new sentence card, "
+                "with its schedule, once a sentence passes review. Your note is not "
+                "edited; its other cards keep their sentence.",
+            )
+        ]
+        if repairs >= MAX_REPAIRS:
+            body.append(
+                field(
+                    "text",
+                    text=f"This sentence has been replaced {repairs} times. It will "
+                    "now be tagged chinese-frontier::manual for you to edit instead.",
+                )
+            )
+        if fix is not None:
+            words = list(fix.words)
+            body += [
+                field(
+                    "input",
+                    "word",
+                    label="Target",
+                    items=[{"value": word, "label": word} for word in words],
+                    value=words[0] if words else "",
+                ),
+                field("input", "meaning", label="Meaning", value=fix.meaning),
+            ]
+        boxes, edits, learnt = categories.learnt_fields(mw.col)
+        body += [
+            *(
+                field("checkbox", f"reason.{reason}", label=label)
+                for reason, label in FEEDBACK_REASONS.items()
             ),
-        ).success(done).run_in_background(initiator=self)
+            *boxes,
+            field(
+                "input", "avoid", label="Words to avoid", placeholder="e.g. 认为 打算"
+            ),
+            field(
+                "input",
+                "answered",
+                label="I answered",
+                placeholder="The new sentence will rule it out",
+            ),
+            *edits,
+            field("textarea", "note", placeholder="Anything else", rows=3),
+            field(
+                "row",
+                align="end",
+                body=[
+                    field("button", "cancel", label="Cancel"),
+                    field("button", "ok", label="OK"),
+                ],
+            ),
+        ]
+
+        def message(message: dict[str, Any]) -> None:
+            if message.get("name") == "cancel":
+                panel.close()
+            if message.get("name") != "ok" or not mw or not mw.col:
+                return
+            panel.close()
+            values = message.get("values", {})
+            extra, learnt_values = learnt(values)
+            reasons = (
+                *(r for r in FEEDBACK_REASONS if values.get(f"reason.{r}") is True),
+                *extra,
+            )
+            avoid = str(values.get("avoid") or "").strip()
+            words = tuple(re.split(r"[\s,，、;；]+", avoid) if avoid else ())
+            text = str(values.get("note") or "")
+            word = str(values.get("answered") or "")
+            if fix is not None:
+                self.submit_fix(
+                    card_id,
+                    word=str(values.get("word") or ""),
+                    definition=str(values.get("meaning") or ""),
+                    reasons=reasons,
+                    note=text,
+                    avoid_words=words,
+                    answered=word,
+                    values=learnt_values,
+                )
+                return
+
+            def done(result: Any) -> None:
+                self.state.retry_now(key)
+                self.save_state()
+                if result.handed_over:
+                    tooltip("Tagged chinese-frontier::manual for you to edit.")
+                else:
+                    self.tick(force=True)
+
+            CollectionOp(
+                parent=mw,
+                op=lambda col: record_feedback(
+                    col,
+                    note_id,
+                    reasons=reasons,
+                    note=text,
+                    avoid_words=words,
+                    answered=word,
+                    values=learnt_values,
+                ),
+            ).success(done).run_in_background(initiator=self)
+
+        panel = panels.open_panel(
+            "Fix this sentence", message, width=520, height=560 if fix else 500
+        )
+        panel.render(*body, submit="ok")
 
     def submit_fix(self, card_id: int, **values: Any) -> None:
         config = self.config()
@@ -795,85 +796,30 @@ class Controller:
     def settings_dialog(self) -> None:
         if not mw or not mw.col:
             return
+        if self.settings_panel:
+            self.settings_panel.close()
         settings = mw.col.get_config(SETTINGS_KEY, {})
         config = self.config()
-        dialog = QDialog(mw)
-        dialog.setWindowTitle("Chinese Frontier")
-        dialog.resize(850, 780)
-        layout = QVBoxLayout(dialog)
-        introduction = QLabel(
-            "Replace suspended single-word cards with one-word sentence clozes.<br>Original notes stay suspended; your daily limits control introductions."
-        )
-        introduction.setWordWrap(True)
-        layout.addWidget(introduction)
-        form = QFormLayout()
-        enabled = QCheckBox("Automatically generate and introduce sentence cards")
-        enabled.setChecked(bool(settings.get("enabled", True)))
-        deck = QComboBox()
-        deck.addItem("Choose a deck…", 0)
-        for item in mw.col.decks.all_names_and_ids(include_filtered=False):
-            deck.addItem(item.name, int(item.id))
-        selected = deck.findData(int(settings.get("deck_id", 0)))
-        if selected <= 0:
+        decks: list[dict[str, Any]] = [
+            {"value": int(item.id), "label": item.name}
+            for item in mw.col.decks.all_names_and_ids(include_filtered=False)
+        ]
+        ids = [deck["value"] for deck in decks]
+        selected = int(settings.get("deck_id", 0))
+        if selected not in ids:
             preferred = [
-                index
-                for index in range(1, deck.count())
-                if deck.itemText(index).casefold()
+                deck["value"]
+                for deck in decks
+                if deck["label"].casefold()
                 in ("chinese", "中文", "汉语", "漢語", "mandarin")
             ]
             selected = preferred[0] if len(preferred) == 1 else 0
-        deck.setCurrentIndex(max(0, selected))
-        provider = QComboBox()
-        provider.addItem("Codex subscription", "codex")
-        provider.addItem("Claude subscription", "claude")
-        provider.setCurrentIndex(
-            max(0, provider.findData(config.get("provider", "codex")))
-        )
-        model = QLineEdit(str(config.get(f"{provider.currentData()}_model", "")))
-        model.setPlaceholderText("Use the CLI default model")
-        qconnect(
-            provider.currentIndexChanged,
-            lambda _index: model.setText(
-                str(config.get(f"{provider.currentData()}_model", ""))
-            ),
-        )
-        form.addRow(enabled)
-        form.addRow("Chinese source deck", deck)
+        provider = config.get("provider", "codex")
+        if provider not in [p["value"] for p in PROVIDERS]:
+            provider = "codex"
+        diagnostics = Diagnostics(self.diagnostics_data)
 
-        def extra_decks(field: str) -> QListWidget:
-            choices = QListWidget()
-            choices.setMaximumHeight(110)
-            chosen = set(settings.get(field, []))
-            for item in mw.col.decks.all_names_and_ids(include_filtered=False):
-                entry = QListWidgetItem(item.name, choices)
-                entry.setData(Qt.ItemDataRole.UserRole, int(item.id))
-                entry.setFlags(entry.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                entry.setCheckState(
-                    Qt.CheckState.Checked
-                    if int(item.id) in chosen
-                    else Qt.CheckState.Unchecked
-                )
-            return choices
-
-        sources = extra_decks("source_deck_ids")
-        vocabulary = extra_decks("vocabulary_deck_ids")
-        sources.setToolTip(
-            "Suspended word targets from these decks become new cards in the chosen Chinese deck. These extra sources do not establish context vocabulary."
-        )
-        vocabulary.setToolTip(
-            "Only established live cards supply context; suspended cards here are not converted."
-        )
-        form.addRow("Extra sources → chosen deck", sources)
-        form.addRow("Extra context vocabulary", vocabulary)
-        form.addRow("Sentence generator", provider)
-        form.addRow("Model (optional)", model)
-        layout.addLayout(form)
-        status = QTextEdit()
-        status.setReadOnly(True)
-        status.setMaximumHeight(160)
-        diagnostics = Diagnostics(dialog, self.diagnostics_data)
-
-        def update_status() -> None:
+        def status_text() -> str:
             text = self.status
             if recurring := categories.status_line(mw.col):
                 text += "\n" + recurring
@@ -890,18 +836,10 @@ class Controller:
                 text += "\nDeferred: " + str(
                     read_lesson(item.get("reason", "")).get("reason", "")
                 )
-            status.setPlainText(text)
-            diagnostics.refresh()
+            return text
 
-        update_status()
-        layout.addWidget(status)
-        fixes_label = QLabel("Fixes waiting for a sentence")
-        fixes = QListWidget()
-        fixes.setMaximumHeight(110)
-        cancel = QPushButton("Cancel selected fix (unsuspends your card)")
-
-        def list_fixes() -> None:
-            fixes.clear()
+        def fixes() -> dict[str, dict[str, Any]]:
+            items = []
             for item in pending_fixes(mw.col):
                 days = max(0, int((time.time() - item.requested_at) // 86400))
                 text = f"{item.word}: waiting {days} d"
@@ -911,58 +849,34 @@ class Controller:
                     text += "; deferred: " + str(read_lesson(reason).get("reason", ""))
                 if item.collision:
                     text += "; another generated card tests this word"
-                entry = QListWidgetItem(text, fixes)
-                entry.setData(Qt.ItemDataRole.UserRole, item.card_id)
-            for widget in (fixes_label, fixes, cancel):
-                widget.setVisible(fixes.count() > 0)
+                items.append({"value": item.card_id, "label": text})
+            hidden = {"hidden": not items}
+            return {
+                "fixes.label": hidden,
+                "fixes": {"items": items, **hidden},
+                "fixes.cancel": hidden,
+            }
 
-        def cancel_selected() -> None:
-            if not (entry := fixes.currentItem()):
-                return
-            card_id = int(entry.data(Qt.ItemDataRole.UserRole))
-            CollectionOp(
-                parent=dialog, op=lambda col: cancel_fix(col, card_id)
-            ).success(lambda _changes: list_fixes()).run_in_background(initiator=self)
+        def checked(values: dict[str, Any], name: str) -> list[int]:
+            chosen = values.get(name) or []
+            return [deck_id for deck_id in ids if deck_id in chosen]
 
-        list_fixes()
-        qconnect(cancel.clicked, cancel_selected)
-        layout.addWidget(fixes_label)
-        layout.addWidget(fixes)
-        layout.addWidget(cancel)
-        categories.settings_widgets(dialog, layout)
-        layout.addWidget(diagnostics)
-        refresh_timer = QTimer(dialog)
-        qconnect(refresh_timer.timeout, update_status)
-        refresh_timer.start(1000)
-        check = QPushButton("Check now")
-        qconnect(check.clicked, lambda: self.tick(force=True))
-        layout.addWidget(check)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Close
-        )
-
-        def save() -> None:
-            if not deck.currentData():
-                showInfo("Choose your Chinese deck first.", parent=dialog)
+        def save(values: dict[str, Any]) -> None:
+            deck_id = values.get("deck")
+            if not isinstance(deck_id, int) or deck_id not in ids:
+                showInfo("Choose your Chinese deck first.")
                 return
             new_settings = {
                 **settings,
-                "deck_id": int(deck.currentData()),
-                "enabled": enabled.isChecked(),
-                **{
-                    field: [
-                        choices.item(index).data(Qt.ItemDataRole.UserRole)
-                        for index in range(choices.count())
-                        if choices.item(index).checkState() == Qt.CheckState.Checked
-                    ]
-                    for field, choices in (
-                        ("source_deck_ids", sources),
-                        ("vocabulary_deck_ids", vocabulary),
-                    )
-                },
+                "deck_id": deck_id,
+                "enabled": values.get("enabled") is True,
+                "source_deck_ids": checked(values, "sources"),
+                "vocabulary_deck_ids": checked(values, "vocabulary"),
             }
-            config["provider"] = provider.currentData()
-            config[f"{provider.currentData()}_model"] = model.text().strip()
+            chosen = values.get("provider")
+            chosen = chosen if chosen in [p["value"] for p in PROVIDERS] else "codex"
+            config["provider"] = chosen
+            config[f"{chosen}_model"] = str(values.get("model") or "").strip()
             self.stop.set()
             self.epoch += 1
             self.stop = Event()
@@ -973,12 +887,129 @@ class Controller:
             ).success(lambda _result: self.tick(force=True)).run_in_background(
                 initiator=self
             )
-            dialog.accept()
+            panel.close()
 
-        qconnect(buttons.accepted, save)
-        qconnect(buttons.rejected, dialog.reject)
-        layout.addWidget(buttons)
-        dialog.exec()
+        def message(message: dict[str, Any]) -> Any:
+            name = str(message.get("name", ""))
+            values = message.get("values", {})
+            if not mw or not mw.col:
+                return None
+            if name.startswith("diagnostics."):
+                return diagnostics.message(message)
+            if categories.settings_message(panel, message):
+                return None
+            if message.get("type") == "change" and name == "provider":
+                model = config.get(f"{values.get('provider')}_model", "")
+                return panels.update({"model": {"value": str(model)}})
+            if name == "cancel_fix" and isinstance(card_id := values.get("fixes"), int):
+                CollectionOp(
+                    parent=mw, op=lambda col: cancel_fix(col, card_id)
+                ).success(
+                    lambda _changes: panel.send(panels.update(fixes()))
+                ).run_in_background(initiator=self)
+            elif name == "check":
+                self.tick(force=True)
+            elif name == "save":
+                save(values)
+            elif name == "close":
+                panel.close()
+            return None
+
+        def refresh() -> None:
+            if panel.closed or not mw or not mw.col:
+                return
+            panel.update({"status": {"value": status_text()}, **diagnostics.fields()})
+            mw.progress.single_shot(1000, refresh)
+
+        def closed() -> None:
+            if self.settings_panel is panel:
+                self.settings_panel = None
+
+        panel = self.settings_panel = panels.open_panel(
+            "Chinese Frontier", message, width=850, height=780, on_closed=closed
+        )
+        shown = fixes()
+        panel.render(
+            field(
+                "text",
+                text="Replace suspended single-word cards with one-word sentence "
+                "clozes.\nOriginal notes stay suspended; your daily limits control "
+                "introductions.",
+            ),
+            field(
+                "checkbox",
+                "enabled",
+                label="Automatically generate and introduce sentence cards",
+                value=bool(settings.get("enabled", True)),
+            ),
+            field(
+                "select",
+                "deck",
+                label="Chinese source deck",
+                items=[{"value": 0, "label": "Choose a deck…"}, *decks],
+                value=selected,
+            ),
+            field(
+                "checklist",
+                "sources",
+                label="Extra sources → chosen deck",
+                tooltip="Suspended word targets from these decks become new cards in the chosen Chinese deck. These extra sources do not establish context vocabulary.",
+                items=decks,
+                value=[i for i in ids if i in settings.get("source_deck_ids", [])],
+                height=110,
+            ),
+            field(
+                "checklist",
+                "vocabulary",
+                label="Extra context vocabulary",
+                tooltip="Only established live cards supply context; suspended cards here are not converted.",
+                items=decks,
+                value=[i for i in ids if i in settings.get("vocabulary_deck_ids", [])],
+                height=110,
+            ),
+            field(
+                "select",
+                "provider",
+                label="Sentence generator",
+                items=PROVIDERS,
+                value=provider,
+                notify=True,
+            ),
+            field(
+                "input",
+                "model",
+                label="Model (optional)",
+                placeholder="Use the CLI default model",
+                value=str(config.get(f"{provider}_model", "")),
+            ),
+            field("readonly", "status", value=status_text(), height=160),
+            field(
+                "text",
+                "fixes.label",
+                text="Fixes waiting for a sentence",
+                **shown["fixes.label"],
+            ),
+            field("list", "fixes", height=110, **shown["fixes"]),
+            field(
+                "button",
+                "fixes.cancel",
+                label="Cancel selected fix (unsuspends your card)",
+                action="cancel_fix",
+                **shown["fixes.cancel"],
+            ),
+            *categories.settings_fields(mw.col),
+            diagnostics.spec(),
+            field("button", "check", label="Check now"),
+            field(
+                "row",
+                align="end",
+                body=[
+                    field("button", "close", label="Close"),
+                    field("button", "save", label="Save"),
+                ],
+            ),
+        )
+        mw.progress.single_shot(1000, refresh)
 
 
 _controller: Controller | None = None

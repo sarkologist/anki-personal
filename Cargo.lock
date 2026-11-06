@@ -177,6 +177,7 @@ dependencies = [
  "dirs 6.0.0",
  "globset",
  "htmlescape",
+ "libc",
  "prost",
  "prost-reflect",
  "rand 0.9.4",

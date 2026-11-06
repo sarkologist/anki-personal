@@ -135,6 +135,7 @@ fn enter(ui: &Arc<Ui>, new: MainState) {
         // the page is about to go; only its audio matters
         apply(ui, effects);
     }
+    crate::plugins::ui::state_changed(ui, old, new);
     crate::menus::refresh(ui);
 }
 
@@ -194,6 +195,24 @@ pub fn start_bench_review(ui: &Arc<Ui>) {
         .unwrap()
         .start_for_bench(&ui.shell.api, media);
     apply(ui, effects);
+}
+
+/// After an add-on's operation: what it changed, as `op_executed` on the
+/// main window's screens.
+pub fn plugin_op_executed(ui: &Arc<Ui>, changes: &anki_proto::collection::OpChanges) {
+    match state(ui) {
+        MainState::Review => {
+            let effects = ui.main.reviewer.lock().unwrap().op_executed(&ui.shell.api);
+            apply(ui, effects);
+        }
+        MainState::DeckBrowser | MainState::Overview => {
+            if changes.study_queues || changes.deck || changes.card || changes.browser_table {
+                refresh(ui);
+            }
+        }
+        MainState::Home => {}
+    }
+    crate::menus::refresh(ui);
 }
 
 /// Reload the shown page's data after changes made elsewhere (a sync, an
@@ -512,6 +531,11 @@ pub fn apply(ui: &Arc<Ui>, effects: Vec<Effect>) {
                 );
             }
             Effect::UndoChanged => crate::menus::refresh(ui),
+            Effect::Answered { card_id, ease } => crate::plugins::ui::notify(
+                ui,
+                "reviewer_did_answer_card",
+                json!({"card_id": card_id, "ease": ease}),
+            ),
         }
     }
 }
@@ -1254,9 +1278,13 @@ fn full_sync_prompt(
                     finish(&ui);
                     return;
                 };
-                let result =
-                    sync::full_sync(&ui.shell.api, &anki_base(&ui), &paths, &auth, upload, usn);
+                let result = {
+                    // add-ons wait while the collection is closed and replaced
+                    let _paused = ui.shell.plugin_gate.write().unwrap();
+                    sync::full_sync(&ui.shell.api, &anki_base(&ui), &paths, &auth, upload, usn)
+                };
                 tracing::info!(upload, ok = result.is_ok(), "full sync done");
+                crate::plugins::ui::notify(&ui, "sync_did_finish", json!({"full": true}));
                 match result {
                     Ok(()) => {
                         ui.main.sync.lock().unwrap().indicator = SyncIndicator::None;
@@ -1295,6 +1323,7 @@ fn render_markdown(ui: &Ui, text: &str) -> String {
 
 /// After a normal sync: the pages show what changed.
 fn after_sync(ui: &Arc<Ui>) {
+    crate::plugins::ui::notify(ui, "sync_did_finish", json!({"full": false}));
     match state(ui) {
         MainState::Review => {
             // the card may have been answered or changed elsewhere

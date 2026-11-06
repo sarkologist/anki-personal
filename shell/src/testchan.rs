@@ -314,6 +314,55 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
         );
         note.map(|n| json!(n.fields)).unwrap_or(Value::Null)
     });
+    // add-ons: their Tools items, choosing one, the reviewer menu's items
+    // for a card, and JS for a window (a panel), whose `pycmd("test:...")`
+    // reports here
+    let u = ui.clone();
+    ui.shell.bridge.register("testAddonMenu", move |_, _, _| {
+        json!(u
+            .plugins
+            .tools
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|i| json!({"id": i.id, "text": i.text, "enabled": i.enabled}))
+            .collect::<Vec<_>>())
+    });
+    let u = ui.clone();
+    ui.shell
+        .bridge
+        .register("testAddonAction", move |_, _, id| {
+            crate::plugins::ui::menu_action(&u, id.parse().unwrap_or(0));
+            Value::Null
+        });
+    let u = ui.clone();
+    ui.shell
+        .bridge
+        .register("testContextMenu", move |_, _, cid| {
+            json!(
+                crate::plugins::ui::context_menu(&u, cid.parse().unwrap_or(0))
+                    .iter()
+                    .map(|i| json!({"id": i.id, "text": i.text}))
+                    .collect::<Vec<_>>()
+            )
+        });
+    // a value another window (a panel) leaves for the script
+    let stash = Arc::new(std::sync::Mutex::new(Value::Null));
+    let st = stash.clone();
+    ui.shell.bridge.register("testStash", move |_, _, value| {
+        let mut stash = st.lock().unwrap();
+        if value.is_empty() {
+            return std::mem::take(&mut *stash);
+        }
+        *stash = serde_json::from_str(value).unwrap_or(Value::Null);
+        Value::Null
+    });
+    let u = ui.clone();
+    ui.shell.bridge.register("testEval", move |_, _, args| {
+        let (label, js) = args.split_once('\n').unwrap_or((args, ""));
+        u.eval(label, js.to_string());
+        Value::Null
+    });
     let u = ui.clone();
     std::thread::spawn(move || {
         let timeout = std::env::var("ANKI_SHELL_TEST_TIMEOUT")

@@ -35,6 +35,7 @@ use rust::build_rust;
 use rust::check_minilints;
 use rust::check_rust;
 use shell::build_shell;
+use shell::check_shell;
 use web::build_and_check_web;
 use web::check_sql;
 
@@ -108,6 +109,7 @@ fn main() -> Result<()> {
 
     check_rust(build)?;
     check_pylib(build)?;
+    check_shell(build)?;
     check_python(build)?;
 
     check_sql(build)?;

@@ -217,8 +217,11 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
         }
         return bundled_file(&shell.web, &remap_legacy_path(rest));
     }
-    if path.starts_with("_addons/") {
-        return text(StatusCode::NOT_FOUND, "add-on files are not supported yet");
+    if let Some(rest) = path.strip_prefix("_addons/") {
+        return match shell.addon_files.resolve(rest) {
+            Some((folder, file)) => local_file(&folder, &file),
+            None => text(StatusCode::NOT_FOUND, format!("not exported: {rest}")),
+        };
     }
     match shell.media_folder() {
         Some(media) => local_file(&media, &path),
@@ -534,6 +537,37 @@ mod test {
             Some("<html><head></head></html>".into()),
         );
         Fixture { shell, _dir: dir }
+    }
+
+    #[test]
+    fn add_on_files_are_served_only_where_exported() {
+        let f = fixture();
+        let addons = f._dir.path().join("addons21");
+        std::fs::create_dir_all(addons.join("frontier/web")).unwrap();
+        std::fs::write(addons.join("frontier/web/panel.html"), "<p>panel").unwrap();
+        std::fs::write(addons.join("frontier/meta.json"), "{\"secret\": 1}").unwrap();
+        assert_eq!(
+            get(&f, "addon-panel-1", "_addons/frontier/web/panel.html").status(),
+            StatusCode::NOT_FOUND
+        );
+        f.shell.addon_files.set_folder(Some(addons));
+        f.shell.addon_files.set_exports("frontier", r"web/.*");
+        let resp = get(&f, "addon-panel-1", "_addons/frontier/web/panel.html");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.body(), b"<p>panel");
+        for path in [
+            "_addons/frontier/meta.json",
+            "_addons/frontier/web/../meta.json",
+            "_addons/other/web/panel.html",
+            // the pattern must match the whole path, as re.fullmatch
+            "_addons/frontier/xweb/panel.html",
+        ] {
+            assert_ne!(
+                get(&f, "addon-panel-1", path).status(),
+                StatusCode::OK,
+                "{path}"
+            );
+        }
     }
 
     fn get(f: &Fixture, label: &str, path: &str) -> HttpResponse {

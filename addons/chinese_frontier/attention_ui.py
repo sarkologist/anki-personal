@@ -5,28 +5,18 @@
 from __future__ import annotations
 
 import traceback
-from typing import Callable
+from typing import Any, Callable
 
 import aqt
 from anki.collection import Collection, OpChanges
 from aqt import gui_hooks, mw
 from aqt.operations import CollectionOp
-from aqt.qt import (
-    QAbstractItemView,
-    QAction,
-    QDialog,
-    QHBoxLayout,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
-    QPushButton,
-    Qt,
-    QVBoxLayout,
-    qconnect,
-)
+from aqt.qt import QAction, qconnect
 from aqt.utils import tooltip
 
+from . import panels
 from .attention import ACTIONS, Attention, banner, browser_search
+from .panels import field
 
 
 class AttentionNotice:
@@ -104,91 +94,112 @@ class AttentionNotice:
     def open(self) -> None:
         if not mw or not mw.col:
             return
-        dialog = QDialog(mw)
-        dialog.setWindowTitle(f"{self.language} Frontier: needs attention")
-        dialog.resize(640, 360)
-        layout = QVBoxLayout(dialog)
-        explanation = QLabel(
-            "Automation cannot finish these cards. Open them in the Browser to edit "
-            "them, or act on the selected ones."
-        )
-        explanation.setWordWrap(True)
-        layout.addWidget(explanation)
-        listing = QListWidget()
-        listing.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        listing.setWordWrap(True)
-        layout.addWidget(listing)
-        buttons = QHBoxLayout()
-        browse = QPushButton("Open in Browser")
-        act = QPushButton()
-        close = QPushButton("Close")
-        for button in (browse, act, close):
-            buttons.addWidget(button)
-        layout.addLayout(buttons)
+        # The listed rows; the page's selection holds their indexes.
+        rows: list[Attention] = []
 
-        def fill() -> None:
-            listing.clear()
-            for item in self.items():
+        def listing() -> dict[str, dict[str, Any]]:
+            rows[:] = self.items()
+            items: list[dict[str, Any]] = []
+            for index, item in enumerate(rows):
                 text = f"{item.word}: {item.reason}"
-                entry = QListWidgetItem(
-                    text if len(text) <= 240 else text[:239] + "…", listing
+                label = text if len(text) <= 240 else text[:239] + "…"
+                items.append({"value": index, "label": label, "title": text})
+            if not items:
+                items.append(
+                    {
+                        "value": None,
+                        "label": "Nothing needs your attention.",
+                        "disabled": True,
+                    }
                 )
-                entry.setToolTip(text)
-                entry.setData(Qt.ItemDataRole.UserRole, item)
-            if not listing.count():
-                QListWidgetItem("Nothing needs your attention.", listing)
-            update()
+            return {"items": {"items": items}, **buttons([])}
 
-        def selected() -> list[Attention]:
+        def selected(values: dict[str, Any]) -> list[Attention]:
             return [
-                item
-                for entry in listing.selectedItems()
-                if isinstance(item := entry.data(Qt.ItemDataRole.UserRole), Attention)
+                rows[index]
+                for index in values.get("items") or []
+                if isinstance(index, int) and 0 <= index < len(rows)
             ]
 
-        def everything() -> list[Attention]:
-            return [
-                item
-                for row in range(listing.count())
-                if isinstance(
-                    item := listing.item(row).data(Qt.ItemDataRole.UserRole), Attention
-                )
-            ]
+        def buttons(chosen: list[Attention]) -> dict[str, dict[str, Any]]:
+            labels = {ACTIONS[item.kind] for item in chosen}
+            return {
+                "act": {
+                    "hidden": len(labels) != 1,
+                    "label": next(iter(labels)) if len(labels) == 1 else "",
+                },
+                "browse": {"disabled": not rows},
+            }
 
-        def update() -> None:
-            labels = {ACTIONS[item.kind] for item in selected()}
-            act.setVisible(len(labels) == 1)
-            if len(labels) == 1:
-                act.setText(labels.pop())
-            browse.setEnabled(bool(everything()))
-
-        def open_browser() -> None:
-            if items := selected() or everything():
-                aqt.dialogs.open("Browser", mw, search=(browser_search(items),))
-
-        def act_on() -> None:
-            # Rows can go stale while the dialog is open; act only on current ones.
+        def act_on(chosen: list[Attention]) -> None:
+            labels = {ACTIONS[item.kind] for item in chosen}
+            if len(labels) != 1:
+                return
+            label = labels.pop()
+            # Rows can go stale while the panel is open; act only on current ones.
             current = set(self.items())
-            items = [item for item in selected() if item in current]
+            items = [item for item in chosen if item in current]
 
             def op(col: Collection) -> OpChanges:
                 undo = col.add_custom_undo_entry(
-                    f"{self.language} Frontier: {act.text().lower()}"
+                    f"{self.language} Frontier: {label.lower()}"
                 )
                 for item in items:
                     self.resolve(col, item)
                 return col.merge_undo_entries(undo)
 
             def done(_changes: OpChanges) -> None:
-                fill()
-                self.refresh()
+                if mw and mw.col:
+                    panel.send(panels.update(listing()))
+                    self.refresh()
 
-            CollectionOp(parent=dialog, op=op).success(done).run_in_background()
+            CollectionOp(parent=mw, op=op).success(done).run_in_background()
 
-        qconnect(listing.itemSelectionChanged, update)
-        qconnect(listing.itemDoubleClicked, lambda _entry: open_browser())
-        qconnect(browse.clicked, open_browser)
-        qconnect(act.clicked, act_on)
-        qconnect(close.clicked, dialog.accept)
-        fill()
-        dialog.show()
+        def message(message: dict[str, Any]) -> Any:
+            chosen = selected(message.get("values", {}))
+            name = message.get("name")
+            if message.get("type") == "change":
+                return panels.update(buttons(chosen))
+            if name == "browse":
+                if items := chosen or list(rows):
+                    aqt.dialogs.open("Browser", mw, search=(browser_search(items),))
+            elif name == "act":
+                act_on(chosen)
+            elif name == "close":
+                panel.close()
+            return None
+
+        panel = panels.open_panel(
+            f"{self.language} Frontier: needs attention",
+            message,
+            width=640,
+            height=360,
+        )
+        shown = listing()
+        panel.render(
+            field(
+                "text",
+                text="Automation cannot finish these cards. Open them in the "
+                "Browser to edit them, or act on the selected ones.",
+            ),
+            field(
+                "list",
+                "items",
+                multiple=True,
+                notify=True,
+                activate="browse",
+                height=220,
+                **shown["items"],
+            ),
+            field(
+                "row",
+                align="end",
+                body=[
+                    field(
+                        "button", "browse", label="Open in Browser", **shown["browse"]
+                    ),
+                    field("button", "act", **shown["act"]),
+                    field("button", "close", label="Close"),
+                ],
+            ),
+        )
