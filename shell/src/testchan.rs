@@ -81,6 +81,44 @@ fn create_test_note(shell: &crate::Shell) -> Result<i64> {
 /// for the next page instead of ending the test.
 static MAIN_SCRIPT: std::sync::Mutex<Option<(String, u32, i64)>> = std::sync::Mutex::new(None);
 
+/// For the other screens (`--test-page preferences`, ...): the window's
+/// label, the script, and how often it ran, as for [MAIN_SCRIPT].
+static SCREEN_SCRIPT: std::sync::Mutex<Option<(String, String, u32)>> =
+    std::sync::Mutex::new(None);
+
+/// The screens a test can open, by `--test-page` name: their window's
+/// label.
+fn screen_label(page: &str) -> Option<&'static str> {
+    match page {
+        "preferences" => Some(crate::preferences::LABEL),
+        _ => None,
+    }
+}
+
+fn open_screen(ui: &Arc<Ui>, page: &str) {
+    match page {
+        "preferences" => crate::preferences::open(ui),
+        _ => {}
+    }
+}
+
+/// A webview loaded a page (its `domDone`): run a screen's script there.
+pub fn page_loaded(ui: &Ui, label: &str) {
+    let mut guard = SCREEN_SCRIPT.lock().unwrap();
+    let Some((screen, script, stage)) = guard.as_mut() else {
+        return;
+    };
+    if screen != label {
+        return;
+    }
+    let js = wrap(script, None).replace(
+        "const testNote = 0;",
+        &format!("const testNote = 0;\n    const testStage = {stage};"),
+    );
+    *stage += 1;
+    ui.eval(label, js);
+}
+
 /// The main window loaded a page (its `domDone`).
 pub fn main_page_loaded(ui: &Ui) {
     let mut guard = MAIN_SCRIPT.lock().unwrap();
@@ -495,6 +533,31 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
         *stash = serde_json::from_str(value).unwrap_or(Value::Null);
         Value::Null
     });
+    // the settings file as the shell has it
+    let u = ui.clone();
+    ui.shell.bridge.register("testSettings", move |_, _, _| {
+        json!(*u.settings.lock().unwrap())
+    });
+    // render LaTeX in `text` as a card would (the first notetype's header),
+    // with the image's contents
+    ui.shell.bridge.register("testRenderLatex", |shell, _, text| {
+        let names: anki_proto::notetypes::NotetypeNames = shell
+            .api
+            .call("get_notetype_names", &anki_proto::generic::Empty {})
+            .unwrap_or_default();
+        let (Some(first), Some(media)) = (names.entries.first(), shell.media_folder()) else {
+            return Value::Null;
+        };
+        let cfg = crate::latex::latex_config(&shell.api, first.id).unwrap_or_default();
+        let (html, errors) = crate::latex::render_latex(&shell.api, &media, text, &cfg);
+        let image = html
+            .split("src=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|name| std::fs::read(media.join(name)).ok())
+            .map(|data| String::from_utf8_lossy(&data).into_owned());
+        json!({ "html": html, "errors": errors, "image": image, "svg": cfg.svg })
+    });
     let u = ui.clone();
     ui.shell.bridge.register("testEval", move |_, _, args| {
         let (label, js) = args.split_once('\n').unwrap_or((args, ""));
@@ -565,6 +628,16 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
             println!("TEST deck {did}");
             *MAIN_SCRIPT.lock().unwrap() = Some((script, 0, did));
             ui.show_main()?;
+        }
+        page if screen_label(page).is_some() => {
+            anyhow::ensure!(
+                ui.shell.open_profile_paths().is_some(),
+                "no profile open: {}",
+                ui.status.lock().unwrap()
+            );
+            let label = screen_label(page).unwrap_or_default();
+            *SCREEN_SCRIPT.lock().unwrap() = Some((label.into(), script, 0));
+            open_screen(ui, page);
         }
         _ => {
             // runs on the home page, and again on each page after it (a

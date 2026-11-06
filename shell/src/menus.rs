@@ -181,6 +181,13 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
     let app_menu = SubmenuBuilder::new(app, "Anki")
         .item(&PredefinedMenuItem::about(app, None, None)?)
         .separator()
+        .item(&item(
+            app,
+            "preferences",
+            &format!("{}…", tr.preferences_preferences()),
+            Some("CmdOrCtrl+,"),
+        )?)
+        .separator()
         .item(&PredefinedMenuItem::hide(app, None)?)
         .item(&PredefinedMenuItem::hide_others(app, None)?)
         .separator()
@@ -408,6 +415,7 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
             refresh(ui);
         }
         "syncLogout" => main_window::logout(ui),
+        "preferences" => crate::preferences::open(ui),
         "addonsRestart" => crate::plugins::ui::restart(ui),
         "addonsLog" => crate::plugins::ui::show_log(ui),
         id if id.starts_with(ADDON_ITEM) => {

@@ -94,6 +94,13 @@ preferences-url-scheme-warning = Blocked attempt to open `{ $link }`, which may 
 preferences-url-scheme-allow-once = Allow Once
 preferences-url-scheme-always-allow = Always Allow
 
+## LaTeX commands (the native shell)
+preferences-latex-commands = LaTeX commands
+preferences-latex-png-commands = PNG images
+preferences-latex-svg-commands = SVG images (note types with "Create scalable images")
+preferences-latex-commands-help = One command per line, with arguments separated by spaces (quote ones that contain spaces). Each runs in a fresh folder holding tmp.tex; the last must leave tmp.png or tmp.svg there.
+preferences-latex-commands-reset = Use Default Commands
+
 ## NO NEED TO TRANSLATE. This text is no longer used by Anki, and will be removed in the future.
 
 preferences-basic = Basic

@@ -696,6 +696,7 @@ fn register_bridge(ui: &Arc<Ui>) {
     bridge.register("domDone", move |_, label, _| {
         u.evals.dom_done(&u.app, label);
         crate::main_window::dom_done(&u, label);
+        crate::testchan::page_loaded(&u, label);
         Value::Null
     });
     let u = ui.clone();
@@ -860,10 +861,13 @@ pub fn run(args: Args) -> Result<()> {
         plugins: crate::plugins::ui::Plugins::new(shell.clone()),
         paste_trackers: Default::default(),
     });
+    crate::latex::set_toolchain(ui.settings().latex_toolchain());
+    crate::theme::apply(&ui, None);
     register_bridge(&ui);
     crate::editor_window::register(&ui);
     crate::plugins::ui::register(&ui);
     crate::main_window::register(&ui);
+    crate::preferences::register(&ui);
     let (menu, menus) = crate::menus::build(&ui, &app)?;
     app.set_menu(menu)?;
     *ui.menus.lock().unwrap() = Some(menus);
@@ -979,6 +983,11 @@ pub fn run(args: Args) -> Result<()> {
             event: tauri::WindowEvent::Focused(focused),
             ..
         } => crate::plugins::ui::window_focused(&exit_ui, &label, focused),
+        // the system's appearance changed (or a forced one was applied)
+        RunEvent::WindowEvent {
+            event: tauri::WindowEvent::ThemeChanged(theme),
+            ..
+        } => crate::theme::apply(&exit_ui, Some(theme == tauri::Theme::Dark)),
         RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,

@@ -10,12 +10,11 @@ aqt.profiles' unpickler (it needs an Anki install's Python, with PyQt). The
 database is opened read-only, so the old Anki can keep running.
 """
 
+import ast
 import json
 import sqlite3
 import sys
 from pathlib import Path
-
-from aqt.profiles import ProfileManager
 
 SYNC_KEYS = (
     "syncKey",
@@ -28,7 +27,68 @@ SYNC_KEYS = (
 )
 
 
+def latex_commands(base: Path) -> dict[str, list[list[str]]]:
+    """The `pngCommands`/`svgCommands` that enabled add-ons set on
+    `anki.latex` at module level (as "Edit LaTeX toolchain" does), keyed
+    "png"/"svg". The files are parsed, not run."""
+    out: dict[str, list[list[str]]] = {}
+    addons = base / "addons21"
+    folders = sorted(addons.iterdir()) if addons.is_dir() else []
+    for folder in folders:
+        try:
+            meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        if not folder.is_dir() or meta.get("disabled"):
+            continue
+        for path in sorted(folder.glob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError, ValueError):
+                continue
+            for node in tree.body:
+                if not isinstance(node, ast.Assign):
+                    continue
+                for target in node.targets:
+                    kind = _latex_target(target)
+                    if kind is None:
+                        continue
+                    try:
+                        value = ast.literal_eval(node.value)
+                    except ValueError:
+                        continue
+                    if _is_command_list(value):
+                        out[kind] = value
+    return out
+
+
+def _latex_target(target: ast.expr) -> str | None:
+    """"png"/"svg" for `latex.pngCommands`/`anki.latex.svgCommands`."""
+    if not isinstance(target, ast.Attribute):
+        return None
+    if target.attr not in ("pngCommands", "svgCommands"):
+        return None
+    owner = target.value
+    name = owner.attr if isinstance(owner, ast.Attribute) else getattr(owner, "id", None)
+    if name != "latex":
+        return None
+    return target.attr[:3]
+
+
+def _is_command_list(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) > 0
+        and all(
+            isinstance(cmd, list) and cmd and all(isinstance(a, str) for a in cmd)
+            for cmd in value
+        )
+    )
+
+
 def main(base: Path) -> None:
+    from aqt.profiles import ProfileManager
+
     db = sqlite3.connect(f"{(base / 'prefs21.db').as_uri()}?mode=ro", uri=True)
     rows = db.execute("select name, cast(data as blob) from profiles").fetchall()
     db.close()
@@ -54,6 +114,8 @@ def main(base: Path) -> None:
         # ProfileManager.get_answer_key; the dict's keys are ints
         "answerKeys": {str(k): v for k, v in (meta.get("answer_keys") or {}).items()},
         "spacebarRatesCard": meta.get("spacebar_rates_card"),
+        "theme": meta.get("theme") if isinstance(meta.get("theme"), int) else None,
+        "latexCommands": latex_commands(base) or None,
     }
     json.dump(out, sys.stdout)
 

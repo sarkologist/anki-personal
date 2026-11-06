@@ -35,8 +35,24 @@ old Anki.
   (any `--anki-base` other than the default) can only sync with a server on
   this machine (`customSyncUrl` pointing at 127.0.0.1), never AnkiWeb.
 - Not yet: custom study, filtered deck creation, deck descriptions editing,
-  "Set due date", "Forget", "Create copy", recording your own voice, dark
-  mode, and add-ons other than Frontier.
+  "Set due date", "Forget", "Create copy", recording your own voice, and
+  add-ons other than those below.
+
+## Preferences
+
+**Anki > Preferences…** (Cmd+,) has what the old Anki's preferences offer
+that the shell uses: the theme, the review and scheduling options, the
+editing and search defaults, backups, and the LaTeX commands. Changes are
+saved as you make them.
+
+- **Dark mode:** the theme follows the system, or is always light or dark;
+  it starts as the old Anki's. Pages switch as soon as it changes,
+  including cards (`.nightMode`).
+- **LaTeX commands:** the commands that turn `tmp.tex` into `tmp.png` or
+  `tmp.svg`, one per line. They start as the ones the "Edit LaTeX
+  toolchain" add-on sets in the old Anki (the profile import reads its
+  file without running it), or latex.py's defaults. "Use Default Commands"
+  goes back to those.
 
 ## Add-ons
 
@@ -145,6 +161,10 @@ Options:
   pastes come from a scratch pasteboard, never the clipboard.
   `--test harness/editor-add.js --test-page add` drives Add Cards: the
   choosers, sticky fields, adding, history, duplicates and format buttons.
+  `--test harness/preferences.js --test-page preferences` drives the
+  Preferences window (`--test-page` also takes the other screens' names;
+  see `src/testchan.rs`): the theme, a collection preference and the LaTeX
+  commands; the copy's `addons21` needs the "Edit LaTeX toolchain" add-on.
   `harness/agent-pane.js` (`--test-page add`, and `--test-page editor
   --test-note 0`) drives the agent pane with a real request; it needs the
   add-on in the copy's `addons21` with its provider set to Ollama and a

@@ -29,6 +29,7 @@ pub enum WebviewKind {
     ImportAnkiPackage,
     ImportLog,
     CardLayout,
+    Preferences,
     /// A [crate::main_window::ask] window.
     Dialog,
     /// An add-on's web view (`AnkiWebView`) in an editor's side panel,
@@ -52,7 +53,17 @@ impl WebviewKind {
                 | WebviewKind::ImportCsv
                 | WebviewKind::ImportAnkiPackage
                 | WebviewKind::ImportLog
+                | WebviewKind::Preferences
         )
+    }
+
+    /// Backend methods a page gets besides the shared page API: its own
+    /// screen's calls.
+    pub fn own_backend(self) -> &'static [&'static str] {
+        match self {
+            WebviewKind::Preferences => &["get_preferences", "set_preferences"],
+            _ => &[],
+        }
     }
 }
 
