@@ -923,8 +923,7 @@ const RECORD_HTML: &str = r#"<style>body { margin: 0; padding: 18px 22px; font-s
 /// `paste` (the page cancelled the paste event): the pasteboard, filtered
 /// as Qt does, then `pasteHTML`.
 fn paste(ui: &Arc<Ui>, label: &str) {
-    let internal = ui.editors.update(label, |_| ()).is_some();
-    if !internal {
+    if ui.editors.session(label).is_none() {
         return;
     }
     let tracker = ui.paste_tracker(label);

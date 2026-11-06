@@ -242,12 +242,13 @@ better under real use, stop here.
 
 ### Phase 3: editing
 
-- [ ] Add Cards and Edit Current windows; every editor bridge command; paste,
+- [x] Add Cards and Edit Current windows; every editor bridge command; paste,
       media import and recording; LaTeX preview; MathJax; image occlusion
       entry points.
-- [ ] Notetype/deck/tag choosers.
-- [ ] editor_agent_pane as a web side panel; alfred bridge events; formatting
-      buttons.
+- [x] Notetype/deck/tag choosers.
+- [x] Formatting buttons (Mini Format Pack).
+- [ ] editor_agent_pane as a web side panel; alfred bridge events (need the
+      phase 2 plugin host; the editor's hook points are in place).
 
 Exit: a week of adding and editing only in the shell.
 
@@ -596,3 +597,161 @@ What remains is the exit criterion: a week of real reviews in the shell.
   descriptions, set due date, forget, create copy, recording your own
   voice, dark mode, and the deck browser's import and shared-deck links.
   Add-on hooks on these screens wait for phase 2.
+
+### Phase 3 (2026-11-06)
+
+Adding and editing work in the shell on a copy of the real profile, checked
+against the collection. What remains: the add-on parts (below), and the
+exit criterion, a week of adding and editing only in the shell.
+
+- **Windows:** Add Cards (`add`) and Edit Current (`editor`) host the stock
+  `editor.js` page (`shell/src/editor_window.rs`). The note logic is in
+  `editor.rs`, whose unit tests run on a real collection without a
+  webview.
+  - The page mounts the editor at the end of `body`. A CSS grid puts the
+    windows' own bars (Qt widgets there) around it: Type and Deck above,
+    History, Close and Add below. The editor CSP blocks inline scripts, so
+    the bars get their behaviour by eval.
+  - Add mode keeps the note in memory until it's added. `key:`/`blur:`
+    saves change only the in-memory note, as `Editor.addMode` does.
+  - Adding: save the fields (`saveNow`, then the ordered bridge), then
+    `note_fields_check`. Problems are a warning dialog; a cloze notetype
+    without a cloze asks first. Then `add_note` into the chosen deck. The
+    next note keeps the sticky fields and the tags. The history holds the
+    last 15; an entry opens Edit Current, since there's no browser yet.
+  - Notetype change copies fields as `on_notetype_change` does: same-named
+    non-empty fields first, then the rest in order. The deck follows the
+    notetype's last-used deck. The choosers are the main window's deck
+    picker, made generic (`main_window::pick`).
+  - Closing or Escape saves first, and asks before discarding input in Add
+    (sticky fields don't count). Quitting waits for every editor to save;
+    unsaved Add input asks too, except in test runs.
+  - Edit Current comes from the reviewer's `e`, with its card. Cmd+Enter
+    closes it, as in Qt.
+- **Bridge commands:** everything `onBridgeCmd` and `_links` handle in add
+  and edit mode:
+  - `toggleSticky*` (saved in the notetype);
+  - `toggleMathjax` (redraws the page), `toggleShrinkImages`,
+    `toggleCloseHTMLTags`;
+  - `lastTextColor`, `lastHighlightColor`, `setTagsCollapsed`, kept in the
+    shell's settings (`editor`);
+  - `editorState`, `ioImageLoaded`;
+  - `dupes`: there's no browser, so a picker lists the duplicates and opens
+    one in Edit Current;
+  - `cards`/`fields`: a "use Anki" note until phase 4;
+  - `preview`: the browser's editor only.
+
+  They are accepted only from the two editor windows: card JS in the main
+  window reaches the same bridge.
+- **Media escaping:** the phase 0 gap is closed. Fields load through
+  `encode_iri_paths` and save through `decode_iri_paths`, as
+  `escape_media_filenames` does. A file name with a space now shows in the
+  editor and is saved unescaped.
+- **Paste:** `paste.rs` (`_pastePreFilter` and `_processMime`) and
+  `pasteboard.rs` (NSPasteboard via objc2).
+  - The page cancels the paste event and sends `paste`, as with Qt. The
+    shell reads the pasteboard: HTML, file and web URLs, text, and a
+    PNG/TIFF image re-encoded as PNG or JPEG per `PASTE_IMAGES_AS_PNG`.
+  - It filters as Qt does (dom_query, already in the tree via wry), then
+    calls `pasteHTML`. Remote images are downloaded into the media folder
+    (30 s timeouts, Anki's user agent); failures are shown as Qt's
+    warnings.
+  - Internal pastes: the page sends `cutOrCopy` during the copy event,
+    before WebKit writes the pasteboard. The shell records the change
+    count, and the next change is the field's content. Later changes make
+    it external again.
+  - WebKit copies absolute `anki://localhost/` image URLs; they're turned
+    back into media names.
+  - Shift flips "strip formatting" (`NSEvent.modifierFlags`).
+  - Not ported: Safari's web archive flavour, which Qt doesn't read either.
+- **Drops:** Tauri's drop handler takes every drop, including drags
+  between fields, so editor windows turn it off.
+  - The page's capture-phase drop listener sends external drops: files as
+    base64 from `dataTransfer`, plus HTML, text and uri-lists. They go
+    through the same mime and filter path.
+  - Drags inside the page stay WebKit's (Qt's `evt.source()` case).
+  - An image dropped on the occlusion picker starts the mask editor.
+- **Attach, record, image occlusion:**
+  - Attach and "Add image for occlusion" use a modal NSOpenPanel on the
+    main thread.
+  - Record is a small window using the page's `getUserMedia` and
+    `MediaRecorder`, which saves `rec<time>.m4a` (AAC; Qt made mp3). It
+    hasn't been tried with a real microphone: the first use asks for
+    permission, which a background test can't answer.
+  - Image occlusion: add, edit (`setupMaskEditor` on load), from a file,
+    from the pasteboard and from a drop. `saveOcclusions` runs before an
+    add.
+- **LaTeX preview:** `renderLatexPreview` reuses the phase 1 port
+  (`latex::render_preview`, as `editor_latex_preview.py`).
+  - Renders run off the bridge and answer `receiveLatexPreviewResult`.
+  - Results are cached per editor (128 entries).
+  - The image goes to the media folder only if a saved field already has
+    that LaTeX; otherwise it's a data URL.
+- **Formatting buttons:** Mini Format Pack's config had no user changes, so
+  all 13 default actions were enabled. The collection uses every one: 732
+  notes with `<pre>`, 2,270 with `<ul>`, 15 with `<abbr>`.
+  - They're added the add-on's way, as `AddonButtons` on the toolbar, with
+    Material Design icons, since the add-on's were PNGs.
+  - The hotkeys are the add-on's (Qt's Ctrl is Cmd), matched on
+    `KeyboardEvent.code`, because Option changes `key` on macOS.
+  - `abbr` asks for its title in a dialog.
+- **Hook points for phase 2:**
+  - `Editors::listen` receives `EditorEvent`s: note loaded, field
+    focused/unfocused (`editor_did_unfocus_field`), typing timer, tags
+    updated, state changed, note added. The alfred bridge needs these.
+  - `editor_window::set_side_panel(label, html)` shows an add-on's own
+    document in a frame beside the fields, for the agent pane. It shares
+    the editor's bridge and API.
+  - `reload_note_keeping_focus` is the reload after a hook changes the
+    note.
+- **WebKit checks** (all pass on the profile copy):
+  - `harness/editor-add.js`:
+    - the bars' layout;
+    - both pickers, with text carried over a notetype change;
+    - the format buttons and a hotkey;
+    - sticky fields and tags;
+    - the note and its card's deck in the collection;
+    - the next note, the history;
+    - the empty-field warning (nothing added);
+    - the duplicate mark.
+  - `harness/editor-features.js`:
+    - paste from a scratch pasteboard (never the user's clipboard):
+      external HTML filtered, plain text escaped with runs of spaces kept,
+      a field copy pasted back unfiltered;
+    - undo and redo;
+    - input method composition, sent through the WKWebView's
+      `setMarkedText:`/`insertText:` (NSTextInputClient), so WebKit's real
+      IME path runs and `compositionend` fires: "にほん" commits as 日本 and
+      is saved;
+    - the MathJax overlay: it opens, the formula renders in the field (in
+      the element's shadow root) and saves as `\(x^2\)`;
+    - the LaTeX preview;
+    - a format button;
+    - an option toggle.
+  - `harness/editor-occlusion.js`: the Image Occlusion notetype, a
+    pasteboard image, the mask editor, and the no-masks warning. Masks
+    aren't drawn, because fabric ignores synthetic mouse events.
+  - `editor-selection.js`, `editor-save.js` (fixed: it used the home
+    page's `openEditor`, which phase 1 limited to the home page) and
+    `main-flow.js` still pass.
+- **WebKit undo:** WebKit coalesces typing into one undo step until an undo
+  or redo. A pause, leaving the field, or moving the caret doesn't end it,
+  so one Cmd+Z can take back typing from before a field switch. The fields
+  share the document's undo stack. Phase 0 saw the same around wrap and
+  surround. This wasn't compared with QtWebEngine.
+- **Keystroke latency** (`harness/editor-typing.js` on the 154-MathJax
+  note, release build): median 1 ms, p95 3-4 ms, max 15-17 ms, the same as
+  main's binary.
+  - The test windows were hidden from WebKit during the runs (no animation
+    frames, and timers clamped to about 100 ms; probably the display or
+    another Space). So this is the keystroke to a forced layout after the
+    page's microtasks, not to paint; the harness reports which it
+    measured.
+  - Measure paint with the window on screen; the spike's paint numbers
+    were 12-13 ms.
+- **Not ported:**
+  - Card layout, Fields, the browser (Show Duplicates and History use
+    Edit Current instead);
+  - the old Anki's editor geometry;
+  - drawing masks in a test;
+  - the agent pane and alfred events (phase 2).

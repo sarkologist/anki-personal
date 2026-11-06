@@ -41,9 +41,7 @@ const query = async (sql) => {
     return rows;
 };
 const editables = () =>
-    [...document.querySelectorAll(".rich-text-editable")].map((f) =>
-        f.shadowRoot?.querySelector("anki-editable")
-    );
+    [...document.querySelectorAll(".rich-text-editable")].map((f) => f.shadowRoot?.querySelector("anki-editable"));
 async function type(index, text) {
     const editable = editables()[index];
     editable.focus();
@@ -110,9 +108,7 @@ await until("the deck name", () => deckButton.textContent !== "" && deckButton.t
 check("deck chosen", deckButton.textContent, String(deckName).replaceAll("\x1f", "::"));
 
 // 3. Format buttons: all thirteen, and they act on the selection.
-const formatButtons = [...document.querySelectorAll(".anki-addon-button")].map((b) =>
-    b.dataset.command
-);
+const formatButtons = [...document.querySelectorAll(".anki-addon-button")].map((b) => b.dataset.command);
 check("format buttons", formatButtons.length, 13);
 const stamp = String(Date.now());
 await type(0, `shell add ${stamp}`);

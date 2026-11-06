@@ -36,9 +36,7 @@ function check(name, actual, expected) {
     log(`${ok ? "pass" : "FAIL"} ${name}: ${JSON.stringify(actual)}`);
 }
 const editables = () =>
-    [...document.querySelectorAll(".rich-text-editable")].map((f) =>
-        f.shadowRoot?.querySelector("anki-editable")
-    );
+    [...document.querySelectorAll(".rich-text-editable")].map((f) => f.shadowRoot?.querySelector("anki-editable"));
 const field = (i) => editables()[i];
 async function saved(i) {
     await sleep(900);
@@ -65,10 +63,12 @@ function caretAtEnd(e) {
 // 1. Paste: external HTML is filtered (no script/style, p -> div).
 const back = field(1);
 await setField(1, "");
-await bridge(`testPasteboard:${JSON.stringify({
-    html: "<p>pasted <b>bold</b></p><script>bad()</script><style>b{}</style>",
-    text: "pasted bold",
-})}`);
+await bridge(`testPasteboard:${
+    JSON.stringify({
+        html: "<p>pasted <b>bold</b></p><script>bad()</script><style>b{}</style>",
+        text: "pasted bold",
+    })
+}`);
 back.focus();
 await frame();
 back.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, composed: true }));
@@ -138,21 +138,25 @@ caretAtEnd(back);
     .find((x) => /Equations/i.test(x.title || x.getAttribute("aria-label") || ""))
     .click();
 await frame();
-const inline = await until("the MathJax menu", () =>
-    [...document.querySelectorAll(".dropdown-item, button")].find((x) => /MathJax Inline/i.test(x.textContent))
+const inline = await until(
+    "the MathJax menu",
+    () => [...document.querySelectorAll(".dropdown-item, button")].find((x) => /MathJax Inline/i.test(x.textContent)),
 );
 inline.click();
-const mathInput = await until("the MathJax overlay", () =>
-    document.activeElement?.tagName === "TEXTAREA" && document.querySelector(".CodeMirror")
-        ? document.activeElement
-        : null
+const mathInput = await until(
+    "the MathJax overlay",
+    () =>
+        document.activeElement?.tagName === "TEXTAREA" && document.querySelector(".CodeMirror")
+            ? document.activeElement
+            : null,
 ).catch(() => null);
 check("mathjax overlay opens", Boolean(mathInput), true);
 if (mathInput) {
     document.execCommand("insertText", false, "x^2");
     await until("the formula in the field", () => back.querySelector("anki-mathjax[data-mathjax='x^2']"));
-    const rendered = await until("the rendered formula", () =>
-        /<svg|<mjx|<img/.test(back.querySelector("[data-anki='mathjax']")?.shadowRoot?.innerHTML ?? "")
+    const rendered = await until(
+        "the rendered formula",
+        () => /<svg|<mjx|<img/.test(back.querySelector("[data-anki='mathjax']")?.shadowRoot?.innerHTML ?? ""),
     ).catch(() => false);
     check("mathjax rendered in the field", rendered, true);
     field(0).focus();
@@ -177,7 +181,9 @@ const preview = await new Promise((resolve) => {
 });
 check(
     "latex preview",
-    preview.ok === true ? preview.src.startsWith("data:image/") || /^latex-/.test(preview.src) : preview.errorText ?? preview,
+    preview.ok === true
+        ? preview.src.startsWith("data:image/") || /^latex-/.test(preview.src)
+        : preview.errorText ?? preview,
     true,
 );
 
