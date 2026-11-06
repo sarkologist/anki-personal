@@ -787,11 +787,16 @@ pub fn choose_deck(ui: &Arc<Ui>) {
         (
             Box::new(|ui: &Arc<Ui>, answer: Option<DialogAnswer>| {
                 let did = answer.and_then(|a| a.fields.get("deck")?.parse::<i64>().ok());
-                if let Some(did) = did {
-                    let _ = ui.shell.api.call::<anki_proto::collection::OpChanges>(
-                        "set_current_deck",
-                        &anki_proto::decks::DeckId { did },
-                    );
+                // the picker doesn't block the main window, whose profile may
+                // have closed or changed since it opened
+                let Some(did) = did.filter(|_| state(ui) != MainState::Home) else {
+                    return;
+                };
+                let chosen = ui.shell.api.call::<anki_proto::collection::OpChanges>(
+                    "set_current_deck",
+                    &anki_proto::decks::DeckId { did },
+                );
+                if chosen.is_ok() {
                     show_overview(ui);
                 }
             }),
