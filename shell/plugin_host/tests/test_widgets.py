@@ -345,7 +345,9 @@ def test_checkboxes_and_the_folder_picker(mw):
     assert QFileDialog.getExistingDirectory(pane, "Project", "/Users/x") == (
         "/Users/x/notes"
     )
-    assert mw.native.ops("choose_folder") == [{"title": "Project", "folder": "/Users/x"}]
+    assert mw.native.ops("choose_folder") == [
+        {"title": "Project", "folder": "/Users/x"}
+    ]
 
 
 def test_what_the_shell_cant_show_says_so(mw):
@@ -405,7 +407,9 @@ def test_editor_events_reach_the_hooks_with_one_note_object(mw, col):
     gui_hooks.editor_did_unfocus_field.append(
         lambda changed, note, ord: seen.append(("unfocus", note, ord)) or changed
     )
-    gui_hooks.editor_did_fire_typing_timer.append(lambda note: seen.append(("type", note)))
+    gui_hooks.editor_did_fire_typing_timer.append(
+        lambda note: seen.append(("type", note))
+    )
     try:
         editors.handle("editor_did_load_note", note_event(col))
         editor = editors.editors()[0]

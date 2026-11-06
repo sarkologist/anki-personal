@@ -948,7 +948,9 @@ class QPlainTextEdit(QWidget):
 
     def _from_page(self, op: str | None, value: Any, event: Any = None) -> Any:
         if op == "text" and isinstance(value, str):
-            self._set_from_page(value, len(value) if self._cursor > len(value) else None)
+            self._set_from_page(
+                value, len(value) if self._cursor > len(value) else None
+            )
         elif op == "key" and isinstance(event, dict):
             text = event.get("text")
             if isinstance(text, str):
@@ -1546,9 +1548,7 @@ class QFormLayout(QLayout):
         super().__init__(parent)
 
     def _widgets(self) -> list[QWidget]:
-        return [
-            w for row in self._rows for w in row if isinstance(w, QWidget)
-        ]
+        return [w for row in self._rows for w in row if isinstance(w, QWidget)]
 
     def _layouts(self) -> list[QLayout]:
         return [f for _label, f in self._rows if isinstance(f, QLayout)]
