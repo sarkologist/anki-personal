@@ -124,7 +124,7 @@ pub fn latex_config(api: &Api, notetype_id: i64) -> Result<LatexConfig> {
     latex_config_with(api, notetype_id, &toolchain())
 }
 
-fn latex_config_with(
+pub(crate) fn latex_config_with(
     api: &Api,
     notetype_id: i64,
     toolchain: &LatexCommands,
@@ -149,7 +149,19 @@ pub fn render_latex(
     html: &str,
     cfg: &LatexConfig,
 ) -> (String, Vec<String>) {
-    match try_render_latex(api, media_dir, html, cfg) {
+    render_latex_expanding(api, media_dir, html, cfg, false)
+}
+
+/// [render_latex], optionally with clozes expanded first (as the media
+/// check finds LaTeX images, and `render_all_latex` makes them).
+pub fn render_latex_expanding(
+    api: &Api,
+    media_dir: &Path,
+    html: &str,
+    cfg: &LatexConfig,
+    expand_clozes: bool,
+) -> (String, Vec<String>) {
+    match try_render_latex(api, media_dir, html, cfg, expand_clozes) {
         Ok(out) => out,
         // latex.py would raise; keep the card and show why
         Err(err) => (html.to_string(), vec![html_escape(&format!("{err:#}"))]),
@@ -161,13 +173,14 @@ fn try_render_latex(
     media_dir: &Path,
     html: &str,
     cfg: &LatexConfig,
+    expand_clozes: bool,
 ) -> Result<(String, Vec<String>)> {
     let out: ExtractLatexResponse = api.call(
         "extract_latex",
         &ExtractLatexRequest {
             text: html.to_string(),
             svg: cfg.svg,
-            expand_clozes: false,
+            expand_clozes,
         },
     )?;
     let mut errors = vec![];

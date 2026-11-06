@@ -250,7 +250,25 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         auto_advance,
         items: review_items,
     } = card_submenu(ui, app, "Card")?;
+    let create_filtered = item(
+        app,
+        "createFiltered",
+        &titled(ui, &tr.qt_misc_create_filtered_deck(), "createFiltered"),
+        None,
+    )?;
+    let check_media = item(
+        app,
+        "checkMedia",
+        &tr.media_check_check_media_action(),
+        None,
+    )?;
+    let empty_cards = item(app, "emptyCards", &tr.qt_misc_empty_cards(), None)?;
     let tools = SubmenuBuilder::new(app, "Tools")
+        .item(&create_filtered)
+        .separator()
+        .item(&check_media)
+        .item(&empty_cards)
+        .separator()
         .item(&item(app, "addonsRestart", "Restart Add-ons", None)?)
         .item(&item(app, "addonsLog", "Add-on Log", None)?)
         .separator()
@@ -268,7 +286,16 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         flags,
         auto_advance,
         review_items,
-        profile_items: vec![sync, decks, study, choose_deck, stats],
+        profile_items: vec![
+            sync,
+            decks,
+            study,
+            choose_deck,
+            stats,
+            create_filtered,
+            check_media,
+            empty_cards,
+        ],
         sync_logout,
         tools,
         addon_items: vec![],
@@ -417,6 +444,12 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
         }
         "syncLogout" => main_window::logout(ui),
         "preferences" => crate::preferences::open(ui),
+        "checkMedia" if ui.shell.open_profile_paths().is_some() => {
+            crate::screens::open_media_check(ui)
+        }
+        "emptyCards" if ui.shell.open_profile_paths().is_some() => {
+            crate::screens::open_empty_cards(ui)
+        }
         "addonsRestart" => crate::plugins::ui::restart(ui),
         "addonsLog" => crate::plugins::ui::show_log(ui),
         id if id.starts_with(ADDON_ITEM) => {
@@ -436,7 +469,16 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
         // the card menu's key equivalents (flags, delete) are the main
         // window's, as in Qt, not the editor's
         id if crate::editor_window::focused_editor(ui).is_some()
-            && !["decks", "add", "study", "chooseDeck", "stats", "sync"].contains(&id) => {}
+            && ![
+                "decks",
+                "add",
+                "study",
+                "chooseDeck",
+                "stats",
+                "sync",
+                "createFiltered",
+            ]
+            .contains(&id) => {}
         id => main_window::action_for_state(ui, id),
     }
     crate::editor_window::note_changed_elsewhere(ui);

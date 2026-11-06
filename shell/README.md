@@ -40,9 +40,15 @@ old Anki.
   (imported), else the system. Pages and cards (`.nightMode`) switch at
   once, and windows show Anki's background colour while a page loads.
   Add-ons get it too (Frontier's panels take it when they open).
-- Not yet: custom study, filtered deck creation, deck descriptions editing,
-  "Set due date", "Forget", "Create copy", recording your own voice, and
-  add-ons other than those below.
+- Filtered decks: **Tools > Create Filtered Deck…** (`f`) builds one, as
+  in Anki; a filtered deck's Options (the overview's, the deck list's gear,
+  or `o`) reopen the dialog to rebuild it. The overview's **Custom Study**
+  (`c`) has all of Anki's choices, with the tags to include or exclude
+  shown under "Study by card state or tag".
+- **Tools > Check Media** and **Tools > Empty Cards…** work as in Anki
+  (Render LaTeX uses the LaTeX commands from Preferences).
+- Not yet: deck descriptions editing, "Set due date", "Forget", "Create
+  copy", recording your own voice, and add-ons other than those below.
 
 ## Preferences
 
@@ -169,6 +175,10 @@ Options:
   Preferences window (`--test-page` also takes the other screens' names;
   see `src/testchan.rs`): the theme, a collection preference and the LaTeX
   commands; the copy's `addons21` needs the "Edit LaTeX toolchain" add-on.
+  `harness/filtered-deck.js`, `custom-study.js`, `media-check.js` and
+  `empty-cards.js` (`--test-page` with the same names) drive those screens
+  and follow the windows they open; they change the copy (the media check
+  trashes its unused files, Empty Cards deletes its empty cards).
   `--test harness/dark-mode.js --test-page main` switches the theme and a
   simulated system appearance through the deck list, overview and
   reviewer (it changes no system setting).

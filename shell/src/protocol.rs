@@ -155,6 +155,10 @@ const SVELTEKIT_PAGES: &[&str] = &[
     "import-page",
     "image-occlusion",
     "preferences",
+    "filtered-deck",
+    "custom-study",
+    "media-check",
+    "empty-cards",
 ];
 
 pub type HttpResponse = Response<Vec<u8>>;
