@@ -18,7 +18,16 @@ const selection = document.getSelection();
 const last = editable.lastChild ?? editable;
 selection.collapse(last, last.nodeType === Node.TEXT_NODE ? last.length : last.childNodes.length);
 
-const nextPaint = () => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+// A hidden page (locked screen, another Space) gets no animation frames;
+// then this measures the keystroke to a forced layout plus a task turn
+// (scripts, style and layout, without painting).
+const hidden = document.hidden;
+const nextPaint = hidden
+    ? () => {
+        editable.getBoundingClientRect();
+        return new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    : () => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
 const samples = [];
 await nextPaint();
 for (const ch of "the quick brown fox jumps over the lazy dog ".repeat(3)) {
@@ -29,5 +38,11 @@ for (const ch of "the quick brown fox jumps over the lazy dog ".repeat(3)) {
 }
 samples.sort((a, b) => a - b);
 const q = (p) => Number(samples[Math.floor(p * (samples.length - 1))].toFixed(1));
-const result = { n: samples.length, median: q(0.5), p95: q(0.95), max: q(1) };
+const result = {
+    n: samples.length,
+    measured: hidden ? "layout (page hidden)" : "paint",
+    median: q(0.5),
+    p95: q(0.95),
+    max: q(1),
+};
 return { ok: result.p95 < 50, ...result };

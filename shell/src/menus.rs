@@ -25,7 +25,6 @@ use tauri::Manager;
 use tauri::Wry;
 
 use crate::app::Ui;
-use crate::app::EDITOR;
 use crate::app::MAIN;
 use crate::main_window;
 use crate::main_window::MainState;
@@ -354,13 +353,8 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
         "undo" | "redo" => {
             // text undo when the editor has the focus, as Qt's webview
             // takes Cmd+Z before the menu does
-            let editor_focused = ui
-                .app
-                .get_webview_window(EDITOR)
-                .and_then(|w| w.is_focused().ok())
-                .unwrap_or(false);
-            if editor_focused {
-                ui.eval(EDITOR, format!("document.execCommand({:?});", id));
+            if let Some(label) = crate::editor_window::focused_editor(ui) {
+                ui.eval(label, format!("document.execCommand({:?});", id));
             } else {
                 main_window::action_for_state(ui, id);
             }
