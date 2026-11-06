@@ -50,7 +50,8 @@ Empty Cards, as qt/aqt/emptycards.py.
             <ol>
                 {#each section.lines as line}
                     <li class:allempty={line.allEmpty}>
-                        <span class="nid">{line.nid}</span>{`: ${line.text}`}
+                        <span class="nid">{line.nid}:</span>
+                        {line.text}
                     </li>
                 {/each}
             </ol>

@@ -331,10 +331,17 @@ mod test {
         let text = "[$]{{c1::x}}[/$]";
         add_note_of(&api, "Cloze", text);
         let toolchain = LatexCommands {
-            png: Some(vec![vec!["sh".into(), "-c".into(), "printf png > tmp.png".into()]]),
+            png: Some(vec![vec![
+                "sh".into(),
+                "-c".into(),
+                "printf png > tmp.png".into(),
+            ]]),
             svg: None,
         };
-        assert_eq!(render_all_latex_in(&api, &paths.media(), &toolchain).unwrap(), None);
+        assert_eq!(
+            render_all_latex_in(&api, &paths.media(), &toolchain).unwrap(),
+            None
+        );
         let expanded: anki_proto::card_rendering::ExtractLatexResponse = api
             .call(
                 "extract_latex",
@@ -346,7 +353,11 @@ mod test {
             )
             .unwrap();
         for latex in &expanded.latex {
-            assert!(paths.media().join(&latex.filename).exists(), "{}", latex.filename);
+            assert!(
+                paths.media().join(&latex.filename).exists(),
+                "{}",
+                latex.filename
+            );
         }
         assert!(!expanded.latex.is_empty());
     }
