@@ -343,7 +343,9 @@ impl Ui {
         if self.background {
             builder = builder.focused(false);
         }
+        let builder = builder.background_color(crate::theme::canvas(self.shell.night.get()));
         let window = builder.build()?;
+        crate::theme::style_window(&window, self.shell.night.get());
         if self.background {
             send_to_back(&window)?;
         }
@@ -385,7 +387,9 @@ impl Ui {
         if self.background {
             builder = builder.focused(false);
         }
+        let builder = builder.background_color(crate::theme::canvas(self.shell.night.get()));
         let window = builder.build()?;
+        crate::theme::style_window(&window, self.shell.night.get());
         if self.background {
             send_to_back(&window)?;
         }
@@ -417,7 +421,9 @@ impl Ui {
         if self.background {
             builder = builder.focused(false);
         }
+        let builder = builder.background_color(crate::theme::canvas(self.shell.night.get()));
         let window = builder.build()?;
+        crate::theme::style_window(&window, self.shell.night.get());
         if self.background {
             send_to_back(&window)?;
         }
@@ -707,6 +713,7 @@ fn register_bridge(ui: &Arc<Ui>) {
         if let Err(err) = u.reimport() {
             *u.status.lock().unwrap() = format!("Re-import failed: {err:#}");
         }
+        crate::theme::apply(&u, None);
         let _ = u.show_main();
         Value::Null
     });
@@ -816,6 +823,12 @@ pub fn run(args: Args) -> Result<()> {
             tracing::warn!("{err:#}");
         }
         settings.save(&args.settings)?;
+    } else {
+        match settings.import_theme_if_missing() {
+            Ok(true) => settings.save(&args.settings)?,
+            Ok(false) => {}
+            Err(err) => tracing::warn!("{err:#}"),
+        }
     }
 
     let shell = Arc::new(Shell::new(Api::new(vec!["en".into()])?, web));
@@ -860,6 +873,7 @@ pub fn run(args: Args) -> Result<()> {
         plugins: crate::plugins::ui::Plugins::new(shell.clone()),
         paste_trackers: Default::default(),
     });
+    crate::theme::apply(&ui, None);
     register_bridge(&ui);
     crate::editor_window::register(&ui);
     crate::plugins::ui::register(&ui);
@@ -979,6 +993,11 @@ pub fn run(args: Args) -> Result<()> {
             event: tauri::WindowEvent::Focused(focused),
             ..
         } => crate::plugins::ui::window_focused(&exit_ui, &label, focused),
+        // the system's appearance changed (or a forced one was applied)
+        RunEvent::WindowEvent {
+            event: tauri::WindowEvent::ThemeChanged(theme),
+            ..
+        } => crate::theme::system_changed(&exit_ui, theme == tauri::Theme::Dark),
         RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,

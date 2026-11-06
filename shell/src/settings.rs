@@ -19,6 +19,8 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::theme::ThemePref;
+
 const IMPORT_SCRIPT: &str = include_str!("../scripts/import_prefs.py");
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -47,6 +49,10 @@ pub struct Settings {
     /// What the editor remembers between notes (the profile and meta keys
     /// `lastTextColor`, `lastHighlightColor`, `*TagsCollapsed` in Qt).
     pub editor: EditorPrefs,
+    /// The theme chosen in the shell; None uses `anki_theme`.
+    pub theme: Option<ThemePref>,
+    /// The old Anki's theme (imported).
+    pub anki_theme: Option<ThemePref>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -87,6 +93,8 @@ struct Imported {
     #[serde(default)]
     answer_keys: BTreeMap<String, String>,
     spacebar_rates_card: Option<bool>,
+    /// `aqt.theme.Theme` as an int
+    theme: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +132,10 @@ impl Settings {
         Ok(())
     }
 
+    pub fn theme_pref(&self) -> ThemePref {
+        self.theme.or(self.anki_theme).unwrap_or_default()
+    }
+
     pub fn anki_base(&self) -> PathBuf {
         self.anki_base.clone().unwrap_or_else(default_anki_base)
     }
@@ -144,8 +156,38 @@ impl Settings {
             .map(|p| p.name.as_str())
     }
 
+    /// Settings imported before the theme was: take just the old Anki's
+    /// theme (a full re-import would replace sync logins made here).
+    pub fn import_theme_if_missing(&mut self) -> Result<bool> {
+        if self.imported_at.is_none() || self.anki_theme.is_some() {
+            return Ok(false);
+        }
+        let out = self.run_import()?;
+        self.merge_theme(&out)?;
+        Ok(true)
+    }
+
+    fn merge_theme(&mut self, json: &[u8]) -> Result<()> {
+        let imported: Imported =
+            serde_json::from_slice(json).context("unexpected profile import output")?;
+        // "follow the system" if it has none, so this runs once
+        self.anki_theme = Some(
+            imported
+                .theme
+                .and_then(ThemePref::from_anki)
+                .unwrap_or_default(),
+        );
+        Ok(())
+    }
+
     /// Run the import and merge it in.
     pub fn import_from_anki(&mut self) -> Result<()> {
+        let out = self.run_import()?;
+        self.merge_import(&out)
+    }
+
+    /// `import_prefs.py`'s output.
+    fn run_import(&self) -> Result<Vec<u8>> {
         let python = match &self.import_python {
             Some(python) => python.clone(),
             None => find_python().context(
@@ -165,7 +207,7 @@ impl Settings {
                 String::from_utf8_lossy(&out.stderr).trim()
             );
         }
-        self.merge_import(&out.stdout)
+        Ok(out.stdout)
     }
 
     fn merge_import(&mut self, json: &[u8]) -> Result<()> {
@@ -190,6 +232,7 @@ impl Settings {
         self.answer_keys =
             crate::shortcuts::import_answer_keys(&self.anki_base(), &imported.answer_keys);
         self.spacebar_rates_card = imported.spacebar_rates_card;
+        self.anki_theme = imported.theme.and_then(ThemePref::from_anki);
         self.imported_at = Some(chrono::Utc::now().timestamp());
         Ok(())
     }
@@ -220,7 +263,7 @@ mod test {
         "currentSyncUrl": "https://sync10.ankiweb.net/", "customSyncUrl": "",
         "syncMedia": true, "autoSync": false}, {"name": "Other"}],
         "lastLoaded": "User 1", "answerKeys": {"1": "1", "2": "2", "3": "3", "4": "x"},
-        "spacebarRatesCard": false}"#;
+        "spacebarRatesCard": false, "theme": 2}"#;
 
     #[test]
     fn import_replaces_profiles_and_keeps_own_fields() {
@@ -251,6 +294,46 @@ mod test {
         assert!(settings.imported_at.is_some());
         assert_eq!(settings.answer_keys[3], vec!["x"]);
         assert_eq!(settings.spacebar_rates_card, Some(false));
+        assert_eq!(settings.theme_pref(), ThemePref::Dark);
+    }
+
+    #[test]
+    fn an_earlier_import_gets_just_the_theme() {
+        let mut settings = Settings {
+            imported_at: Some(1),
+            profiles: vec![Profile {
+                name: "Kept".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        settings.merge_theme(IMPORTED.as_bytes()).unwrap();
+        assert_eq!(settings.anki_theme, Some(ThemePref::Dark));
+        assert_eq!(settings.profiles[0].name, "Kept");
+        // none in the old Anki: the system's, so it's asked once only
+        settings
+            .merge_theme(br#"{"profiles": [], "lastLoaded": null}"#)
+            .unwrap();
+        assert_eq!(settings.anki_theme, Some(ThemePref::System));
+        assert!(!settings.import_theme_if_missing().unwrap());
+    }
+
+    #[test]
+    fn the_shells_own_theme_wins_over_the_imported_one() {
+        let mut settings = Settings {
+            theme: Some(ThemePref::Light),
+            ..Default::default()
+        };
+        settings.merge_import(IMPORTED.as_bytes()).unwrap();
+        assert_eq!(settings.anki_theme, Some(ThemePref::Dark));
+        assert_eq!(settings.theme_pref(), ThemePref::Light);
+        // an import without one clears only the imported theme
+        settings
+            .merge_import(br#"{"profiles": [], "lastLoaded": null}"#)
+            .unwrap();
+        assert_eq!(settings.anki_theme, None);
+        assert_eq!(settings.theme_pref(), ThemePref::Light);
+        assert_eq!(Settings::default().theme_pref(), ThemePref::System);
     }
 
     #[test]

@@ -257,6 +257,7 @@ Exit: a week of adding and editing only in the shell.
 - [ ] Card browser: table, sidebar, search, column config including the plugin
       column API (suspended_card_priority), find/replace, duplicates,
       previewer, card info.
+- [x] Dark mode.
 - [ ] Card layout, notetypes, fields, filtered decks, custom study,
       preferences, import/export, media check, empty cards, LaTeX toolchain
       setting.
@@ -1019,3 +1020,52 @@ exit criterion, a week of adding and editing only in the shell.
   - the old Anki's editor geometry;
   - drawing masks in a test;
   - the agent pane and alfred events: done since, below.
+
+### Phase 4: dark mode (2026-11-06)
+
+The shell was always light; the old Anki follows the system (`_global.theme`
+is 0), and macOS is dark here.
+
+- **Theme** (`src/theme.rs`): system, light or dark (`theme` in the
+  settings file; the profile import takes the old Anki's as `anki_theme`,
+  and the shell's own wins). Settings imported before this get just the
+  theme, once, at startup: a full re-import would replace sync logins
+  made in the shell. Night mode is that, or for "system" the
+  global `AppleInterfaceStyle`, read directly since the windows' own
+  appearance follows a forced theme. Windows get the matching appearance
+  (`AppHandle::set_theme`). A change of the system's appearance arrives as
+  Tauri's `ThemeChanged`, and is handled off the main thread, since it
+  takes the settings and reviewer locks; a newer event supersedes a thread
+  still waiting, so quick flips can't land out of order.
+- **Pages:** the protocol adds Qt's markers to every HTML page it serves:
+  `night-mode` and `data-bs-theme="dark"` on `<html>` (what
+  `theme_manager` and the ts/ pages' `pageTheme` use), and
+  `nightMode`/`night_mode` on `<body>`. That covers the SvelteKit shell,
+  the assembled pages (`legacyPageData`) and add-on panels, so a page
+  never loads light and then switches. Open pages, and their same-origin
+  frames (the reviewer's bars), get Qt's `on_theme_did_change` script. The
+  reviewer's card body gets `nightMode night_mode` with each card. The deck
+  description's frame is drawn again, since its colours are copied in.
+  Sandboxed frames (add-on web views in the editor) can't be reached, so
+  they keep the theme they loaded in until they reload.
+- **Add-ons:** the plugin host's `theme_manager.night_mode` was always
+  false. The host now gets `set_theme` when it starts and
+  `theme_did_change` (which fires the hook) on changes. Frontier reads it
+  when a panel opens, as in Qt, so its panels are dark.
+- **No white flash:** each window gets Anki's canvas colour
+  (`#f5f5f5`/`#2c2c2c`) as its background, at creation and on changes;
+  wry turns the WKWebView's own background off (`drawsBackground`), so
+  that colour shows until a page draws.
+- **Checks:** `harness/dark-mode.js` (`--test-page main`): the setting
+  and a simulated system appearance switching the open deck list live;
+  the overview and reviewer, with both bars, served dark; the card body's
+  classes switching with a card shown; the window's background and the
+  webview's `drawsBackground`, read from AppKit. Unit tests cover the
+  markers, the protocol's theming, the preference and the import.
+  `main-flow.js` and `editor-add.js` still pass in dark mode.
+  `plugin_host/tests/test_host.py` checks add-ons see the theme.
+- **Review** (an independent Opus pass), fixed: Frontier's panels stayed
+  light (the host's theme), the deck description kept the old colours
+  after a switch, the reviewer could copy the old value during a switch,
+  quick system flips could apply out of order, and earlier installs had
+  no imported theme.

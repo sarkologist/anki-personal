@@ -175,7 +175,7 @@ pub fn start_review(ui: &Arc<Ui>) {
     let effects = {
         let spacebar_rates_card = ui.settings.lock().unwrap().spacebar_rates_card;
         let mut r = ui.main.reviewer.lock().unwrap();
-        r.night_mode = false;
+        r.night_mode = ui.shell.night.get();
         r.spacebar_rates_card = spacebar_rates_card.unwrap_or(true);
         r.start(&ui.shell.api, media)
     };

@@ -193,7 +193,7 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
     let mut path = path;
     let first = path.split('/').next().unwrap_or_default();
     if MAIN_PAGE_ROUTES.contains(&first) {
-        let mut resp = bundled_file(&shell.web, "sveltekit/index.html");
+        let mut resp = bundled_file(&shell.web, "sveltekit/index.html", shell.night.get());
         resp.headers_mut().insert(
             CONTENT_SECURITY_POLICY,
             "frame-ancestors 'none'".parse().unwrap(),
@@ -215,11 +215,11 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
                 return legacy_page(shell, label, req);
             }
         }
-        return bundled_file(&shell.web, &remap_legacy_path(rest));
+        return bundled_file(&shell.web, &remap_legacy_path(rest), shell.night.get());
     }
     if let Some(rest) = path.strip_prefix("_addons/") {
         return match shell.addon_files.resolve(rest) {
-            Some((folder, file)) => file_response(&folder, &file),
+            Some((folder, file)) => themed(file_response(&folder, &file), shell.night.get()),
             None => text(StatusCode::NOT_FOUND, format!("not exported: {rest}")),
         };
     }
@@ -371,6 +371,7 @@ fn legacy_page(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespon
     let Some(html) = page.html else {
         return text(StatusCode::NOT_FOUND, "page not found");
     };
+    let html = crate::theme::apply_to_html(&html, shell.night.get());
     if page.kind == WebviewKind::AddonView {
         let mut resp = respond(StatusCode::OK, "text/html", html);
         resp.headers_mut().insert(
@@ -407,9 +408,9 @@ fn legacy_page(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespon
 }
 
 /// SvelteKit's page shell, with the page font every other page gets from
-/// `std_html`.
-fn with_system_font(html: &[u8]) -> Vec<u8> {
-    let html = String::from_utf8_lossy(html);
+/// `std_html`, in the current theme.
+fn sveltekit_page(html: &[u8], night: bool) -> Vec<u8> {
+    let html = crate::theme::apply_to_html(&String::from_utf8_lossy(html), night);
     html.replacen(
         "</head>",
         &format!("<style>{}</style></head>", crate::pages::SYSTEM_FONT_CSS),
@@ -418,7 +419,7 @@ fn with_system_font(html: &[u8]) -> Vec<u8> {
     .into_bytes()
 }
 
-fn bundled_file(web: &Path, path: &str) -> HttpResponse {
+fn bundled_file(web: &Path, path: &str, night: bool) -> HttpResponse {
     let immutable = path.contains("immutable");
     let path = if path.starts_with("sveltekit/") && !immutable {
         "sveltekit/index.html"
@@ -431,7 +432,7 @@ fn bundled_file(web: &Path, path: &str) -> HttpResponse {
     match std::fs::read(&full) {
         Ok(mut data) => {
             if path == "sveltekit/index.html" {
-                data = with_system_font(&data);
+                data = sveltekit_page(&data, night);
             }
             let mut resp = respond(StatusCode::OK, mime(path), data);
             if immutable {
@@ -464,6 +465,15 @@ fn local_file(root: &Path, path: &str) -> HttpResponse {
     if resp.status() == StatusCode::OK && document {
         resp.headers_mut()
             .insert(CONTENT_SECURITY_POLICY, "sandbox".parse().unwrap());
+    }
+    resp
+}
+
+/// An HTML response in the current theme (an add-on's panel page).
+fn themed(mut resp: HttpResponse, night: bool) -> HttpResponse {
+    if night && resp.status() == StatusCode::OK && resp.headers()[CONTENT_TYPE] == "text/html" {
+        let html = crate::theme::apply_to_html(&String::from_utf8_lossy(resp.body()), true);
+        *resp.body_mut() = html.into_bytes();
     }
     resp
 }
@@ -569,7 +579,11 @@ mod test {
         std::fs::create_dir_all(web.join("css")).unwrap();
         std::fs::create_dir_all(web.join("sveltekit/_app/immutable")).unwrap();
         std::fs::write(web.join("css/reviewer.css"), "body {}").unwrap();
-        std::fs::write(web.join("sveltekit/index.html"), "<head></head><svelte>").unwrap();
+        std::fs::write(
+            web.join("sveltekit/index.html"),
+            "<html><head></head><svelte>",
+        )
+        .unwrap();
         std::fs::write(web.join("sveltekit/_app/immutable/a.js"), "a").unwrap();
         let shell = Shell::new(Api::new(vec!["en".into()]).unwrap(), web);
         let paths = ProfilePaths::new(dir.path(), "User 1");
@@ -842,6 +856,49 @@ mod test {
                 "{path}: {body}"
             );
         }
+    }
+
+    #[test]
+    fn pages_are_served_in_the_current_theme() {
+        let f = fixture();
+        let page = |label: &str, path: &str| {
+            String::from_utf8_lossy(get(&f, label, path).body()).into_owned()
+        };
+        assert!(!page("editor", "deck-options/1").contains("night-mode"));
+        assert!(!page("reviewer", "_anki/legacyPageData?id=reviewer").contains("night-mode"));
+        f.shell.night.set(true);
+        for (label, path) in [
+            ("editor", "deck-options/1"),
+            ("editor", "deck-browser"),
+            ("reviewer", "_anki/legacyPageData?id=reviewer"),
+            ("editor", "_anki/legacyPageData?id=editor"),
+        ] {
+            let body = page(label, path);
+            assert!(
+                body.contains("<html class=\"night-mode\" data-bs-theme=\"dark\">"),
+                "{path}: {body}"
+            );
+        }
+        // other files are left alone
+        assert_eq!(
+            get(&f, "reviewer", "_anki/css/reviewer.css").body(),
+            b"body {}"
+        );
+        // add-on panels too
+        let addons = f._dir.path().join("addons21");
+        std::fs::create_dir_all(addons.join("frontier/web")).unwrap();
+        std::fs::write(addons.join("frontier/web/form.html"), "<html><body>").unwrap();
+        std::fs::write(addons.join("frontier/web/form.js"), "<html>").unwrap();
+        f.shell.addon_files.set_folder(Some(addons));
+        f.shell.addon_files.set_exports("frontier", r"web/.*");
+        assert_eq!(
+            get(&f, "addon-panel-1", "_addons/frontier/web/form.html").body(),
+            b"<html class=\"night-mode\" data-bs-theme=\"dark\"><body class=\"nightMode night_mode\">"
+        );
+        assert_eq!(
+            get(&f, "addon-panel-1", "_addons/frontier/web/form.js").body(),
+            b"<html>"
+        );
     }
 
     #[test]
