@@ -208,6 +208,30 @@ def collection(tmp_path):
     col.close()
 
 
+def log_review(col, card_id: int, *, days: int, ease: int = 3, at: int = 3600) -> None:
+    """A review `days` before today, `at` seconds into that day. Revlog ids
+    are milliseconds, so it takes the next one free from then."""
+    start = (col.sched.day_cutoff - days * 86400 + at) * 1000
+    stamp = col.db.scalar(
+        "select coalesce(max(id) + 1, ?) from revlog where id between ? and ?",
+        start,
+        start,
+        start + 3_599_999,
+    )
+    col.db.execute(
+        "insert into revlog values (?,?,?,?,?,?,?,?,?)",
+        stamp,
+        card_id,
+        0,
+        ease,
+        1,
+        1,
+        2500,
+        1000,
+        1,
+    )
+
+
 def add_cloze(col, text, *, learned=False, suspended=False):
     model = col.models.by_name("Cloze")
     note = col.new_note(model)
@@ -220,21 +244,7 @@ def add_cloze(col, text, *, learned=False, suspended=False):
             card.due = col.sched.today + 100
             col.update_card(card)
             for days in (2, 3):
-                stamp = (
-                    col.sched.day_cutoff - days * 86400 + 3600
-                ) * 1000 + card.id % 1000
-                col.db.execute(
-                    "insert into revlog values (?,?,?,?,?,?,?,?,?)",
-                    stamp,
-                    card.id,
-                    0,
-                    3,
-                    1,
-                    1,
-                    2500,
-                    1000,
-                    1,
-                )
+                log_review(col, card.id, days=days)
         if suspended:
             col.sched.suspend_cards([card.id])
     return note
@@ -4136,19 +4146,7 @@ def test_cards_checked_under_an_older_policy_still_establish_words(collection):
     card.due = collection.sched.today + 100
     collection.update_card(card)
     for days in (2, 3):
-        stamp = (collection.sched.day_cutoff - days * 86400 + 3600) * 1000 + days
-        collection.db.execute(
-            "insert into revlog values (?,?,?,?,?,?,?,?,?)",
-            stamp,
-            card.id,
-            0,
-            3,
-            1,
-            1,
-            2500,
-            1000,
-            1,
-        )
+        log_review(collection, card.id, days=days)
     known = snapshot(collection, settings, {}, dictionary()).known
     assert "emprunte" in known.surfaces
     stored = json.loads(html_module.unescape(note["Disambiguation"]))
@@ -4219,3 +4217,14 @@ def test_french_fix_accepts_promoted_categories_and_is_classified(collection):
     assert entry["categories"] == {"ambiguous": True}
     assert entry["reasons"] == ["only_translation"]
     assert collection.get_note(note.id).fields == fields
+
+
+def test_logged_reviews_never_share_an_id(collection):
+    """Revlog ids are milliseconds; reviews of cards whose ids end alike, on
+    the same day, must still get their own."""
+    card = add_cloze(collection, "{{c1::je}}").cards()[0]
+    for _ in range(3):
+        log_review(collection, card.id, days=2)
+    assert (
+        collection.db.scalar("select count() from revlog where cid = ?", card.id) == 3
+    )

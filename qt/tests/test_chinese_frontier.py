@@ -161,26 +161,39 @@ def add_word(
     return note, card
 
 
+def log_review(
+    col: Collection, card_id: int, *, days: int, ease: int = 3, at: int = 3600
+) -> None:
+    """A review `days` before today, `at` seconds into that day. Revlog ids
+    are milliseconds, so it takes the next one free from then."""
+    start = (col.sched.day_cutoff - days * 86400 + at) * 1000
+    stamp = col.db.scalar(
+        "select coalesce(max(id) + 1, ?) from revlog where id between ? and ?",
+        start,
+        start,
+        start + 3_599_999,
+    )
+    col.db.execute(
+        "insert into revlog values (?,?,?,?,?,?,?,?,?)",
+        stamp,
+        card_id,
+        0,
+        ease,
+        1,
+        1,
+        2500,
+        1000,
+        1,
+    )
+
+
 def establish(col: Collection, card) -> None:
     card.type = card.queue = 2
     card.reps = 2
     card.due = col.sched.today + 100
     col.update_card(card)
-    cutoff = col.sched.day_cutoff
-    for offset in (2, 3):
-        timestamp = (cutoff - offset * 86400 + 3600) * 1000 + card.id % 1000
-        col.db.execute(
-            "insert into revlog values (?,?,?,?,?,?,?,?,?)",
-            timestamp,
-            card.id,
-            0,
-            3,
-            1,
-            1,
-            2500,
-            1000,
-            1,
-        )
+    for days in (2, 3):
+        log_review(col, card.id, days=days)
 
 
 def add_cloze(
@@ -413,19 +426,7 @@ def test_unseen_and_relearning_cards_do_not_establish_vocabulary(
     settings = {"deck_id": 1}
     add_word(collection, "学生")
     _note, card = add_word(collection, "书", established=True)
-    timestamp = (collection.sched.day_cutoff - 86400) * 1000
-    collection.db.execute(
-        "insert into revlog values (?,?,?,?,?,?,?,?,?)",
-        timestamp,
-        card.id,
-        0,
-        1,
-        1,
-        1,
-        2500,
-        1000,
-        1,
-    )
+    log_review(collection, card.id, days=1, ease=1, at=0)
     assert snapshot(collection, settings, {}).known == {}
 
 
@@ -439,20 +440,8 @@ def test_cloze_snapshot_uses_only_reviewed_live_ordinal(collection: Collection) 
     first.reps = 2
     first.due = collection.sched.today + 100
     collection.update_card(first)
-    for offset in (2, 3):
-        timestamp = (collection.sched.day_cutoff - offset * 86400 + 3600) * 1000
-        collection.db.execute(
-            "insert into revlog values (?,?,?,?,?,?,?,?,?)",
-            timestamp,
-            first.id,
-            0,
-            3,
-            1,
-            1,
-            2500,
-            1000,
-            1,
-        )
+    for days in (2, 3):
+        log_review(collection, first.id, days=days)
     current = snapshot(collection, {"deck_id": 1}, {})
     assert set(current.known) == {"甘"}
     assert "苦" not in current.known and "亲身经历" not in current.known
@@ -1492,20 +1481,8 @@ def test_character_word_needs_all_siblings_learned_for_context(
         card.reps = 2
         card.due = collection.sched.today + 100
         collection.update_card(card)
-        for offset in (2, 3):
-            collection.db.execute(
-                "insert into revlog values (?,?,?,?,?,?,?,?,?)",
-                (collection.sched.day_cutoff - offset * 86400 + 3600) * 1000
-                + card.id % 1000,
-                card.id,
-                0,
-                3,
-                1,
-                1,
-                2500,
-                1000,
-                1,
-            )
+        for days in (2, 3):
+            log_review(collection, card.id, days=days)
         known = snapshot(collection, settings, {}).known
         assert ("学生" in known) == (index == 1)
         assert "学" not in known and "生" not in known
@@ -3710,3 +3687,14 @@ def test_attention_dialog_browses_and_releases(
     assert collection.get_note(note_id).cards()[0].queue == QUEUE_TYPE_SUSPENDED
     page.act("close")
     assert page.closed
+
+
+def test_logged_reviews_never_share_an_id(collection: Collection) -> None:
+    """Revlog ids are milliseconds; reviews of cards whose ids end alike, on
+    the same day, must still get their own."""
+    _note, card = add_word(collection, "书")
+    for _ in range(3):
+        log_review(collection, card.id, days=2)
+    assert (
+        collection.db.scalar("select count() from revlog where cid = ?", card.id) == 3
+    )
