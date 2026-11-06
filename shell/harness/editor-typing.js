@@ -18,14 +18,15 @@ const selection = document.getSelection();
 const last = editable.lastChild ?? editable;
 selection.collapse(last, last.nodeType === Node.TEXT_NODE ? last.length : last.childNodes.length);
 
-// A hidden page (locked screen, another Space) gets no animation frames;
-// then this measures the keystroke to a forced layout plus a task turn
-// (scripts, style and layout, without painting).
+// A hidden page (locked screen, another Space) gets no animation frames,
+// and its timers are clamped (an idle setTimeout(0) takes about 100ms).
+// Then this measures the keystroke to a forced layout after the page's
+// microtasks: scripts, style and layout, without painting.
 const hidden = document.hidden;
 const nextPaint = hidden
-    ? () => {
+    ? async () => {
+        await Promise.resolve();
         editable.getBoundingClientRect();
-        return new Promise((resolve) => setTimeout(resolve, 0));
     }
     : () => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
 const samples = [];

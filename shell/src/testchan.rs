@@ -355,6 +355,20 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
                 .map(|nid| u.open_editor(nid).is_ok())
                 .unwrap_or(false))
         });
+    // the absolute path of a media file with this extension, if any
+    ui.shell.bridge.register("testMediaFile", |shell, _, ext| {
+        let folder = shell.media_folder();
+        let found = folder
+            .as_deref()
+            .and_then(|dir| std::fs::read_dir(dir).ok())
+            .and_then(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)))
+            });
+        json!(found.map(|p| p.to_string_lossy().into_owned()))
+    });
     // the open windows' labels
     let u = ui.clone();
     ui.shell.bridge.register("testWindows", move |_, _, _| {
