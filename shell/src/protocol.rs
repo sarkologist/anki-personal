@@ -159,6 +159,7 @@ const SVELTEKIT_PAGES: &[&str] = &[
     "custom-study",
     "media-check",
     "empty-cards",
+    "card-layout",
 ];
 
 pub type HttpResponse = Response<Vec<u8>>;
@@ -378,7 +379,8 @@ fn legacy_page(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespon
         return text(StatusCode::NOT_FOUND, "page not found");
     };
     let html = crate::theme::apply_to_html(&html, shell.night.get());
-    if page.kind == WebviewKind::AddonView {
+    // card templates in the card layout's preview, and add-on output
+    if matches!(page.kind, WebviewKind::AddonView | WebviewKind::CardLayout) {
         let mut resp = respond(StatusCode::OK, "text/html", html);
         resp.headers_mut().insert(
             CONTENT_SECURITY_POLICY,
@@ -774,6 +776,35 @@ mod test {
         assert_eq!(call("preferences", "getDeckNames"), StatusCode::OK);
         assert_eq!(call("editor", "getPreferences"), StatusCode::NOT_FOUND);
         assert_eq!(call("preferences", "removeNotes"), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn the_card_layout_preview_is_sandboxed() {
+        let f = fixture();
+        f.shell
+            .pages
+            .set("card-layout", WebviewKind::CardLayoutEditor, None);
+        f.shell.pages.set(
+            "card-layout-preview",
+            WebviewKind::CardLayout,
+            Some("<p>card".into()),
+        );
+        let page = get(&f, "card-layout", "_anki/legacyPageData?id=card-layout-preview");
+        assert_eq!(page.status(), StatusCode::OK);
+        assert_eq!(
+            page.headers()[CONTENT_SECURITY_POLICY],
+            "sandbox allow-scripts"
+        );
+        // the editing page may save the notetype; the frame's requests come
+        // from an opaque origin and are refused
+        let ok = post(&f, "card-layout", "updateNotetype", "application/binary", vec![]);
+        assert_ne!(ok.status(), StatusCode::FORBIDDEN);
+        let req = Request::post("anki://localhost/_anki/updateNotetype")
+            .header(CONTENT_TYPE, "application/binary")
+            .header("Origin", "null")
+            .body(vec![])
+            .unwrap();
+        assert_eq!(handle(&f.shell, "card-layout", &req).status(), StatusCode::FORBIDDEN);
     }
 
     #[test]

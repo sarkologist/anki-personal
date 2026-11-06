@@ -871,6 +871,7 @@ pub fn run(args: Args) -> Result<()> {
     crate::main_window::register(&ui);
     crate::preferences::register(&ui);
     crate::screens::register(&ui);
+    crate::card_layout::register(&ui);
     let (menu, menus) = crate::menus::build(&ui, &app)?;
     app.set_menu(menu)?;
     *ui.menus.lock().unwrap() = Some(menus);
@@ -929,6 +930,16 @@ pub fn run(args: Args) -> Result<()> {
         {
             api.prevent_close();
             crate::editor_window::close(&exit_ui, &label);
+        }
+        // the card layout asks before discarding changes
+        RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == crate::card_layout::LABEL
+            && crate::card_layout::close_requested(&exit_ui) =>
+        {
+            api.prevent_close();
         }
         // Preferences saves what's being typed first
         RunEvent::WindowEvent {

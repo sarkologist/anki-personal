@@ -28,7 +28,10 @@ pub enum WebviewKind {
     ImportCsv,
     ImportAnkiPackage,
     ImportLog,
+    /// The card layout's preview frame (card templates; served sandboxed).
     CardLayout,
+    /// The card layout's editing page.
+    CardLayoutEditor,
     Preferences,
     FilteredDeck,
     CustomStudy,
@@ -58,6 +61,7 @@ impl WebviewKind {
                 | WebviewKind::ImportAnkiPackage
                 | WebviewKind::ImportLog
                 | WebviewKind::Preferences
+                | WebviewKind::CardLayoutEditor
                 | WebviewKind::FilteredDeck
                 | WebviewKind::CustomStudy
                 | WebviewKind::MediaCheck
@@ -70,6 +74,7 @@ impl WebviewKind {
     pub fn own_backend(self) -> &'static [&'static str] {
         match self {
             WebviewKind::Preferences => &["get_preferences", "set_preferences"],
+            WebviewKind::CardLayoutEditor => &["update_notetype"],
             WebviewKind::FilteredDeck => &[
                 "get_or_create_filtered_deck",
                 "add_or_update_filtered_deck",

@@ -47,6 +47,7 @@ pub const COLLECTION_WINDOWS: &[&str] = &[
     crate::screens::CUSTOM_STUDY,
     crate::screens::MEDIA_CHECK,
     crate::screens::EMPTY_CARDS,
+    crate::card_layout::LABEL,
 ];
 
 /// The id of the bottom bar's HTML (served by `legacyPageData`).
