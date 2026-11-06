@@ -11,7 +11,6 @@ use itertools::Itertools;
 
 use crate::action::BuildAction;
 use crate::archives::Platform;
-use crate::configure::ConfigureBuild;
 use crate::input::join_inputs;
 use crate::input::space_separated;
 use crate::input::BuildInput;
@@ -40,7 +39,7 @@ impl Build {
             Utf8PathBuf::from("out").canonicalize_utf8()?
         };
 
-        let mut build = Build {
+        Ok(Build {
             buildroot,
             build_profile: BuildProfile::from_env(),
             host_platform: Platform::current(),
@@ -51,11 +50,7 @@ impl Build {
             action_names: Default::default(),
             groups: Default::default(),
             have_n2: which::which("n2").is_ok(),
-        };
-
-        build.add_action("build:configure", ConfigureBuild {})?;
-
-        Ok(build)
+        })
     }
 
     pub fn variable(&mut self, name: &'static str, value: impl Into<String>) {
