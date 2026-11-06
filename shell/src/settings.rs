@@ -301,7 +301,10 @@ mod test {
         settings.merge_import(IMPORTED.as_bytes()).unwrap();
         assert_eq!(settings.anki_theme, Some(ThemePref::Dark));
         assert_eq!(settings.theme_pref(), ThemePref::Light);
-        assert_eq!(settings.latex_toolchain(), settings.latex_commands.clone().unwrap());
+        assert_eq!(
+            settings.latex_toolchain(),
+            settings.latex_commands.clone().unwrap()
+        );
         // an import without them clears the imported ones only
         settings
             .merge_import(br#"{"profiles": [], "lastLoaded": null}"#)

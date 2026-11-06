@@ -139,12 +139,7 @@ pub fn parse_commands(text: &str) -> Result<Vec<Vec<String>>> {
 pub fn format_commands(commands: &[Vec<String>]) -> String {
     commands
         .iter()
-        .map(|args| {
-            args.iter()
-                .map(|a| quote(a))
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
+        .map(|args| args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" "))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -166,7 +161,11 @@ mod test {
     #[test]
     fn commands_round_trip_through_text() {
         let commands = vec![
-            vec!["pdflatex".to_string(), "--interaction=nonstopmode".into(), "tmp.tex".into()],
+            vec![
+                "pdflatex".to_string(),
+                "--interaction=nonstopmode".into(),
+                "tmp.tex".into(),
+            ],
             vec![
                 "pdfcrop".into(),
                 "--margins".into(),

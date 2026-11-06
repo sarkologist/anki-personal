@@ -297,7 +297,12 @@ fn render_image(body: &str, cfg: &LatexConfig) -> Result<std::result::Result<Vec
     let log =
         File::create(&log_path).with_context(|| format!("creating {}", log_path.display()))?;
     let path = tex_path();
-    for command in cfg.toolchain.for_kind(cfg.svg).iter().filter(|c| !c.is_empty()) {
+    for command in cfg
+        .toolchain
+        .for_kind(cfg.svg)
+        .iter()
+        .filter(|c| !c.is_empty())
+    {
         if !run(command, &dir, &path, &log)? {
             return Ok(Err(Failed {
                 command: command[0].clone(),

@@ -199,8 +199,12 @@ Changes are saved as they're made, as on macOS.
                 bind:value={editing.addingDefaultsToCurrentDeck}
                 on:change={changed}
             >
-                <option value={true}>{tr.preferencesWhenAddingDefaultToCurrentDeck()}</option>
-                <option value={false}>{tr.preferencesChangeDeckDependingOnNoteType()}</option>
+                <option value={true}>
+                    {tr.preferencesWhenAddingDefaultToCurrentDeck()}
+                </option>
+                <option value={false}>
+                    {tr.preferencesChangeDeckDependingOnNoteType()}
+                </option>
             </select>
         </label>
         <label class="check">
@@ -284,7 +288,12 @@ Changes are saved as they're made, as on macOS.
         <p class="help">{tr.preferencesBackupExplanation()}</p>
         <label class="row">
             <span>{tr.preferencesDailyBackups()}</span>
-            <input type="number" min="0" bind:value={backups.daily} on:change={changed} />
+            <input
+                type="number"
+                min="0"
+                bind:value={backups.daily}
+                on:change={changed}
+            />
         </label>
         <label class="row">
             <span>{tr.preferencesWeeklyBackups()}</span>

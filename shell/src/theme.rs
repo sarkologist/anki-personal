@@ -113,16 +113,12 @@ pub fn apply_to_html(html: &str, night: bool) -> String {
 fn add_to_tag(html: &str, tag: &str, classes: &[&str], bs_theme: Option<&str>) -> String {
     let lower = html.to_ascii_lowercase();
     let open = format!("<{tag}");
-    let Some(start) = lower
-        .match_indices(&open)
-        .map(|(i, _)| i)
-        .find(|&i| {
-            lower[i + open.len()..]
-                .chars()
-                .next()
-                .is_some_and(|c| c == '>' || c.is_ascii_whitespace())
-        })
-    else {
+    let Some(start) = lower.match_indices(&open).map(|(i, _)| i).find(|&i| {
+        lower[i + open.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c == '>' || c.is_ascii_whitespace())
+    }) else {
         return html.to_string();
     };
     let Some(len) = html[start..].find('>') else {

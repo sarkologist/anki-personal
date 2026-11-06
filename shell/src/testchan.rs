@@ -83,8 +83,7 @@ static MAIN_SCRIPT: std::sync::Mutex<Option<(String, u32, i64)>> = std::sync::Mu
 
 /// For the other screens (`--test-page preferences`, ...): the window's
 /// label, the script, and how often it ran, as for [MAIN_SCRIPT].
-static SCREEN_SCRIPT: std::sync::Mutex<Option<(String, String, u32)>> =
-    std::sync::Mutex::new(None);
+static SCREEN_SCRIPT: std::sync::Mutex<Option<(String, String, u32)>> = std::sync::Mutex::new(None);
 
 /// The screens a test can open, by `--test-page` name: their window's
 /// label.
@@ -96,9 +95,8 @@ fn screen_label(page: &str) -> Option<&'static str> {
 }
 
 fn open_screen(ui: &Arc<Ui>, page: &str) {
-    match page {
-        "preferences" => crate::preferences::open(ui),
-        _ => {}
+    if page == "preferences" {
+        crate::preferences::open(ui);
     }
 }
 
@@ -540,24 +538,26 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
     });
     // render LaTeX in `text` as a card would (the first notetype's header),
     // with the image's contents
-    ui.shell.bridge.register("testRenderLatex", |shell, _, text| {
-        let names: anki_proto::notetypes::NotetypeNames = shell
-            .api
-            .call("get_notetype_names", &anki_proto::generic::Empty {})
-            .unwrap_or_default();
-        let (Some(first), Some(media)) = (names.entries.first(), shell.media_folder()) else {
-            return Value::Null;
-        };
-        let cfg = crate::latex::latex_config(&shell.api, first.id).unwrap_or_default();
-        let (html, errors) = crate::latex::render_latex(&shell.api, &media, text, &cfg);
-        let image = html
-            .split("src=\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .and_then(|name| std::fs::read(media.join(name)).ok())
-            .map(|data| String::from_utf8_lossy(&data).into_owned());
-        json!({ "html": html, "errors": errors, "image": image, "svg": cfg.svg })
-    });
+    ui.shell
+        .bridge
+        .register("testRenderLatex", |shell, _, text| {
+            let names: anki_proto::notetypes::NotetypeNames = shell
+                .api
+                .call("get_notetype_names", &anki_proto::generic::Empty {})
+                .unwrap_or_default();
+            let (Some(first), Some(media)) = (names.entries.first(), shell.media_folder()) else {
+                return Value::Null;
+            };
+            let cfg = crate::latex::latex_config(&shell.api, first.id).unwrap_or_default();
+            let (html, errors) = crate::latex::render_latex(&shell.api, &media, text, &cfg);
+            let image = html
+                .split("src=\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .and_then(|name| std::fs::read(media.join(name)).ok())
+                .map(|data| String::from_utf8_lossy(&data).into_owned());
+            json!({ "html": html, "errors": errors, "image": image, "svg": cfg.svg })
+        });
     let u = ui.clone();
     ui.shell.bridge.register("testEval", move |_, _, args| {
         let (label, js) = args.split_once('\n').unwrap_or((args, ""));

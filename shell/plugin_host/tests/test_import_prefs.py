@@ -45,7 +45,15 @@ def addon(base: Path, name: str, code: str, disabled: bool = False) -> None:
 def test_reads_the_commands_an_enabled_add_on_sets(tmp_path: Path) -> None:
     addon(tmp_path, "933614828", TOOLCHAIN)
     out = import_prefs.latex_commands(tmp_path)
-    assert out["png"][1] == ["sips", "-s", "format", "png", "tmp.pdf", "--out", "tmp.png"]
+    assert out["png"][1] == [
+        "sips",
+        "-s",
+        "format",
+        "png",
+        "tmp.pdf",
+        "--out",
+        "tmp.png",
+    ]
     assert out["svg"][1][0] == "/usr/local/bin/pdf2svg"
 
 

@@ -572,7 +572,11 @@ mod test {
         std::fs::create_dir_all(web.join("css")).unwrap();
         std::fs::create_dir_all(web.join("sveltekit/_app/immutable")).unwrap();
         std::fs::write(web.join("css/reviewer.css"), "body {}").unwrap();
-        std::fs::write(web.join("sveltekit/index.html"), "<html><head></head><svelte>").unwrap();
+        std::fs::write(
+            web.join("sveltekit/index.html"),
+            "<html><head></head><svelte>",
+        )
+        .unwrap();
         std::fs::write(web.join("sveltekit/_app/immutable/a.js"), "a").unwrap();
         let shell = Shell::new(Api::new(vec!["en".into()]).unwrap(), web);
         let paths = ProfilePaths::new(dir.path(), "User 1");
@@ -884,7 +888,10 @@ mod test {
             );
         }
         // other files are left alone
-        assert_eq!(get(&f, "reviewer", "_anki/css/reviewer.css").body(), b"body {}");
+        assert_eq!(
+            get(&f, "reviewer", "_anki/css/reviewer.css").body(),
+            b"body {}"
+        );
     }
 
     #[test]

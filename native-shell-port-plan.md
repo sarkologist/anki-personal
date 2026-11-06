@@ -1031,22 +1031,22 @@ collection (read only). Qt saves a window's geometry under a key with the
 Qt version, and the daily Anki (25.9.2) runs Qt 6.11, so a 6.11 key means
 the window was opened recently:
 
-| Screen                         | Evidence                                     | Plan       |
-| ------------------------------ | -------------------------------------------- | ---------- |
-| Card layout                    | `CardLayoutGeometry6.11`                     | port       |
-| Filtered deck                  | `dyndeckconfGeometry6.11`; 69 filtered reviews in 2026 | port |
-| Custom study                   | (no geometry key); the filtered reviews      | port       |
-| Media check, empty cards       | `checkmediadb…6.11`, `emptycards…6.11`       | port       |
-| Preferences                    | non-default settings                         | port       |
-| Dark mode                      | `theme` 0 (follow system), and macOS is dark | port       |
-| LaTeX toolchain                | "Edit LaTeX toolchain" enabled, custom pipeline | port    |
-| Manage Note Types, its options | `models…6.6`, `modelopts…6.6` (not since)     | defer      |
-| Fields                         | no trace (the dialog saves no geometry)      | defer      |
-| Import                         | `import…6.6`; last bulk import in 2017       | defer      |
-| Export                         | an `exportDirectory`, nothing recent         | defer      |
-| Deck description editing       | every deck description is empty             | defer      |
-| Set due date, Forget           | no manual revlog entries, ever               | defer      |
-| Create copy, record own voice  | no trace                                     | defer      |
+| Screen                         | Evidence                                               | Plan  |
+| ------------------------------ | ------------------------------------------------------ | ----- |
+| Card layout                    | `CardLayoutGeometry6.11`                               | port  |
+| Filtered deck                  | `dyndeckconfGeometry6.11`; 69 filtered reviews in 2026 | port  |
+| Custom study                   | (no geometry key); the filtered reviews                | port  |
+| Media check, empty cards       | `checkmediadb…6.11`, `emptycards…6.11`                 | port  |
+| Preferences                    | non-default settings                                   | port  |
+| Dark mode                      | `theme` 0 (follow system), and macOS is dark           | port  |
+| LaTeX toolchain                | "Edit LaTeX toolchain" enabled, custom pipeline        | port  |
+| Manage Note Types, its options | `models…6.6`, `modelopts…6.6` (not since)              | defer |
+| Fields                         | no trace (the dialog saves no geometry)                | defer |
+| Import                         | `import…6.6`; last bulk import in 2017                 | defer |
+| Export                         | an `exportDirectory`, nothing recent                   | defer |
+| Deck description editing       | every deck description is empty                        | defer |
+| Set due date, Forget           | no manual revlog entries, ever                         | defer |
+| Create copy, record own voice  | no trace                                               | defer |
 
 Deferred screens stay in the old Anki. The change-notetype and import pages
 already exist in `ts/`; hosting them is small when they're wanted.
@@ -1091,4 +1091,3 @@ already exist in `ts/`; hosting them is small when they're wanted.
   tests cover the theme markers, the protocol's theming and per-page API,
   the toolchain in `latex.rs`, the command text, and the import
   (`plugin_host/tests/test_import_prefs.py`).
-
