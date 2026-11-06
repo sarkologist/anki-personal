@@ -219,7 +219,7 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
     }
     if let Some(rest) = path.strip_prefix("_addons/") {
         return match shell.addon_files.resolve(rest) {
-            Some((folder, file)) => local_file(&folder, &file),
+            Some((folder, file)) => file_response(&folder, &file),
             None => text(StatusCode::NOT_FOUND, format!("not exported: {rest}")),
         };
     }
@@ -431,6 +431,28 @@ fn bundled_file(web: &Path, path: &str) -> HttpResponse {
 }
 
 fn local_file(root: &Path, path: &str) -> HttpResponse {
+    let mut resp = file_response(root, path);
+    // a media file opened as a document (framed by a card or field) gets
+    // an origin of its own, without the bridge or API
+    let document = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ctype| {
+            matches!(
+                ctype,
+                "text/html" | "application/xhtml+xml" | "image/svg+xml"
+            )
+        });
+    if resp.status() == StatusCode::OK && document {
+        resp.headers_mut()
+            .insert(CONTENT_SECURITY_POLICY, "sandbox".parse().unwrap());
+    }
+    resp
+}
+
+/// `root/path` (guarded), as is.
+fn file_response(root: &Path, path: &str) -> HttpResponse {
     let Some(full) = safe_join(root, path) else {
         return text(StatusCode::FORBIDDEN, format!("invalid path: {path}"));
     };
@@ -438,20 +460,7 @@ fn local_file(root: &Path, path: &str) -> HttpResponse {
         return text(StatusCode::FORBIDDEN, "directories are not supported");
     }
     match std::fs::read(&full) {
-        Ok(data) => {
-            let ctype = mime(path);
-            let mut resp = respond(StatusCode::OK, ctype, data);
-            // a media file opened as a document (framed by a card or
-            // field) gets an origin of its own, without the bridge or API
-            if matches!(
-                ctype,
-                "text/html" | "application/xhtml+xml" | "image/svg+xml"
-            ) {
-                resp.headers_mut()
-                    .insert(CONTENT_SECURITY_POLICY, "sandbox".parse().unwrap());
-            }
-            resp
-        }
+        Ok(data) => respond(StatusCode::OK, mime(path), data),
         Err(_) => text(StatusCode::NOT_FOUND, format!("invalid path: {path}")),
     }
 }
@@ -582,6 +591,9 @@ mod test {
         let resp = get(&f, "addon-panel-1", "_addons/frontier/web/panel.html");
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.body(), b"<p>panel");
+        // a panel is the add-on's page, with its scripts and the bridge,
+        // unlike media opened as a document
+        assert!(!resp.headers().contains_key(CONTENT_SECURITY_POLICY));
         for path in [
             "_addons/frontier/meta.json",
             "_addons/frontier/web/../meta.json",
