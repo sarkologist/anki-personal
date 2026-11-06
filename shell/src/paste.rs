@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 
 use anki::prelude::I18n;
 use anki_proto::config::config_key::Bool as BoolKey;
@@ -596,31 +597,69 @@ fn config_bool(shell: &Shell, key: BoolKey) -> bool {
 }
 
 /// `EditorWebView`'s tracking of copies from a field, whose HTML is pasted
-/// unfiltered. The page reports a cut/copy before WebKit writes the
-/// pasteboard, so the change after the one recorded is the field's;
-/// any later change makes pastes external again.
+/// unfiltered. The page reports a cut/copy around when WebKit writes the
+/// pasteboard (before or after; the bridge is asynchronous), so, as Qt does
+/// on its clipboard-change signal, the pasteboard is captured a moment
+/// later ([COPY_SETTLE]). A paste is the field's while the pasteboard
+/// still holds that capture.
 #[derive(Default)]
-pub struct InternalPaste(Mutex<Option<isize>>);
+pub struct InternalPaste(Mutex<CopyState>);
+
+/// How long after a reported copy WebKit has surely written the pasteboard.
+pub const COPY_SETTLE: Duration = Duration::from_millis(200);
+
+#[derive(Default)]
+enum CopyState {
+    #[default]
+    None,
+    /// A copy was reported at this time, and not captured yet.
+    Pending(Instant),
+    /// What the pasteboard held after the copy: (change count, HTML).
+    Captured(isize, String),
+}
 
 impl InternalPaste {
-    /// `user_cut_or_copied`, with the pasteboard's change count then.
-    pub fn on_cut_or_copy(&self, change_count: isize) {
-        *self.0.lock().unwrap() = Some(change_count);
+    /// `user_cut_or_copied`. Call [InternalPaste::settle] after
+    /// [COPY_SETTLE].
+    pub fn on_cut_or_copy(&self) {
+        *self.0.lock().unwrap() = CopyState::Pending(Instant::now());
     }
 
-    /// The field's HTML, if `contents` (read at `change_count`) is what
-    /// the field wrote.
+    /// Capture the pasteboard for a pending copy (`read` gives its change
+    /// count and HTML), waiting first if the copy was just reported.
+    pub fn settle(&self, read: impl FnOnce() -> (isize, Option<String>)) {
+        let since = match *self.0.lock().unwrap() {
+            CopyState::Pending(at) => at.elapsed(),
+            _ => return,
+        };
+        if since < COPY_SETTLE {
+            std::thread::sleep(COPY_SETTLE - since);
+        }
+        let (count, html) = read();
+        let mut state = self.0.lock().unwrap();
+        if matches!(*state, CopyState::Pending(_)) {
+            *state = match html {
+                Some(html) => CopyState::Captured(count, html),
+                None => CopyState::None,
+            };
+        }
+    }
+
+    /// The field's HTML, if `contents` (read at `change_count`) is still
+    /// what the field wrote; otherwise the copy is forgotten.
     pub fn field_html(&self, change_count: isize, contents: &Contents) -> Option<String> {
-        let mut copied_at = self.0.lock().unwrap();
-        match *copied_at {
-            Some(at) if change_count == at + 1 => contents.html.clone(),
-            // not written yet
-            Some(at) if change_count == at => None,
-            Some(_) => {
-                *copied_at = None;
+        let mut state = self.0.lock().unwrap();
+        match &*state {
+            CopyState::Captured(count, html)
+                if *count == change_count && contents.html.as_ref() == Some(html) =>
+            {
+                Some(html.clone())
+            }
+            CopyState::Captured(..) => {
+                *state = CopyState::None;
                 None
             }
-            None => None,
+            _ => None,
         }
     }
 }
@@ -642,6 +681,10 @@ pub fn paste_html(
     internal: &InternalPaste,
     pasteboard: Option<&str>,
 ) -> Option<Paste> {
+    internal.settle(|| {
+        let count = pasteboard::change_count(pasteboard);
+        (count, pasteboard::read_html(pasteboard))
+    });
     let count = pasteboard::change_count(pasteboard);
     let contents = pasteboard::read(pasteboard, config_bool(shell, BoolKey::PasteImagesAsPng));
     // what was read may be newer than `count`; then it isn't the field's
@@ -1142,30 +1185,44 @@ mod test {
         }
     }
 
+    fn captured(tracker: &InternalPaste, count: isize, html: Option<&str>) {
+        tracker.settle(|| (count, html.map(Into::into)));
+    }
+
     #[test]
     fn copy_from_a_field_is_internal_until_the_pasteboard_changes_again() {
         let tracker = InternalPaste::default();
         let field = with_html("<b>field</b>");
-        assert_eq!(tracker.field_html(5, &field), None);
-        // the page reports the copy before WebKit writes the pasteboard
-        tracker.on_cut_or_copy(5);
-        assert_eq!(tracker.field_html(5, &field), None, "not written yet");
+        assert_eq!(tracker.field_html(5, &field), None, "no copy yet");
+        tracker.on_cut_or_copy();
+        assert_eq!(tracker.field_html(5, &field), None, "not captured yet");
+        captured(&tracker, 6, Some("<b>field</b>"));
         assert_eq!(
             tracker.field_html(6, &field).as_deref(),
             Some("<b>field</b>")
         );
         assert_eq!(
             tracker.field_html(6, &field).as_deref(),
-            Some("<b>field</b>")
+            Some("<b>field</b>"),
+            "pasted twice"
         );
         assert_eq!(tracker.field_html(7, &with_html("<i>other</i>")), None);
         assert_eq!(tracker.field_html(6, &field), None, "forgotten");
     }
 
     #[test]
+    fn same_html_from_elsewhere_is_external() {
+        let tracker = InternalPaste::default();
+        tracker.on_cut_or_copy();
+        captured(&tracker, 3, Some("x"));
+        assert_eq!(tracker.field_html(4, &with_html("x")), None);
+    }
+
+    #[test]
     fn copy_without_html_is_not_internal() {
         let tracker = InternalPaste::default();
-        tracker.on_cut_or_copy(1);
+        tracker.on_cut_or_copy();
+        captured(&tracker, 2, None);
         let text_only = Contents {
             text: Some("x".into()),
             ..contents()
@@ -1174,12 +1231,17 @@ mod test {
     }
 
     #[test]
-    fn a_new_copy_rearms_the_tracker() {
+    fn settling_waits_for_the_pasteboard_write() {
         let tracker = InternalPaste::default();
-        tracker.on_cut_or_copy(1);
-        assert_eq!(tracker.field_html(3, &with_html("x")), None);
-        tracker.on_cut_or_copy(3);
-        assert_eq!(tracker.field_html(4, &with_html("y")).as_deref(), Some("y"));
+        tracker.on_cut_or_copy();
+        let start = Instant::now();
+        captured(&tracker, 1, Some("y"));
+        assert!(start.elapsed() >= COPY_SETTLE - Duration::from_millis(5));
+        // only a pending copy is captured
+        let start = Instant::now();
+        captured(&tracker, 9, Some("z"));
+        assert!(start.elapsed() < COPY_SETTLE);
+        assert_eq!(tracker.field_html(1, &with_html("y")).as_deref(), Some("y"));
     }
 }
 
@@ -1264,7 +1326,8 @@ mod shell_test {
             ("<div>x</div>", false)
         );
 
-        tracker.on_cut_or_copy(pasteboard::change_count(Some(pb.name())));
+        // as WebKit: the copy is reported, and the pasteboard written
+        tracker.on_cut_or_copy();
         pb.write(Some("<p>y</p>"), None, &[], None);
         let paste = paste_html(&shell, &tracker, Some(pb.name())).unwrap();
         assert_eq!((paste.html.as_str(), paste.internal), ("<p>y</p>", true));

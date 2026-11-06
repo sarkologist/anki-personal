@@ -359,7 +359,12 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
                 main_window::action_for_state(ui, id);
             }
         }
+        // the card menu's key equivalents (flags, delete) are the main
+        // window's, as in Qt, not the editor's
+        id if crate::editor_window::focused_editor(ui).is_some()
+            && !["decks", "add", "study", "chooseDeck", "stats", "sync"].contains(&id) => {}
         id => main_window::action_for_state(ui, id),
     }
+    crate::editor_window::note_changed_elsewhere(ui);
     refresh(ui);
 }

@@ -77,6 +77,14 @@ pub fn read(pasteboard: Option<&str>, png: bool) -> Contents {
     }
 }
 
+/// Just the pasteboard's HTML (cheaper than [read]: no image re-encoding).
+pub fn read_html(pasteboard: Option<&str>) -> Option<String> {
+    let pb = self::pasteboard(pasteboard);
+    // SAFETY: AppKit's constant string
+    let html = unsafe { NSPasteboardTypeHTML };
+    pb.stringForType(html).map(|s| s.to_string())
+}
+
 /// Every item's file or web url (public.file-url / public.url), file
 /// reference urls as paths.
 fn read_urls(pb: &NSPasteboard) -> Vec<String> {

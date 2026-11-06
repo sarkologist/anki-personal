@@ -369,6 +369,14 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
             });
         json!(found.map(|p| p.to_string_lossy().into_owned()))
     });
+    // an add-on side panel with this HTML in the sending editor
+    let u = ui.clone();
+    ui.shell
+        .bridge
+        .register("testSidePanel", move |_, label, html| {
+            crate::editor_window::set_side_panel(&u, label, Some(html.to_string()));
+            json!(true)
+        });
     // the open windows' labels
     let u = ui.clone();
     ui.shell.bridge.register("testWindows", move |_, _, _| {

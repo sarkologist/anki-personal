@@ -201,6 +201,25 @@ const after = (await bridge("testQuery:select val from config where key = 'close
 await bridge("toggleCloseHTMLTags");
 check("closeHTMLTags toggled", before !== after, true);
 
+// 10. Frames: an add-on's side panel loads; a media document (which would
+// share the editor's bridge) and another window's page don't.
+await bridge("testSidePanel:<p id=panel>side panel</p>");
+const side = document.getElementById("shell-side");
+const panelText = await until("the side panel", () =>
+    side.contentDocument?.getElementById("panel")?.textContent
+).catch(() => null);
+check("side panel shown", [side.hidden, panelText], [false, "side panel"]);
+const blocked = [];
+document.addEventListener("securitypolicyviolation", (e) => blocked.push(e.effectiveDirective));
+const mediaFrame = document.createElement("iframe");
+mediaFrame.src = "shell-media-page.html";
+document.body.appendChild(mediaFrame);
+await until("the frame to be refused", () => blocked.includes("frame-src"), 5000).catch(() => null);
+check("media document frame refused", blocked.includes("frame-src"), true);
+mediaFrame.remove();
+const other = await fetch("/_anki/legacyPageData?id=main");
+check("another window's page refused", other.status, 404);
+
 await setField(1, "");
 await sleep(900);
 return { ok: checks.every((c) => c.ok) && errors.length === 0, checks, errors };

@@ -212,7 +212,7 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
                 return handle_post(shell, label, rest, req);
             }
             if rest == "legacyPageData" {
-                return legacy_page(shell, req);
+                return legacy_page(shell, label, req);
             }
         }
         return bundled_file(&shell.web, &remap_legacy_path(rest));
@@ -338,7 +338,7 @@ fn handle_post(shell: &Shell, label: &str, endpoint: &str, req: &Request<Vec<u8>
     }
 }
 
-fn legacy_page(shell: &Shell, req: &Request<Vec<u8>>) -> HttpResponse {
+fn legacy_page(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpResponse {
     let id = req
         .uri()
         .query()
@@ -347,6 +347,12 @@ fn legacy_page(shell: &Shell, req: &Request<Vec<u8>>) -> HttpResponse {
         .find_map(|kv| kv.strip_prefix("id="))
         .map(percent_decode)
         .unwrap_or_default();
+    // a webview's own pages only (`label`, `label-bottom`, ...): framed
+    // in another webview, a page would run with that one's bridge and
+    // API, so a field can't frame the reviewer's card JS in the editor
+    if id != label && !id.starts_with(&format!("{label}-")) {
+        return text(StatusCode::NOT_FOUND, "page not found");
+    }
     let Some(page) = shell.pages.get(&id) else {
         return text(StatusCode::NOT_FOUND, "page not found");
     };
@@ -367,9 +373,15 @@ fn legacy_page(shell: &Shell, req: &Request<Vec<u8>>) -> HttpResponse {
     let mut resp = respond(StatusCode::OK, "text/html", html);
     resp.headers_mut().insert(
         CONTENT_SECURITY_POLICY,
-        format!("script-src 'nonce-{nonce}' {ORIGIN}_anki/ {ORIGIN}_addons/")
-            .parse()
-            .unwrap(),
+        // frames: the shell's own pages (an add-on's side panel) and the
+        // web (embeds), not media documents, which would share the
+        // editor's origin and bridge
+        format!(
+            "script-src 'nonce-{nonce}' {ORIGIN}_anki/ {ORIGIN}_addons/; \
+             frame-src {ORIGIN}_anki/legacyPageData https: http:; object-src 'none'"
+        )
+        .parse()
+        .unwrap(),
     );
     resp
 }
@@ -423,7 +435,20 @@ fn local_file(root: &Path, path: &str) -> HttpResponse {
         return text(StatusCode::FORBIDDEN, "directories are not supported");
     }
     match std::fs::read(&full) {
-        Ok(data) => respond(StatusCode::OK, mime(path), data),
+        Ok(data) => {
+            let ctype = mime(path);
+            let mut resp = respond(StatusCode::OK, ctype, data);
+            // a media file opened as a document (framed by a card or
+            // field) gets an origin of its own, without the bridge or API
+            if matches!(
+                ctype,
+                "text/html" | "application/xhtml+xml" | "image/svg+xml"
+            ) {
+                resp.headers_mut()
+                    .insert(CONTENT_SECURITY_POLICY, "sandbox".parse().unwrap());
+            }
+            resp
+        }
         Err(_) => text(StatusCode::NOT_FOUND, format!("invalid path: {path}")),
     }
 }
@@ -522,6 +547,8 @@ mod test {
         std::fs::create_dir_all(&paths.folder).unwrap();
         shell.open_profile(paths.clone()).unwrap();
         std::fs::write(paths.media().join("pic.png"), "png").unwrap();
+        std::fs::write(paths.media().join("page.html"), "<script>x</script>").unwrap();
+        std::fs::write(paths.media().join("pic.svg"), "<svg/>").unwrap();
         std::fs::write(dir.path().join("secret.txt"), "no").unwrap();
         shell.pages.set(
             "editor",
@@ -740,13 +767,68 @@ mod test {
     #[test]
     fn editor_page_gets_a_csp_nonce() {
         let f = fixture();
-        let editor = get(&f, "x", "_anki/legacyPageData?id=editor");
+        let editor = get(&f, "editor", "_anki/legacyPageData?id=editor");
         let csp = editor.headers()[CONTENT_SECURITY_POLICY].to_str().unwrap();
         let nonce = csp.split('\'').nth(1).unwrap().trim_start_matches("nonce-");
         let html = String::from_utf8(editor.body().clone()).unwrap();
         assert!(html.contains(&format!("content=\"{nonce}\"")), "{html}");
-        let reviewer = get(&f, "x", "_anki/legacyPageData?id=reviewer");
+        let reviewer = get(&f, "reviewer", "_anki/legacyPageData?id=reviewer");
         assert!(!reviewer.headers().contains_key(CONTENT_SECURITY_POLICY));
+    }
+
+    #[test]
+    fn editor_fields_cant_frame_local_documents() {
+        // a shared deck's field with <iframe src="x.html"> would get the
+        // editor's bridge; only the shell's own pages and the web may be
+        // framed, and plugins/objects not at all
+        let f = fixture();
+        let editor = get(&f, "editor", "_anki/legacyPageData?id=editor");
+        let csp = editor.headers()[CONTENT_SECURITY_POLICY].to_str().unwrap();
+        assert!(
+            csp.contains(&format!(
+                "frame-src {ORIGIN}_anki/legacyPageData https: http:"
+            )),
+            "{csp}"
+        );
+        assert!(csp.contains("object-src 'none'"), "{csp}");
+    }
+
+    #[test]
+    fn webviews_get_only_their_own_legacy_pages() {
+        let f = fixture();
+        let own = get(&f, "reviewer", "_anki/legacyPageData?id=reviewer");
+        assert_eq!(own.status(), StatusCode::OK);
+        assert_eq!(
+            get(&f, "editor", "_anki/legacyPageData?id=reviewer").status(),
+            StatusCode::NOT_FOUND
+        );
+        // `editor-side` (an add-on's panel) is the editor's
+        f.shell
+            .pages
+            .set("editor-side", WebviewKind::Dialog, Some("side".into()));
+        assert_eq!(
+            get(&f, "editor", "_anki/legacyPageData?id=editor-side").body(),
+            b"side"
+        );
+        assert_eq!(
+            get(&f, "editorx", "_anki/legacyPageData?id=editor-side").status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn media_documents_are_sandboxed() {
+        // their own origin, so a framed or opened media page can't reach
+        // the bridge or the API
+        let f = fixture();
+        for path in ["page.html", "pic.svg"] {
+            let resp = get(&f, "reviewer", path);
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(resp.headers()[CONTENT_SECURITY_POLICY], "sandbox", "{path}");
+        }
+        assert!(!get(&f, "reviewer", "pic.png")
+            .headers()
+            .contains_key(CONTENT_SECURITY_POLICY));
     }
 
     fn bridge() -> tauri::http::request::Builder {

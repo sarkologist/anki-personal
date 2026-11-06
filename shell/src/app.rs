@@ -33,6 +33,14 @@ use crate::Shell;
 pub const MAIN: &str = "main";
 pub const EDITOR: &str = "editor";
 const EDITOR_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long the save may take while the page's bridge is busy (a paste
+/// downloading images, a drop): its commands queue behind it.
+const EDITOR_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// The token for `cmd`, sent back by webview `label` once it has saved.
+pub fn pending_key(label: &str, cmd: &str) -> String {
+    format!("{label}|{cmd}")
+}
 
 #[derive(Debug, Clone)]
 pub struct Args {
@@ -398,7 +406,8 @@ impl Ui {
         // a token per request, so a late timeout can't take a newer request
         let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let cmd = &format!("{cmd}:{seq}");
-        self.shell.bridge.add_pending(cmd.to_string());
+        let key = pending_key(label, cmd);
+        self.shell.bridge.add_pending(key.clone());
         self.eval(
             label,
             format!(
@@ -412,9 +421,13 @@ impl Ui {
         let label = label.to_string();
         std::thread::spawn(move || {
             std::thread::sleep(EDITOR_SAVE_TIMEOUT);
-            if shell.bridge.take_pending(&cmd) {
+            let started = std::time::Instant::now();
+            while shell.bridge.busy(&label) && started.elapsed() < EDITOR_BUSY_TIMEOUT {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if shell.bridge.take_pending(&key) {
                 tracing::warn!(cmd, "editor save timed out; continuing");
-                shell.bridge.add_pending(cmd.clone());
+                shell.bridge.add_pending(key);
                 shell.bridge.dispatch(&shell, &label, &cmd);
             }
         });
@@ -807,6 +820,18 @@ pub fn run(args: Args) -> Result<()> {
         {
             api.prevent_close();
             crate::editor_window::close(&exit_ui, &label);
+        }
+        // closing the main window quits, once the editors are saved (or
+        // the user keeps the Add window's input)
+        RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == MAIN && crate::editor_window::has_open_editors(&exit_ui) => {
+            api.prevent_close();
+            if !crate::editor_window::exit_requested(&exit_ui, 0) {
+                app.exit(0);
+            }
         }
         RunEvent::ExitRequested { api, code, .. }
             if crate::editor_window::exit_requested(&exit_ui, code.unwrap_or(0)) =>

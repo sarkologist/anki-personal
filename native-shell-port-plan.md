@@ -643,6 +643,38 @@ exit criterion, a week of adding and editing only in the shell.
 
   They are accepted only from the two editor windows: card JS in the main
   window reaches the same bridge.
+- **Safety** (from the independent review):
+  - Add mode's notes are all id 0, so each note shown gets a generation,
+    and the page gets its negative as the note id. A late save, a double
+    Add (double click, key repeat), or an Add confirmed after a cloze
+    prompt can't land on the next note. A confirmed Add saves and checks
+    again first.
+  - The 2 s save timeout waits while the editor's bridge is busy. A paste
+    downloading images, or a big drop, holds the ordered bridge, and the
+    save and the close/add/load behind it would otherwise run early.
+  - The tokens `after_saved` waits for name their editor, so card JS in
+    the main window can't trigger an editor's close, add or quit.
+  - Fields can't frame media documents, which would share the editor's
+    origin and bridge. The editor CSP allows frames only from the shell's
+    own pages and the web (`frame-src`), and no `object-src`. HTML and SVG
+    media are served with `CSP: sandbox`, an opaque origin. A webview gets
+    only its own `legacyPageData` pages (`label`, `label-*`). WebKit honours
+    all three with the `anki:` scheme (`editor-features.js` checks them).
+    This user's notes frame only one web page.
+  - Drops: only pictures and audio go into the media folder, as Qt's
+    `urlToLink`; other files are named in a message. Files over 100 MB
+    aren't read.
+  - The card menu's key equivalents (Cmd+1-7 flags, delete) are ignored
+    while an editor window has the focus, as Qt's are main-window only.
+  - Escape during an input method's composition doesn't close Add.
+  - Closing the main window with editors open saves them first, and keeps
+    the window if the user keeps the Add input.
+  - Edit Current follows changes made elsewhere (an undo, the reviewer's
+    mark), and closes if the note is deleted. A save is dropped if the
+    note's notetype changed meanwhile.
+  - Add reopened with nothing typed starts again from the defaults (the
+    reviewed card's deck), as `AddCards.reopen`.
+  - `NSMicrophoneUsageDescription` is in `Info.plist`, for recording.
 - **Media escaping:** the phase 0 gap is closed. Fields load through
   `encode_iri_paths` and save through `decode_iri_paths`, as
   `escape_media_filenames` does. A file name with a space now shows in the
@@ -657,9 +689,10 @@ exit criterion, a week of adding and editing only in the shell.
     (30 s timeouts, Anki's user agent); failures are shown as Qt's
     warnings.
   - Internal pastes: the page sends `cutOrCopy` during the copy event,
-    before WebKit writes the pasteboard. The shell records the change
-    count, and the next change is the field's content. Later changes make
-    it external again.
+    but the bridge is asynchronous, so WebKit may write the pasteboard
+    before or after the shell hears of it. So, as Qt does on its clipboard
+    signal, the shell captures the pasteboard 200 ms later. A paste is
+    internal while the pasteboard still has that change count and HTML.
   - WebKit copies absolute `anki://localhost/` image URLs; they're turned
     back into media names.
   - Shift flips "strip formatting" (`NSEvent.modifierFlags`).
@@ -727,7 +760,8 @@ exit criterion, a week of adding and editing only in the shell.
       the element's shadow root) and saves as `\(x^2\)`;
     - the LaTeX preview;
     - a format button;
-    - an option toggle.
+    - an option toggle;
+    - the side panel and the frame limits.
   - `harness/editor-occlusion.js`: the Image Occlusion notetype, a
     pasteboard image, the mask editor, and the no-masks warning. Masks
     aren't drawn, because fabric ignores synthetic mouse events.

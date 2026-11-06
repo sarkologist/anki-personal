@@ -95,21 +95,9 @@ pub fn load_edit_current(ui: &Arc<Ui>, nid: i64, card_id: Option<i64>) -> anyhow
 
 /// Add Cards, or bring it to the front if it's open (`aqt.dialogs`).
 pub fn open_add(ui: &Arc<Ui>) -> anyhow::Result<()> {
-    if let Some(w) = ui.app.get_webview_window(ADD) {
-        if ui.editors.session(ADD).is_some() {
-            if !ui.background {
-                let _ = w.set_focus();
-            }
-            return Ok(());
-        }
-    }
     let api = &ui.shell.api;
-    let review_deck = ui
-        .main
-        .reviewer
-        .lock()
-        .unwrap()
-        .card_id()
+    let review_card = ui.main.reviewer.lock().unwrap().card_id();
+    let review_deck = review_card
         .and_then(|cid| {
             api.call::<anki_proto::cards::Card>("get_card", &anki_proto::cards::CardId { cid })
                 .ok()
@@ -123,6 +111,31 @@ pub fn open_add(ui: &Arc<Ui>) -> anyhow::Result<()> {
         })
         .unwrap_or(0);
     let (ntid, did) = editor::defaults_for_adding(api, review_deck)?;
+    if let Some(w) = ui.app.get_webview_window(ADD) {
+        if let Some(session) = ui.editors.session(ADD) {
+            // `AddCards.reopen`: with nothing typed, start again from the
+            // defaults (the reviewed card's deck)
+            if editor::session_fields_are_blank(api, &session) {
+                let note = if session.note.notetype_id == ntid {
+                    None
+                } else {
+                    Some(editor::switch_notetype(api, &session.note, ntid)?)
+                };
+                ui.editors.update(ADD, |s| {
+                    if let Some(note) = note {
+                        s.replace_note(note);
+                    }
+                    s.deck_id = did;
+                });
+                reload_note(ui, ADD, Some(0));
+                update_choosers(ui);
+            }
+            if !ui.background {
+                let _ = w.set_focus();
+            }
+            return Ok(());
+        }
+    }
     let note = editor::new_note(api, ntid)?;
     ui.editors.set_session(ADD, Session::add(note, did));
     let title = ui.main.tr.actions_add().into_owned();
@@ -330,7 +343,8 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
     // Escape closes Add (not Edit Current, as in Qt), unless the page used
     // it (closing a popup)
     document.addEventListener("keydown", (e) => {{
-        if (add && e.key === "Escape" && !e.defaultPrevented) {{
+        // (Escape also cancels an input method's composition)
+        if (add && e.key === "Escape" && !e.defaultPrevented && !e.isComposing && e.keyCode !== 229) {{
             if (historyMenu && !historyMenu.hidden) {{ historyMenu.hidden = true; return; }}
             pycmd("closeEditor");
         }}
@@ -350,9 +364,13 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
             r.onerror = () => resolve(null);
             r.readAsDataURL(f);
         }});
-        const files = (await Promise.all([...(dt.files || [])].map(read))).filter(Boolean);
+        // big files would cross the bridge as base64
+        const all = [...(dt.files || [])];
+        const tooBig = all.filter((f) => f.size > {max_drop}).map((f) => f.name);
+        const files = (await Promise.all(all.filter((f) => f.size <= {max_drop}).map(read))).filter(Boolean);
         const drop = {{
             files,
+            tooBig,
             html: dt.getData("text/html"),
             text: dt.getData("text/plain"),
             uris: dt.getData("text/uri-list"),
@@ -362,6 +380,7 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
     }}, true);
 }})();"#,
         add = mode == Mode::Add,
+        max_drop = MAX_DROP_BYTES,
         deleted = js(ui.main.tr.adding_note_deleted()),
         keys = Value::Array(keys),
     )
@@ -618,6 +637,45 @@ fn exit_saved(ui: &Arc<Ui>) {
     );
 }
 
+/// Whether an editor window with a note is open.
+pub fn has_open_editors(ui: &Ui) -> bool {
+    [ADD, EDITOR]
+        .into_iter()
+        .any(|l| ui.editors.session(l).is_some() && ui.app.get_webview_window(l).is_some())
+}
+
+/// The collection changed outside Edit Current (an undo, the reviewer's
+/// mark, a sync): show the note as stored, or close if it's gone
+/// (`EditCurrent.on_operation_did_execute`).
+pub fn note_changed_elsewhere(ui: &Arc<Ui>) {
+    let Some(session) = ui.editors.session(EDITOR) else {
+        return;
+    };
+    let stored = ui.shell.api.call::<Note>(
+        "get_note",
+        &NoteId {
+            nid: session.note.id,
+        },
+    );
+    match stored {
+        Err(_) => {
+            ui.editors.clear(EDITOR);
+            if let Some(w) = ui.app.get_webview_window(EDITOR) {
+                let _ = w.destroy();
+            }
+        }
+        Ok(note)
+            if note.fields != session.note.fields
+                || note.tags != session.note.tags
+                || note.notetype_id != session.note.notetype_id =>
+        {
+            ui.editors.update(EDITOR, |s| s.note = note);
+            reload_note_keeping_focus(ui, EDITOR);
+        }
+        Ok(_) => {}
+    }
+}
+
 /// An editor window went away.
 pub fn destroyed(ui: &Arc<Ui>, label: &str) {
     ui.editors.clear(label);
@@ -628,30 +686,36 @@ pub fn destroyed(ui: &Arc<Ui>, label: &str) {
 // Adding
 //////////////////////////////////////////////////////////////////////////
 
-/// Add / Cmd+Enter: save the fields, then add (`add_current_note`).
+/// Add / Cmd+Enter: save the fields, then add (`add_current_note`) the
+/// note shown now.
 fn add_note(ui: &Arc<Ui>) {
-    if ui.editors.session(ADD).is_none() {
+    let Some(generation) = ui.editors.session(ADD).map(|s| s.generation) else {
         return;
-    }
+    };
     // image occlusion: the masks go into their field first
     ui.eval(
         ADD,
         "(() => { try { if (globalThis.canvas) saveOcclusions(); } catch (e) { console.error(e); } })();"
             .into(),
     );
-    ui.after_saved(ADD, "editorAdd");
+    ui.after_saved(ADD, &format!("editorAdd:{generation}"));
 }
 
-fn add_saved(ui: &Arc<Ui>) {
-    let Some(session) = ui.editors.session(ADD) else {
+fn add_saved(ui: &Arc<Ui>, generation: i64) {
+    // added already (a double click), or another note since
+    let Some(session) = ui
+        .editors
+        .session(ADD)
+        .filter(|s| s.generation == generation)
+    else {
         return;
     };
-    if session.note.id != 0 {
-        return;
-    }
     let tr = &ui.main.tr;
     match editor::add_check(&ui.shell.api, &session.note) {
-        AddCheck::Ok => really_add(ui),
+        AddCheck::Ok => really_add(ui, generation),
+        AddCheck::ConfirmNoCloze(_) if session.cloze_confirmed == Some(generation) => {
+            really_add(ui, generation)
+        }
         AddCheck::Problem(msg) => crate::main_window::ask(
             ui,
             Dialog {
@@ -675,17 +739,24 @@ fn add_saved(ui: &Arc<Ui>) {
                 ],
                 default: 0,
             },
-            |ui, answer| {
+            move |ui, answer| {
                 if answer.is_some_and(|a| a.button == 0) {
-                    really_add(ui);
+                    // the window kept working meanwhile: save and check
+                    // again, then add
+                    ui.editors.update(ADD, |s| {
+                        if s.generation == generation {
+                            s.cloze_confirmed = Some(generation);
+                        }
+                    });
+                    add_note(ui);
                 }
             },
         ),
     }
 }
 
-fn really_add(ui: &Arc<Ui>) {
-    match editor::add_current_note(&ui.shell, &ui.editors, ADD) {
+fn really_add(ui: &Arc<Ui>, generation: i64) {
+    match editor::add_current_note(&ui.shell, &ui.editors, ADD, generation) {
         Ok(Some((_, cards))) => {
             let tr = &ui.main.tr;
             reload_note(ui, ADD, Some(0));
@@ -764,7 +835,7 @@ fn choose_notetype_saved(ui: &Arc<Ui>) {
         let deck = editor::default_deck_for_notetype(api, ntid);
         let fields = note.fields.len() as u32;
         ui.editors.update(ADD, |s| {
-            s.note = note;
+            s.replace_note(note);
             s.last_added = None;
             if let Some(did) = deck {
                 s.deck_id = did;
@@ -943,6 +1014,18 @@ fn paste(ui: &Arc<Ui>, label: &str) {
     }
 }
 
+/// Dropped files bigger than this aren't read (100 MB).
+const MAX_DROP_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Whether a dropped file goes into the media folder: pictures and audio,
+/// as Qt's `urlToLink`.
+fn is_media_file(name: &str) -> bool {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    ext.is_some_and(|ext| {
+        crate::paste::PICS.contains(&ext.as_str()) || crate::paste::AUDIO.contains(&ext.as_str())
+    })
+}
+
 /// A drop from outside the page (Finder files, another app's HTML).
 fn drop(ui: &Arc<Ui>, label: &str, args: &str) {
     let Ok(drop) = serde_json::from_str::<Value>(args) else {
@@ -964,7 +1047,17 @@ fn drop(ui: &Arc<Ui>, label: &str, args: &str) {
         })
         .collect();
     let io_picker = ui.editors.session(label).is_some_and(|s| s.state == 1);
+    let mut skipped: Vec<String> = drop["tooBig"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| n.as_str().map(|n| format!("{n} (too big)")))
+        .collect();
     for (name, data) in &files {
+        if !is_media_file(name) {
+            skipped.push(name.clone());
+            continue;
+        }
         let Ok(saved) = crate::paste::Media::write_data(&media, name, data) else {
             continue;
         };
@@ -974,7 +1067,19 @@ fn drop(ui: &Arc<Ui>, label: &str, args: &str) {
         }
         html += &crate::paste::fname_to_link(&saved);
     }
+    if !skipped.is_empty() {
+        crate::main_window::message(
+            ui,
+            &format!(
+                "Only pictures and audio go into the media folder. Not added: {}",
+                skipped.join(", ")
+            ),
+        );
+    }
     let mut internal = false;
+    if html.is_empty() && !files.is_empty() {
+        return;
+    }
     if html.is_empty() {
         let contents = crate::pasteboard::Contents {
             html: drop["html"]
@@ -1184,8 +1289,16 @@ pub fn register(ui: &Arc<Ui>) {
         Value::Null
     });
     reg("cutOrCopy", |ui, label, _| {
-        ui.paste_tracker(label)
-            .on_cut_or_copy(crate::pasteboard::change_count(pasteboard().as_deref()));
+        let tracker = ui.paste_tracker(label);
+        tracker.on_cut_or_copy();
+        // capture what the field wrote, once WebKit has surely written it
+        std::thread::spawn(move || {
+            let board = pasteboard();
+            tracker.settle(|| {
+                let count = crate::pasteboard::change_count(board.as_deref());
+                (count, crate::pasteboard::read_html(board.as_deref()))
+            });
+        });
         Value::Null
     });
     reg("drop", |ui, label, args| {
@@ -1285,7 +1398,11 @@ pub fn register(ui: &Arc<Ui>) {
     let after = |name: &'static str, f: fn(&Arc<Ui>, &str, &str)| {
         let u = ui.clone();
         bridge.register(name, move |shell, label, args| {
-            if shell.bridge.take_pending(&format!("{name}:{args}")) {
+            // only the editor that was asked; the token says which
+            if shell
+                .bridge
+                .take_pending(&crate::app::pending_key(label, &format!("{name}:{args}")))
+            {
                 f(&u, label, args);
             }
             Value::Null
@@ -1305,7 +1422,11 @@ pub fn register(ui: &Arc<Ui>) {
         }
     });
     after("editorClose", |ui, label, _| close_saved(ui, label));
-    after("editorAdd", |ui, _, _| add_saved(ui));
+    after("editorAdd", |ui, _, args| {
+        if let Some(generation) = args.split(':').next().and_then(|g| g.parse().ok()) {
+            add_saved(ui, generation);
+        }
+    });
     after("editorChooseNotetype", |ui, _, _| choose_notetype_saved(ui));
     after("editorExit", |ui, _, _| exit_saved(ui));
 }

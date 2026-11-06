@@ -76,6 +76,18 @@ pub struct Session {
     pub last_added: Option<Note>,
     /// Edit Current: the card being reviewed.
     pub card_id: Option<i64>,
+    /// Add mode: which note this is. Every note shown gets a new one, so
+    /// saves and adds meant for an earlier note (all id 0) can be told
+    /// apart; the page gets its negative as the note id ([Session::page_id]).
+    pub generation: i64,
+    /// Add mode: the generation the user agreed to add without a cloze.
+    pub cloze_confirmed: Option<i64>,
+}
+
+static NEXT_GENERATION: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+
+pub fn next_generation() -> i64 {
+    NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
 
 impl Session {
@@ -90,6 +102,8 @@ impl Session {
             history: vec![],
             last_added: None,
             card_id,
+            generation: 0,
+            cloze_confirmed: None,
         }
     }
 
@@ -97,8 +111,25 @@ impl Session {
         Session {
             mode: Mode::Add,
             deck_id,
+            generation: next_generation(),
             ..Session::edit(note, None)
         }
+    }
+
+    /// The note id the page sends with its saves: the note's, or in Add
+    /// mode the generation's negative.
+    pub fn page_id(&self) -> i64 {
+        match self.mode {
+            Mode::Add => -self.generation,
+            Mode::EditCurrent => self.note.id,
+        }
+    }
+
+    /// Show `note`, a new note, in Add mode.
+    pub fn replace_note(&mut self, note: Note) {
+        self.note = note;
+        self.generation = next_generation();
+        self.cloze_confirmed = None;
     }
 }
 
@@ -343,7 +374,7 @@ pub fn load_note_js(
         descriptions = per_field("description", json!("")),
         fonts = Value::Array(fonts),
         focus = json!(focus_to),
-        nid = note.id,
+        nid = session.page_id(),
         tags = json!(note.tags),
         shrink = config_json(api, "shrinkEditorImages", json!(true)),
         close_tags = config_json(api, "closeHTMLTags", json!(true)),
@@ -401,19 +432,24 @@ fn munge_html(api: &Api, txt: &str) -> String {
         .unwrap_or(txt)
 }
 
-/// For Edit Current: the note in `label`, as currently stored, if it is
-/// `nid`. Saves start from the stored note, so changes made elsewhere while
-/// the editor is open (AnkiConnect, say) aren't reverted. For Add, the
-/// unsaved note.
-fn current_note(shell: &Shell, editors: &Editors, label: &str, nid: i64) -> Option<Note> {
+/// The note in `label` if the page's save is for it (`page_id` is what
+/// the page sent). For Edit Current, the note as currently stored: saves
+/// start from it, so changes made elsewhere while the editor is open
+/// (AnkiConnect, say) aren't reverted, unless its notetype changed, when
+/// the page's fields no longer match. For Add, the unsaved note.
+fn current_note(shell: &Shell, editors: &Editors, label: &str, page_id: i64) -> Option<Note> {
     let session = editors.session(label)?;
-    if session.note.id != nid {
+    if session.page_id() != page_id {
         tracing::debug!("ignored late save");
         return None;
     }
     match session.mode {
         Mode::Add => Some(session.note),
-        Mode::EditCurrent => shell.api.call("get_note", &NoteId { nid }).ok(),
+        Mode::EditCurrent => shell
+            .api
+            .call::<Note>("get_note", &NoteId { nid: page_id })
+            .ok()
+            .filter(|n| n.notetype_id == session.note.notetype_id),
     }
 }
 
@@ -482,10 +518,10 @@ pub fn save_tags(shell: &Shell, editors: &Editors, label: &str, args: &str) {
         tracing::warn!("ignored malformed tags");
         return;
     };
-    let Some(nid) = editors.note(label).map(|n| n.id) else {
+    let Some(page_id) = editors.session(label).map(|s| s.page_id()) else {
         return;
     };
-    let Some(mut note) = current_note(shell, editors, label, nid) else {
+    let Some(mut note) = current_note(shell, editors, label, page_id) else {
         return;
     };
     note.tags = tags;
@@ -784,20 +820,22 @@ pub fn add_check(api: &Api, note: &Note) -> AddCheck {
     }
 }
 
-/// Add the Add window's note to the collection; the window then shows the
-/// next one. Returns the new note's id and how many cards it made, or None
-/// if it was already added (a double click).
+/// Add the Add window's note, if it is still note `generation`, to the
+/// collection; the window then shows the next one. Returns the new note's
+/// id and how many cards it made, or None if that note was already added
+/// (a double click) or replaced.
 pub fn add_current_note(
     shell: &Shell,
     editors: &Editors,
     label: &str,
+    generation: i64,
 ) -> Result<Option<(i64, u32)>, ApiError> {
-    let Some(session) = editors.session(label).filter(|s| s.mode == Mode::Add) else {
+    let Some(session) = editors
+        .session(label)
+        .filter(|s| s.mode == Mode::Add && s.generation == generation)
+    else {
         return Ok(None);
     };
-    if session.note.id != 0 {
-        return Ok(None);
-    }
     let added: AddNoteResponse = shell.api.call(
         "add_note",
         &AddNoteRequest {
@@ -812,7 +850,7 @@ pub fn add_current_note(
         s.history.insert(0, note.id);
         s.history.truncate(HISTORY_SIZE);
         s.last_added = Some(note.clone());
-        s.note = next;
+        s.replace_note(next);
     });
     editors.emit(
         shell,
@@ -1336,12 +1374,22 @@ mod store_test {
         let ntid = basic(&shell);
         editors.set_session("add", Session::add(new_note(&shell.api, ntid).unwrap(), 1));
         let before = note_count(&shell);
+        let first = editors.session("add").unwrap();
+        let page = first.page_id();
 
-        assert!(save_field(&shell, &editors, "add", "0:0:question", false));
+        assert!(save_field(
+            &shell,
+            &editors,
+            "add",
+            &format!("0:{page}:question"),
+            false
+        ));
         save_tags(&shell, &editors, "add", r#"["tagged"]"#);
 
         assert_eq!(note_count(&shell), before);
-        let (nid, cards) = add_current_note(&shell, &editors, "add").unwrap().unwrap();
+        let (nid, cards) = add_current_note(&shell, &editors, "add", first.generation)
+            .unwrap()
+            .unwrap();
         assert_eq!(cards, 1);
         let added = stored(&shell, nid);
         assert_eq!(added.fields, vec!["question", ""]);
@@ -1352,14 +1400,22 @@ mod store_test {
         assert_eq!(session.note.id, 0);
         assert_eq!(session.note.fields, vec!["", ""]);
         assert_eq!(session.note.tags, vec!["tagged"]);
-        // a late save for the added note is ignored
+        // a late save for the added note doesn't land in the next one
         assert!(!save_field(
             &shell,
             &editors,
             "add",
-            &format!("0:{nid}:late"),
+            &format!("0:{page}:late"),
             false
         ));
+        assert_eq!(editors.session("add").unwrap().note.fields, vec!["", ""]);
+        // nor does a second add of it (a double click)
+        assert_eq!(
+            add_current_note(&shell, &editors, "add", first.generation).unwrap(),
+            None
+        );
+        assert_eq!(note_count(&shell), before + 1);
+        assert_ne!(editors.session("add").unwrap().page_id(), page);
     }
 
     #[test]
@@ -1383,9 +1439,11 @@ mod store_test {
         );
 
         // sticky fields carry over after adding
-        save_field(&shell, &editors, "add", "0:0:q", false);
-        save_field(&shell, &editors, "add", "1:0:kept", false);
-        add_current_note(&shell, &editors, "add").unwrap();
+        let session = editors.session("add").unwrap();
+        let page = session.page_id();
+        save_field(&shell, &editors, "add", &format!("0:{page}:q"), false);
+        save_field(&shell, &editors, "add", &format!("1:{page}:kept"), false);
+        add_current_note(&shell, &editors, "add", session.generation).unwrap();
         assert_eq!(
             editors.session("add").unwrap().note.fields,
             vec!["q", "kept"]

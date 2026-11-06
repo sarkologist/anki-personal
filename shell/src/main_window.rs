@@ -515,6 +515,8 @@ pub fn apply(ui: &Arc<Ui>, effects: Vec<Effect>) {
             Effect::UndoChanged => crate::menus::refresh(ui),
         }
     }
+    // the reviewer may have changed the note Edit Current shows (mark, undo)
+    crate::editor_window::note_changed_elsewhere(ui);
 }
 
 pub fn tooltip(ui: &Ui, msg: &str) {
