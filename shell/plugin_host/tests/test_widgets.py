@@ -513,3 +513,93 @@ def test_editor_buttons_their_keys_and_callbacks(mw, col):
     (ev,) = mw.native.ops("editor_eval")
     editors.handle("editor_callback", {"callback": ev["callback"], "value": 2})
     assert got == [2]
+
+
+def test_a_structure_change_keeps_the_evals_after_it(mw):
+    pane = QWidget()
+    pane.setLayout(QVBoxLayout())
+    web = AnkiWebView()
+    pane.layout().addWidget(web)
+    dock = shown(mw, pane)
+    pane.layout().addWidget(QLabel("new"))
+    web.eval("after()")
+    ops = updates(mw)
+    assert "tree" in ops[0] and ops[1:] == [{"id": web._id, "eval": "after()"}]
+    assert event(dock, "tree")["seq"] == 1
+
+
+def test_a_redrawn_view_answers_callbacks_it_lost(mw):
+    pane = QWidget()
+    pane.setLayout(QVBoxLayout())
+    web = AnkiWebView()
+    pane.layout().addWidget(web)
+    dock = shown(mw, pane)
+    got: list[Any] = []
+    web.evalWithCallback("lost()", got.append)
+    updates(mw)
+    # the page reloaded before answering: it asks for the tree again
+    event(dock, "tree")
+    assert got == [None]
+    # one not sent yet is kept for the new page
+    web.evalWithCallback("kept()", got.append)
+    event(dock, "tree")
+    assert got == [None]
+
+
+def test_load_note_sends_only_what_the_add_on_changed(mw, col):
+    editors.handle("editor_did_load_note", note_event(col))
+    editor = editors.editors()[0]
+    mw.native.sent.clear()
+    assert editor.note
+    editor.note.fields[1] = "tidied"
+    editor.loadNote(focusTo=1)
+    (load,) = mw.native.ops("editor_load_note")
+    assert load == {
+        "label": "add",
+        "page_id": -1,
+        "fields": {"1": "tidied"},
+        "tags": None,
+        "focus_to": 1,
+    }
+
+
+def test_an_unfocus_hook_that_changed_the_note_reloads_it_after_a_moment(mw, col):
+    gui_hooks.editor_did_unfocus_field.append(lambda changed, note, ord: True)
+    try:
+        editors.handle("editor_did_load_note", note_event(col))
+        mw.native.sent.clear()
+        editors.handle("editor_did_unfocus_field", note_event(col, ord=0))
+        assert mw.native.ops("editor_load_note") == []
+        # the next field's focus comes first, as in Qt
+        editors.handle("editor_did_focus_field", note_event(col, ord=1))
+        import time
+
+        time.sleep(0.15)
+        mw.loop.run_pending()
+        (load,) = mw.native.ops("editor_load_note")
+        assert load["focus_to"] == 1
+    finally:
+        gui_hooks.editor_did_unfocus_field._hooks.clear()
+
+
+def test_a_closed_windows_editor_does_nothing(mw, col):
+    editors.handle("editor_did_load_note", note_event(col))
+    editor = editors.editors()[0]
+    pane = QWidget()
+    pane.setLayout(QVBoxLayout())
+    web = AnkiWebView()
+    pane.layout().addWidget(web)
+    dock = QDockWidget("Agent", editor.parentWindow)
+    dock.setWidget(pane)
+    editor.parentWindow.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+    mw.native.sent.clear()
+    editors.handle("editor_closed", {"label": "add"})
+    assert mw.native.ops("widget_pages_closed") == [{"widgets": [web._id]}]
+    mw.native.sent.clear()
+    got: list[Any] = []
+    editor.web.eval("x()")
+    editor.web.evalWithCallback("y()", got.append)
+    editor.doPaste("<b>x</b>", False)
+    editor.loadNote()
+    mw.loop.run_pending()
+    assert mw.native.sent == [] and got == [None]

@@ -20,7 +20,6 @@ use std::sync::Mutex;
 use std::sync::Weak;
 use std::time::Duration;
 
-use anki_proto::notes::Note;
 use prost::Message;
 use serde_json::json;
 use serde_json::Value;
@@ -191,7 +190,11 @@ pub fn host_stopped(ui: &Ui) {
     for label in docks {
         editor_window::set_side_panel(ui, &label, None, false);
     }
-    ui.plugins.editors.pages.lock().unwrap().clear();
+    for (widget, _) in ui.plugins.editors.pages.lock().unwrap().drain() {
+        for label in editor_window_labels(&[]) {
+            ui.shell.pages.remove(&page_id(label, widget));
+        }
+    }
     ui.plugins.editors.buttons.lock().unwrap().clear();
 }
 
@@ -232,7 +235,7 @@ pub fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> bool {
                     ui.eval_with_result(
                         label,
                         js,
-                        Box::new(move |value| {
+                        crate::app::EvalResult::new(move |value| {
                             host.notify(
                                 "editor_callback",
                                 json!({"callback": callback, "value": value}),
@@ -244,13 +247,15 @@ pub fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> bool {
             }
         }
         "editor_load_note" if in_editor => {
-            if let Some(note) = host_note(ui, label, msg) {
-                ui.editors.update(label, |s| s.note = note);
+            if note_changed(ui, label, msg) {
                 let focus = msg["focus_to"].as_u64().map(|f| f as u32);
                 editor_window::reload_note(ui, label, focus);
             }
         }
-        "editor_note_changed" if in_editor => note_changed(ui, label, msg),
+        "editor_note_changed" if in_editor => {
+            note_changed(ui, label, msg);
+        }
+        "widget_pages_closed" => pages_closed(ui, msg),
         "editor_after_saved" if in_editor => {
             let callback = msg["callback"].as_u64().unwrap_or(0);
             ui.after_saved(label, &format!("addonAfterSaved:{callback}"));
@@ -292,45 +297,60 @@ pub fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> bool {
     true
 }
 
-/// The note the host sent for `label`, if the window still shows it.
-fn host_note(ui: &Ui, label: &str, msg: &Value) -> Option<Note> {
-    let session = ui.editors.session(label)?;
-    if msg["page_id"].as_i64() != Some(session.page_id()) {
-        tracing::debug!(label, "add-on's note is for a note no longer shown");
-        return None;
-    }
-    let data = data_encoding::BASE64
-        .decode(msg["note"].as_str()?.as_bytes())
-        .ok()?;
-    let note = Note::decode(data.as_slice()).ok()?;
-    (note.id == session.note.id && note.notetype_id == session.note.notetype_id).then_some(note)
-}
-
 /// Fields and tags an add-on changed in its copy of the window's note: the
-/// window's next save (or Add) has them, as Qt's would.
-fn note_changed(ui: &Ui, label: &str, msg: &Value) {
+/// window's next save (or Add) has them, as Qt's would. Only those, so what
+/// the user typed since stays. False if the window shows another note now.
+fn note_changed(ui: &Ui, label: &str, msg: &Value) -> bool {
     let page_id = msg["page_id"].as_i64();
-    ui.editors.update(label, |s| {
-        if page_id != Some(s.page_id()) {
-            return;
-        }
-        if let Some(fields) = msg["fields"].as_object() {
-            for (ord, html) in fields {
-                let (Ok(ord), Some(html)) = (ord.parse::<usize>(), html.as_str()) else {
-                    continue;
-                };
-                if let Some(field) = s.note.fields.get_mut(ord) {
-                    *field = html.to_string();
+    ui.editors
+        .update(label, |s| {
+            if page_id != Some(s.page_id()) {
+                tracing::debug!(label, "add-on's change is for a note no longer shown");
+                return false;
+            }
+            if let Some(fields) = msg["fields"].as_object() {
+                for (ord, html) in fields {
+                    let (Ok(ord), Some(html)) = (ord.parse::<usize>(), html.as_str()) else {
+                        continue;
+                    };
+                    if let Some(field) = s.note.fields.get_mut(ord) {
+                        *field = html.to_string();
+                    }
                 }
             }
+            if let Some(tags) = msg["tags"].as_array() {
+                s.note.tags = tags
+                    .iter()
+                    .filter_map(|t| t.as_str().map(str::to_string))
+                    .collect();
+            }
+            true
+        })
+        .unwrap_or(false)
+}
+
+/// A closed window's web views: their pages aren't needed any more.
+fn pages_closed(ui: &Ui, msg: &Value) {
+    let state = &ui.plugins.editors;
+    let labels: Vec<String> = state.docks.lock().unwrap().keys().cloned().collect();
+    let mut pages = state.pages.lock().unwrap();
+    for widget in msg["widgets"].as_array().into_iter().flatten() {
+        let Some(widget) = widget.as_u64() else {
+            continue;
+        };
+        pages.remove(&widget);
+        for label in editor_window_labels(&labels) {
+            ui.shell.pages.remove(&page_id(label, widget));
         }
-        if let Some(tags) = msg["tags"].as_array() {
-            s.note.tags = tags
-                .iter()
-                .filter_map(|t| t.as_str().map(str::to_string))
-                .collect();
-        }
-    });
+    }
+}
+
+/// Both editors' labels (a closed window's pages were served for it too).
+fn editor_window_labels(open: &[String]) -> Vec<&str> {
+    let mut labels = vec![editor_window::ADD, crate::app::EDITOR];
+    labels.extend(open.iter().map(String::as_str));
+    labels.dedup();
+    labels
 }
 
 /// A dock added to the window, shown or hidden. Its page loads with the
@@ -358,7 +378,7 @@ fn load_side_panel(ui: &Ui, label: &str, root: u64, visible: bool) {
     for (widget, html) in ui.plugins.editors.pages.lock().unwrap().iter() {
         ui.shell.pages.set(
             &page_id(label, *widget),
-            WebviewKind::Dialog,
+            WebviewKind::AddonView,
             Some(html.clone()),
         );
     }
@@ -480,7 +500,7 @@ fn widget_page(ui: &Ui, msg: &Value) {
     for label in ui.plugins.editors.docks.lock().unwrap().keys() {
         ui.shell.pages.set(
             &page_id(label, widget),
-            WebviewKind::Dialog,
+            WebviewKind::AddonView,
             Some(html.clone()),
         );
     }

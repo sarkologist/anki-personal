@@ -150,8 +150,29 @@ fn find_web(args: &Args) -> Result<PathBuf> {
 }
 
 /// What an eval's result goes to (`evalWithCallback`): null if the page
-/// went away, or the result isn't JSON.
-pub type EvalResult = Box<dyn FnOnce(Value) + Send>;
+/// went away, or the result isn't JSON. It's always answered: dropped
+/// unanswered (the eval was never run), it gets null.
+pub struct EvalResult(Option<Box<dyn FnOnce(Value) + Send>>);
+
+impl EvalResult {
+    pub fn new(f: impl FnOnce(Value) + Send + 'static) -> Self {
+        EvalResult(Some(Box::new(f)))
+    }
+
+    pub fn answer(mut self, value: Value) {
+        if let Some(f) = self.0.take() {
+            f(value);
+        }
+    }
+}
+
+impl Drop for EvalResult {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f(Value::Null);
+        }
+    }
+}
 
 enum Js {
     Plain(String),
@@ -215,7 +236,7 @@ fn run_queued(app: &AppHandle, label: &str, js: Js) {
             }
             None => {
                 tracing::warn!(label, "eval on a closed webview");
-                done(Value::Null);
+                done.answer(Value::Null);
             }
         },
     }

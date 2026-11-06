@@ -16,6 +16,7 @@ NotImplementedError when they're created or shown."""
 from __future__ import annotations
 
 import enum
+import functools
 import inspect
 import itertools
 import re
@@ -348,8 +349,10 @@ class Root:
         if not (self._ops or self._structure):
             return
         if self._structure:
-            # what's in the tree is sent with it; later ops still apply
-            ops = [{"tree": self.widget._tree()}]
+            # the tree has every widget's properties; evals, focus and the
+            # like still apply after it
+            ops: list[dict[str, Any]] = [{"tree": self.widget._tree()}]
+            ops += [op for op in self._ops if "props" not in op]
         else:
             ops = []
             for op in self._ops:
@@ -368,6 +371,15 @@ class Root:
             native.notify("widget_update", root=self.widget._id, seq=self.seq, ops=ops)
 
     def tree(self) -> dict[str, Any]:
+        """For a page drawing the root afresh. Web view callbacks already
+        sent went to the page it replaces: they get None, as for a page
+        that's gone."""
+        waiting = {op["callback"] for op in self._ops if "callback" in op}
+        for widget in list(_widgets.values()):
+            if isinstance(widget, AnkiWebView) and root_of(widget) is self:
+                for n in [n for n in widget._callbacks if n not in waiting]:
+                    callback = widget._callbacks.pop(n)
+                    _post(functools.partial(callback, None))
         return {"seq": self.seq, "tree": self.widget._tree()}
 
 

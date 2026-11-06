@@ -786,7 +786,23 @@ running them as before.
     completion handler (`src/webkit.rs`): the editor's CSP has no `eval`.
   - The format buttons and the add-ons' buttons are one toolbar group:
     each `AddonButtons` group handles the clicks of every add-on button in
-    the page, so with two each click ran twice.
+    the page, so with two each click ran twice. The add-ons' are put in the
+    format group with their own handlers (a group's `destroy` leaves its
+    element, so it can't be redrawn).
+- **Review** (an independent Opus pass), fixed:
+  - rich-text labels drew any HTML in the panel, which has the editor's
+    bridge and API: now only formatting tags and http links;
+  - `loadNote` sent the host's whole, older copy of the note, undoing
+    typing since: now only what the add-on changed; the reload after
+    `editor_did_unfocus_field` waits 100 ms, as Qt;
+  - eval callbacks could be dropped (a reset page, a structure change, a
+    redrawn panel): now always answered, with null if lost;
+  - the host's text replaced typing it hadn't had yet;
+  - add-on shortcuts got a second listener after a host restart;
+  - web view pages were kept after their window closed;
+  - add-on web views are also served with `CSP: sandbox`, and API calls
+    from another origin (`null`) are refused;
+  - a closed window's `Editor` could act on a reopened one.
   - Host requests can now get replies (the folder picker waits for one).
   - The add-on logger and logs folder are Anki's (`logs/addons/<add-on>`).
 - **Checks** (on a copy of the real profile, with both add-ons):

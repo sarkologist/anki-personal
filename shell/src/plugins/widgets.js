@@ -31,6 +31,71 @@
         typedTimer = setTimeout(() => typed.size && send("values", 0, {}), 300);
     };
 
+    // the host's text for a widget would undo typing it hasn't had yet
+    const unsent = (id) => typed.has(String(id));
+
+    // A label's rich text, as Qt draws it: formatting, no scripts. Parsed
+    // inert, then only these tags (and http links) are kept; the panel has
+    // the editor's bridge and API.
+    const RICH_TAGS = new Set([
+        "A",
+        "B",
+        "BIG",
+        "BLOCKQUOTE",
+        "BR",
+        "CODE",
+        "DIV",
+        "EM",
+        "FONT",
+        "H1",
+        "H2",
+        "H3",
+        "H4",
+        "H5",
+        "H6",
+        "HR",
+        "I",
+        "LI",
+        "OL",
+        "P",
+        "PRE",
+        "S",
+        "SMALL",
+        "SPAN",
+        "STRONG",
+        "SUB",
+        "SUP",
+        "TABLE",
+        "TD",
+        "TH",
+        "TR",
+        "TT",
+        "U",
+        "UL",
+    ]);
+    function richText(html) {
+        const parsed = new DOMParser().parseFromString(html, "text/html").body;
+        const copy = (node) => {
+            if (node.nodeType === Node.TEXT_NODE) {
+                return document.createTextNode(node.textContent);
+            }
+            const out = document.createDocumentFragment();
+            const kids = [...node.childNodes].map(copy);
+            if (node.nodeType !== Node.ELEMENT_NODE || !RICH_TAGS.has(node.tagName)) {
+                out.append(...kids);
+                return out;
+            }
+            const el = document.createElement(node.tagName);
+            const href = node.tagName === "A" && node.getAttribute("href");
+            if (href && /^(https?|mailto):/i.test(href)) {
+                el.setAttribute("href", href);
+            }
+            el.append(...kids);
+            return el;
+        };
+        return copy(parsed);
+    }
+
     // Widgets: each is { el, set(props) } plus what its ops need
     ////////////////////////////////////////////////////////////////////
 
@@ -79,7 +144,7 @@
                 el,
                 set(p) {
                     if (p.rich) {
-                        el.innerHTML = p.text;
+                        el.replaceChildren(richText(p.text));
                     } else {
                         el.textContent = p.text;
                     }
@@ -144,7 +209,7 @@
             return {
                 el,
                 set(p) {
-                    if (el.value !== p.text) {
+                    if (!unsent(node.id) && el.value !== p.text) {
                         el.value = p.text;
                     }
                     el.placeholder = p.placeholder ?? "";
@@ -178,7 +243,7 @@
                     });
                     if (p.editable) {
                         list.replaceChildren(...options);
-                        if (input.value !== p.text) {
+                        if (!unsent(node.id) && input.value !== p.text) {
                             input.value = p.text;
                         }
                         input.placeholder = p.placeholder ?? "";
@@ -245,7 +310,7 @@
             return {
                 el,
                 set(p) {
-                    if (el.value !== p.text) {
+                    if (!unsent(node.id) && el.value !== p.text) {
                         el.value = p.text;
                     }
                     el.placeholder = p.placeholder ?? "";
@@ -457,6 +522,16 @@
             w.setCursor?.(op.cursor);
         }
     }
+
+    // links (rich labels) open in the browser, as the bridge script does
+    // for top-level pages
+    document.addEventListener("click", (e) => {
+        const link = e.target instanceof Element && e.target.closest("a[href]");
+        if (link) {
+            e.preventDefault();
+            window.pycmd("openUrl:" + link.href);
+        }
+    });
 
     window.addEventListener("message", (e) => {
         const w = widgets.get(e.data?.shellWidget);

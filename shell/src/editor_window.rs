@@ -435,22 +435,13 @@ fn format_buttons_js() -> String {
             )
         })
         .collect();
-    // One group for them and the plugin host's buttons
-    // ([add_addon_buttons]): every AddonButtons group handles the clicks
-    // of all the page's add-on buttons, so a second one would run each
-    // button twice. Redrawn, in turn, when the add-ons' buttons come.
+    // The plugin host's buttons go in this group too ([add_addon_buttons]):
+    // every AddonButtons group handles the clicks of all the page's add-on
+    // buttons, so with a second group each button would run twice.
     format!(
-        r#"window.shellToolbarButtons = {{ format: {}, addons: [] }};
-window.shellDrawToolbarButtons = () => {{
-    const b = window.shellToolbarButtons;
-    b.drawn = (b.drawn || require("anki/ui").loaded).then(async (group) => {{
-        group?.destroy?.();
-        return require("anki/NoteEditor").instances[0].toolbar.toolbar.append({{
-            component: editorToolbar.AddonButtons, id: "addons",
-            props: {{ buttons: [...b.format, ...b.addons] }} }});
-    }});
-}};
-shellDrawToolbarButtons();"#,
+        "window.shellToolbarButtons = {{ drawn: require(\"anki/ui\").loaded.then(() => \
+         require(\"anki/NoteEditor\").instances[0].toolbar.toolbar.append({{ \
+         component: editorToolbar.AddonButtons, id: \"addons\", props: {{ buttons: {} }} }})) }};",
         json!(buttons)
     )
 }
@@ -572,17 +563,46 @@ pub fn add_addon_buttons(ui: &Ui, label: &str, buttons: &[String], keys: &[(Stri
         .collect();
     let mut js = String::new();
     if !buttons.is_empty() {
+        // after the format buttons, in their group, with the clicks
+        // AddonButtons would give them; again after a host restart
         js += &format!(
-            "window.shellToolbarButtons.addons = {}; shellDrawToolbarButtons();",
-            json!(buttons)
+            r#"window.shellToolbarButtons.drawn.then(() => {{
+    const format = document.querySelector(".anki-addon-button[data-command^='format:']");
+    const group = format?.parentElement?.parentElement;
+    if (!group) return;
+    group.querySelectorAll(".shell-plugin-button").forEach((w) => w.remove());
+    const last = group.lastElementChild;
+    if (last) last.style.cssText = "--border-left-radius: 0; --border-right-radius: 0;";
+    const buttons = {buttons};
+    buttons.forEach((html, i) => {{
+        const wrap = document.createElement("div");
+        wrap.className = "shell-plugin-button";
+        wrap.style.cssText = i === buttons.length - 1
+            ? "--border-left-radius: 0; --border-right-radius: 5px;"
+            : "--border-left-radius: 0; --border-right-radius: 0;";
+        wrap.innerHTML = html;
+        const button = wrap.firstElementChild;
+        button.addEventListener("mousedown", (e) => {{ e.preventDefault(); e.stopPropagation(); }});
+        button.addEventListener("click", () => {{
+            const command = button.getAttribute("data-command");
+            if (command) pycmd(command);
+            if (button.getAttribute("data-cantoggle") === "1") button.classList.toggle("active");
+        }});
+        group.append(wrap);
+    }});
+}});"#,
+            buttons = json!(buttons)
         );
     }
     if !keys.is_empty() {
+        // one listener per page, for the latest keys (a restarted host
+        // sends them again)
         js += &format!(
-            "(() => {{ const keys = {}; document.addEventListener(\"keydown\", (e) => {{ \
-             for (const k of keys) {{ if (e.code === k.code && e.metaKey === k.meta && \
+            "window.shellAddonKeys = {}; if (!window.shellAddonKeysListen) {{ \
+             window.shellAddonKeysListen = true; document.addEventListener(\"keydown\", (e) => {{ \
+             for (const k of window.shellAddonKeys) {{ if (e.code === k.code && e.metaKey === k.meta && \
              e.shiftKey === k.shift && e.altKey === k.alt && e.ctrlKey === k.ctrl) {{ \
-             e.preventDefault(); e.stopPropagation(); pycmd(k.cmd); return; }} }} }}, true); }})();",
+             e.preventDefault(); e.stopPropagation(); pycmd(k.cmd); return; }} }} }}, true); }}",
             Value::Array(keys)
         );
     }

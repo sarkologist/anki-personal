@@ -131,12 +131,20 @@ class EditorWindow(QMainWindow):
         )
 
     def _close(self) -> None:
-        from .widgets import root_of
+        from .widgets import AnkiWebView, _widgets, root_of
 
-        for dock in self._docks:
-            if root := root_of(dock):
-                root.close()
+        roots = [root for dock in self._docks if (root := root_of(dock))]
+        # the shell can forget their web views' pages
+        views = [
+            w._id
+            for w in list(_widgets.values())
+            if isinstance(w, AnkiWebView) and root_of(w) in roots
+        ]
+        for root in roots:
+            root.close()
         self._docks.clear()
+        if views:
+            _native().notify("widget_pages_closed", widgets=views)
 
 
 class EditorWebView(QObject):
@@ -147,12 +155,14 @@ class EditorWebView(QObject):
         self.editor = editor
 
     def eval(self, js: str) -> None:
-        _native().notify("editor_eval", label=self.editor.label, js=js)
+        self.editor._send("editor_eval", js=js)
 
     def evalWithCallback(self, js: str, cb: Callable[[Any], None]) -> None:
-        _native().notify(
-            "editor_eval", label=self.editor.label, js=js, callback=_callback(cb)
-        )
+        if self.editor._closed:
+            # as for a page that's gone
+            self.editor.mw.loop.post(functools.partial(cb, None))
+            return
+        self.editor._send("editor_eval", js=js, callback=_callback(cb))
 
     def setFocus(self, *_args: Any) -> None:
         pass
@@ -226,10 +236,16 @@ class Editor:
         self.note._load_from_backend_note(proto)
         self._shell_state = (list(self.note.fields), list(self.note.tags))
 
-    def _sync(self) -> None:
-        """Send what an add-on changed in the note to the window."""
-        if self.note is None or self._shell_state is None or self._closed:
-            return
+    def _send(self, op: str, **fields: Any) -> None:
+        """To this window, while it's open: a reopened one is another."""
+        if not self._closed:
+            _native().notify(op, label=self.label, **fields)
+
+    def _changes(self) -> dict[str, Any] | None:
+        """What an add-on changed in the note since the window sent it:
+        only that, so typing the window has since isn't undone."""
+        if self.note is None or self._shell_state is None:
+            return None
         fields, tags = self._shell_state
         changed = {
             str(i): html
@@ -237,16 +253,14 @@ class Editor:
             if i >= len(fields) or html != fields[i]
         }
         new_tags = list(self.note.tags) if list(self.note.tags) != tags else None
-        if not changed and new_tags is None:
-            return
         self._shell_state = (list(self.note.fields), list(self.note.tags))
-        _native().notify(
-            "editor_note_changed",
-            label=self.label,
-            page_id=self._page_id,
-            fields=changed,
-            tags=new_tags,
-        )
+        return {"page_id": self._page_id, "fields": changed, "tags": new_tags}
+
+    def _sync(self) -> None:
+        """Send what an add-on changed in the note to the window."""
+        changes = self._changes()
+        if changes and (changes["fields"] or changes["tags"] is not None):
+            self._send("editor_note_changed", **changes)
 
     # Qt's API
 
@@ -255,18 +269,9 @@ class Editor:
         return self.note.note_type()
 
     def loadNote(self, focusTo: int | None = None) -> None:
-        if self.note is None:
-            return
-        self._shell_state = (list(self.note.fields), list(self.note.tags))
-        _native().notify(
-            "editor_load_note",
-            label=self.label,
-            page_id=self._page_id,
-            note=base64.b64encode(
-                self.note._to_backend_note().SerializeToString()
-            ).decode(),
-            focus_to=focusTo,
-        )
+        changes = self._changes()
+        if changes is not None:
+            self._send("editor_load_note", **changes, focus_to=focusTo)
 
     def loadNoteKeepingFocus(self) -> None:
         self.loadNote(self.currentField)
@@ -274,23 +279,20 @@ class Editor:
     def call_after_note_saved(
         self, callback: Callable[[], None], keepFocus: bool = False
     ) -> None:
-        _native().notify(
-            "editor_after_saved", label=self.label, callback=_callback(callback)
-        )
+        self._send("editor_after_saved", callback=_callback(callback))
 
     saveNow = call_after_note_saved
 
     def doPaste(self, html: str, internal: bool, extended: bool = False) -> None:
-        _native().notify(
+        self._send(
             "editor_paste",
-            label=self.label,
             html=html,
             internal=internal,
             extended=extended,
         )
 
     def checkValid(self) -> None:
-        _native().notify("editor_check_valid", label=self.label)
+        self._send("editor_check_valid")
 
     def addButton(
         self,
@@ -421,7 +423,8 @@ def handle(name: str, event: dict[str, Any]) -> Any:
         editor.currentField = None
         editor.last_field_index = ord
         if gui_hooks.editor_did_unfocus_field(False, note, ord):
-            editor.loadNoteKeepingFocus()
+            # after the next field's focus, as Qt
+            editor.mw.progress.single_shot(100, editor.loadNoteKeepingFocus, False)
     elif name == "editor_did_fire_typing_timer":
         gui_hooks.editor_did_fire_typing_timer(note)
     elif name == "editor_did_update_tags":

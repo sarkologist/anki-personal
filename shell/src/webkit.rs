@@ -26,7 +26,7 @@ const FRAGMENTS_ALLOWED: usize = 1 << 2;
 ///
 /// # Safety
 /// `webview` is a WKWebView, and this runs on the main thread.
-pub unsafe fn evaluate(webview: *mut c_void, js: &str, done: Box<dyn FnOnce(Value) + Send>) {
+pub unsafe fn evaluate(webview: *mut c_void, js: &str, done: crate::app::EvalResult) {
     let webview = &*(webview as *const AnyObject);
     let js = NSString::from_str(js);
     let done = Cell::new(Some(done));
@@ -37,7 +37,7 @@ pub unsafe fn evaluate(webview: *mut c_void, js: &str, done: Box<dyn FnOnce(Valu
             to_json(&*result).unwrap_or(Value::Null)
         };
         if let Some(done) = done.take() {
-            done(value);
+            done.answer(value);
         }
     });
     let _: () = msg_send![webview, evaluateJavaScript: &*js, completionHandler: &*block];
