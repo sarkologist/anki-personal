@@ -60,6 +60,8 @@ pub struct Settings {
     /// The `pngCommands`/`svgCommands` an enabled add-on sets in the old
     /// Anki (the "Edit LaTeX toolchain" add-on does), imported.
     pub anki_latex_commands: Option<LatexCommands>,
+    /// Whether an import has read the LaTeX commands (None is a value).
+    pub latex_imported: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -174,8 +176,10 @@ impl Settings {
 
     /// Settings imported before the theme was: take just the old Anki's
     /// theme (a full re-import would replace sync logins made here).
+    /// Also the LaTeX commands, if they were imported before the import
+    /// read them.
     pub fn import_theme_if_missing(&mut self) -> Result<bool> {
-        if self.imported_at.is_none() || self.anki_theme.is_some() {
+        if self.imported_at.is_none() || (self.anki_theme.is_some() && self.latex_imported) {
             return Ok(false);
         }
         let out = self.run_import()?;
@@ -186,13 +190,20 @@ impl Settings {
     fn merge_theme(&mut self, json: &[u8]) -> Result<()> {
         let imported: Imported =
             serde_json::from_slice(json).context("unexpected profile import output")?;
-        // "follow the system" if it has none, so this runs once
-        self.anki_theme = Some(
-            imported
-                .theme
-                .and_then(ThemePref::from_anki)
-                .unwrap_or_default(),
-        );
+        if self.anki_theme.is_none() {
+            // "follow the system" if it has none, so this runs once
+            self.anki_theme = Some(
+                imported
+                    .theme
+                    .and_then(ThemePref::from_anki)
+                    .unwrap_or_default(),
+            );
+        }
+        if !self.latex_imported {
+            self.anki_latex_commands = imported.latex_commands.filter(|c| !c.is_empty());
+        self.latex_imported = true;
+            self.latex_imported = true;
+        }
         Ok(())
     }
 
@@ -330,12 +341,16 @@ mod test {
         };
         settings.merge_theme(IMPORTED.as_bytes()).unwrap();
         assert_eq!(settings.anki_theme, Some(ThemePref::Dark));
+        assert_eq!(settings.latex_toolchain().png.unwrap()[1], vec!["sips", "tmp.pdf"]);
         assert_eq!(settings.profiles[0].name, "Kept");
         // none in the old Anki: the system's, so it's asked once only
+        settings.anki_theme = None;
+        settings.latex_imported = false;
         settings
             .merge_theme(br#"{"profiles": [], "lastLoaded": null}"#)
             .unwrap();
         assert_eq!(settings.anki_theme, Some(ThemePref::System));
+        assert_eq!(settings.anki_latex_commands, None);
         assert!(!settings.import_theme_if_missing().unwrap());
     }
 
