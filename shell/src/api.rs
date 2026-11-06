@@ -250,7 +250,7 @@ mod test {
         };
         let out = OpChangesWithCount {
             count: 300,
-            changes: Some(changes.clone()),
+            changes: Some(changes),
         }
         .encode_to_vec();
         let (_, _, field) = METHOD_INDEX["remove_notes"];

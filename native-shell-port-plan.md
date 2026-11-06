@@ -705,8 +705,26 @@ Anki as before, from the same `addons21` folder. How to turn it on is in
     submission.
 - **End to end:** `shell/harness/frontier-flow.js` on a copy of the real
   profile (29,857 cards), with the bundled app and its host on
-  `~/.anki-stable`'s Python. The run checks:
-  - the Tools items, the deck list notice, the settings panel and its
-    live status, and the "More" menu's "Fix this sentence...";
-  - the job's model calls (writer and checker through the claude CLI)
-    and its admission op, which updated a generated note in the copy.
+  `~/.anki-stable`'s Python. It checks:
+  - the Tools items for both languages, the deck list notice, the
+    settings panel and its live status, and the "More" menu's "Fix this
+    sentence...";
+  - the background job: model calls (writer and checker through the
+    claude CLI), and its admission op, which updated a generated note in
+    the copy (他买{{c1::八}}个玩具).
+
+  Two runs (with the copy capped at 2 and 3 batches) admitted no new card:
+  Frontier's checks rejected every candidate and deferred it. The live
+  state has 174 such deferrals too, and the three pending fixes are hard
+  ones (飘 against 漂, say). So the admission path was checked another
+  way: with `shell/harness/remote_everywhere.py`, all 379 of Frontier's
+  collection tests pass with every collection attached over the socket
+  protocol (18,880 backend calls), admission and schedule takeover
+  included.
+- **Review:** an independent Opus pass found no deadlock, data loss or
+  security hole. Its findings are fixed: host requests applied out of
+  order (a stale Tools list), unbounded writes to a stuck host, orphaned
+  model CLIs if the shell dies, colpkg import/export, `_rsbridge` import
+  errors losing their cause, a 5 s wait on unknown page commands, a panel
+  left blank by a busy host, replies missing from a panel's diffing, the
+  host's initial state, and unnormalised collection paths.

@@ -116,10 +116,13 @@ impl HostConfig {
     }
 }
 
+/// Where a request's reply goes: (OK or ERR, payload).
+type ReplySender = mpsc::Sender<(u8, Vec<u8>)>;
+
 /// The socket to a running host.
 struct Conn {
     writer: Mutex<UnixStream>,
-    pending: Mutex<HashMap<u32, mpsc::Sender<(u8, Vec<u8>)>>>,
+    pending: Mutex<HashMap<u32, ReplySender>>,
     next: AtomicU32,
     /// The host's process group.
     pgid: i32,
