@@ -216,6 +216,17 @@ fn build_and_check_pages(build: &mut Build) -> Result<()> {
             ":sveltekit"
         ],
     )?;
+    // the native shell's card browser (shell/src/browser_window.rs)
+    build_page(
+        "browser",
+        false,
+        inputs![
+            //
+            ":ts:lib",
+            ":sass",
+            ":sveltekit"
+        ],
+    )?;
 
     Ok(())
 }

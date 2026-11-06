@@ -221,6 +221,10 @@ class Native:
             from aqt import widgets
 
             return widgets.handle_event(event)
+        elif name.startswith("browser_"):
+            from aqt import browser
+
+            return browser.handle(name, event)
         elif name.startswith("editor_") or name == "add_cards_did_add_note":
             from aqt import editor
 

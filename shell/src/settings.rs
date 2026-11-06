@@ -62,6 +62,22 @@ pub struct Settings {
     pub anki_latex_commands: Option<LatexCommands>,
     /// Whether an import has read the LaTeX commands (None is a value).
     pub latex_imported: bool,
+    /// The card browser's layout and search history.
+    pub browser: BrowserPrefs,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BrowserPrefs {
+    /// The table's width beside the editor, in pixels (0: the default).
+    pub split: f64,
+    /// The sidebar's width (0: the default).
+    pub sidebar: f64,
+    /// Column widths by key, in each mode.
+    pub card_widths: std::collections::HashMap<String, f64>,
+    pub note_widths: std::collections::HashMap<String, f64>,
+    /// Searches typed, newest first (Anki keeps them in the profile).
+    pub history: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

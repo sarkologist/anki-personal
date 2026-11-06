@@ -254,7 +254,7 @@ Exit: a week of adding and editing only in the shell.
 
 ### Phase 4: browser and the rest
 
-- [ ] Card browser: table, sidebar, search, column config including the plugin
+- [x] Card browser: table, sidebar, search, column config including the plugin
       column API (suspended_card_priority), find/replace, duplicates,
       previewer, card info.
 - [x] Dark mode.
@@ -263,8 +263,9 @@ Exit: a week of adding and editing only in the shell.
 - [x] Media check and empty cards.
 - [x] Card layout.
 - Deferred, as unused (see "Phase 4: the other screens"): Manage Note
-  Types, Fields, import/export, deck description editing, Set due date,
-  Forget, Create copy, and recording your own voice.
+  Types, Fields, import/export, deck description editing, Create copy,
+  and recording your own voice. (Set due date and Reset are in the
+  browser, not the reviewer.)
 
 Exit: the old Anki is no longer opened for a month, then it is retired.
 
@@ -1024,6 +1025,135 @@ exit criterion, a week of adding and editing only in the shell.
   - the old Anki's editor geometry;
   - drawing masks in a test;
   - the agent pane and alfred events: done since, below.
+
+### Phase 4: card browser (2026-11-06)
+
+The browser works in the shell on a copy of the real profile (29,857
+cards), checked against the collection, with Suspended Card Priority
+running unchanged in the plugin host.
+
+- **What this user uses** (old Anki's config and add-ons, read only):
+  cards mode, twelve columns (Sort Field, Card Type, Due, Created, Card
+  Modified, Ease, Deck, Lapses, Note Modified, Reviews, Tags, Priority),
+  sorted by creation, newest first; 32 saved searches for triage (leeches,
+  suspended, marked and new cards per deck); "back side only" previews.
+  Ported accordingly; dropped for now: filtered deck creation, export, create
+  copy, grade now, the card list's layout options, drag and drop in the
+  sidebar, and the agent pane's browser pane.
+- **Window:** `browser` is the stock editor page in a new Browse mode
+  (`setupEditor("browse")`, with its Preview button), and the table, search
+  bar and sidebar are a page in a frame beside it
+  (`legacyPageData?id=browser-table`, which the editor CSP allows). So the
+  editor's evals, saves and add-on hooks work unchanged, and the whole
+  window is one WebContent process. The editor hides unless one card is
+  selected, as Qt's `splitter.widget(1)`.
+  - Loading another note goes through `after_saved`, so edits in the
+    600 ms debounce are saved first (`ensure_editor_saved`).
+  - The table page (`ts/browser`, a standalone bundle like congrats) talks
+    to the shell only over the bridge: `browserRows` fetches rows by
+    position in blocks of 100 as it scrolls; `gen` changes with the item
+    list, so stale positions are ignored both ways.
+- **State** (`shell/src/browser.rs`, tested on a scratch collection): mode,
+  columns and sort are the collection's (`activeCols`, `sortType`,
+  `browserTableShowNotesMode`, ...), shared with the old Anki. Qt kept
+  column widths and the search history in the profile; the shell keeps its
+  own (`browser` in its settings).
+  - Selection as in `Table`: kept across searches where the items are
+    still found (at most 500, else the current one), converted when
+    switching modes; a header click sorts (numeric columns start
+    descending) or reverses.
+  - Changes refresh the rows in view: the backend now has several change
+    observers (the plugin host's and the browser's), plus add-ons'
+    operations. Deleted notes' rows stay, greyed, until the next search,
+    as in Qt.
+- **Sidebar:** Qt's sections and searches (built with rslib's
+  `build_search_string`), collapse state in the collection, Cmd/Shift/
+  Option clicks through `join_search_nodes`/`replace_search_node`, a filter,
+  and Rename/Delete for decks, tags and saved searches.
+- **Actions:** Qt's Cards and Notes menus as a native popup (right-click,
+  or the `⋯` button), with Qt's keys handled in the page (both frames;
+  editing keys stay with text boxes and the editor). Dialogs are small
+  forms (`browser_window::form`): find and replace (fields, tags,
+  selected notes, regex), find duplicates (a results window that searches a
+  group or tags them), reposition, set due date, reset, tags, change deck.
+  Change Note Type opens the stock page for the selected notes.
+- **Previewer and card info:** both follow the current card. The previewer
+  frames the stock reviewer page; everything its documents send goes to
+  the previewer (card JS can't reach the reviewer's commands). Play
+  buttons play files; TTS in previews isn't ported.
+- **Add-on columns** (the plan's `browser_did_fetch_row`-style API): the
+  shell sends the browser hooks as plugin host events, with the Qt objects
+  the add-on touches shimmed (`plugin_host/aqt/browser`: `Browser`,
+  `table.Column`, `SearchContext`, the table's state and model, a menu bar,
+  an empty header).
+  - Opening the browser runs `browser_did_fetch_columns` and
+    `browser_menus_did_init` and learns which hooks have handlers;
+    searching runs `browser_will_search`, and `browser_did_search` only if
+    that changed the context (it gets every id); rows go to
+    `browser_did_fetch_row` in batches. Add-on menus are toolbar buttons
+    with native popups.
+  - What add-ons ask of the browser (the search, the selection, the
+    current card) comes from a snapshot, without the table's lock. Their
+    requests that search (`search_for`, `search()`, a sort) run in order on
+    a worker: the host-request thread mustn't wait on host events, which
+    the host can't answer while its add-on code waits on a request.
+  - Reversing an add-on's sort searches again (its order needn't be
+    symmetric), which the add-on did by patching `Table._reverse`.
+  - Not sent: `browser_will_show` and `browser_did_change_row`, used only
+    by the agent pane's browser pane.
+  - Checked with the user's scores: the shell's rendering gives the same
+    fingerprints as the old Anki's (the four cards still fresh there show
+    64, 34, 9 and Review); most of this profile's scores are Stale in both
+    (295 of the first 300 in the old Anki), since the cards' MathJax rewrite.
+- **Elsewhere:** Browse in the toolbar, the Go menu and `b` (on the card
+  being reviewed); the editor's Show Duplicates (`dupe:` search), the Add
+  window's history, `search_in_browser` (import log) and add-ons'
+  `dialogs.open("Browser", search=...)` open the browser.
+- **Checks:**
+  - `cargo test -p anki-shell` (12 new tests on a scratch collection:
+    searching and sorting, selection across searches and modes, columns,
+    add-on columns and hooks, deleted rows, the sidebar's searches,
+    modifier clicks, duplicates), `ts/browser/lib.test.ts` (selection,
+    blocks, the sidebar filter), `plugin_host/tests/test_browser.py` (the
+    real add-on through the events).
+  - `harness/browser.js` on the profile copy: default search, sorting,
+    editing in the browser's editor, selection, every action and dialog by
+    its key, find and replace, duplicates, modes, columns, the sidebar,
+    search errors and history, previewer, card info, Show Duplicates and
+    delete. Also with the agent pane and Suspended Card Priority loaded.
+  - `harness/browser-priority.js`: the add-on's column, menu, sort (both
+    ways, unscored last), values and an action asking for the current card.
+  - The editor harnesses still pass. `main-flow.js` fails on this copy at
+    its first answer with main's binary too (not this change).
+- **Review** (an independent Opus pass), fixed:
+  - an action could run on the selection before the last one, and a
+    selection could be sent with a newer list's `gen`: selections now carry
+    their own list, and actions and menus wait until the shell has them
+    (`SelectionSender`, tested);
+  - table pushes from two threads could arrive out of order and leave a
+    blank table: the page drops older lists, and fetches the table again
+    when a row reply says it's behind;
+  - add-ons asking about the browser during a hook waited on the table's
+    lock until the hook timed out: the open flag is atomic, and column
+    changes from add-ons queue with their other requests;
+  - `browser_did_search` ran only after a `browser_will_search` change (Qt
+    always runs it); `table.len()` was always 0;
+  - the editor could reload after its own saves (rslib normalises text):
+    the editors' own saves no longer count as changes elsewhere;
+  - actions now wait for the editor's save, as `ensure_editor_saved`;
+  - the browser's other windows aren't `browser-*`, which its page could
+    frame; reopening on a card searches the default search first; saved
+    searches ask before overwriting one.
+- **Dark mode** (after the merge with phase 4's dark mode): the table's
+  page and the browser's dialogs get the night markers like every page,
+  the row colours are Anki's flag and state colours, which switch with
+  them (the pale dark-mode suspended colour mixed in less), and the
+  previewer's card body gets `nightMode`. `browser.js` checks the frame's
+  theme, a flagged row's colour and the previewer in both themes.
+- **Memory** (`harness/bench.py`, release builds, three runs each): main's
+  binary 184, 191 and 185 MB after 240 cards, this one 202, 192 and 190; idle
+  130-136 MB for both. The reviewer path is unchanged; the spread is run to
+  run.
 
 ### Phase 4: dark mode (2026-11-06)
 

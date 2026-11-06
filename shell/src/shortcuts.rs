@@ -50,6 +50,7 @@ pub const DEFAULTS: &[(&str, &[&str])] = &[
     // main window
     ("decks", &["d"]),
     ("add", &["a"]),
+    ("browse", &["b"]),
     ("study", &["s"]),
     ("chooseDeck", &["/"]),
     ("stats", &["t"]),

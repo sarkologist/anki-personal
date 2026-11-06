@@ -239,6 +239,14 @@ class QShortcut(QObject):
         pass
 
 
+class sip:
+    """`sip.isdeleted`: a closed browser (or editor window) is deleted."""
+
+    @staticmethod
+    def isdeleted(obj: Any) -> bool:
+        return bool(getattr(obj, "_deleted", False) or getattr(obj, "_closed", False))
+
+
 class QApplication:
     """The focus as the shell last reported it (aqt.editor)."""
 

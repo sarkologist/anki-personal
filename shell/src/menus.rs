@@ -226,6 +226,12 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         None,
     )?;
     let study = item(app, "study", &titled(ui, "Study Deck", "study"), None)?;
+    let browse = item(
+        app,
+        "browse",
+        &titled(ui, &tr.qt_misc_browse(), "browse"),
+        None,
+    )?;
     let choose_deck = item(
         app,
         "chooseDeck",
@@ -241,6 +247,7 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
     let go = SubmenuBuilder::new(app, "Go")
         .item(&decks)
         .item(&study)
+        .item(&browse)
         .item(&choose_deck)
         .item(&stats)
         .build()?;
@@ -290,6 +297,7 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
             sync,
             decks,
             study,
+            browse,
             choose_deck,
             stats,
             create_filtered,
@@ -452,6 +460,9 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
         }
         "addonsRestart" => crate::plugins::ui::restart(ui),
         "addonsLog" => crate::plugins::ui::show_log(ui),
+        id if id.starts_with(crate::browser_window::MENU_PREFIX) => {
+            crate::browser_window::menu_event(ui, &id[crate::browser_window::MENU_PREFIX.len()..]);
+        }
         id if id.starts_with(ADDON_ITEM) => {
             if let Ok(id) = id[ADDON_ITEM.len()..].parse() {
                 crate::plugins::ui::menu_action(ui, id);
@@ -461,7 +472,15 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
             // text undo when the editor has the focus, as Qt's webview
             // takes Cmd+Z before the menu does
             if let Some(label) = crate::editor_window::focused_editor(ui) {
-                ui.eval(label, format!("document.execCommand({:?});", id));
+                // in the browser, the table's frame handles its own Cmd+Z
+                ui.eval(
+                    label,
+                    format!(
+                        "if (document.activeElement?.id !== 'shell-browser') \
+                         document.execCommand({:?});",
+                        id
+                    ),
+                );
             } else {
                 main_window::action_for_state(ui, id);
             }
@@ -472,6 +491,7 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
             && ![
                 "decks",
                 "add",
+                "browse",
                 "study",
                 "chooseDeck",
                 "stats",

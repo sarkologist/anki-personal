@@ -6,12 +6,12 @@ or a bundled Chromium. See `native-shell-port-plan.md` for the plan and
 findings. Phases 0 to 3 are done: profile, collection, page protocol,
 bridge, settings import, AnkiConnect, reviewing (deck list, overview,
 reviewer, sync, native menus), editing (Add Cards, Edit Current), and a
-plugin host running Chinese/French Frontier, the editor agent pane and the
-Alfred bridge. Phase 4 adds Preferences (with dark mode and the LaTeX
-commands), filtered decks, custom study, Check Media, Empty Cards and the
-card layout. The browser, other add-ons, and the screens the plan defers as
-unused (Manage Note Types, Fields, import/export, ...) still need the old
-Anki.
+plugin host running Chinese/French Frontier, the editor agent pane, the
+Alfred bridge and Suspended Card Priority. Phase 4 adds the card browser,
+Preferences (with dark mode and the LaTeX commands), filtered decks, custom
+study, Check Media, Empty Cards and the card layout. Other add-ons, and the
+screens the plan defers as unused (Manage Note Types, Fields,
+import/export, ...) still need the old Anki.
 
 ## Reviewing
 
@@ -72,9 +72,11 @@ saved as you make them.
 Add-ons run in a Python plugin host, from the old Anki's `addons21` folder
 (sharing its config and files). Supported: Chinese/French Frontier
 (`chinese_frontier`), the editor agent pane (`editor_agent_pane`) and the
-Alfred bridge (`alfred_anki_html_bridge`). To turn them on, quit the shell,
-list them in the settings file, e.g. `"plugins": ["chinese_frontier",
-"editor_agent_pane", "alfred_anki_html_bridge"]`, and start it again.
+Alfred bridge (`alfred_anki_html_bridge`) and Suspended Card Priority
+(`suspended_card_priority`, the browser's Priority column). To turn them
+on, quit the shell, list them in the settings file, e.g. `"plugins":
+["chinese_frontier", "editor_agent_pane", "alfred_anki_html_bridge",
+"suspended_card_priority"]`, and start it again.
 Their menu items are in Tools, with Add-on Log (the host's output,
 `plugin-host.log` next to the settings) and Restart Add-ons. The host
 needs an Anki install's Python, found as for the profile import
@@ -89,6 +91,45 @@ needs an Anki install's Python, found as for the profile import
   last left in Add or Edit Current, as in Anki, but at the field's end:
   the add-on's caret script needs `ShadowRoot.getSelection`, which WebKit
   hasn't got.
+
+## Browsing
+
+- **Browse** (toolbar, Go menu, or `b`) opens the card browser on the
+  current deck, or on the card being reviewed. The window is the table
+  (with the search bar and sidebar) beside the editor, as in Anki; the
+  editor shows the note when one card is selected.
+- Search as in Anki (Enter; earlier searches drop down from the box). The
+  sidebar has saved searches, today, flags, card states, decks, note types
+  and tags: a click searches, Cmd+click adds to the search, Shift+click ORs,
+  Option+click negates. Its filter box narrows it; right-click for Search,
+  Rename, Delete and Save Current Search.
+- The table: click or Shift/Cmd+click to select, arrows, Page Up/Down,
+  Home/End. Click a header to sort, again to reverse; right-click it to
+  choose columns; drag its edges to resize. Cards/Notes switches modes
+  (Cmd+Option+T). Columns, sort and mode are the collection's, shared with
+  Anki; widths, the sidebar width and the search history are the shell's.
+- Actions are Anki's, with its keys (Qt's Ctrl is Cmd), and in the table's
+  right-click menu and the `⋯` button: Change Deck (Cmd+D), Set Due Date
+  (Cmd+Shift+D), Reset (Cmd+Option+N), Reposition (Cmd+Shift+S), Toggle
+  Suspend (Cmd+J), Toggle Bury (Cmd+Shift+J), flags (Cmd+1-7), Info
+  (Cmd+Shift+I), Preview (Cmd+Shift+P), Add Tags (Cmd+Shift+A), Remove Tags
+  (Cmd+Option+Shift+A), Clear Unused Tags, Toggle Mark (Cmd+K), Change Note
+  Type (Cmd+Shift+M), Find Duplicates, Find and Replace (Cmd+Option+F),
+  Delete (Cmd+Backspace), Select Notes, Select All (Cmd+Option+A), Invert
+  Selection (Cmd+Option+S), Undo/Redo (Cmd+Z/Cmd+Shift+Z), next/previous
+  card (Cmd+N/Cmd+P), and Cmd+F, Cmd+Shift+F and Cmd+Shift+R for the search
+  box, the sidebar filter and the sidebar. Cmd+W, or Escape outside the
+  editor and text boxes, closes.
+- The previewer follows the current card: Right/Space/Enter for the answer
+  then the next card, Left to go back, R to replay, and "Back side only"
+  (B) as in Anki.
+  Card info follows it too.
+- Add-ons' browser columns and menus work (Suspended Card Priority's
+  Priority column and menu, in the toolbar).
+- Not yet: Create Filtered Deck, Export Notes, Create Copy, Grade Now,
+  Manage Note Types, dragging in the sidebar
+  (reparenting decks and tags), reordering columns, the browser's layout
+  options, and the agent pane's browser pane.
 
 ## Editing
 
@@ -119,9 +160,8 @@ needs an Anki install's Python, found as for the profile import
   back and styling, with a live preview (front or back, Fill Empty, night
   mode), and Add, Remove, Rename, Reposition and Flip for card types.
   Cmd+Enter saves; Cancel or closing asks before discarding changes.
-- Not yet: Fields opens nothing but a note; "Show Duplicates" lists the
-  duplicates and opens the one you pick in Edit Current, since there's no
-  browser yet.
+- "Show Duplicates" and the Add window's history open the browser on those
+  notes. Not yet: Fields opens nothing but a note.
 
 ## Build and run
 
@@ -197,6 +237,16 @@ Options:
   add-on in the copy's `addons21` with its provider set to Ollama and a
   local model. `harness/alfred-bridge.js` (`--test-page add`) calls the
   Alfred bridge's server as the workflow does.
+  `--test harness/browser.js --test-page browser` opens the browser on a
+  test deck and checks searching, sorting, selecting, editing, columns,
+  modes, the sidebar, every action and its dialog, find and replace,
+  duplicates, the previewer and card info against the collection.
+  `harness/browser-priority.js` (same page) checks Suspended Card
+  Priority's column, sorting and menu through the plugin host; it needs the
+  add-on in the copy's `addons21`, `"plugins": ["suspended_card_priority"]`
+  and the profile's `suspended-card-priority.json`. Pass
+  `--ankiconnect-port 0` to test runs, so they leave the running shell's
+  port alone.
   `--test harness/main-flow.js --test-page main` adds a test deck
   and reviews it through the deck list, overview and reviewer: keys, undo,
   typed answers, audio, TTS and LaTeX. `harness/sync-flow.js` syncs through

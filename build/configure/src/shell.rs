@@ -39,7 +39,7 @@ pub fn build_shell(build: &mut Build) -> Result<()> {
                     ":qt:aqt:data:web",
                     ":pylib:anki",
                     ":qt:aqt:hooks.py",
-                    glob!["{shell/plugin_host,pylib/anki}/**"]
+                    glob!["{shell/plugin_host,pylib/anki,addons/suspended_card_priority}/**"]
                 ],
             },
             outputs: hashmap! {

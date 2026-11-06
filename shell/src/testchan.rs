@@ -29,7 +29,8 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Debug, Clone)]
 pub struct TestRun {
     pub script: PathBuf,
-    /// "editor" (Edit Current; needs `note`), "add" (Add Cards), "main"
+    /// "editor" (Edit Current; needs `note`), "add" (Add Cards), "browser",
+    /// "main"
     /// (the deck browser, then every page the main window loads) or
     /// "home".
     pub page: String,
@@ -648,6 +649,28 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
         let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
         local_http(&v).unwrap_or_else(|e| json!({ "error": e.to_string() }))
     });
+    // the add-ons' browser menus: [[title, [{id, text}]]]
+    let u = ui.clone();
+    ui.shell
+        .bridge
+        .register("testBrowserMenus", move |_, _, _| {
+            json!(crate::browser_window::addon_menus(&u)
+                .into_iter()
+                .map(|(title, items)| json!([
+                    title,
+                    items
+                        .iter()
+                        .map(|i| json!({"id": i.id, "text": i.text}))
+                        .collect::<Vec<_>>()
+                ]))
+                .collect::<Vec<_>>())
+        });
+    // a menu item, as if chosen (`browser:column:noteTags`, say)
+    let u = ui.clone();
+    ui.shell.bridge.register("testMenuEvent", move |_, _, id| {
+        crate::menus::on_event(&u, id);
+        Value::Null
+    });
     // the open windows' labels
     let u = ui.clone();
     ui.shell.bridge.register("testWindows", move |_, _, _| {
@@ -889,6 +912,24 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
                 Value::Null
             });
             crate::editor_window::open_add(ui)?;
+        }
+        "browser" => {
+            anyhow::ensure!(
+                ui.shell.open_profile_paths().is_some(),
+                "no profile open: {}",
+                ui.status.lock().unwrap()
+            );
+            // a deck of test notes, the current deck, so the browser's
+            // default search shows them; the script runs in the browser's
+            // page (the editor) and waits for the table's frame itself
+            let did = create_test_deck(&ui.shell)?;
+            println!("TEST deck {did}");
+            crate::browser_window::open(ui, None, None);
+            let js = wrap(&script, None).replace(
+                "const testNote = 0;",
+                &format!("const testNote = 0;\n    const testDeck = {did};"),
+            );
+            ui.eval(crate::editor_window::BROWSER, js);
         }
         "main" => {
             anyhow::ensure!(

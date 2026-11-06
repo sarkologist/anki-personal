@@ -75,7 +75,7 @@ impl std::error::Error for ApiError {}
 
 pub struct Api {
     backend: Backend,
-    observer: RwLock<Option<ChangesObserver>>,
+    observers: RwLock<Vec<ChangesObserver>>,
 }
 
 impl Api {
@@ -88,7 +88,7 @@ impl Api {
         let backend = init_backend(&init.encode_to_vec()).map_err(|e| anyhow!(e))?;
         Ok(Api {
             backend,
-            observer: RwLock::new(None),
+            observers: RwLock::new(vec![]),
         })
     }
 
@@ -100,8 +100,8 @@ impl Api {
         METHOD_NAMES.get(&(service, method)).copied()
     }
 
-    pub fn set_changes_observer(&self, observer: ChangesObserver) {
-        *self.observer.write().unwrap() = Some(observer);
+    pub fn add_changes_observer(&self, observer: ChangesObserver) {
+        self.observers.write().unwrap().push(observer);
     }
 
     /// Call a method with raw protobuf bytes. `name` is snake_case.
@@ -117,7 +117,7 @@ impl Api {
             .run_service_method(service, method, input)
             .map_err(|e| ApiError::from_bytes(&e))?;
         if let Some(op_changes) = op_changes(&out, changes) {
-            if let Some(observer) = self.observer.read().unwrap().as_ref() {
+            for observer in self.observers.read().unwrap().iter() {
                 observer(name, op_changes);
             }
         }

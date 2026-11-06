@@ -629,6 +629,7 @@ pub const TOOLTIP_SCRIPT: &str = r#"window._shellTooltip = (msg) => {
 const GLOBAL_ACTIONS: &[&str] = &[
     "decks",
     "add",
+    "browse",
     "study",
     "chooseDeck",
     "stats",
@@ -680,6 +681,12 @@ pub fn action_for_state(ui: &Arc<Ui>, action: &str) {
             if let Err(err) = crate::editor_window::open_add(ui) {
                 message(ui, &format!("{err:#}"));
             }
+        }
+        // on the card being reviewed, as `AnkiQt.onBrowse`
+        (_, "browse") => {
+            let card = ui.main.reviewer.lock().unwrap().card_id();
+            let u = ui.clone();
+            std::thread::spawn(move || crate::browser_window::open(&u, None, card));
         }
         (_, "study") => show_overview(ui),
         (_, "chooseDeck") => choose_deck(ui),
@@ -1528,12 +1535,15 @@ pub fn register(ui: &Arc<Ui>) {
         }
         Value::Null
     });
-    reg("add", |ui, label, _| {
-        if label == MAIN && state(ui) != MainState::Home {
-            action_for_state(ui, "add");
-        }
-        Value::Null
-    });
+    for name in ["add", "browse"] {
+        let u = ui.clone();
+        ui.shell.bridge.register(name, move |_, label, _| {
+            if label == MAIN && state(&u) != MainState::Home {
+                action_for_state(&u, name);
+            }
+            Value::Null
+        });
+    }
     reg("open", |ui, label, did| {
         if label == MAIN && matches!(state(ui), MainState::DeckBrowser | MainState::Overview) {
             if let Ok(did) = did.parse::<i64>() {
