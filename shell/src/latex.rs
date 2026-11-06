@@ -145,7 +145,7 @@ fn try_render_latex(
 }
 
 /// Translations in the backend's languages.
-fn backend_tr(api: &Api) -> I18n {
+pub fn backend_tr(api: &Api) -> I18n {
     let langs = api
         .call::<generic::Json>(
             "i18n_resources",
@@ -170,26 +170,10 @@ fn save_latex_image<'a>(
     extracted: &ExtractedLatex,
     cfg: &LatexConfig,
 ) -> Result<Option<String>> {
-    let ext = if cfg.svg { "svg" } else { "png" };
-    let dir = render_dir()?;
-    let tex = dir.join("tmp.tex");
-    let log_path = dir.join("latex_log.txt");
-    fs::write(
-        &tex,
-        tex_source(&cfg.latex_pre, &extracted.latex_body, &cfg.latex_post),
-    )
-    .with_context(|| format!("writing {}", tex.display()))?;
-    let log =
-        File::create(&log_path).with_context(|| format!("creating {}", log_path.display()))?;
-    let path = tex_path();
-    for command in latex_commands(cfg.svg) {
-        if !run(command, &dir, &path, &log)? {
-            // keep the folder, so the paths in the message stay valid
-            return Ok(Some(err_msg(tr(), command[0], &tex, &log_path)));
-        }
-    }
-    let image = dir.join(format!("tmp.{ext}"));
-    let data = fs::read(&image).with_context(|| format!("reading {}", image.display()))?;
+    let data = match render_image(&extracted.latex_body, cfg)? {
+        Ok(data) => data,
+        Err(failed) => return Ok(Some(failed.html(tr()))),
+    };
     let _: generic::String = api.call(
         "add_media_file",
         &AddMediaFileRequest {
@@ -197,8 +181,168 @@ fn save_latex_image<'a>(
             data,
         },
     )?;
-    let _ = fs::remove_dir_all(&dir);
     Ok(None)
+}
+
+/// A LaTeX command that failed, with the files to look at.
+struct Failed {
+    command: &'static str,
+    tex: PathBuf,
+    log: PathBuf,
+}
+
+impl Failed {
+    fn log(&self) -> Option<String> {
+        fs::read(&self.log)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .filter(|log| !log.is_empty())
+    }
+
+    /// latex.py's _err_msg.
+    fn html(&self, tr: &I18n) -> String {
+        let mut msg = format!("{}<br>", tr.media_error_executing(self.command));
+        msg += &format!(
+            "{}<br>",
+            tr.media_generated_file(self.tex.display().to_string())
+        );
+        match self.log() {
+            Some(log) => msg += &format!("<small><pre>{}</pre></small>", html_escape(&log)),
+            None => msg += &tr.media_have_you_installed_latex_and_dvipngdvisvgm(),
+        }
+        msg
+    }
+
+    /// The editor preview's plain-text version (`_latex_error_text`).
+    fn text(&self, tr: &I18n) -> String {
+        let mut msg = format!("{}\n", tr.media_error_executing(self.command));
+        msg += &format!(
+            "{}\n",
+            tr.media_generated_file(self.tex.display().to_string())
+        );
+        match self.log() {
+            Some(log) => msg += &log,
+            None => msg += &tr.media_have_you_installed_latex_and_dvipngdvisvgm(),
+        }
+        msg
+    }
+}
+
+/// Run latex and dvipng/dvisvgm on `body` in a fresh folder; the image's
+/// bytes, or the command that failed (whose folder is kept, so the paths
+/// in the message stay valid).
+fn render_image(body: &str, cfg: &LatexConfig) -> Result<std::result::Result<Vec<u8>, Failed>> {
+    let ext = if cfg.svg { "svg" } else { "png" };
+    let dir = render_dir()?;
+    let tex = dir.join("tmp.tex");
+    let log_path = dir.join("latex_log.txt");
+    fs::write(&tex, tex_source(&cfg.latex_pre, body, &cfg.latex_post))
+        .with_context(|| format!("writing {}", tex.display()))?;
+    let log =
+        File::create(&log_path).with_context(|| format!("creating {}", log_path.display()))?;
+    let path = tex_path();
+    for command in latex_commands(cfg.svg) {
+        if !run(command, &dir, &path, &log)? {
+            return Ok(Err(Failed {
+                command: command[0],
+                tex,
+                log: log_path,
+            }));
+        }
+    }
+    let image = dir.join(format!("tmp.{ext}"));
+    let data = fs::read(&image).with_context(|| format!("reading {}", image.display()))?;
+    let _ = fs::remove_dir_all(&dir);
+    Ok(Ok(data))
+}
+
+/// An editor LaTeX preview (`editor_latex_preview.py`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    /// A media file name, or a data URL for an image not saved.
+    pub src: String,
+    pub alt: String,
+    pub svg: bool,
+}
+
+/// `render_legacy_latex_preview`: the image for one `[$]`/`[$$]` (`kind`
+/// "inline" or "display") being edited. The image goes to the media folder
+/// only if a saved field already has this LaTeX (in Add mode none is
+/// saved); otherwise it comes back as a data URL, so typing doesn't fill
+/// the media folder. Errors are plain text.
+pub fn render_preview(
+    api: &Api,
+    media_dir: Option<&Path>,
+    cfg: &LatexConfig,
+    kind: &str,
+    html: &str,
+    saved_fields: &[String],
+) -> std::result::Result<Preview, String> {
+    let wrapped = if kind == "display" {
+        format!("[$$]{html}[/$$]")
+    } else {
+        format!("[$]{html}[/$]")
+    };
+    let extract = |text: &str| {
+        api.call::<ExtractLatexResponse>(
+            "extract_latex",
+            &ExtractLatexRequest {
+                text: text.to_string(),
+                svg: cfg.svg,
+                expand_clozes: false,
+            },
+        )
+        .map_err(|e| e.to_string())
+    };
+    let Some(latex) = extract(&wrapped)?.latex.into_iter().next() else {
+        return Err("No LaTeX to preview".into());
+    };
+    let ready = |src: String| Preview {
+        src,
+        alt: latex.latex_body.clone(),
+        svg: cfg.svg,
+    };
+    if media_dir.is_some_and(|dir| dir.join(&latex.filename).exists()) {
+        return Ok(ready(latex.filename.clone()));
+    }
+    let enabled: generic::Bool = api
+        .call(
+            "get_config_bool",
+            &GetConfigBoolRequest {
+                key: BoolKey::RenderLatex as i32,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    let tr = backend_tr(api);
+    if !enabled.val {
+        return Err(tr.preferences_latex_generation_disabled().into_owned());
+    }
+    let saved = saved_fields.iter().any(|field| {
+        extract(field).is_ok_and(|out| out.latex.iter().any(|l| l.filename == latex.filename))
+    });
+    if saved {
+        return match save_latex_image(api, || &tr, &latex, cfg) {
+            Ok(None) => Ok(ready(latex.filename.clone())),
+            // an HTML message, from the card path
+            Ok(Some(err)) => Err(err),
+            Err(err) => Err(format!("{err:#}")),
+        };
+    }
+    match render_image(&latex.latex_body, cfg) {
+        Ok(Ok(data)) => {
+            let mime = if cfg.svg {
+                "image/svg+xml"
+            } else {
+                "image/png"
+            };
+            Ok(ready(format!(
+                "data:{mime};base64,{}",
+                data_encoding::BASE64.encode(&data)
+            )))
+        }
+        Ok(Err(failed)) => Err(failed.text(&tr)),
+        Err(err) => Err(format!("{err:#}")),
+    }
 }
 
 /// Whether the command ran and succeeded (a missing binary counts as a
@@ -253,23 +397,8 @@ fn tex_path() -> OsString {
     std::env::join_paths(dirs).unwrap_or(inherited)
 }
 
-/// latex.py's _err_msg.
-fn err_msg(tr: &I18n, cmd: &str, tex: &Path, log: &Path) -> String {
-    let mut msg = format!("{}<br>", tr.media_error_executing(cmd));
-    msg += &format!("{}<br>", tr.media_generated_file(tex.display().to_string()));
-    let log = fs::read(log)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .filter(|log| !log.is_empty());
-    match log {
-        Some(log) => msg += &format!("<small><pre>{}</pre></small>", html_escape(&log)),
-        None => msg += &tr.media_have_you_installed_latex_and_dvipngdvisvgm(),
-    }
-    msg
-}
-
 /// Python's html.escape(quote=True).
-fn html_escape(text: &str) -> String {
+pub(crate) fn html_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {
@@ -418,7 +547,12 @@ mod test {
         let log = dir.path().join("latex_log.txt");
         std::fs::write(&log, "").unwrap();
         let tex = dir.path().join("tmp.tex");
-        let msg = err_msg(&I18n::template_only(), "latex", &tex, &log);
+        let msg = Failed {
+            command: "latex",
+            tex: tex.clone(),
+            log,
+        }
+        .html(&I18n::template_only());
         assert_eq!(
             msg,
             format!(
@@ -531,5 +665,55 @@ mod test {
         assert!(err.contains("tmp.tex<br><small><pre>"), "{err}");
         assert!(err.contains("Undefined control sequence"), "{err}");
         assert!(media_files(&fx.media).is_empty());
+    }
+
+    #[test]
+    fn preview_without_latex_or_with_generation_off_explains() {
+        let fx = collection(false);
+        let cfg = stock_config(&fx.api);
+        let none = render_preview(&fx.api, Some(&fx.media), &cfg, "inline", "", &[]);
+        assert_eq!(none, Err("No LaTeX to preview".into()));
+        let off = render_preview(&fx.api, Some(&fx.media), &cfg, "inline", "x^2", &[]);
+        assert!(off.unwrap_err().contains("LaTeX"));
+    }
+
+    #[test]
+    fn preview_of_unsaved_latex_is_a_data_url() {
+        if !have_tools(&["latex", "dvipng"]) {
+            return;
+        }
+        let fx = collection(true);
+        let cfg = stock_config(&fx.api);
+        let p = render_preview(&fx.api, Some(&fx.media), &cfg, "display", "x^2", &[]).unwrap();
+        assert!(p.src.starts_with("data:image/png;base64,"), "{}", p.src);
+        // as in Qt, the alt text is the LaTeX as rendered
+        assert_eq!(p.alt, "\\begin{displaymath}x^2\\end{displaymath}");
+        assert!(media_files(&fx.media).is_empty());
+    }
+
+    #[test]
+    fn preview_of_saved_latex_goes_to_the_media_folder() {
+        if !have_tools(&["latex", "dvipng"]) {
+            return;
+        }
+        let fx = collection(true);
+        let cfg = stock_config(&fx.api);
+        let saved = vec!["before [$]x^2[/$]".to_string()];
+        let p = render_preview(&fx.api, Some(&fx.media), &cfg, "inline", "x^2", &saved).unwrap();
+        assert_eq!(media_files(&fx.media), vec![p.src.clone()]);
+        assert!(p.src.starts_with("latex-"));
+    }
+
+    #[test]
+    fn broken_preview_reports_the_log_as_text() {
+        if !have_tools(&["latex"]) {
+            return;
+        }
+        let fx = collection(true);
+        let cfg = stock_config(&fx.api);
+        let err =
+            render_preview(&fx.api, Some(&fx.media), &cfg, "inline", "\\nosuch", &[]).unwrap_err();
+        assert!(err.contains("Undefined control sequence"), "{err}");
+        assert!(!err.contains("<br>"), "{err}");
     }
 }

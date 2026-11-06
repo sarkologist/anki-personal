@@ -49,6 +49,7 @@ pub const DEFAULTS: &[(&str, &[&str])] = &[
     ("autoAdvance", &["Shift+a"]),
     // main window
     ("decks", &["d"]),
+    ("add", &["a"]),
     ("study", &["s"]),
     ("chooseDeck", &["/"]),
     ("stats", &["t"]),

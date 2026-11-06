@@ -27,6 +27,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     const items = [
         { cmd: "decks", label: tr.actionsDecks(), key: "D" },
+        { cmd: "add", label: tr.actionsAdd(), key: "A" },
         { cmd: "stats", label: tr.qtMiscStats(), key: "T" },
     ];
 </script>

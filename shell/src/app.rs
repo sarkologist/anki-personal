@@ -33,6 +33,14 @@ use crate::Shell;
 pub const MAIN: &str = "main";
 pub const EDITOR: &str = "editor";
 const EDITOR_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long the save may take while the page's bridge is busy (a paste
+/// downloading images, a drop): its commands queue behind it.
+const EDITOR_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// The token for `cmd`, sent back by webview `label` once it has saved.
+pub fn pending_key(label: &str, cmd: &str) -> String {
+    format!("{label}|{cmd}")
+}
 
 #[derive(Debug, Clone)]
 pub struct Args {
@@ -208,6 +216,7 @@ pub struct Ui {
     /// Set once the close sync has run (or wasn't wanted).
     pub close_synced: std::sync::atomic::AtomicBool,
     pub plugins: crate::plugins::ui::Plugins,
+    paste_trackers: Mutex<HashMap<String, Arc<crate::paste::InternalPaste>>>,
 }
 
 impl Ui {
@@ -265,6 +274,11 @@ impl Ui {
         }
         if self.geometry.is_some() {
             builder = builder.position(x, y);
+        }
+        if kind == WebviewKind::Editor {
+            // drops go to the page, which sends external ones to the shell
+            // (`editor_window`) and keeps drags between fields WebKit's
+            builder = builder.disable_drag_drop_handler();
         }
         if self.background {
             builder = builder.focused(false);
@@ -412,26 +426,23 @@ impl Ui {
         self.open_window(MAIN, "Anki", WebviewKind::Main, Content::Html(html))
     }
 
-    /// Show note `nid` in the editor window, saving the shown note first.
-    pub fn open_editor(&self, nid: i64) -> Result<()> {
-        if self.editors.note(EDITOR).is_some() && self.app.get_webview_window(EDITOR).is_some() {
-            self.after_editor_saved(&format!("editorLoad:{nid}"));
-            return Ok(());
-        }
-        self.load_editor(nid)
+    /// Show note `nid` in Edit Current, saving the shown note first.
+    pub fn open_editor(self: &Arc<Self>, nid: i64) -> Result<()> {
+        crate::editor_window::open_edit_current(self, nid, None)
     }
 
-    /// Flush the editor's pending (debounced) field save, then send `cmd`
-    /// over the bridge, which keeps commands in order; as
+    /// Flush editor `label`'s pending (debounced) field save, then send
+    /// `cmd` over the bridge, which keeps commands in order; as
     /// `Editor.call_after_note_saved`. If the page doesn't answer, `cmd`
     /// runs anyway after a timeout.
-    pub fn after_editor_saved(&self, cmd: &str) {
+    pub fn after_saved(&self, label: &str, cmd: &str) {
         // a token per request, so a late timeout can't take a newer request
         let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let cmd = &format!("{cmd}:{seq}");
-        self.shell.bridge.add_pending(cmd.to_string());
+        let key = pending_key(label, cmd);
+        self.shell.bridge.add_pending(key.clone());
         self.eval(
-            EDITOR,
+            label,
             format!(
                 "(() => {{ try {{ saveNow(); }} catch (e) {{ console.error(e); }} \
                  pycmd({}); }})()",
@@ -440,29 +451,30 @@ impl Ui {
         );
         let shell = self.shell.clone();
         let cmd = cmd.to_string();
+        let label = label.to_string();
         std::thread::spawn(move || {
             std::thread::sleep(EDITOR_SAVE_TIMEOUT);
-            if shell.bridge.take_pending(&cmd) {
+            let started = std::time::Instant::now();
+            while shell.bridge.busy(&label) && started.elapsed() < EDITOR_BUSY_TIMEOUT {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if shell.bridge.take_pending(&key) {
                 tracing::warn!(cmd, "editor save timed out; continuing");
-                shell.bridge.add_pending(cmd.clone());
-                shell.bridge.dispatch(&shell, EDITOR, &cmd);
+                shell.bridge.add_pending(key);
+                shell.bridge.dispatch(&shell, &label, &cmd);
             }
         });
     }
 
-    fn load_editor(&self, nid: i64) -> Result<()> {
-        let label = EDITOR;
-        let js = crate::editor::load_note_js(&self.shell, &self.editors, label, nid)?;
-        self.open_window(
-            label,
-            "Edit",
-            WebviewKind::Editor,
-            Content::Html(pages::editor_html(&self.shell.web)),
-        )?;
-        self.evals
-            .eval(&self.app, label, "setupEditor('review')".into());
-        self.evals.eval(&self.app, label, js);
-        Ok(())
+    /// What editor `label` knows about its fields' last copy or cut, for
+    /// pasting it back unfiltered.
+    pub fn paste_tracker(&self, label: &str) -> Arc<crate::paste::InternalPaste> {
+        self.paste_trackers
+            .lock()
+            .unwrap()
+            .entry(label.to_string())
+            .or_default()
+            .clone()
     }
 
     pub fn eval(&self, label: &str, js: String) {
@@ -675,54 +687,6 @@ fn register_bridge(ui: &Arc<Ui>) {
         );
         Value::Null
     });
-    // editor
-    for cmd in ["key", "blur"] {
-        let u = ui.clone();
-        bridge.register(cmd, move |shell, label, args| {
-            crate::editor::save_field(shell, &u.editors, label, args)
-        });
-    }
-    let u = ui.clone();
-    bridge.register("saveFields", move |shell, label, args| {
-        crate::editor::save_fields(shell, &u.editors, label, args)
-    });
-    let u = ui.clone();
-    bridge.register("saveTags", move |shell, label, args| {
-        crate::editor::save_tags(shell, &u.editors, label, args)
-    });
-    // the second halves of after_editor_saved
-    let u = ui.clone();
-    bridge.register("editorLoad", move |shell, _, args| {
-        if shell.bridge.take_pending(&format!("editorLoad:{args}")) {
-            let nid = args.split(':').next().unwrap_or_default();
-            if let Err(err) = nid
-                .parse()
-                .map_err(anyhow::Error::from)
-                .and_then(|nid| u.load_editor(nid))
-            {
-                tracing::warn!(%err, "opening editor failed");
-            }
-        }
-        Value::Null
-    });
-    let u = ui.clone();
-    bridge.register("editorClose", move |shell, _, args| {
-        if shell.bridge.take_pending(&format!("editorClose:{args}")) {
-            if let Some(window) = u.app.get_webview_window(EDITOR) {
-                let _ = window.destroy();
-            }
-        }
-        Value::Null
-    });
-    let u = ui.clone();
-    bridge.register("editorExit", move |shell, _, args| {
-        if shell.bridge.take_pending(&format!("editorExit:{args}")) {
-            u.exiting.store(true, std::sync::atomic::Ordering::SeqCst);
-            u.app
-                .exit(u.exit_code.load(std::sync::atomic::Ordering::SeqCst));
-        }
-        Value::Null
-    });
     bridge.register("openUrl", |_, _, url| {
         match url.parse::<tauri::Url>() {
             Ok(url) if ["http", "https", "mailto"].contains(&url.scheme()) => {
@@ -732,9 +696,6 @@ fn register_bridge(ui: &Arc<Ui>) {
         }
         Value::Null
     });
-    for quiet in ["focus", "noteLoaded"] {
-        bridge.register(quiet, |_, _, _| Value::Null);
-    }
     // deck options
     bridge.register("deckOptionsReady", |_, _, _| Value::Null);
     let u = ui.clone();
@@ -832,8 +793,10 @@ pub fn run(args: Args) -> Result<()> {
         close_synced: Default::default(),
         status: Mutex::new(String::new()),
         plugins: crate::plugins::ui::Plugins::new(shell.clone()),
+        paste_trackers: Default::default(),
     });
     register_bridge(&ui);
+    crate::editor_window::register(&ui);
     crate::plugins::ui::register(&ui);
     crate::main_window::register(&ui);
     let (menu, menus) = crate::menus::build(&ui, &app)?;
@@ -889,21 +852,28 @@ pub fn run(args: Args) -> Result<()> {
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
-        } if label == EDITOR && exit_ui.editors.note(EDITOR).is_some() => {
+        } if crate::editor_window::is_editor(&label)
+            && exit_ui.editors.session(&label).is_some() =>
+        {
             api.prevent_close();
-            exit_ui.after_editor_saved("editorClose");
+            crate::editor_window::close(&exit_ui, &label);
+        }
+        // closing the main window quits, once the editors are saved (or
+        // the user keeps the Add window's input)
+        RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == MAIN && crate::editor_window::has_open_editors(&exit_ui) => {
+            api.prevent_close();
+            if !crate::editor_window::exit_requested(&exit_ui, 0) {
+                app.exit(0);
+            }
         }
         RunEvent::ExitRequested { api, code, .. }
-            if !exit_ui.exiting.load(std::sync::atomic::Ordering::SeqCst)
-                && exit_ui.editors.note(EDITOR).is_some()
-                && app.get_webview_window(EDITOR).is_some() =>
+            if crate::editor_window::exit_requested(&exit_ui, code.unwrap_or(0)) =>
         {
             api.prevent_exit();
-            // e.g. a test's result, to exit with once the editor is saved
-            exit_ui
-                .exit_code
-                .store(code.unwrap_or(0), std::sync::atomic::Ordering::SeqCst);
-            exit_ui.after_editor_saved("editorExit");
         }
         // not in the middle of a sync (a full sync, or its prompt): quit
         // once it's over
@@ -944,9 +914,8 @@ pub fn run(args: Args) -> Result<()> {
             event: tauri::WindowEvent::Destroyed,
             ..
         } => {
-            if label == EDITOR {
-                exit_ui.editors.clear(EDITOR);
-                crate::main_window::editor_closed(&exit_ui);
+            if crate::editor_window::is_editor(&label) {
+                crate::editor_window::destroyed(&exit_ui, &label);
             }
             if label.starts_with("dialog-") {
                 crate::main_window::dialog_closed(&exit_ui, &label);

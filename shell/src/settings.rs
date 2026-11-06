@@ -44,6 +44,18 @@ pub struct Settings {
     /// Add-ons to run in the plugin host: folder names in the old Anki's
     /// `addons21` (they share its config and files). None by default.
     pub plugins: Vec<String>,
+    /// What the editor remembers between notes (the profile and meta keys
+    /// `lastTextColor`, `lastHighlightColor`, `*TagsCollapsed` in Qt).
+    pub editor: EditorPrefs,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct EditorPrefs {
+    pub last_text_color: Option<String>,
+    pub last_highlight_color: Option<String>,
+    pub add_tags_collapsed: bool,
+    pub edit_tags_collapsed: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

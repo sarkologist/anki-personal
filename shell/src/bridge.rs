@@ -98,6 +98,8 @@ pub struct Bridge {
     /// Commands the shell has asked a page to send back (after a save),
     /// so each runs once: from the page, or after a timeout.
     pending: Mutex<std::collections::HashSet<String>>,
+    /// Webview label -> commands being handled now.
+    running: Mutex<HashMap<String, usize>>,
 }
 
 impl Bridge {
@@ -144,7 +146,16 @@ impl Bridge {
         }
         if let Some(handler) = self.handlers.read().unwrap().get(name) {
             tracing::trace!(label, name, "bridge command");
+            *self
+                .running
+                .lock()
+                .unwrap()
+                .entry(label.to_string())
+                .or_default() += 1;
             let out = handler(shell, label, rest);
+            if let Some(n) = self.running.lock().unwrap().get_mut(label) {
+                *n -= 1;
+            }
             tracing::trace!(label, name, "bridge command done");
             return out;
         }
@@ -165,6 +176,16 @@ impl Bridge {
             .entry(name.to_string())
             .or_default() += 1;
         Value::Null
+    }
+
+    /// Whether a command from `label` is being handled (a slow paste, say),
+    /// so the page's later commands are still waiting behind it.
+    pub fn busy(&self, label: &str) -> bool {
+        self.running
+            .lock()
+            .unwrap()
+            .get(label)
+            .is_some_and(|n| *n > 0)
     }
 
     pub fn add_pending(&self, cmd: String) {

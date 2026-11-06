@@ -29,8 +29,9 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Debug, Clone)]
 pub struct TestRun {
     pub script: PathBuf,
-    /// "editor" (needs `note`), "main" (the deck browser, then every page
-    /// the main window loads) or "home".
+    /// "editor" (Edit Current; needs `note`), "add" (Add Cards), "main"
+    /// (the deck browser, then every page the main window loads) or
+    /// "home".
     pub page: String,
     /// 0 creates a Cloze note with the text "alpha beta gamma".
     pub note: Option<i64>,
@@ -231,6 +232,27 @@ fn silent_wav() -> Vec<u8> {
     out
 }
 
+/// `setMarkedText:` and `insertText:` on a WKWebView, as an input method
+/// composes and commits text.
+unsafe fn ime_input(webview: *mut std::ffi::c_void, steps: &[(String, String)]) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSRange;
+    use objc2_foundation::NSString;
+    let view = webview as *mut AnyObject;
+    // NSNotFound: no replacement range
+    let none = NSRange::new(isize::MAX as usize, 0);
+    for (kind, text) in steps {
+        let s = NSString::from_str(text);
+        let len = text.encode_utf16().count();
+        if kind == "mark" {
+            let _: () = msg_send![view, setMarkedText: &*s, selectedRange: NSRange::new(len, 0), replacementRange: none];
+        } else {
+            let _: () = msg_send![view, insertText: &*s, replacementRange: none];
+        }
+    }
+}
+
 fn wrap(script: &str, note: Option<i64>) -> String {
     format!(
         r#"(async () => {{
@@ -288,6 +310,73 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
             None => json!(false),
         }
     });
+    // paste from a scratch pasteboard with these contents
+    // (`{"html": .., "text": .., "urls": [..]}`), never the user's
+    static SCRATCH: std::sync::Mutex<Option<crate::pasteboard::ScratchPasteboard>> =
+        std::sync::Mutex::new(None);
+    ui.shell.bridge.register("testPasteboard", |_, _, args| {
+        let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+        let mut scratch = SCRATCH.lock().unwrap();
+        let board = scratch.get_or_insert_with(crate::pasteboard::ScratchPasteboard::new);
+        let urls: Vec<&str> = v["urls"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        board.write(v["html"].as_str(), v["text"].as_str(), &urls, None);
+        crate::editor_window::use_pasteboard(Some(board.name().to_string()));
+        json!(true)
+    });
+    // text input as an input method sends it, to the page's webview:
+    // `[["mark", "に"], ["mark", "にほ"], ["insert", "日本"]]`
+    let u = ui.clone();
+    ui.shell.bridge.register("testIme", move |_, label, args| {
+        use tauri::Manager;
+        let steps: Vec<(String, String)> = serde_json::from_str(args).unwrap_or_default();
+        let Some(window) = u.app.get_webview_window(label) else {
+            return json!(false);
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sent = window.with_webview(move |webview| {
+            // SAFETY: inner() is the WKWebView, an NSTextInputClient; this
+            // runs on the main thread
+            unsafe { ime_input(webview.inner(), &steps) };
+            let _ = tx.send(());
+        });
+        json!(sent.is_ok() && rx.recv_timeout(Duration::from_secs(5)).is_ok())
+    });
+    // Edit Current on another note, saving the shown one first (the
+    // reviewer's edit; `openEditor` is the home page's only)
+    let u = ui.clone();
+    ui.shell
+        .bridge
+        .register("testOpenEditor", move |_, _, nid| {
+            json!(nid
+                .parse()
+                .map(|nid| u.open_editor(nid).is_ok())
+                .unwrap_or(false))
+        });
+    // the absolute path of a media file with this extension, if any
+    ui.shell.bridge.register("testMediaFile", |shell, _, ext| {
+        let folder = shell.media_folder();
+        let found = folder
+            .as_deref()
+            .and_then(|dir| std::fs::read_dir(dir).ok())
+            .and_then(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)))
+            });
+        json!(found.map(|p| p.to_string_lossy().into_owned()))
+    });
+    // an add-on side panel with this HTML in the sending editor
+    let u = ui.clone();
+    ui.shell
+        .bridge
+        .register("testSidePanel", move |_, label, html| {
+            crate::editor_window::set_side_panel(&u, label, Some(html.to_string()));
+            json!(true)
+        });
     // the open windows' labels
     let u = ui.clone();
     ui.shell.bridge.register("testWindows", move |_, _, _| {
@@ -396,6 +485,26 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
                 Value::Null
             });
             ui.open_editor(nid)?;
+        }
+        "add" => {
+            anyhow::ensure!(
+                ui.shell.open_profile_paths().is_some(),
+                "no profile open: {}",
+                ui.status.lock().unwrap()
+            );
+            let js = wrap(&script, None);
+            let label = crate::editor_window::ADD;
+            let u = ui.clone();
+            let started = std::sync::atomic::AtomicBool::new(false);
+            // run once, when the first note is in the page (adding loads
+            // the next note, which sends noteLoaded again)
+            ui.shell.bridge.register("noteLoaded", move |_, l, _| {
+                if l == label && !started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    u.eval(label, js.clone());
+                }
+                Value::Null
+            });
+            crate::editor_window::open_add(ui)?;
         }
         "main" => {
             anyhow::ensure!(

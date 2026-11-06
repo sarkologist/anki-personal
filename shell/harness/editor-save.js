@@ -17,7 +17,7 @@ if (!step) {
     document.getSelection().collapse(text, text.length);
     document.execCommand("insertText", false, " unsaved");
     // well within the debounce
-    bridge(`openEditor:${testNote}`);
+    bridge(`testOpenEditor:${testNote}`);
     // never resolves: the page is replaced
     return await new Promise(() => {});
 }
