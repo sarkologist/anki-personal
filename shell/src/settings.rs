@@ -179,12 +179,17 @@ impl Settings {
     /// Also the LaTeX commands, if they were imported before the import
     /// read them.
     pub fn import_theme_if_missing(&mut self) -> Result<bool> {
-        if self.imported_at.is_none() || (self.anki_theme.is_some() && self.latex_imported) {
+        if !self.backfill_needed() {
             return Ok(false);
         }
         let out = self.run_import()?;
         self.merge_theme(&out)?;
         Ok(true)
+    }
+
+    /// Imported, but before the import read the theme or LaTeX commands.
+    fn backfill_needed(&self) -> bool {
+        self.imported_at.is_some() && (self.anki_theme.is_none() || !self.latex_imported)
     }
 
     fn merge_theme(&mut self, json: &[u8]) -> Result<()> {
@@ -201,7 +206,6 @@ impl Settings {
         }
         if !self.latex_imported {
             self.anki_latex_commands = imported.latex_commands.filter(|c| !c.is_empty());
-            self.latex_imported = true;
             self.latex_imported = true;
         }
         Ok(())
@@ -259,8 +263,15 @@ impl Settings {
         self.answer_keys =
             crate::shortcuts::import_answer_keys(&self.anki_base(), &imported.answer_keys);
         self.spacebar_rates_card = imported.spacebar_rates_card;
-        self.anki_theme = imported.theme.and_then(ThemePref::from_anki);
+        // "follow the system" if it has none, so no backfill runs later
+        self.anki_theme = Some(
+            imported
+                .theme
+                .and_then(ThemePref::from_anki)
+                .unwrap_or_default(),
+        );
         self.anki_latex_commands = imported.latex_commands.filter(|c| !c.is_empty());
+        self.latex_imported = true;
         self.imported_at = Some(chrono::Utc::now().timestamp());
         Ok(())
     }
@@ -374,14 +385,28 @@ mod test {
             settings.latex_toolchain(),
             settings.latex_commands.clone().unwrap()
         );
-        // an import without them clears the imported ones only
+        // an import without them resets the imported ones only (no theme
+        // there is "follow the system")
         settings
             .merge_import(br#"{"profiles": [], "lastLoaded": null}"#)
             .unwrap();
-        assert_eq!(settings.anki_theme, None);
+        assert_eq!(settings.anki_theme, Some(ThemePref::System));
         assert_eq!(settings.anki_latex_commands, None);
         assert_eq!(settings.theme, Some(ThemePref::Light));
         assert_eq!(Settings::default().theme_pref(), ThemePref::System);
+    }
+
+    #[test]
+    fn a_full_import_needs_no_backfill() {
+        // also when the old Anki has no theme and no LaTeX commands
+        for json in [
+            IMPORTED,
+            r#"{"profiles": [{"name": "User 1"}], "lastLoaded": null}"#,
+        ] {
+            let mut settings = Settings::default();
+            settings.merge_import(json.as_bytes()).unwrap();
+            assert!(!settings.backfill_needed(), "{json}");
+        }
     }
 
     #[test]
