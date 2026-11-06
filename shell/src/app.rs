@@ -276,6 +276,7 @@ pub struct Ui {
     /// Set once the close sync has run (or wasn't wanted).
     pub close_synced: std::sync::atomic::AtomicBool,
     pub plugins: crate::plugins::ui::Plugins,
+    pub browser: crate::browser_window::BrowserUi,
     paste_trackers: Mutex<HashMap<String, Arc<crate::paste::InternalPaste>>>,
 }
 
@@ -858,10 +859,12 @@ pub fn run(args: Args) -> Result<()> {
         close_synced: Default::default(),
         status: Mutex::new(String::new()),
         plugins: crate::plugins::ui::Plugins::new(shell.clone()),
+        browser: Default::default(),
         paste_trackers: Default::default(),
     });
     register_bridge(&ui);
     crate::editor_window::register(&ui);
+    crate::browser_window::register(&ui);
     crate::plugins::ui::register(&ui);
     crate::main_window::register(&ui);
     let (menu, menus) = crate::menus::build(&ui, &app)?;

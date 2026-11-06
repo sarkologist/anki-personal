@@ -43,6 +43,8 @@ const LATEX_PREVIEW_CACHE_SIZE: usize = 128;
 pub enum Mode {
     Add,
     EditCurrent,
+    /// The browser's editor: as Edit Current, with a Preview button.
+    Browse,
 }
 
 impl Mode {
@@ -51,6 +53,7 @@ impl Mode {
         match self {
             Mode::Add => "add",
             Mode::EditCurrent => "review",
+            Mode::Browse => "browse",
         }
     }
 }
@@ -91,6 +94,14 @@ pub fn next_generation() -> i64 {
 }
 
 impl Session {
+    /// The browser's editor on `note`.
+    pub fn browse(note: Note, card_id: Option<i64>) -> Session {
+        Session {
+            mode: Mode::Browse,
+            ..Session::edit(note, card_id)
+        }
+    }
+
     pub fn edit(note: Note, card_id: Option<i64>) -> Session {
         Session {
             mode: Mode::EditCurrent,
@@ -121,7 +132,7 @@ impl Session {
     pub fn page_id(&self) -> i64 {
         match self.mode {
             Mode::Add => -self.generation,
-            Mode::EditCurrent => self.note.id,
+            Mode::EditCurrent | Mode::Browse => self.note.id,
         }
     }
 
@@ -223,7 +234,7 @@ impl Editors {
     }
 }
 
-fn notetype_json(api: &Api, ntid: i64) -> Result<Value, ApiError> {
+pub fn notetype_json(api: &Api, ntid: i64) -> Result<Value, ApiError> {
     let json: generic::Json = api.call("get_notetype_legacy", &NotetypeId { ntid })?;
     serde_json::from_slice(&json.json).map_err(|e| ApiError {
         kind: -1,
@@ -306,7 +317,7 @@ pub fn load_note_js(
     let io = is_image_occlusion(&nt);
     let tags_collapsed = match session.mode {
         Mode::Add => prefs.add_tags_collapsed,
-        Mode::EditCurrent => prefs.edit_tags_collapsed,
+        Mode::EditCurrent | Mode::Browse => prefs.edit_tags_collapsed,
     };
     let colors = json!([
         prefs.last_text_color.as_deref().unwrap_or("#0000ff"),
@@ -445,7 +456,7 @@ fn current_note(shell: &Shell, editors: &Editors, label: &str, page_id: i64) -> 
     }
     match session.mode {
         Mode::Add => Some(session.note),
-        Mode::EditCurrent => shell
+        Mode::EditCurrent | Mode::Browse => shell
             .api
             .call::<Note>("get_note", &NoteId { nid: page_id })
             .ok()
@@ -567,6 +578,16 @@ pub fn editor_state(shell: &Shell, editors: &Editors, label: &str, args: &str) {
     );
 }
 
+thread_local! {
+    static SAVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread is in an editor's own save, so change observers
+/// can tell it from changes made elsewhere (Qt's `handler is self.editor`).
+pub fn in_editor_save() -> bool {
+    SAVING.with(|s| s.get())
+}
+
 /// Store `note` as the session's note; in Edit Current, save it to the
 /// collection first.
 fn save_note(shell: &Shell, editors: &Editors, label: &str, note: Note) {
@@ -574,6 +595,7 @@ fn save_note(shell: &Shell, editors: &Editors, label: &str, note: Note) {
         editors.set(label, note);
         return;
     }
+    SAVING.with(|s| s.set(true));
     let result: Result<anki_proto::collection::OpChanges, _> = shell.api.call(
         "update_notes",
         &UpdateNotesRequest {
@@ -581,6 +603,7 @@ fn save_note(shell: &Shell, editors: &Editors, label: &str, note: Note) {
             skip_undo_entry: false,
         },
     );
+    SAVING.with(|s| s.set(false));
     match result {
         Ok(_) => editors.set(label, note),
         Err(err) => tracing::error!(%err, "saving note failed"),
@@ -962,7 +985,7 @@ pub fn mask_editor_js(mode: Mode, nid: i64, image: &str, image_html: &str) -> St
             "mode": {"kind": "add", "imagePath": image, "notetypeId": 0},
             "html": image_html,
         })),
-        Mode::EditCurrent => format!(
+        Mode::EditCurrent | Mode::Browse => format!(
             "resetIOImage({}); setImageField({}); {}",
             json!(image),
             json!(image_html),
@@ -1020,7 +1043,7 @@ pub fn latex_request(
     let config = crate::latex::latex_config(&shell.api, session.note.notetype_id).ok()?;
     let saved_fields = match session.mode {
         Mode::Add => vec![],
-        Mode::EditCurrent => session.note.fields.clone(),
+        Mode::EditCurrent | Mode::Browse => session.note.fields.clone(),
     };
     let request_id = match &request["requestId"] {
         Value::String(s) => s.clone(),

@@ -30,6 +30,7 @@ from .qt import QMainWindow, QObject
 
 ADD = "add"
 EDIT_CURRENT = "editor"
+BROWSER = "browser"
 
 
 class EditorMode(Enum):
@@ -398,7 +399,9 @@ def handle(name: str, event: dict[str, Any]) -> Any:
     editor = _editors.get(label)
     created = editor is None
     if editor is None:
-        mode = EditorMode.ADD_CARDS if label == ADD else EditorMode.EDIT_CURRENT
+        mode = {ADD: EditorMode.ADD_CARDS, BROWSER: EditorMode.BROWSER}.get(
+            label, EditorMode.EDIT_CURRENT
+        )
         editor = Editor(label, mode)
         _editors[label] = editor
     editor._update(event)

@@ -32,14 +32,17 @@ use crate::pages::WebviewKind;
 
 /// The Add Cards window; Edit Current is [EDITOR].
 pub const ADD: &str = "add";
+/// The card browser, whose page is the editor's (see `browser_window`).
+pub const BROWSER: &str = "browser";
+const LABELS: [&str; 3] = [ADD, EDITOR, BROWSER];
 
 pub fn is_editor(label: &str) -> bool {
-    label == ADD || label == EDITOR
+    LABELS.contains(&label)
 }
 
 /// The editor window with the focus, if one has it.
 pub fn focused_editor(ui: &Ui) -> Option<&'static str> {
-    [ADD, EDITOR].into_iter().find(|label| {
+    LABELS.into_iter().find(|label| {
         ui.app
             .get_webview_window(label)
             .and_then(|w| w.is_focused().ok())
@@ -199,6 +202,50 @@ pub fn reload_note_keeping_focus(ui: &Ui, label: &str) {
     reload_note(ui, label, focus);
 }
 
+/// The browser's page: the editor in Browse mode, with the table (a
+/// frame) beside it. It shows no note until one card is selected.
+pub fn open_browse_page(ui: &Arc<Ui>, js: String) -> anyhow::Result<()> {
+    ui.editors.clear(BROWSER);
+    let title = ui.main.tr.qt_misc_browse().into_owned();
+    ui.open_window(
+        BROWSER,
+        &title,
+        WebviewKind::Editor,
+        Content::Html(page_html(ui, Mode::Browse)),
+    )?;
+    ui.eval(
+        BROWSER,
+        format!("setupEditor({})", self::js(Mode::Browse.page_mode())),
+    );
+    ui.eval(BROWSER, chrome_js(ui, Mode::Browse));
+    ui.eval(BROWSER, format_buttons_js());
+    ui.eval(BROWSER, js);
+    Ok(())
+}
+
+/// Show note `nid` in the browser's editor (without saving the one shown).
+pub fn show_browse_note(ui: &Arc<Ui>, nid: i64, card_id: Option<i64>) -> anyhow::Result<()> {
+    let note: Note = ui.shell.api.call("get_note", &NoteId { nid })?;
+    let first = ui.editors.session(BROWSER).is_none();
+    ui.editors
+        .set_session(BROWSER, Session::browse(note, card_id));
+    reload_note(ui, BROWSER, None);
+    if first {
+        crate::plugins::editors::page_opened(ui, BROWSER);
+    }
+    ui.eval(BROWSER, "shellBrowserNote(true);".into());
+    Ok(())
+}
+
+/// The browser shows no note (none or several cards are selected).
+pub fn clear_browse_note(ui: &Ui) {
+    if ui.editors.session(BROWSER).is_some() {
+        ui.editors.clear(BROWSER);
+        crate::plugins::editors::closed(ui, BROWSER);
+    }
+    ui.eval(BROWSER, "shellBrowserNote(false);".into());
+}
+
 /// The editor page with the window's bars around it. The page mounts the
 /// editor at the end of `body`; a grid puts it between the bars.
 fn page_html(ui: &Ui, mode: Mode) -> String {
@@ -234,6 +281,13 @@ fn page_html(ui: &Ui, mode: Mode) -> String {
                 esc(tr.actions_close()),
             ),
         ),
+        Mode::Browse => (
+            format!(
+                "<iframe id=shell-browser src=\"{}\"></iframe><div id=shell-split></div>",
+                pages::legacy_page_url(crate::browser_window::TABLE_PAGE)
+            ),
+            String::new(),
+        ),
     };
     let body =
         format!("<style>{CHROME_CSS}</style>{top}<iframe id=shell-side hidden></iframe>{bottom}");
@@ -246,7 +300,11 @@ fn page_html(ui: &Ui, mode: Mode) -> String {
     )
     .replacen(
         "<body class=\"isMac\">",
-        "<body class=\"isMac shell-editor\">",
+        if mode == Mode::Browse {
+            "<body class=\"isMac shell-editor shell-browse shell-no-note\">"
+        } else {
+            "<body class=\"isMac shell-editor\">"
+        },
         1,
     )
 }
@@ -276,6 +334,14 @@ body.shell-editor > .note-editor { grid-area: editor; height: auto; min-height: 
 #shell-history-menu div:hover { background: var(--highlight-bg, #3478f6); color: var(--highlight-fg, #fff); }
 #shell-history-menu div.deleted { color: var(--fg-subtle, #888); }
 #shell-history-menu div.deleted:hover { background: none; color: var(--fg-subtle, #888); }
+body.shell-editor.shell-browse { grid-template-rows: minmax(0, 1fr); \
+  grid-template-columns: var(--shell-table, 60%) 5px minmax(0, 1fr) auto; \
+  grid-template-areas: 'table split editor side'; }
+body.shell-editor.shell-browse.shell-no-note { grid-template-columns: minmax(0, 1fr) 0 0 auto; }
+body.shell-browse.shell-no-note > .note-editor, body.shell-browse.shell-no-note > #shell-split \
+  { display: none; }
+#shell-browser { grid-area: table; width: 100%; height: 100%; border: 0; min-width: 0; }
+#shell-split { grid-area: split; cursor: col-resize; background: var(--border, #ccc); }
 ";
 
 /// The bars' behaviour, and the window's keys: Cmd+Enter adds (or closes
@@ -294,6 +360,7 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
     format!(
         r#"(() => {{
     const add = {add};
+    const browse = {browse};
     const $ = (id) => document.getElementById(id);
     const click = (id, cmd) => $(id)?.addEventListener("click", () => pycmd(cmd));
     click("shell-notetype", "chooseNotetype");
@@ -322,7 +389,7 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
     window.shellSetHistory = (any) => {{ $("shell-history").disabled = !any; }};
     const formatKeys = {keys};
     document.addEventListener("keydown", (e) => {{
-        if (e.metaKey && !e.altKey && !e.ctrlKey && (e.key === "Enter" || e.code === "NumpadEnter")) {{
+        if (!browse && e.metaKey && !e.altKey && !e.ctrlKey && (e.key === "Enter" || e.code === "NumpadEnter")) {{
             e.preventDefault();
             pycmd(add ? "addNote" : "closeEditor");
             return;
@@ -381,6 +448,7 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
     }}, true);
 }})();"#,
         add = mode == Mode::Add,
+        browse = mode == Mode::Browse,
         max_drop = MAX_DROP_BYTES,
         deleted = js(ui.main.tr.adding_note_deleted()),
         keys = Value::Array(keys),
@@ -389,7 +457,7 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
 
 /// A Qt hotkey ("Cmd+Shift+[") as the page's keydown fields; `code` is the
 /// physical key, since Option changes `key` on macOS.
-fn key_spec(hotkey: &str) -> Value {
+pub(crate) fn key_spec(hotkey: &str) -> Value {
     let parts: Vec<&str> = hotkey.split('+').collect();
     let (mods, key) = match hotkey.strip_suffix("++") {
         Some(rest) => (rest.split('+').collect::<Vec<_>>(), "+"),
@@ -663,9 +731,7 @@ fn close_saved(ui: &Arc<Ui>, label: &str) {
     let Some(session) = ui.editors.session(label) else {
         return destroy(ui, label);
     };
-    if session.mode == Mode::EditCurrent
-        || editor::session_fields_are_blank(&ui.shell.api, &session)
-    {
+    if session.mode != Mode::Add || editor::session_fields_are_blank(&ui.shell.api, &session) {
         return destroy(ui, label);
     }
     let tr = &ui.main.tr;
@@ -702,7 +768,7 @@ pub fn exit_requested(ui: &Arc<Ui>, code: i32) -> bool {
     if ui.exiting.load(Ordering::SeqCst) || EXIT_WAITING.load(Ordering::SeqCst) > 0 {
         return EXIT_WAITING.load(Ordering::SeqCst) > 0;
     }
-    let open: Vec<&str> = [ADD, EDITOR]
+    let open: Vec<&str> = LABELS
         .into_iter()
         .filter(|l| ui.editors.session(l).is_some() && ui.app.get_webview_window(l).is_some())
         .collect();
@@ -757,7 +823,7 @@ fn exit_saved(ui: &Arc<Ui>) {
 
 /// Whether an editor window with a note is open.
 pub fn has_open_editors(ui: &Ui) -> bool {
-    [ADD, EDITOR]
+    LABELS
         .into_iter()
         .any(|l| ui.editors.session(l).is_some() && ui.app.get_webview_window(l).is_some())
 }
@@ -766,7 +832,13 @@ pub fn has_open_editors(ui: &Ui) -> bool {
 /// mark, a sync): show the note as stored, or close if it's gone
 /// (`EditCurrent.on_operation_did_execute`).
 pub fn note_changed_elsewhere(ui: &Arc<Ui>) {
-    let Some(session) = ui.editors.session(EDITOR) else {
+    for label in [EDITOR, BROWSER] {
+        note_changed_in(ui, label);
+    }
+}
+
+fn note_changed_in(ui: &Arc<Ui>, label: &str) {
+    let Some(session) = ui.editors.session(label) else {
         return;
     };
     let stored = ui.shell.api.call::<Note>(
@@ -776,9 +848,11 @@ pub fn note_changed_elsewhere(ui: &Arc<Ui>) {
         },
     );
     match stored {
+        // the browser stays, with no note
+        Err(_) if label == BROWSER => clear_browse_note(ui),
         Err(_) => {
-            ui.editors.clear(EDITOR);
-            if let Some(w) = ui.app.get_webview_window(EDITOR) {
+            ui.editors.clear(label);
+            if let Some(w) = ui.app.get_webview_window(label) {
                 let _ = w.destroy();
             }
         }
@@ -787,8 +861,8 @@ pub fn note_changed_elsewhere(ui: &Arc<Ui>) {
                 || note.tags != session.note.tags
                 || note.notetype_id != session.note.notetype_id =>
         {
-            ui.editors.update(EDITOR, |s| s.note = note);
-            reload_note_keeping_focus(ui, EDITOR);
+            ui.editors.update(label, |s| s.note = note);
+            reload_note_keeping_focus(ui, label);
         }
         Ok(_) => {}
     }
@@ -797,6 +871,9 @@ pub fn note_changed_elsewhere(ui: &Arc<Ui>) {
 /// An editor window went away.
 pub fn destroyed(ui: &Arc<Ui>, label: &str) {
     ui.editors.clear(label);
+    if label == BROWSER {
+        crate::browser_window::destroyed(ui);
+    }
     ui.shell.pages.remove(&format!("{label}-side"));
     crate::main_window::editor_closed(ui);
 }
@@ -1354,6 +1431,10 @@ pub fn register(ui: &Arc<Ui>) {
                     let title = match mode {
                         Mode::Add => u.main.tr.actions_add().into_owned(),
                         Mode::EditCurrent => u.main.tr.editing_edit_current().into_owned(),
+                        Mode::Browse => {
+                            crate::browser_window::reload_page(&u);
+                            return Value::Null;
+                        }
                     };
                     let _ = open_page(&u, label, &title, mode, focus);
                 }
@@ -1401,7 +1482,12 @@ pub fn register(ui: &Arc<Ui>) {
         Value::Null
     });
     // the browser's editor only
-    reg("preview", |_, _, _| Value::Null);
+    reg("preview", |ui, label, _| {
+        if label == BROWSER {
+            crate::browser_window::toggle_preview(ui);
+        }
+        Value::Null
+    });
     reg("paste", |ui, label, _| {
         paste(ui, label);
         Value::Null
@@ -1504,11 +1590,12 @@ pub fn register(ui: &Arc<Ui>) {
         json!(editor::history_entries(&ui.shell.api, &history))
     });
     reg("editHistory", |ui, _, nid| {
-        // the browser in Qt; Edit Current until the browser is ported
-        if let Ok(nid) = nid.parse() {
-            if let Err(err) = open_edit_current(ui, nid, None) {
-                crate::main_window::message(ui, &format!("{err:#}"));
-            }
+        // the browser on the note, as `AddCards.editHistory`
+        if let Ok(nid) = nid.parse::<i64>() {
+            crate::browser_window::open_with_search(
+                ui,
+                anki_proto::search::search_node::Filter::Nid(nid),
+            );
         }
         Value::Null
     });
@@ -1533,6 +1620,10 @@ pub fn register(ui: &Arc<Ui>) {
             .map_err(anyhow::Error::from)
             .and_then(|nid| match label {
                 ADD => Ok(()),
+                BROWSER => {
+                    crate::browser_window::editor_saved(ui);
+                    Ok(())
+                }
                 _ => load_edit_current(ui, nid, None),
             });
         if let Err(err) = result {
@@ -1555,27 +1646,20 @@ fn show_duplicates(ui: &Ui, label: &str) {
     }
 }
 
-/// "Show Duplicates": a picker over the notes with the same first field;
-/// the chosen one opens in Edit Current (the browser in Qt).
+/// "Show Duplicates": the browser on the notes with the same first field
+/// (`Editor.showDupes`).
 fn show_duplicate_list(ui: &Arc<Ui>, label: &str) {
     let Some(note) = ui.editors.note(label) else {
         return;
     };
-    let dupes: Vec<(String, String)> = editor::duplicates(&ui.shell.api, &note)
-        .into_iter()
-        .map(|(nid, text)| (nid.to_string(), text))
-        .collect();
-    if dupes.is_empty() {
-        return;
-    }
-    let title = ui.main.tr.editing_show_duplicates().into_owned();
-    crate::main_window::pick(ui, &title, &dupes, "", |ui, id| {
-        if let Some(nid) = id.and_then(|id| id.parse().ok()) {
-            if let Err(err) = open_edit_current(ui, nid, None) {
-                crate::main_window::message(ui, &format!("{err:#}"));
-            }
-        }
-    });
+    let first = note.fields.first().cloned().unwrap_or_default();
+    crate::browser_window::open_with_search(
+        ui,
+        anki_proto::search::search_node::Filter::Dupe(anki_proto::search::search_node::Dupe {
+            notetype_id: note.notetype_id,
+            first_field: first,
+        }),
+    );
 }
 
 /// Mini Format Pack's `abbr`: ask for the full text, then wrap.

@@ -194,6 +194,10 @@ class Qt(metaclass=_Names):
         LeftArrow = 3
         RightArrow = 4
 
+    class SortOrder(enum.IntEnum):
+        AscendingOrder = 0
+        DescendingOrder = 1
+
     class CheckState(enum.IntEnum):
         Unchecked = 0
         PartiallyChecked = 1

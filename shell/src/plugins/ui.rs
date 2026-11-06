@@ -150,7 +150,7 @@ pub fn register(ui: &Arc<Ui>) {
     let host = ui.plugins.host.clone();
     ui.shell
         .api
-        .set_changes_observer(Box::new(move |_method, changes| {
+        .add_changes_observer(Box::new(move |_method, changes| {
             if !host.is_running() {
                 return;
             }
@@ -271,6 +271,7 @@ pub fn window_focused(ui: &Ui, label: &str, focused: bool) {
 /// The host's end: its menu items and panels go with it.
 fn forget_host_ui(ui: &Arc<Ui>) {
     super::editors::host_stopped(ui);
+    crate::browser_window::host_stopped(ui);
     ui.plugins.tools.lock().unwrap().clear();
     crate::menus::set_tools(ui, vec![]);
     let labels: Vec<String> = ui
@@ -293,12 +294,16 @@ fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> Option<Value> {
     if super::editors::on_host(ui, op, msg) {
         return None;
     }
+    if let Some(reply) = crate::browser_window::on_host(ui, op, msg) {
+        return reply;
+    }
     match op {
         "ready" => {
             tracing::info!(addons = %msg["addons"], "add-ons loaded");
             // a (re)started host starts out on the deck list
             let state = state_name(*ui.main.state.lock().unwrap());
             notify(ui, "set_state", json!({"state": state}));
+            crate::browser_window::host_ready(ui);
         }
         "addon_failed" => {
             let module = msg["module"].as_str().unwrap_or_default();
@@ -342,6 +347,7 @@ fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> Option<Value> {
                 .and_then(|b| anki_proto::collection::OpChanges::decode(b.as_slice()).ok());
             if let Some(changes) = changes {
                 main_window::plugin_op_executed(ui, &changes);
+                crate::browser_window::plugin_op_executed(ui, &changes);
             }
         }
         "menu" if msg["menu"] == "tools" => {
@@ -370,14 +376,14 @@ fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> Option<Value> {
         "refresh_main" => main_window::refresh(ui),
         "browser_search" => {
             let search = msg["search"].as_str().unwrap_or_default();
-            copy_to_clipboard(search);
-            main_window::message(
-                ui,
-                &format!(
-                    "The card browser isn't in the native shell yet. The search is on \
-                     the clipboard, to paste into the old Anki's browser:\n\n{search}"
-                ),
-            );
+            let normalized =
+                crate::browser::normalize(&ui.shell.api, crate::browser::text_node(search));
+            match normalized {
+                Ok(search) => crate::browser_window::queue(ui, move |ui| {
+                    crate::browser_window::open(ui, Some(search), None)
+                }),
+                Err(err) => main_window::message(ui, &err.message),
+            }
         }
         op => tracing::warn!(op, "unknown plugin host request"),
     }
@@ -456,17 +462,4 @@ pub fn show_log(ui: &Arc<Ui>) {
         WebviewKind::Dialog,
         crate::app::Content::Html(html),
     );
-}
-
-fn copy_to_clipboard(text: &str) {
-    use std::io::Write;
-    if let Ok(mut child) = std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(stdin) = child.stdin.as_mut() {
-            let _ = stdin.write_all(text.as_bytes());
-        }
-        let _ = child.wait();
-    }
 }

@@ -15,12 +15,15 @@ from anki.lang import tr_legacyglobal as tr  # noqa: F401
 
 def _window(parent: Any) -> str | None:
     """The shell window an add-on's widget is in (an editor's side panel)."""
+    from aqt.browser import Browser
     from aqt.editor import EditorWindow
 
     widget = parent
     while widget is not None:
         if isinstance(widget, EditorWindow):
             return widget.editor.label
+        if isinstance(widget, Browser):
+            return "browser"
         widget = getattr(widget, "_parent", None)
     return None
 
@@ -34,8 +37,23 @@ def tooltip(
         )
 
 
-def showInfo(text: str, parent: Any = None, *_args: Any, **_kwargs: Any) -> None:
+def _plain(html: str) -> str:
+    """Rich text as the shell's plain message: paragraphs and breaks as
+    lines, no tags."""
+    import html as html_module
+    import re
+
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>", "\n", html)
+    text = re.sub(r"<[^>]+>", "", text)
+    return html_module.unescape(re.sub(r"\n{3,}", "\n\n", text)).strip()
+
+
+def showInfo(
+    text: str, parent: Any = None, *_args: Any, textFormat: str = "", **_kwargs: Any
+) -> None:
     if aqt.mw:
+        if textFormat == "rich":
+            text = _plain(str(text))
         aqt.mw.native.notify("show_info", text=str(text))
 
 
