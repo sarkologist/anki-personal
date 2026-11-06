@@ -73,6 +73,9 @@ def test_ignores_disabled_add_ons_and_other_assignments(tmp_path: Path) -> None:
         ),
     )
     addon(tmp_path, "broken", "latex.pngCommands = [[")
+    # literal_eval's TypeError, and a meta.json that isn't an object
+    addon(tmp_path, "odd", "latex.pngCommands = {[]: 1}")
+    (tmp_path / "addons21" / "odd" / "meta.json").write_text("[1]")
     assert import_prefs.latex_commands(tmp_path) == {}
 
 

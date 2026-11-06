@@ -12,6 +12,8 @@ declare global {
         shellRefresh?: () => void;
         /** Push a new sync state (see `SyncState`) to the toolbar. */
         shellSetSyncState?: (state: unknown) => void;
+        /** Save what's pending before the window closes. */
+        shellFlush?: () => Promise<void>;
     }
 }
 

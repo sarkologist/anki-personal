@@ -438,6 +438,7 @@ impl Ui {
         let mut settings = self.settings.lock().unwrap();
         settings.import_from_anki()?;
         settings.save(&self.settings_path)?;
+        crate::latex::set_toolchain(settings.latex_toolchain());
         tracing::info!(
             profiles = settings.profiles.len(),
             "imported profiles from Anki"
@@ -708,6 +709,7 @@ fn register_bridge(ui: &Arc<Ui>) {
         if let Err(err) = u.reimport() {
             *u.status.lock().unwrap() = format!("Re-import failed: {err:#}");
         }
+        crate::theme::apply(&u, None);
         let _ = u.show_main();
         Value::Null
     });
@@ -928,6 +930,15 @@ pub fn run(args: Args) -> Result<()> {
             api.prevent_close();
             crate::editor_window::close(&exit_ui, &label);
         }
+        // Preferences saves what's being typed first
+        RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == crate::preferences::LABEL && crate::preferences::wants_flush(&exit_ui) => {
+            api.prevent_close();
+            crate::preferences::close(&exit_ui);
+        }
         // closing the main window quits, once the editors are saved (or
         // the user keeps the Add window's input)
         RunEvent::WindowEvent {
@@ -988,7 +999,12 @@ pub fn run(args: Args) -> Result<()> {
         RunEvent::WindowEvent {
             event: tauri::WindowEvent::ThemeChanged(theme),
             ..
-        } => crate::theme::apply(&exit_ui, Some(theme == tauri::Theme::Dark)),
+        } => {
+            // it takes the settings and reviewer locks, which bridge
+            // threads hold across backend calls
+            let ui = exit_ui.clone();
+            std::thread::spawn(move || crate::theme::apply(&ui, Some(theme == tauri::Theme::Dark)));
+        }
         RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,

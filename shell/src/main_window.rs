@@ -36,6 +36,19 @@ use crate::reviewer::Side;
 use crate::settings::SyncSettings;
 use crate::sync;
 
+/// Windows whose pages keep collection data and write it back (pending
+/// edits, a loaded copy of settings): a full sync replaces the collection
+/// under them, so they must be closed first.
+pub const COLLECTION_WINDOWS: &[&str] = &[
+    "editor",
+    "deck-options",
+    crate::preferences::LABEL,
+    crate::screens::FILTERED_DECK,
+    crate::screens::CUSTOM_STUDY,
+    crate::screens::MEDIA_CHECK,
+    crate::screens::EMPTY_CARDS,
+];
+
 /// The id of the bottom bar's HTML (served by `legacyPageData`).
 const BOTTOM_PAGE: &str = "main-bottom";
 
@@ -1326,8 +1339,9 @@ fn full_sync_prompt(
             // As `closeAllWindows` before a full sync: the editor's pending
             // save, or deck options, would write into the replaced
             // collection. When quitting, the editor has been saved already.
-            let open: Vec<&str> = ["editor", "deck-options"]
-                .into_iter()
+            let open: Vec<&str> = COLLECTION_WINDOWS
+                .iter()
+                .copied()
                 .filter(|l| ui.app.get_webview_window(l).is_some())
                 .collect();
             if !open.is_empty() {

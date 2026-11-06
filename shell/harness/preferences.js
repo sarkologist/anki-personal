@@ -68,6 +68,20 @@ if (testStage === 0) {
     await until("the rollover saved", async () => (await rollover()) === changed);
     check("rollover saved in the collection", await rollover(), changed);
 
+    // what's typed just before closing is saved by the flush the shell
+    // runs first; an emptied box keeps the saved value
+    set("#rollover", "");
+    set("#rollover", changed === "5" ? "7" : "8");
+    await window.shellFlush();
+    check("flushed before closing", await rollover(), changed === "5" ? "7" : "8");
+    set("#rollover", "");
+    await window.shellFlush();
+    check("an empty box isn't saved", await rollover(), changed === "5" ? "7" : "8");
+    // an out-of-range hour is clamped, as Qt's spin box
+    set("#rollover", "300");
+    await window.shellFlush();
+    check("rollover clamped", await rollover(), "23");
+
     // LaTeX: a bad line is refused and nothing changes
     set("#latex-png", "pdflatex tmp.tex\nprintf \"unclosed");
     await until("the error", () => document.querySelector("#latex-error"));

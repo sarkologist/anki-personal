@@ -10,6 +10,8 @@ aqt.profiles' unpickler (it needs an Anki install's Python, with PyQt). The
 database is opened read-only, so the old Anki can keep running.
 """
 
+from __future__ import annotations
+
 import ast
 import json
 import sqlite3
@@ -39,12 +41,13 @@ def latex_commands(base: Path) -> dict[str, list[list[str]]]:
             meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             meta = {}
-        if not folder.is_dir() or meta.get("disabled"):
+        if not folder.is_dir() or (isinstance(meta, dict) and meta.get("disabled")):
             continue
         for path in sorted(folder.glob("*.py")):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
-            except (OSError, SyntaxError, ValueError):
+            # an odd file mustn't stop the profile import
+            except Exception:
                 continue
             for node in tree.body:
                 if not isinstance(node, ast.Assign):
@@ -55,7 +58,7 @@ def latex_commands(base: Path) -> dict[str, list[list[str]]]:
                         continue
                     try:
                         value = ast.literal_eval(node.value)
-                    except ValueError:
+                    except Exception:
                         continue
                     if _is_command_list(value):
                         out[kind] = value

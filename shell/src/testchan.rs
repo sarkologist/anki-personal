@@ -634,6 +634,15 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
             Err(_) => json!(false),
         }
     });
+    // close a window as its close button does (CloseRequested)
+    let u = ui.clone();
+    ui.shell.bridge.register("testClose", move |_, _, label| {
+        use tauri::Manager;
+        match u.app.get_webview_window(label) {
+            Some(window) => json!(window.close().is_ok()),
+            None => json!(false),
+        }
+    });
     // the settings file as the shell has it
     let u = ui.clone();
     ui.shell.bridge.register("testSettings", move |_, _, _| {

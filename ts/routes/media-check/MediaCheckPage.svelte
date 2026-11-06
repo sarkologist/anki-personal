@@ -30,12 +30,15 @@ action.
     let error = "";
     let latexError: { nid: string; error: string } | null = null;
     let askDelete = false;
+    /** Checks run so far (for tests: each action ends with one). */
+    let checks = 0;
 
     async function check(): Promise<void> {
         busy = true;
         try {
             result = await checkMedia({}, quiet);
             error = "";
+            checks++;
         } catch (err) {
             error = errorMessage(err);
         } finally {
@@ -112,7 +115,7 @@ action.
     }
 </script>
 
-<main>
+<main data-checks={checks}>
     {#if busy && !result}
         <p class="status">{tr.mediaCheckCheckMediaAction()}…</p>
     {/if}
