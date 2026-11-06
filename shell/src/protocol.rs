@@ -217,8 +217,11 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
         }
         return bundled_file(&shell.web, &remap_legacy_path(rest));
     }
-    if path.starts_with("_addons/") {
-        return text(StatusCode::NOT_FOUND, "add-on files are not supported yet");
+    if let Some(rest) = path.strip_prefix("_addons/") {
+        return match shell.addon_files.resolve(rest) {
+            Some((folder, file)) => file_response(&folder, &file),
+            None => text(StatusCode::NOT_FOUND, format!("not exported: {rest}")),
+        };
     }
     match shell.media_folder() {
         Some(media) => local_file(&media, &path),
@@ -428,6 +431,28 @@ fn bundled_file(web: &Path, path: &str) -> HttpResponse {
 }
 
 fn local_file(root: &Path, path: &str) -> HttpResponse {
+    let mut resp = file_response(root, path);
+    // a media file opened as a document (framed by a card or field) gets
+    // an origin of its own, without the bridge or API
+    let document = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ctype| {
+            matches!(
+                ctype,
+                "text/html" | "application/xhtml+xml" | "image/svg+xml"
+            )
+        });
+    if resp.status() == StatusCode::OK && document {
+        resp.headers_mut()
+            .insert(CONTENT_SECURITY_POLICY, "sandbox".parse().unwrap());
+    }
+    resp
+}
+
+/// `root/path` (guarded), as is.
+fn file_response(root: &Path, path: &str) -> HttpResponse {
     let Some(full) = safe_join(root, path) else {
         return text(StatusCode::FORBIDDEN, format!("invalid path: {path}"));
     };
@@ -435,20 +460,7 @@ fn local_file(root: &Path, path: &str) -> HttpResponse {
         return text(StatusCode::FORBIDDEN, "directories are not supported");
     }
     match std::fs::read(&full) {
-        Ok(data) => {
-            let ctype = mime(path);
-            let mut resp = respond(StatusCode::OK, ctype, data);
-            // a media file opened as a document (framed by a card or
-            // field) gets an origin of its own, without the bridge or API
-            if matches!(
-                ctype,
-                "text/html" | "application/xhtml+xml" | "image/svg+xml"
-            ) {
-                resp.headers_mut()
-                    .insert(CONTENT_SECURITY_POLICY, "sandbox".parse().unwrap());
-            }
-            resp
-        }
+        Ok(data) => respond(StatusCode::OK, mime(path), data),
         Err(_) => text(StatusCode::NOT_FOUND, format!("invalid path: {path}")),
     }
 }
@@ -561,6 +573,40 @@ mod test {
             Some("<html><head></head></html>".into()),
         );
         Fixture { shell, _dir: dir }
+    }
+
+    #[test]
+    fn add_on_files_are_served_only_where_exported() {
+        let f = fixture();
+        let addons = f._dir.path().join("addons21");
+        std::fs::create_dir_all(addons.join("frontier/web")).unwrap();
+        std::fs::write(addons.join("frontier/web/panel.html"), "<p>panel").unwrap();
+        std::fs::write(addons.join("frontier/meta.json"), "{\"secret\": 1}").unwrap();
+        assert_eq!(
+            get(&f, "addon-panel-1", "_addons/frontier/web/panel.html").status(),
+            StatusCode::NOT_FOUND
+        );
+        f.shell.addon_files.set_folder(Some(addons));
+        f.shell.addon_files.set_exports("frontier", r"web/.*");
+        let resp = get(&f, "addon-panel-1", "_addons/frontier/web/panel.html");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.body(), b"<p>panel");
+        // a panel is the add-on's page, with its scripts and the bridge,
+        // unlike media opened as a document
+        assert!(!resp.headers().contains_key(CONTENT_SECURITY_POLICY));
+        for path in [
+            "_addons/frontier/meta.json",
+            "_addons/frontier/web/../meta.json",
+            "_addons/other/web/panel.html",
+            // the pattern must match the whole path, as re.fullmatch
+            "_addons/frontier/xweb/panel.html",
+        ] {
+            assert_ne!(
+                get(&f, "addon-panel-1", path).status(),
+                StatusCode::OK,
+                "{path}"
+            );
+        }
     }
 
     fn get(f: &Fixture, label: &str, path: &str) -> HttpResponse {

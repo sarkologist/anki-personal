@@ -215,6 +215,7 @@ pub struct Ui {
     pub menus: Mutex<Option<crate::menus::Menus>>,
     /// Set once the close sync has run (or wasn't wanted).
     pub close_synced: std::sync::atomic::AtomicBool,
+    pub plugins: crate::plugins::ui::Plugins,
     paste_trackers: Mutex<HashMap<String, Arc<crate::paste::InternalPaste>>>,
 }
 
@@ -321,6 +322,38 @@ impl Ui {
                 builder = builder.position(x, y);
             }
         }
+        if self.background {
+            builder = builder.focused(false);
+        }
+        let window = builder.build()?;
+        if self.background {
+            send_to_back(&window)?;
+        }
+        Ok(())
+    }
+
+    /// A window showing `url` (an add-on's page), in front of the main
+    /// window.
+    pub fn open_url_window(
+        &self,
+        label: &str,
+        title: &str,
+        kind: WebviewKind,
+        url: &str,
+        (width, height): (f64, f64),
+    ) -> Result<()> {
+        self.shell.pages.set(label, kind, None);
+        self.evals.reset(label);
+        if let Some(window) = self.app.get_webview_window(label) {
+            window.navigate(url.parse()?)?;
+            return Ok(());
+        }
+        let mut builder =
+            WebviewWindowBuilder::new(&self.app, label, WebviewUrl::CustomProtocol(url.parse()?))
+                .title(title)
+                .inner_size(width, height)
+                .initialization_script_for_all_frames(crate::bridge::init_script())
+                .on_navigation(crate::protocol::allowed_navigation);
         if self.background {
             builder = builder.focused(false);
         }
@@ -618,6 +651,7 @@ fn register_bridge(ui: &Arc<Ui>) {
             return Value::Null;
         }
         u.open_profile(None);
+        crate::plugins::ui::start(&u);
         let _ = u.show_main();
         Value::Null
     });
@@ -758,10 +792,12 @@ pub fn run(args: Args) -> Result<()> {
         menus: Mutex::new(None),
         close_synced: Default::default(),
         status: Mutex::new(String::new()),
+        plugins: crate::plugins::ui::Plugins::new(shell.clone()),
         paste_trackers: Default::default(),
     });
     register_bridge(&ui);
     crate::editor_window::register(&ui);
+    crate::plugins::ui::register(&ui);
     crate::main_window::register(&ui);
     let (menu, menus) = crate::menus::build(&ui, &app)?;
     app.set_menu(menu)?;
@@ -770,6 +806,7 @@ pub fn run(args: Args) -> Result<()> {
     app.on_menu_event(move |_, event| crate::menus::on_event(&u, event.id().as_ref()));
 
     ui.open_profile(args.profile.as_deref());
+    crate::plugins::ui::start(&ui);
     crate::menus::refresh(&ui);
     if args.ankiconnect {
         let (config, port) = crate::ankiconnect::Config::for_anki_base(&ui.settings().anki_base());
@@ -883,12 +920,14 @@ pub fn run(args: Args) -> Result<()> {
             if label.starts_with("dialog-") {
                 crate::main_window::dialog_closed(&exit_ui, &label);
             }
+            crate::plugins::ui::window_destroyed(&exit_ui, &label);
             exit_shell.pages.remove(&label);
             if label == MAIN || app.webview_windows().is_empty() {
                 app.exit(0);
             }
         }
         RunEvent::Exit => {
+            crate::plugins::ui::stop(&exit_ui);
             exit_shell.close_profile();
         }
         _ => {}

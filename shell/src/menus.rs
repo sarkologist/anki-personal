@@ -55,6 +55,21 @@ pub struct Menus {
     /// Enabled with a profile open.
     profile_items: Vec<MenuItem<Wry>>,
     sync_logout: MenuItem<Wry>,
+    tools: Submenu<Wry>,
+    /// Add-ons' items at the end of Tools.
+    addon_items: Vec<MenuItem<Wry>>,
+}
+
+/// Menu ids of add-ons' items.
+const ADDON_ITEM: &str = "addon:";
+
+fn addon_item(
+    app: &AppHandle,
+    item: &crate::plugins::ui::MenuItem,
+) -> tauri::Result<MenuItem<Wry>> {
+    MenuItemBuilder::with_id(format!("{ADDON_ITEM}{}", item.id), &item.text)
+        .enabled(item.enabled)
+        .build(app)
 }
 
 /// "Title (key)": the page shortcut, shown since it isn't a key equivalent.
@@ -228,12 +243,17 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         auto_advance,
         items: review_items,
     } = card_submenu(ui, app, "Card")?;
+    let tools = SubmenuBuilder::new(app, "Tools")
+        .item(&item(app, "addonsRestart", "Restart Add-ons", None)?)
+        .item(&item(app, "addonsLog", "Add-on Log", None)?)
+        .separator()
+        .build()?;
     let window = SubmenuBuilder::new(app, "Window")
         .item(&PredefinedMenuItem::minimize(app, None)?)
         .item(&PredefinedMenuItem::fullscreen(app, None)?)
         .build()?;
     let menu = MenuBuilder::new(app)
-        .items(&[&app_menu, &file, &edit, &go, &card, &window])
+        .items(&[&app_menu, &file, &edit, &go, &card, &tools, &window])
         .build()?;
     let menus = Menus {
         undo,
@@ -243,6 +263,8 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         review_items,
         profile_items: vec![sync, decks, study, choose_deck, stats],
         sync_logout,
+        tools,
+        addon_items: vec![],
     };
     Ok((menu, menus))
 }
@@ -301,6 +323,29 @@ pub fn refresh(ui: &Arc<Ui>) {
     });
 }
 
+/// Replace the add-ons' items in Tools.
+pub fn set_tools(ui: &Arc<Ui>, items: Vec<crate::plugins::ui::MenuItem>) {
+    let u = ui.clone();
+    let _ = ui.app.run_on_main_thread(move || {
+        let mut guard = u.menus.lock().unwrap();
+        let Some(m) = guard.as_mut() else {
+            return;
+        };
+        for old in m.addon_items.drain(..) {
+            let _ = m.tools.remove(&old);
+        }
+        for item in &items {
+            match addon_item(&u.app, item) {
+                Ok(new) => {
+                    let _ = m.tools.append(&new);
+                    m.addon_items.push(new);
+                }
+                Err(err) => tracing::warn!(%err, "add-on menu item"),
+            }
+        }
+    });
+}
+
 /// The reviewer's "More" button and `m`.
 pub fn popup_more(ui: &Arc<Ui>) {
     let Some(window) = ui.app.get_webview_window(MAIN) else {
@@ -323,6 +368,19 @@ pub fn popup_more(ui: &Arc<Ui>) {
         let _ = item.set_checked(flag == i as u32 + 1);
     }
     let _ = auto_advance.set_checked(on);
+    // `reviewer_will_show_context_menu`
+    let card_id = ui.main.reviewer.lock().unwrap().card_id();
+    let addon_items = card_id.map_or(vec![], |cid| crate::plugins::ui::context_menu(ui, cid));
+    if !addon_items.is_empty() {
+        if let Ok(sep) = PredefinedMenuItem::separator(&ui.app) {
+            let _ = card.append(&sep);
+        }
+        for item in &addon_items {
+            if let Ok(item) = addon_item(&ui.app, item) {
+                let _ = card.append(&item);
+            }
+        }
+    }
     let w = window.clone();
     // AppKit only on the main thread
     let _ = window.run_on_main_thread(move || {
@@ -350,6 +408,13 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
             refresh(ui);
         }
         "syncLogout" => main_window::logout(ui),
+        "addonsRestart" => crate::plugins::ui::restart(ui),
+        "addonsLog" => crate::plugins::ui::show_log(ui),
+        id if id.starts_with(ADDON_ITEM) => {
+            if let Ok(id) = id[ADDON_ITEM.len()..].parse() {
+                crate::plugins::ui::menu_action(ui, id);
+            }
+        }
         "undo" | "redo" => {
             // text undo when the editor has the focus, as Qt's webview
             // takes Cmd+Z before the menu does

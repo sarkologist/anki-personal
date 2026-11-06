@@ -178,6 +178,7 @@ dependencies = [
  "dom_query",
  "globset",
  "htmlescape",
+ "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",

@@ -25,6 +25,8 @@ from chinese_frontier.french.lexicon import (  # noqa: E402
     tokens,
 )
 
+from .test_frontier_panels import FakeHost  # noqa: E402
+
 
 def dictionary():
     return Lexicon(
@@ -3844,6 +3846,160 @@ def test_french_fix_can_be_cancelled(collection):
     assert collection.get_card(card.id).queue != -1
     assert PENDING_TAG not in collection.get_note(note.id).tags
     assert not pending_fixes(collection)
+
+
+@pytest.fixture
+def french_panels(monkeypatch, collection):
+    """A French controller whose dialogs open in a fake panel host."""
+    from threading import Event
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import runtime
+
+    config = {"provider": "codex", "french": {"claude_model": "opus"}}
+    written: list[dict] = []
+    timers: list = []
+    monkeypatch.setattr(
+        runtime,
+        "mw",
+        SimpleNamespace(
+            col=collection,
+            addonManager=SimpleNamespace(
+                getConfig=lambda _module: json.loads(json.dumps(config)),
+                writeConfig=lambda _module, value: written.append(value),
+            ),
+            progress=SimpleNamespace(single_shot=lambda _ms, fn: timers.append(fn)),
+        ),
+    )
+
+    class ImmediateOp:
+        def __init__(self, parent, op):
+            self.result = op(collection)
+
+        def success(self, done):
+            done(self.result)
+            return self
+
+        def run_in_background(self, **_kwargs):
+            pass
+
+    monkeypatch.setattr(runtime, "CollectionOp", ImmediateOp)
+    monkeypatch.setattr(runtime, "tooltip", lambda *_args, **_kwargs: None)
+    controller = runtime.Controller.__new__(runtime.Controller)
+    controller.__dict__.update(
+        state={}, status="Idle", busy=False, stop=Event(), epoch=0, lexicon=None
+    )
+    controller.save = lambda: None
+    ticks: list[bool] = []
+    controller.tick = lambda force=False: ticks.append(force)
+    return SimpleNamespace(
+        controller=controller,
+        ticks=ticks,
+        host=FakeHost(monkeypatch),
+        written=written,
+        timers=timers,
+    )
+
+
+def test_french_fix_panel_requests_a_fix_for_the_chosen_lemma(
+    collection, french_panels
+):
+    from chinese_frontier.french.collection import FIXES, SETTINGS
+
+    p = french_panels
+    collection.set_config(SETTINGS, {"enabled": True, "deck_id": 1})
+    note = add_cloze(
+        collection, "Je {{c1::emprunte}} le train.<br>I borrow the train.", learned=True
+    )
+    card = note.cards()[0]
+    p.controller.open_fix_dialog(card.id, dictionary())
+    page = p.host.page()
+    assert [i["label"] for i in page["lemma"]["items"]] == ["emprunter (VER)"]
+    assert page["answered"]["label"] == "I'm confusing emprunte with"
+    page.act("cancel")
+    assert page.closed and not collection.get_config(FIXES, {})
+    p.controller.open_fix_dialog(card.id, dictionary())
+    page = p.host.page()
+    page.act(
+        "ok",
+        meaning="borrow",
+        avoid="pourtant, enfin",
+        **{"reason.unnatural": True},
+    )
+    record = collection.get_config(FIXES)[str(card.id)]
+    assert record["target"]["lemma"] == "emprunter"
+    assert record["target"]["pos"] == "VER"
+    (entry,) = record["feedback"]
+    assert entry["reasons"] == ["unnatural"]
+    assert entry["avoid_words"] == ["pourtant", "enfin"]
+    assert page.closed and p.ticks == [True]
+
+
+def test_french_fix_panel_takes_a_typed_lemma_without_a_part_of_speech(
+    collection, french_panels, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from chinese_frontier.french import runtime
+    from chinese_frontier.french.collection import SETTINGS
+
+    p = french_panels
+    collection.set_config(SETTINGS, {"enabled": True, "deck_id": 1})
+    note = add_cloze(collection, "Je {{c1::emprunte}} le train.", learned=True)
+    requested = []
+    monkeypatch.setattr(
+        runtime,
+        "request_fix",
+        lambda _col, _card, **values: (
+            requested.append(values) or SimpleNamespace(key="k")
+        ),
+    )
+    p.controller.open_fix_dialog(note.cards()[0].id, dictionary())
+    p.host.page().act("ok", lemma="emprunter (rare)", meaning="borrow")
+    ((lemma, pos),) = [(r["lemma"], r["pos"]) for r in requested]
+    assert (lemma, pos) == ("emprunter", "")
+
+
+def test_french_feedback_panel_records_the_confusion(collection, french_panels):
+    p = french_panels
+    _settings, note = admitted_french_note(collection, candidate())
+    p.controller.state = {"deferred": {target().key: {"retry_after": 9e12}}}
+    p.controller.feedback_dialog(note.id)
+    page = p.host.page()
+    assert page.title == "Fix this sentence"
+    assert page["answered"]["label"] == "I'm confusing emprunte with"
+    page.act("ok", answered="prends", **{"reason.giveaway": True})
+    assert "french-frontier::feedback::giveaway" in collection.get_note(note.id).tags
+    assert p.controller.state["deferred"][target().key]["retry_after"] == 0
+    assert page.closed and p.ticks == [True]
+
+
+def test_french_settings_panel_saves_the_deck_and_generator(collection, french_panels):
+    from chinese_frontier.french.collection import SETTINGS
+
+    p = french_panels
+    french = collection.decks.id("French")
+    p.controller.settings_dialog()
+    page = p.host.page()
+    assert page.title == "French Frontier" and page["deck"]["value"] == french
+    assert not page["check"].get("disabled")
+    assert page.change("provider", provider="claude")["fields"]["model"] == {
+        "value": "opus"
+    }
+    p.controller.busy = True
+    p.controller.status = "Generating"
+    (refresh,) = p.timers
+    refresh()
+    assert page["check"]["disabled"] and page["status"]["text"] == "Generating"
+    page.act("save", enabled=False, provider="claude", model=" opus-5 ")
+    assert p.written == [
+        {
+            "provider": "codex",
+            "french": {"claude_model": "opus-5", "provider": "claude"},
+        }
+    ]
+    assert collection.get_config(SETTINGS) == {"enabled": False, "deck_id": french}
+    assert page.closed and p.ticks == [True]
 
 
 def test_french_reviewer_menu_offers_fix_and_restore(collection, monkeypatch):

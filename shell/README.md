@@ -3,10 +3,11 @@
 A native macOS shell for Anki (Tauri 2 on the system WebKit). It runs the
 existing `ts/` pages against an in-process Rust backend, without Qt, Python
 or a bundled Chromium. See `native-shell-port-plan.md` for the plan and
-findings. Phases 0, 1 and 3 are done: profile, collection, page protocol,
+findings. Phases 0 to 3 are done: profile, collection, page protocol,
 bridge, settings import, AnkiConnect, reviewing (deck list, overview,
-reviewer, sync, native menus) and editing (Add Cards, Edit Current). The
-browser, add-ons and most dialogs still need the old Anki.
+reviewer, sync, native menus), editing (Add Cards, Edit Current), and a
+plugin host running Chinese/French Frontier. The browser, other add-ons and
+most dialogs still need the old Anki.
 
 ## Reviewing
 
@@ -34,7 +35,18 @@ browser, add-ons and most dialogs still need the old Anki.
   this machine (`customSyncUrl` pointing at 127.0.0.1), never AnkiWeb.
 - Not yet: custom study, filtered deck creation, deck descriptions editing,
   "Set due date", "Forget", "Create copy", recording your own voice, dark
-  mode, and add-ons.
+  mode, and add-ons other than Frontier.
+
+## Add-ons
+
+Add-ons run in a Python plugin host, from the old Anki's `addons21` folder
+(sharing its config and files). Only Chinese/French Frontier is
+supported. To turn it on, quit the shell, add
+`"plugins": ["chinese_frontier"]` to the settings file, and start it
+again. Its menu items are in Tools, with Add-on Log (the host's output,
+`plugin-host.log` next to the settings) and Restart Add-ons. The host
+needs an Anki install's Python, found as for the profile import
+(`import_python`).
 
 ## Editing
 

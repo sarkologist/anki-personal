@@ -85,6 +85,8 @@ from chinese_frontier.state import State  # noqa: E402
 
 from anki.collection import Collection  # noqa: E402
 
+from .test_frontier_panels import FakeHost  # noqa: E402
+
 
 def audit_report(
     source: Source, candidate: Candidate, *, approved: bool = True
@@ -2937,6 +2939,187 @@ def test_fix_dialog_submission_requests_and_retries_now(
     assert retried == [record["key"]] and ticks == [True]
 
 
+def immediate(collection: Collection):
+    """CollectionOp running at once on the test collection."""
+
+    class Op:
+        def __init__(self, parent, op):
+            self.result = op(collection)
+
+        def success(self, done):
+            done(self.result)
+            return self
+
+        def failure(self, _failed):
+            return self
+
+        def run_in_background(self, **_kwargs):
+            pass
+
+    return Op
+
+
+@pytest.fixture
+def panel_controller(monkeypatch, collection, menu_controller):
+    """A controller whose dialogs open in a fake panel host."""
+    from types import SimpleNamespace
+
+    from chinese_frontier import runtime
+
+    controller, ticks = menu_controller
+    config = {"provider": "codex", "claude_model": "opus"}
+    written: list[dict] = []
+    timers: list = []
+    monkeypatch.setattr(
+        runtime,
+        "mw",
+        SimpleNamespace(
+            col=collection,
+            addonManager=SimpleNamespace(
+                getConfig=lambda _module: dict(config),
+                writeConfig=lambda _module, value: written.append(value),
+            ),
+            progress=SimpleNamespace(single_shot=lambda _ms, fn: timers.append(fn)),
+        ),
+    )
+    monkeypatch.setattr(runtime, "CollectionOp", immediate(collection))
+    monkeypatch.setattr(runtime, "tooltip", lambda *_args, **_kwargs: None)
+    controller.__dict__.update(
+        status="Idle", last_snapshot=None, busy=False, stop=Event(), epoch=0
+    )
+    return SimpleNamespace(
+        controller=controller,
+        ticks=ticks,
+        host=FakeHost(monkeypatch),
+        written=written,
+        timers=timers,
+    )
+
+
+def test_settings_panel_saves_the_scope_and_generator(
+    collection: Collection, panel_controller, monkeypatch
+) -> None:
+    from chinese_frontier import runtime
+
+    p = panel_controller
+    extra = collection.decks.id("Extra")
+    p.controller.settings_dialog()
+    page = p.host.page()
+    assert page.title == "Chinese Frontier"
+    assert page["deck"]["value"] == 0 and page["enabled"]["value"] is True
+    assert [i["value"] for i in page["sources"]["items"]] == [1, extra]
+    shown: list[str] = []
+    monkeypatch.setattr(runtime, "showInfo", lambda text, **_: shown.append(text))
+    page.act("save")
+    assert shown == ["Choose your Chinese deck first."] and not page.closed
+    # Each generator shows its own model.
+    reply = page.change("provider", provider="claude")
+    assert reply["fields"]["model"]["value"] == "opus"
+    page.act(
+        "save",
+        deck=1,
+        enabled=False,
+        sources=[extra],
+        provider="claude",
+        model=" opus-5 ",
+    )
+    assert p.written == [{"provider": "claude", "claude_model": "opus-5"}]
+    assert collection.get_config(SETTINGS_KEY) == {
+        "deck_id": 1,
+        "enabled": False,
+        "source_deck_ids": [extra],
+        "vocabulary_deck_ids": [],
+    }
+    assert p.ticks == [True] and page.closed
+
+
+def test_settings_panel_refreshes_status_and_cancels_a_fix(
+    collection: Collection, panel_controller
+) -> None:
+    p = panel_controller
+    _settings, _note, card, _sibling = setup_fix(collection)
+    request_fix(collection, card.id, config={}, word="百", definition="hundred")
+    p.controller.settings_dialog()
+    page = p.host.page()
+    (item,) = page["fixes"]["items"]
+    assert item == {"value": card.id, "label": "百: waiting 0 d"}
+    assert not page["fixes"]["hidden"] and page["status"]["value"].startswith("Idle")
+    p.controller.status = "Generating sentences"
+    (refresh,) = p.timers
+    refresh()
+    assert page["status"]["value"].startswith("Generating sentences")
+    assert "Overview" in [t["label"] for t in page["diagnostics"]["tabs"]]
+    page.act("cancel_fix", fixes=card.id)
+    assert collection.get_card(card.id).queue != QUEUE_TYPE_SUSPENDED
+    assert page["fixes"]["hidden"] and page["fixes"]["items"] == []
+    page.act("check")
+    assert p.ticks == [True]
+    page.act("close")
+    assert page.closed
+    # The refresh stops with the panel.
+    p.timers[-1]()
+    assert len(p.timers) == 2
+
+
+def test_feedback_panel_records_feedback_on_a_generated_sentence(
+    collection: Collection, lexicon: Lexicon, panel_controller, monkeypatch
+) -> None:
+    from chinese_frontier.collection import KEY_PREFIX
+
+    p = panel_controller
+    settings, _note, _card, initial = setup_sentence(collection)
+    note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    promote(collection, "only_translation", description="Context admits another.")
+    promote(collection, "unknown_hint", input="words", input_label="Words")
+    retried: list[str] = []
+    monkeypatch.setattr(p.controller.state, "retry_now", retried.append)
+    note = collection.get_note(note_id)
+    p.controller.feedback_dialog(note.cards()[0].id)
+    page = p.host.page()
+    fields = page.fields()
+    assert "word" not in fields and fields["reason.ambiguous"]["kind"] == "checkbox"
+    assert fields["category.only_translation"]["kind"] == "checkbox"
+    assert fields["category.unknown_hint"]["label"] == "Words"
+    page.act(
+        "ok",
+        **{
+            "reason.ambiguous": True,
+            "category.only_translation": True,
+            "category.unknown_hint": "页",
+        },
+        avoid="认为, 打算",
+        answered="千",
+        note="stiff",
+    )
+    assert page.closed
+    (entry,) = stored_source(collection.get_note(note_id))["feedback"]
+    assert entry["reasons"] == ["ambiguous", "only_translation"]
+    assert entry["avoid_words"] == ["认为", "打算"] and entry["answered"] == "千"
+    assert entry["values"] == {"unknown_hint": "页"} and entry["note"] == "stiff"
+    key = next(t for t in note.tags if t.startswith(KEY_PREFIX))[len(KEY_PREFIX) :]
+    assert retried == [key] and p.ticks == [True]
+
+
+def test_fix_panel_on_a_learner_card_requests_a_fix(
+    collection: Collection, panel_controller
+) -> None:
+    p = panel_controller
+    _settings, _note, card, _sibling = setup_fix(collection)
+    p.controller.feedback_dialog(card.id)
+    page = p.host.page()
+    assert [i["label"] for i in page["word"]["items"]] == ["百"]
+    assert page["word"]["value"] == "百"
+    page.act("cancel")
+    assert page.closed and str(card.id) not in collection.get_config(FIXES_KEY, {})
+    p.controller.feedback_dialog(card.id)
+    page = p.host.page()
+    page.act("ok", meaning="a hundred", **{"reason.unnatural": True})
+    record = collection.get_config(FIXES_KEY)[str(card.id)]
+    assert record["feedback"][0]["reasons"] == ["unnatural"]
+    assert collection.get_card(card.id).queue == QUEUE_TYPE_SUSPENDED
+    assert page.closed and p.ticks == [True]
+
+
 def test_stalled_basic_fix_is_not_converted_as_an_ordinary_target(
     collection: Collection,
 ) -> None:
@@ -3461,23 +3644,17 @@ def test_attention_notice_shows_on_the_main_screen_and_notifies_once(
 def test_attention_dialog_browses_and_releases(
     monkeypatch, collection: Collection, lexicon: Lexicon
 ) -> None:
+    from types import SimpleNamespace
+
     from chinese_frontier import attention_ui, runtime
 
     import aqt
-    from aqt.qt import QApplication, QDialog, QPushButton, QWidget
 
-    app = QApplication.instance() or QApplication([])
     settings, source_note, _card, initial = setup_sentence(collection)
     note_id = admit(collection, settings, {}, [initial], lexicon).admitted[0]
     record_feedback(collection, note_id, note="ambiguous")
     collection.remove_notes([source_note.id])
     current = snapshot(collection, settings, {})
-
-    class Main(QWidget):
-        col = collection
-        state = "review"
-
-    parent = Main()
     searches: list[tuple] = []
 
     class Op:
@@ -3491,7 +3668,10 @@ def test_attention_dialog_browses_and_releases(
         def run_in_background(self, **_):
             self.callback(self.op(collection))
 
-    monkeypatch.setattr(attention_ui, "mw", parent)
+    host = FakeHost(monkeypatch)
+    monkeypatch.setattr(
+        attention_ui, "mw", SimpleNamespace(col=collection, state="review")
+    )
     monkeypatch.setattr(attention_ui, "CollectionOp", Op)
     monkeypatch.setattr(attention_ui, "tooltip", lambda *_a, **_k: None)
     monkeypatch.setattr(
@@ -3508,23 +3688,25 @@ def test_attention_dialog_browses_and_releases(
         action=type("A", (), {"setText": lambda self, _t: None})(),
     )
     notice.open()
-    (dialog,) = [
-        w for w in app.topLevelWidgets() if isinstance(w, QDialog) and w.isVisible()
-    ]
-    listing = dialog.findChild(attention_ui.QListWidget)
-    buttons = {b.text(): b for b in dialog.findChildren(QPushButton)}
-    assert listing.count() == 1 and "deleted" in listing.item(0).text()
-    buttons["Open in Browser"].click()
+    page = host.page()
+    assert page.title == "Chinese Frontier: needs attention"
+    (item,) = page["items"]["items"]
+    assert "deleted" in item["label"] and page["items"]["multiple"]
+    # Without a selection, the Browser shows every listed card.
+    page.act("browse")
     card_id = collection.get_note(note_id).cards()[0].id
     assert searches == [(f"cid:{card_id}",)]
-    act = buttons[""]
-    listing.item(0).setSelected(True)
-    assert act.text() == "Release" and act.isVisibleTo(dialog)
-    act.click()
-    assert "Nothing needs" in listing.item(0).text()
+    assert page["act"]["hidden"]
+    page.change("items", items=[item["value"]])
+    assert page["act"] == {**page["act"], "label": "Release", "hidden": False}
+    page.act("act", items=[item["value"]])
+    (empty,) = page["items"]["items"]
+    assert "Nothing needs" in empty["label"] and empty["disabled"]
+    assert page["browse"]["disabled"] and page["act"]["hidden"]
     assert collection.get_note(note_id).cards()[0].queue != QUEUE_TYPE_SUSPENDED
     # The whole action is one undo step.
     collection.undo()
     assert "chinese-frontier::held" in collection.get_note(note_id).tags
     assert collection.get_note(note_id).cards()[0].queue == QUEUE_TYPE_SUSPENDED
-    dialog.close()
+    page.act("close")
+    assert page.closed

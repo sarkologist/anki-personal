@@ -371,3 +371,42 @@ fn redrawing_the_answer_shows_only_the_answer() {
     assert!(!page.contains("_showQuestion("));
     assert_eq!(r.side(), Some(Side::Answer));
 }
+
+#[test]
+fn an_add_on_suspending_the_shown_card_moves_on() {
+    let col = collection();
+    add_note(&col.api, "Basic", &["one", "1"]);
+    add_note(&col.api, "Basic", &["two", "2"]);
+    let (mut r, _) = started(&col);
+    let first = r.card_id().unwrap();
+    // unrelated changes leave the card alone
+    assert!(r.op_executed(&col.api).is_empty());
+    let _: anki_proto::collection::OpChangesWithCount = col
+        .api
+        .call(
+            "bury_or_suspend_cards",
+            &anki_proto::scheduler::BuryOrSuspendCardsRequest {
+                card_ids: vec![first],
+                note_ids: vec![],
+                mode: 0,
+            },
+        )
+        .unwrap();
+    assert!(js(&r.op_executed(&col.api)).contains("two"));
+    assert_ne!(r.card_id(), Some(first));
+}
+
+#[test]
+fn answering_tells_add_ons_the_card_and_ease() {
+    let col = collection();
+    add_note(&col.api, "Basic", &["one", "1"]);
+    add_note(&col.api, "Basic", &["two", "2"]);
+    let (mut r, _) = started(&col);
+    let card_id = r.card_id().unwrap();
+    reveal(&col, &mut r, "");
+    let effects = r.answer(&col.api, 3);
+    assert!(
+        effects.contains(&Effect::Answered { card_id, ease: 3 }),
+        "{effects:?}"
+    );
+}

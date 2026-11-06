@@ -27,8 +27,8 @@ pub struct Settings {
     /// The old Anki's base folder (holding `prefs21.db` and the profile
     /// folders). None means the default location.
     pub anki_base: Option<PathBuf>,
-    /// Python with `aqt` installed, for the import. None means search the
-    /// usual install locations.
+    /// Python with `aqt` installed, for the import and the plugin host.
+    /// None means search the usual install locations.
     pub import_python: Option<PathBuf>,
     pub last_profile: Option<String>,
     pub profiles: Vec<Profile>,
@@ -41,6 +41,9 @@ pub struct Settings {
     pub shortcuts: BTreeMap<String, Vec<String>>,
     /// Space/Enter rate the card on the answer side (imported; default on).
     pub spacebar_rates_card: Option<bool>,
+    /// Add-ons to run in the plugin host: folder names in the old Anki's
+    /// `addons21` (they share its config and files). None by default.
+    pub plugins: Vec<String>,
     /// What the editor remembers between notes (the profile and meta keys
     /// `lastTextColor`, `lastHighlightColor`, `*TagsCollapsed` in Qt).
     pub editor: EditorPrefs,
@@ -194,7 +197,7 @@ impl Settings {
 
 /// A Python that can import `aqt`: `ANKI_SHELL_PYTHON`, the launcher's
 /// venv, or a venv in `~/.anki-stable`.
-fn find_python() -> Option<PathBuf> {
+pub fn find_python() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("ANKI_SHELL_PYTHON") {
         return Some(p.into());
     }

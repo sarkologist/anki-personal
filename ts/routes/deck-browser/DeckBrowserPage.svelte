@@ -42,6 +42,15 @@ The deck list, as qt/aqt/deckbrowser.py drew it.
 
     let error = "";
     let notice = "";
+    /** Add-ons' HTML under the list (`deck_browser_will_render_content`). */
+    let addonStats = "";
+
+    function loadAddonStats(): void {
+        bridgeCommand<string | null>("addonContent", (html) => {
+            addonStats = html ?? "";
+        });
+    }
+    loadAddonStats();
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
     async function refresh(): Promise<void> {
@@ -49,6 +58,7 @@ The deck list, as qt/aqt/deckbrowser.py drew it.
             ({ tree, currentDeckId, currentDeckName, studiedToday } =
                 await loadDeckBrowser());
             error = "";
+            loadAddonStats();
         } catch (err) {
             error = errorMessage(err);
         }
@@ -370,6 +380,8 @@ The deck list, as qt/aqt/deckbrowser.py drew it.
     {/if}
 
     <div class="studied-today">{studiedToday}</div>
+    <!-- trusted: from the user's own add-ons, as in deckbrowser.py -->
+    {@html addonStats}
 </div>
 
 <BottomBar>

@@ -67,6 +67,11 @@ pub enum Effect {
     },
     /// The undo/redo state changed (menus).
     UndoChanged,
+    /// A card was answered (`reviewer_did_answer_card`, for add-ons).
+    Answered {
+        card_id: i64,
+        ease: u8,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -687,7 +692,13 @@ impl Reviewer {
             self.side = Side::Answer;
             return vec![Effect::Tooltip(err.message)];
         }
-        let mut out = vec![Effect::UndoChanged];
+        let mut out = vec![
+            Effect::UndoChanged,
+            Effect::Answered {
+                card_id: answer.card_id,
+                ease,
+            },
+        ];
         if let Some(state) = &answer.new_state {
             let leech = api
                 .call::<anki_proto::generic::Bool>("state_is_leech", state)
@@ -798,6 +809,22 @@ impl Reviewer {
             self.redraw(api)
         } else {
             vec![]
+        }
+    }
+
+    /// After an add-on's operation (`Reviewer.op_executed`): move on if the
+    /// card was suspended, buried or deleted, else redraw it if its note
+    /// changed.
+    pub fn op_executed(&mut self, api: &Api) -> Vec<Effect> {
+        let Some(c) = &self.current else {
+            return vec![];
+        };
+        if self.side == Side::Transition {
+            return vec![];
+        }
+        match api.call::<Card>("get_card", &anki_proto::cards::CardId { cid: c.card.id }) {
+            Ok(card) if card.queue >= 0 => self.redraw_if_note_changed(api),
+            _ => self.next_card(api),
         }
     }
 

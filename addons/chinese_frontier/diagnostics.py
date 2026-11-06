@@ -3,75 +3,58 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Callable
 
-import aqt
-from aqt.qt import (
-    QComboBox,
-    QDialog,
-    QFileDialog,
-    QLabel,
-    QPushButton,
-    QTabWidget,
-    QTextEdit,
-    QVBoxLayout,
-    QWidget,
-    qconnect,
-)
 from aqt.theme import theme_manager
-from aqt.utils import showInfo
+from aqt.utils import showInfo, tooltip
 
+from . import panels
 from .charts import charts_html
+from .panels import Panel, field
 from .preparation import read_lesson
 from .telemetry import clock, decisions_text, overview
 
+NAME = "diagnostics"
 
-class Diagnostics(QTabWidget):
-    def __init__(self, parent: QWidget, read: Callable[[], dict[str, Any]]) -> None:
-        super().__init__(parent)
+
+class Diagnostics:
+    """The diagnostics tabs of a settings panel. Field names start with
+    "diagnostics."; message() answers the ones the page sends."""
+
+    def __init__(self, read: Callable[[], dict[str, Any]]) -> None:
         self.read = read
-        self.setMinimumHeight(270)
-        # AnkiWebView renders through the media server, which only exists in a
-        # running Anki; tests check the generated page instead.
-        self.chart_view: Any = None
-        if aqt.mw is not None:
-            from aqt.webview import AnkiWebView
-
-            self.chart_view = AnkiWebView(self, title="frontier charts")
-            if isinstance(parent, QDialog):
-                # Release the view's hooks and media-server page with the dialog.
-                qconnect(parent.finished, self.release_charts)
-        self.chart_html = ""
-        self.addTab(self.chart_view or QLabel("Charts need a running Anki."), "Charts")
-        self.summary = QTextEdit()
-        self.summary.setReadOnly(True)
-        self.addTab(self.summary, "Overview")
-        calls = QWidget()
-        layout = QVBoxLayout(calls)
-        # macOS accessibility inspection of the earlier live table crashed
-        # inside Qt's cocoa plugin. Use text controls for the changing history.
-        self.choices = QComboBox()
-        self.calls = QTextEdit()
-        self.calls.setReadOnly(True)
-        self.details = QTextEdit()
-        self.details.setReadOnly(True)
-        self.details.setMaximumHeight(130)
-        layout.addWidget(self.choices)
-        layout.addWidget(self.calls)
-        layout.addWidget(self.details)
-        self.addTab(calls, "Model calls")
-        self.decisions = QTextEdit()
-        self.decisions.setReadOnly(True)
-        self.addTab(self.decisions, "Decisions")
-        export = QPushButton("Export diagnostics")
-        qconnect(export.clicked, self.export)
-        self.setCornerWidget(export)
-        qconnect(self.choices.currentIndexChanged, self.selected)
         self.rows: list[dict[str, Any]] = []
-        self.refresh()
+        self.selected: Any = None
 
-    def refresh(self) -> None:
+    def spec(self) -> dict[str, Any]:
+        current = self.fields()
+
+        def own(kind: str, name: str, **props: Any) -> dict[str, Any]:
+            name = f"{NAME}.{name}"
+            return field(kind, name, **props, **current[name])
+
+        def tab(label: str, *body: dict[str, Any]) -> dict[str, Any]:
+            return {"label": label, "body": list(body)}
+
+        # The page shows the charts in a scriptless frame; the rest is text.
+        return field(
+            "tabs",
+            NAME,
+            tabs=[
+                tab("Charts", own("frame", "charts", height=420)),
+                tab("Overview", own("readonly", "overview", height=300)),
+                tab(
+                    "Model calls",
+                    own("select", "call", notify=True),
+                    own("readonly", "calls", height=200),
+                    own("readonly", "details", height=130),
+                ),
+                tab("Decisions", own("readonly", "decisions", height=300)),
+            ],
+            corner=[field("button", f"{NAME}.export", label="Export diagnostics")],
+        )
+
+    def fields(self) -> dict[str, dict[str, Any]]:
         data = self.read()
         text = overview(
             **{
@@ -81,72 +64,65 @@ class Diagnostics(QTabWidget):
         )
         if feedback := data.get("feedback"):
             text += "\n\n" + feedback
-        if self.summary.toPlainText() != text:
-            self.summary.setPlainText(text)
-        html = charts_html(data["store"], data["state"], dark=theme_manager.night_mode)
-        if html != self.chart_html:
-            self.chart_html = html
-            if self.chart_view is not None:
-                # Reloading resets scrolling; restore it once the page is ready.
-                y = self.chart_view.page().scrollPosition().y()
-                self.chart_view.setHtml(html)
-                # setHtml shows the view; a hidden tab page must stay hidden.
-                if self.currentWidget() is not self.chart_view:
-                    self.chart_view.hide()
-                self.chart_view.eval(f"window.scrollTo(0, {y})")
         decisions = decisions_text(data["store"])
         if deferred := data.get("deferred"):
             decisions += "\n\nDeferred targets (latest retry times)\n" + "\n\n".join(
                 f"{key[:12]} · retry after {clock(item.get('retry_after'))}\n{read_lesson(item.get('reason', '')).get('reason', '')}"
                 for key, item in deferred.items()
             )
-        if self.decisions.toPlainText() != decisions:
-            self.decisions.setPlainText(decisions)
-        rows = list(reversed(data["store"].get("calls", [])))
-        if rows == self.rows:
-            return
-        selected = self.choices.currentData()
-        self.rows = rows
-        self.choices.blockSignals(True)
-        self.choices.clear()
+        self.rows = list(reversed(data["store"].get("calls", [])))
         lines = []
-        for row in rows:
+        for row in self.rows:
             elapsed = row.get("elapsed_seconds")
             seconds = f"{elapsed}s" if elapsed is not None else "unknown duration"
-            line = f"{clock(row.get('started_at'))} · {row.get('phase', 'unknown')} · {row.get('provider', 'unknown')} · {seconds} · {row.get('prompt_chars', '?')} input chars · {row.get('status', 'unknown')}"
-            self.choices.addItem(line, row.get("call_id"))
-            lines.append(line)
-        self.calls.setPlainText("\n\n".join(lines) or "No completed calls yet.")
-        index = self.choices.findData(selected)
-        self.choices.setCurrentIndex(max(0, index) if rows else -1)
-        self.choices.blockSignals(False)
-        self.selected()
+            lines.append(
+                f"{clock(row.get('started_at'))} · {row.get('phase', 'unknown')} · {row.get('provider', 'unknown')} · {seconds} · {row.get('prompt_chars', '?')} input chars · {row.get('status', 'unknown')}"
+            )
+        ids = [row.get("call_id") for row in self.rows]
+        if self.selected not in ids:
+            self.selected = ids[0] if ids else None
+        return {
+            f"{NAME}.overview": {"value": text},
+            f"{NAME}.charts": {
+                "html": charts_html(
+                    data["store"], data["state"], dark=theme_manager.night_mode
+                )
+            },
+            f"{NAME}.decisions": {"value": decisions},
+            f"{NAME}.call": {
+                "items": [{"value": id, "label": line} for id, line in zip(ids, lines)],
+                "value": self.selected,
+            },
+            f"{NAME}.calls": {"value": "\n\n".join(lines) or "No completed calls yet."},
+            f"{NAME}.details": self.details(),
+        }
 
-    def release_charts(self) -> None:
-        view, self.chart_view = self.chart_view, None
-        if view is not None:
-            view.cleanup()
-
-    def selected(self, _index: int = -1) -> None:
-        index = self.choices.currentIndex()
-        self.details.setPlainText(
-            json.dumps(self.rows[index], ensure_ascii=False, indent=2)
-            if 0 <= index < len(self.rows)
+    def details(self) -> dict[str, Any]:
+        row = next((r for r in self.rows if r.get("call_id") == self.selected), None)
+        return {
+            "value": json.dumps(row, ensure_ascii=False, indent=2)
+            if row is not None
             else "Select a completed call for details."
-        )
+        }
+
+    def refresh(self, panel: Panel) -> None:
+        panel.update(self.fields())
+
+    def message(self, message: dict[str, Any]) -> Any:
+        name = message.get("name")
+        if message.get("type") == "change" and name == f"{NAME}.call":
+            self.selected = message.get("values", {}).get(name)
+            return panels.update({f"{NAME}.details": self.details()})
+        if message.get("type") == "action" and name == f"{NAME}.export":
+            self.export()
+        return None
 
     def export(self) -> None:
-        filename, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Frontier diagnostics",
-            "frontier-diagnostics.json",
-            "JSON (*.json)",
-        )
-        if not filename:
-            return
+        data = json.dumps(self.read(), ensure_ascii=False, indent=2)
         try:
-            Path(filename).write_text(
-                json.dumps(self.read(), ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            path = panels.save_file("frontier-diagnostics.json", data.encode("utf-8"))
         except OSError as exc:
-            showInfo(str(exc), parent=self)
+            showInfo(str(exc))
+            return
+        if path:
+            tooltip(f"Exported to {path}")

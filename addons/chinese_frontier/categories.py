@@ -680,62 +680,100 @@ def status_line(col: Collection) -> str:
 
 
 def learnt_fields(
-    col: Collection, layout: Any, form: Any
-) -> Callable[[], tuple[tuple[str, ...], dict[str, str]]]:
-    """Promoted categories in the fix dialog: checkboxes after the built-in
-    reasons, inputs in the form. Returns a reader for the learner's answers."""
-    from aqt.qt import QCheckBox, QLineEdit
-
-    boxes, edits = {}, {}
+    col: Collection,
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    Callable[[dict[str, Any]], tuple[tuple[str, ...], dict[str, str]]],
+]:
+    """Promoted categories in the fix dialog: checkboxes to follow the built-in
+    reasons, inputs to follow the form's. Returns both and a reader for the
+    learner's answers in the page's values."""
+    boxes, edits = [], []
+    flags, words = [], []
     for key, category in promoted(registry(col)):
+        name = f"category.{key}"
         if category["input"] == "flag":
-            boxes[key] = QCheckBox(category["label"])
-            boxes[key].setToolTip(category.get("description", ""))
-            layout.addWidget(boxes[key])
+            flags.append(key)
+            boxes.append(
+                {
+                    "kind": "checkbox",
+                    "name": name,
+                    "label": category["label"],
+                    "tooltip": category.get("description", ""),
+                }
+            )
         else:
-            edits[key] = QLineEdit()
-            edits[key].setPlaceholderText(category.get("description", ""))
-            form.addRow(category.get("input_label") or category["label"], edits[key])
-    return lambda: (
-        tuple(key for key, box in boxes.items() if box.isChecked()),
-        {key: edit.text() for key, edit in edits.items() if edit.text().strip()},
-    )
+            words.append(key)
+            edits.append(
+                {
+                    "kind": "input",
+                    "name": name,
+                    "label": category.get("input_label") or category["label"],
+                    "placeholder": category.get("description", ""),
+                }
+            )
+
+    def read(values: dict[str, Any]) -> tuple[tuple[str, ...], dict[str, str]]:
+        texts = {key: str(values.get(f"category.{key}") or "") for key in words}
+        return (
+            tuple(key for key in flags if values.get(f"category.{key}") is True),
+            {key: text for key, text in texts.items() if text.strip()},
+        )
+
+    return boxes, edits, read
 
 
-def settings_widgets(parent: Any, layout: Any) -> None:
+RECURRING = "recurring"
+
+
+def settings_fields(col: Collection) -> list[dict[str, Any]]:
     """Rule-change candidates, with a way to say a rule now covers one."""
+    shown = recurring_fields(col)
+    return [
+        {"kind": "text", "name": f"{RECURRING}.label", **shown[f"{RECURRING}.label"]},
+        {"kind": "list", "name": RECURRING, "height": 90, **shown[RECURRING]},
+        {
+            "kind": "button",
+            "name": f"{RECURRING}.mark",
+            "label": "Mark selected as addressed by a rule change",
+            **shown[f"{RECURRING}.mark"],
+        },
+    ]
+
+
+def recurring_fields(col: Collection) -> dict[str, dict[str, Any]]:
+    _reg, rows = summary(col)
+    items = [
+        {"value": row["key"], "label": f"{row['label']}: {row['notes']} notes"}
+        for row in rows
+        if row["candidate"]
+    ]
+    hidden = {"hidden": not items}
+    return {
+        f"{RECURRING}.label": {
+            "text": "Recurring feedback: consider a generation rule",
+            **hidden,
+        },
+        RECURRING: {"items": items, **hidden},
+        f"{RECURRING}.mark": hidden,
+    }
+
+
+def settings_message(panel: Any, message: dict[str, Any]) -> bool:
+    """Answer the recurring-feedback fields' messages; False if not theirs."""
     from aqt import mw
     from aqt.operations import CollectionOp
-    from aqt.qt import QLabel, QListWidget, QListWidgetItem, QPushButton, Qt, qconnect
 
-    label = QLabel("Recurring feedback: consider a generation rule")
-    candidates = QListWidget()
-    candidates.setMaximumHeight(90)
-    addressed = QPushButton("Mark selected as addressed by a rule change")
-
-    def fill() -> None:
-        candidates.clear()
-        _reg, rows = summary(mw.col)
-        for row in rows:
-            if row["candidate"]:
-                entry = QListWidgetItem(
-                    f"{row['label']}: {row['notes']} notes", candidates
-                )
-                entry.setData(Qt.ItemDataRole.UserRole, row["key"])
-        for widget in (label, candidates, addressed):
-            widget.setVisible(candidates.count() > 0)
-
-    def mark() -> None:
-        if not (entry := candidates.currentItem()):
-            return
-        key = str(entry.data(Qt.ItemDataRole.UserRole))
-        CollectionOp(parent=parent, op=lambda col: mark_addressed(col, key)).success(
-            lambda _changes: fill() if parent.isVisible() else None
-        ).run_in_background()
-
-    qconnect(addressed.clicked, mark)
-    layout.addWidget(label)
-    layout.addWidget(candidates)
-    layout.addWidget(addressed)
-    # Only once parented: showing a parentless widget opens its own window.
-    fill()
+    if message.get("name") != f"{RECURRING}.mark":
+        return False
+    if not (key := message.get("values", {}).get(RECURRING)):
+        return True
+    CollectionOp(parent=mw, op=lambda col: mark_addressed(col, str(key))).success(
+        lambda _changes: (
+            panel.send({"type": "update", "fields": recurring_fields(mw.col)})
+            if mw.col
+            else None
+        )
+    ).run_in_background()
+    return True

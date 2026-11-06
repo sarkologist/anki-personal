@@ -1,0 +1,199 @@
+:root {
+    color-scheme: light;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --canvas: #f5f5f7;
+    --field: #ffffff;
+    --border: #c7c7cc;
+    --selected: #0a64d6;
+    --selected-text: #ffffff;
+    --button: #ffffff;
+}
+
+:root.night {
+    color-scheme: dark;
+    --text: #f2f2f7;
+    --muted: #a1a1a6;
+    --canvas: #1e1e1e;
+    --field: #2c2c2e;
+    --border: #48484a;
+    --selected: #0a64d6;
+    --selected-text: #ffffff;
+    --button: #3a3a3c;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+html,
+body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--text);
+    font:
+        13px -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+}
+
+main {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+}
+
+p.text {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.field {
+    display: grid;
+    grid-template-columns: minmax(8em, 13em) 1fr;
+    gap: 8px;
+    align-items: start;
+}
+
+.field > label {
+    padding-top: 4px;
+}
+
+input[type="text"],
+textarea,
+select {
+    box-sizing: border-box;
+    width: 100%;
+    font: inherit;
+    color: var(--text);
+    background: var(--field);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 6px;
+}
+
+textarea {
+    resize: vertical;
+}
+
+textarea[readonly] {
+    min-height: 6em;
+    white-space: pre-wrap;
+}
+
+label.check {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+}
+
+.listbox {
+    box-sizing: border-box;
+    overflow-y: auto;
+    min-height: 3em;
+    background: var(--field);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    outline: none;
+}
+
+.listbox:focus {
+    border-color: var(--selected);
+}
+
+.listbox .option {
+    padding: 2px 6px;
+    overflow-wrap: anywhere;
+    cursor: default;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.listbox .option.selected {
+    background: var(--selected);
+    color: var(--selected-text);
+}
+
+.listbox .option.disabled {
+    color: var(--muted);
+}
+
+.listbox label.check {
+    padding: 2px 6px;
+}
+
+button {
+    font: inherit;
+    color: var(--text);
+    background: var(--button);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 12px;
+}
+
+main > button,
+.pane > button {
+    align-self: flex-start;
+}
+
+button:disabled {
+    color: var(--muted);
+}
+
+.row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.row.end {
+    justify-content: flex-end;
+}
+
+.row > .grow {
+    flex: 1;
+}
+
+.tabs {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+.tabs > .bar {
+    display: flex;
+    gap: 2px;
+    padding: 4px;
+    border-bottom: 1px solid var(--border);
+}
+
+.tabs > .bar > .tab {
+    border-color: transparent;
+    background: transparent;
+}
+
+.tabs > .bar > .tab.current {
+    border-color: var(--border);
+    background: var(--button);
+}
+
+.tabs > .bar > .spacer {
+    flex: 1;
+}
+
+.tabs > .pane {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+}
+
+iframe {
+    width: 100%;
+    border: none;
+    background: var(--canvas);
+}

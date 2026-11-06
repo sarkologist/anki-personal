@@ -34,6 +34,7 @@ dirs.workspace = true
 dom_query.workspace = true
 globset.workspace = true
 htmlescape.workspace = true
+libc.workspace = true
 objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true

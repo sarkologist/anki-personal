@@ -178,11 +178,17 @@ def test_ranking_without_targets_spends_budget_without_fabricating_attempts():
 def test_diagnostics_widget_refreshes_real_calls_and_preserves_plain_text(
     monkeypatch, tmp_path
 ):
+    import json
+
+    from chinese_frontier import diagnostics as module
+    from chinese_frontier import panels
     from chinese_frontier.diagnostics import Diagnostics
 
-    from aqt.qt import QApplication, QDialog
+    from aqt.qt import QFileDialog
 
-    app = QApplication.instance() or QApplication([])
+    from .test_frontier_panels import FakeHost
+
+    host = FakeHost(monkeypatch)
     store = {}
     data = {
         "store": store,
@@ -192,11 +198,19 @@ def test_diagnostics_widget_refreshes_real_calls_and_preserves_plain_text(
         "prepared": 2,
         "buffer": 4,
     }
-    parent = QDialog()
-    widget = Diagnostics(parent, lambda: data)
-    assert "2 / 4" in widget.summary.toPlainText()
-    assert widget.tabText(0) == "Charts" and widget.currentIndex() == 0
-    assert "no data yet" in widget.chart_html
+    diagnostics = Diagnostics(lambda: data)
+    panel = panels.open_panel("Diagnostics", diagnostics.message)
+    panel.render(diagnostics.spec())
+    page = host.page()
+    tabs = page["diagnostics"]["tabs"]
+    assert [tab["label"] for tab in tabs] == [
+        "Charts",
+        "Overview",
+        "Model calls",
+        "Decisions",
+    ]
+    assert "2 / 4" in page["diagnostics.overview"]["value"]
+    assert "no data yet" in page["diagnostics.charts"]["html"]
     observe(
         store,
         {
@@ -222,25 +236,30 @@ def test_diagnostics_widget_refreshes_real_calls_and_preserves_plain_text(
         },
         10,
     )
-    widget.refresh()
-    assert widget.choices.count() == 1
-    assert "timeout" in widget.calls.toPlainText()
-    assert "timeout" in widget.details.toPlainText()
-    assert "<b>Synonym also fits.</b>" in widget.decisions.toPlainText()
-    assert "call 1 · timeout" in widget.chart_html
-    assert "&lt;b&gt;" not in widget.chart_html  # substantive audit prose is bucketed
-    assert app is not None
-    import json
-
-    from aqt.qt import QFileDialog
-
+    diagnostics.refresh(panel)
+    (choice,) = page["diagnostics.call"]["items"]
+    assert choice["value"] == "x" and page["diagnostics.call"]["value"] == "x"
+    assert "timeout" in page["diagnostics.calls"]["value"]
+    assert "timeout" in page["diagnostics.details"]["value"]
+    assert "<b>Synonym also fits.</b>" in page["diagnostics.decisions"]["value"]
+    assert "call 1 · timeout" in page["diagnostics.charts"]["html"]
+    # Substantive audit prose is bucketed.
+    assert "&lt;b&gt;" not in page["diagnostics.charts"]["html"]
+    # An unchanged refresh sends nothing.
+    count = len(page.received)
+    diagnostics.refresh(panel)
+    assert len(page.received) == count
+    reply = page.change("diagnostics.call", **{"diagnostics.call": None})
+    assert reply["fields"]["diagnostics.details"]["value"].startswith("Select")
     output = tmp_path / "diagnostics.json"
     monkeypatch.setattr(
         QFileDialog, "getSaveFileName", lambda *args: (str(output), "JSON (*.json)")
     )
-    widget.export()
+    tips = []
+    monkeypatch.setattr(module, "tooltip", tips.append)
+    page.act("diagnostics.export")
     assert json.loads(output.read_text())["store"]["calls"][0]["status"] == "timeout"
-    parent.close()
+    assert tips == [f"Exported to {output}"]
 
 
 def test_error_location_names_the_add_on_caller_not_only_library_frames():

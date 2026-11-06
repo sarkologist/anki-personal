@@ -16,6 +16,8 @@ use serde_json::Value;
 use crate::Shell;
 
 pub type Handler = Box<dyn Fn(&Shell, &str, &str) -> Value + Send + Sync>;
+/// Gets the commands no handler knows; None leaves them unknown.
+pub type Fallback = Box<dyn Fn(&Shell, &str, &str) -> Option<Value> + Send + Sync>;
 
 /// Installed in every page before its own scripts. Commands are sent in
 /// order (Qt's channel is ordered and the editor relies on it), and `cb`
@@ -88,6 +90,10 @@ pub fn init_script() -> String {
 #[derive(Default)]
 pub struct Bridge {
     handlers: RwLock<HashMap<String, Handler>>,
+    /// Pages (by label prefix) whose commands go to one handler first, but
+    /// `domDone`: add-on panels.
+    routes: RwLock<Vec<(String, Fallback)>>,
+    fallback: RwLock<Option<Fallback>>,
     unknown: Mutex<BTreeMap<String, usize>>,
     /// Commands the shell has asked a page to send back (after a save),
     /// so each runs once: from the page, or after a timeout.
@@ -108,8 +114,36 @@ impl Bridge {
             .insert(name.to_string(), Box::new(handler));
     }
 
+    /// `handler` returning None passes the command on to the others.
+    pub fn route_prefix(
+        &self,
+        prefix: &str,
+        handler: impl Fn(&Shell, &str, &str) -> Option<Value> + Send + Sync + 'static,
+    ) {
+        self.routes
+            .write()
+            .unwrap()
+            .push((prefix.to_string(), Box::new(handler)));
+    }
+
+    pub fn set_fallback(
+        &self,
+        fallback: impl Fn(&Shell, &str, &str) -> Option<Value> + Send + Sync + 'static,
+    ) {
+        *self.fallback.write().unwrap() = Some(Box::new(fallback));
+    }
+
     pub fn dispatch(&self, shell: &Shell, label: &str, cmd: &str) -> Value {
         let (name, rest) = cmd.split_once(':').unwrap_or((cmd, ""));
+        if name != "domDone" {
+            let routes = self.routes.read().unwrap();
+            let route = routes
+                .iter()
+                .find(|(prefix, _)| label.starts_with(prefix.as_str()));
+            if let Some(out) = route.and_then(|(_, handler)| handler(shell, label, cmd)) {
+                return out;
+            }
+        }
         if let Some(handler) = self.handlers.read().unwrap().get(name) {
             tracing::trace!(label, name, "bridge command");
             *self
@@ -123,6 +157,15 @@ impl Bridge {
                 *n -= 1;
             }
             tracing::trace!(label, name, "bridge command done");
+            return out;
+        }
+        if let Some(out) = self
+            .fallback
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|fallback| fallback(shell, label, cmd))
+        {
             return out;
         }
         tracing::warn!(label, name, "unknown bridge command");
@@ -157,5 +200,34 @@ impl Bridge {
     /// Unhandled command names and how often each was sent.
     pub fn unknown_commands(&self) -> BTreeMap<String, usize> {
         self.unknown.lock().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::api::Api;
+
+    #[test]
+    fn routed_pages_get_every_command_and_the_rest_fall_back() {
+        let shell = Shell::new(Api::new(vec!["en".into()]).unwrap(), ".".into());
+        let bridge = &shell.bridge;
+        bridge.register("key", |_, _, rest| Value::from(format!("key {rest}")));
+        bridge.register("domDone", |_, _, _| Value::from("dom"));
+        bridge.route_prefix("panel-", |_, label, cmd| {
+            (!cmd.starts_with("key:pass")).then(|| Value::from(format!("{label} {cmd}")))
+        });
+        bridge.set_fallback(|_, _, cmd| (cmd == "known:x").then(|| Value::from("fell back")));
+        assert_eq!(
+            bridge.dispatch(&shell, "panel-1", "key:{\"a\":1}"),
+            "panel-1 key:{\"a\":1}"
+        );
+        assert_eq!(bridge.dispatch(&shell, "panel-1", "domDone"), "dom");
+        assert_eq!(bridge.dispatch(&shell, "panel-1", "key:pass"), "key pass");
+        assert_eq!(bridge.dispatch(&shell, "main", "key:1"), "key 1");
+        assert_eq!(bridge.dispatch(&shell, "main", "known:x"), "fell back");
+        assert_eq!(bridge.dispatch(&shell, "main", "other"), Value::Null);
+        assert_eq!(bridge.unknown_commands().get("other"), Some(&1));
+        assert_eq!(bridge.unknown_commands().get("known"), None);
     }
 }

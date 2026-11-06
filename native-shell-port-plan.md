@@ -234,10 +234,10 @@ better under real use, stop here.
 
 ### Phase 2: plugin host and Frontier
 
-- [ ] Sidecar process, `RemoteBackend` (attach, no open/close, no
+- [x] Sidecar process, `RemoteBackend` (attach, no open/close, no
       buildhash), `OpChanges` forwarding both ways, `aqt` shim, events,
       contributions, `/_addons/` assets, logging, restart.
-- [ ] chinese_frontier running unchanged except its UI, which moves to web
+- [x] chinese_frontier running unchanged except its UI, which moves to web
       panels.
 
 ### Phase 3: editing
@@ -597,6 +597,147 @@ What remains is the exit criterion: a week of real reviews in the shell.
   descriptions, set due date, forget, create copy, recording your own
   voice, dark mode, and the deck browser's import and shared-deck links.
   Add-on hooks on these screens wait for phase 2.
+
+### Phase 2 (2026-11-06)
+
+Chinese/French Frontier runs in the shell's plugin host, and in the old
+Anki as before, from the same `addons21` folder. How to turn it on is in
+`shell/README.md` ("Add-ons").
+
+- **Process:** `shell/plugin_host/host.py`, started after the profile
+  opens for the add-ons in the settings' `plugins` (none by default).
+  - It runs on an Anki install's Python (`import_python`, the launcher's
+    venv or `~/.anki-stable`) with `-I`. In the app bundle,
+    `Resources/plugin_host` holds pylib, the generated `_aqt/hooks.py` and
+    the shim, but no `_rsbridge`. A meta-path finder makes `anki`, `aqt`
+    and `_aqt` come only from there: an editable install's finder beats
+    `sys.path`, and a dev venv's `.pth` pointed at another checkout.
+  - The host is a child in its own process group. Stopping it sends
+    `profile_will_close` (3 s), then `shutdown`, then kills the group,
+    which includes Frontier's model CLIs. The host also ends its group
+    when the shell's socket closes, in case the shell died first.
+  - A crash restarts it after 1, 4 and 9 s, and more than 3 crashes in
+    10 minutes leave it off until Tools > Restart Add-ons. Its output goes
+    to `plugin-host.log` next to the settings, shown by Tools > Add-on
+    Log.
+- **Wire:** one Unix socket, with frames `u32 length | u8 kind | u32 id |
+  payload` (`shell/src/plugins/wire.rs`, `pylib/anki/remote.py`).
+  - Kinds: CALL (service, method, protobuf), DB (db_command JSON), HOST
+    (a JSON request to the shell), EVENT (JSON from the shell), OK, ERR.
+    Id 0 wants no reply.
+  - The socket sits in a 0700 per-process folder and is unlinked once the
+    host connects.
+  - Calls run on their own threads, so a slow query doesn't hold up
+    events. Host requests run in order on one thread, since a menu's
+    items come whole each time.
+  - Writes to the host time out after 2 s. A host that stops reading
+    (stopped, wedged) is killed and restarted rather than blocking the
+    shell (tested with SIGSTOP).
+- **pylib:**
+  - `RemoteBackend` overrides `_run_command`/`_db_command`, and attaches:
+    `open_collection` only checks the path, and `close_collection` does
+    nothing.
+  - `_backend.py` tolerates a missing `_rsbridge`, keeping the import
+    error for a local `RustBackend`, and skips the build hash then.
+  - `lang.py`'s globals use the remote backend
+    (`use_for_translations`). No other pylib change was needed.
+  - The shell refuses add-on calls that would close or replace the
+    collection: open/close, full and normal sync, and colpkg
+    import/export.
+- **OpChanges:**
+  - The method table now records where each output's `OpChanges` are
+    (from the descriptors in `build.rs`). `Api::raw` passes non-empty ones
+    from the shell's own calls (answering, undo, AnkiConnect) to the host.
+    There they clear `models._cache` and fire `operation_did_execute`.
+  - A plugin `CollectionOp` reports its changes once it's done. The
+    reviewer then moves on if its card was suspended, buried or deleted
+    (as `Reviewer.op_executed`), and the deck list and overview reload.
+  - A full sync holds a gate that plugin calls wait on. Afterwards the
+    host gets `sync_did_finish` with `full`, which reloads the scheduler
+    and clears caches.
+- **`aqt` shim (`shell/plugin_host/aqt`):**
+  - `mw` with `col`, `state`, `taskman` (collection tasks one at a time,
+    as aqt), `progress` timers, `addonManager` (config in the same
+    `meta.json`, web exports), `form.menuTools`, `deckBrowser.refresh`,
+    `reviewer.card` and `pm`.
+  - `operations.CollectionOp`/`QueryOp`, `utils.tooltip`/`showInfo`,
+    `dialogs.open("Browser")` (no browser yet: the search goes on the
+    clipboard), and `theme`.
+  - `aqt.qt` has only `QAction`, `QMenu`, `QTimer`, signals and
+    `qconnect`. Widgets raise a clear error.
+  - `gui_hooks` is the generated `_aqt/hooks.py` itself, so every hook
+    exists, with aqt's filter semantics (a hook that raises is dropped).
+- **Events the shell sends:** `state_did_change`, `operation_did_execute`,
+  `reviewer_did_answer_card`, `reviewer_will_show_context_menu` (its items
+  join the "More" menu), `deck_browser_will_render_content` (`stats` only,
+  under the deck list), `webview_did_receive_js_message` (unknown commands
+  from the main window's pages), `sync_did_finish` and
+  `profile_will_close`, plus menu clicks and panel messages.
+  - Events the shell waits on time out: 0.4 s while drawing a menu or
+    page, 1 s for an unknown page command (the page's later commands wait
+    behind it), and 5 s for a panel message.
+- **UI:**
+  - Add-on menu items go at the end of a new Tools menu.
+  - A panel is a window showing `/_addons/<module>/<path>`, served only
+    where the add-on's `setWebExports` pattern matches. All its bridge
+    commands go to the add-on.
+- **Frontier:**
+  - Its dialogs (settings, fix, feedback, attention, diagnostics, in both
+    languages) are now one generic page, `web/form.html`, rendering a
+    JSON form spec that Python builds (`panels.py`). In the old Anki it's
+    a QDialog with an AnkiWebView; in the shell, a panel. They aren't
+    modal any more.
+  - The old Chinese feedback dialog retried the wrong key (a loop
+    variable shadowed it); now fixed. The rest of the add-on is
+    unchanged.
+  - Its state is keyed by the collection path. The shell passes the same
+    path the old Anki does, so both apps share
+    `user_files/<hash>/state.json`.
+- **Checks:**
+  - `pylib/tests/test_remote.py` (8 tests) and
+    `shell/plugin_host/tests/test_host.py` (11 tests: the real host as a
+    subprocess against a fake shell, run by `check:pytest:plugin_host`).
+  - `shell/tests/plugin_host.rs` (4 tests: the real host on a scratch
+    collection, covering the sync gate, denied methods, crash restart and
+    a stopped host).
+  - Reviewer and bridge tests, and Frontier's 394 tests.
+  - The subagent that wrote the panels opened each one in the real Qt
+    Anki offscreen on a profile copy, with a round trip and one feedback
+    submission.
+- **End to end:** `shell/harness/frontier-flow.js` on a copy of the real
+  profile (29,857 cards), with the bundled app and its host on
+  `~/.anki-stable`'s Python. It checks:
+  - the Tools items for both languages, the deck list notice, the
+    settings panel and its live status, and the "More" menu's "Fix this
+    sentence...";
+  - the background job: model calls (writer and checker through the
+    claude CLI), and its admission op, which updated a generated note in
+    the copy (他买{{c1::八}}个玩具).
+
+  Two runs (with the copy capped at 2 and 3 batches) admitted no new card:
+  Frontier's checks rejected every candidate and deferred it. The live
+  state has 174 such deferrals too, and the three pending fixes are hard
+  ones (飘 against 漂, say). So the admission path was checked another
+  way: with `shell/harness/remote_everywhere.py`, all 379 of Frontier's
+  collection tests pass with every collection attached over the socket
+  protocol (18,880 backend calls), admission and schedule takeover
+  included.
+- **Review:** an independent Opus pass found no deadlock, data loss or
+  security hole. Its findings are fixed: host requests applied out of
+  order (a stale Tools list), unbounded writes to a stuck host, orphaned
+  model CLIs if the shell dies, colpkg import/export, `_rsbridge` import
+  errors losing their cause, a 5 s wait on unknown page commands, a panel
+  left blank by a busy host, replies missing from a panel's diffing, the
+  host's initial state, and unnormalised collection paths.
+- **After merging phase 3:**
+  - Media HTML is now sandboxed. Add-on files are served without that
+    sandbox, or a panel's page loses its scripts.
+  - All the WebKit harnesses pass on a profile copy with the plugin host
+    running: main flow, Add Cards, the editor's selection, save, features
+    and occlusion checks, and Frontier's UI.
+  - Not wired yet (with editor_agent_pane and the alfred bridge): phase
+    3's `Editors::listen` events and `editor_window::set_side_panel`. The
+    shim would need an `aqt.editor` stand-in for those add-ons' hooks.
 
 ### Phase 3 (2026-11-06)
 
