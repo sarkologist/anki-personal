@@ -31,6 +31,10 @@ pub enum WebviewKind {
     CardLayout,
     /// A [crate::main_window::ask] window.
     Dialog,
+    /// An add-on's web view (`AnkiWebView`) in an editor's side panel,
+    /// which may show a model's output: served sandboxed, whatever frames
+    /// it.
+    AddonView,
 }
 
 impl WebviewKind {

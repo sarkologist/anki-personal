@@ -6,8 +6,9 @@ or a bundled Chromium. See `native-shell-port-plan.md` for the plan and
 findings. Phases 0 to 3 are done: profile, collection, page protocol,
 bridge, settings import, AnkiConnect, reviewing (deck list, overview,
 reviewer, sync, native menus), editing (Add Cards, Edit Current), and a
-plugin host running Chinese/French Frontier. The browser, other add-ons and
-most dialogs still need the old Anki.
+plugin host running Chinese/French Frontier, the editor agent pane and the
+Alfred bridge. The browser, other add-ons and most dialogs still need the
+old Anki.
 
 ## Reviewing
 
@@ -40,13 +41,25 @@ most dialogs still need the old Anki.
 ## Add-ons
 
 Add-ons run in a Python plugin host, from the old Anki's `addons21` folder
-(sharing its config and files). Only Chinese/French Frontier is
-supported. To turn it on, quit the shell, add
-`"plugins": ["chinese_frontier"]` to the settings file, and start it
-again. Its menu items are in Tools, with Add-on Log (the host's output,
+(sharing its config and files). Supported: Chinese/French Frontier
+(`chinese_frontier`), the editor agent pane (`editor_agent_pane`) and the
+Alfred bridge (`alfred_anki_html_bridge`). To turn them on, quit the shell,
+list them in the settings file, e.g. `"plugins": ["chinese_frontier",
+"editor_agent_pane", "alfred_anki_html_bridge"]`, and start it again.
+Their menu items are in Tools, with Add-on Log (the host's output,
 `plugin-host.log` next to the settings) and Restart Add-ons. The host
 needs an Anki install's Python, found as for the profile import
 (`import_python`).
+
+- **Agent pane:** the toolbar's Agent button (or Cmd+Option+Shift+E) in
+  Add or Edit Current shows the pane beside the fields, as in Anki: the
+  same settings, requests, transcript and Apply. Its × hides it. The agent
+  queue window (Tools > Agent Queue) and the pane in the browser aren't in
+  the shell yet.
+- **Alfred bridge:** Alfred's "insert into Anki" pastes into the field you
+  last left in Add or Edit Current, as in Anki, but at the field's end:
+  the add-on's caret script needs `ShadowRoot.getSelection`, which WebKit
+  hasn't got.
 
 ## Editing
 
@@ -132,6 +145,11 @@ Options:
   pastes come from a scratch pasteboard, never the clipboard.
   `--test harness/editor-add.js --test-page add` drives Add Cards: the
   choosers, sticky fields, adding, history, duplicates and format buttons.
+  `harness/agent-pane.js` (`--test-page add`, and `--test-page editor
+  --test-note 0`) drives the agent pane with a real request; it needs the
+  add-on in the copy's `addons21` with its provider set to Ollama and a
+  local model. `harness/alfred-bridge.js` (`--test-page add`) calls the
+  Alfred bridge's server as the workflow does.
   `--test harness/main-flow.js --test-page main` adds a test deck
   and reviews it through the deck list, overview and reviewer: keys, undo,
   typed answers, audio, TTS and LaTeX. `harness/sync-flow.js` syncs through

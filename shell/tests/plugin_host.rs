@@ -37,6 +37,8 @@ def message(handled, text, context):
         return (True, "closed")
     if text == "probe:crash":
         os._exit(3)
+    if text == "probe:ask":
+        return (True, mw.native.request("ask", question="six times seven"))
     if text == "probe:freeze":
         import signal
         os.kill(os.getpid(), signal.SIGSTOP)
@@ -80,6 +82,7 @@ fn fixture() -> Option<Fixture> {
     let tx = Mutex::new(tx);
     host.set_handler(Arc::new(move |op, msg| {
         let _ = tx.lock().unwrap().send((op.to_string(), msg.clone()));
+        (op == "ask").then(|| json!({"answer": 42, "to": msg["question"]}))
     }));
     let (script, search) = HostConfig::locate().unwrap();
     host.start(HostConfig {
@@ -141,6 +144,17 @@ fn add_ons_use_the_shells_collection_and_wait_out_a_full_sync() {
     assert_eq!(f.message("probe:count", Duration::from_millis(500)), None);
     drop(sync);
     assert_eq!(f.message("probe:count", long), Some(json!(0)));
+}
+
+#[test]
+fn the_hosts_requests_get_the_shells_replies() {
+    let Some(f) = fixture() else {
+        return;
+    };
+    assert_eq!(
+        f.message("probe:ask", Duration::from_secs(10)),
+        Some(json!({"answer": 42, "to": "six times seven"}))
+    );
 }
 
 #[test]

@@ -149,10 +149,40 @@ fn find_web(args: &Args) -> Result<PathBuf> {
     anyhow::bail!("web assets not found; build them with ./ninja shell or pass --web")
 }
 
+/// What an eval's result goes to (`evalWithCallback`): null if the page
+/// went away, or the result isn't JSON. It's always answered: dropped
+/// unanswered (the eval was never run), it gets null.
+pub struct EvalResult(Option<Box<dyn FnOnce(Value) + Send>>);
+
+impl EvalResult {
+    pub fn new(f: impl FnOnce(Value) + Send + 'static) -> Self {
+        EvalResult(Some(Box::new(f)))
+    }
+
+    pub fn answer(mut self, value: Value) {
+        if let Some(f) = self.0.take() {
+            f(value);
+        }
+    }
+}
+
+impl Drop for EvalResult {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f(Value::Null);
+        }
+    }
+}
+
+enum Js {
+    Plain(String),
+    WithResult(String, EvalResult),
+}
+
 /// Evals for each webview, held until its page has sent `domDone`, as
 /// `AnkiWebPage._queueAction` does.
 #[derive(Default)]
-pub struct Evals(Mutex<HashMap<String, (bool, Vec<String>)>>);
+pub struct Evals(Mutex<HashMap<String, (bool, Vec<Js>)>>);
 
 impl Evals {
     pub fn reset(&self, label: &str) {
@@ -163,10 +193,18 @@ impl Evals {
     }
 
     pub fn eval(&self, app: &AppHandle, label: &str, js: String) {
+        self.queue(app, label, Js::Plain(js));
+    }
+
+    pub fn eval_with_result(&self, app: &AppHandle, label: &str, js: String, done: EvalResult) {
+        self.queue(app, label, Js::WithResult(js, done));
+    }
+
+    fn queue(&self, app: &AppHandle, label: &str, js: Js) {
         let mut map = self.0.lock().unwrap();
         let entry = map.entry(label.to_string()).or_default();
         if entry.0 {
-            run_js(app, label, &js);
+            run_queued(app, label, js);
         } else {
             entry.1.push(js);
         }
@@ -177,8 +215,30 @@ impl Evals {
         let entry = map.entry(label.to_string()).or_default();
         entry.0 = true;
         for js in entry.1.drain(..) {
-            run_js(app, label, &js);
+            run_queued(app, label, js);
         }
+    }
+}
+
+fn run_queued(app: &AppHandle, label: &str, js: Js) {
+    match js {
+        Js::Plain(js) => run_js(app, label, &js),
+        Js::WithResult(js, done) => match app.get_webview_window(label) {
+            Some(w) => {
+                // in order with the plain evals: both go through the
+                // event loop
+                if let Err(err) = w.with_webview(move |webview| {
+                    // SAFETY: inner() is the WKWebView, on the main thread
+                    unsafe { crate::webkit::evaluate(webview.inner(), &js, done) }
+                }) {
+                    tracing::warn!(label, %err, "eval failed");
+                }
+            }
+            None => {
+                tracing::warn!(label, "eval on a closed webview");
+                done.answer(Value::Null);
+            }
+        },
     }
 }
 
@@ -479,6 +539,11 @@ impl Ui {
 
     pub fn eval(&self, label: &str, js: String) {
         self.evals.eval(&self.app, label, js);
+    }
+
+    /// `evalWithCallback`: `done` gets the script's completion value.
+    pub fn eval_with_result(&self, label: &str, js: String, done: EvalResult) {
+        self.evals.eval_with_result(&self.app, label, js, done);
     }
 }
 
@@ -909,6 +974,11 @@ pub fn run(args: Args) -> Result<()> {
                 })),
             );
         }
+        RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Focused(focused),
+            ..
+        } => crate::plugins::ui::window_focused(&exit_ui, &label, focused),
         RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,

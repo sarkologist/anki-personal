@@ -172,6 +172,7 @@ dependencies = [
  "anki_proto_gen",
  "anyhow",
  "axum",
+ "block2",
  "chrono",
  "data-encoding",
  "dirs 6.0.0",

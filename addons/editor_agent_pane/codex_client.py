@@ -24,13 +24,14 @@ from .agent_log import (
 )
 from .effort_options import effort_value
 from .patches import (
+    NO_CHANGES,
     EditorSnapshot,
     MultiCardSnapshot,
     MultiNotePatch,
     NotePatch,
     PatchValidationError,
-    validate_multi_note_patch,
-    validate_note_patch,
+    snapshot_create_defaults,
+    validate_patch,
 )
 from .sources import SourceAccessError, resolve_project_root
 
@@ -67,55 +68,23 @@ PROJECT_ACCESS_INSTRUCTIONS = {
 }
 
 
-SINGLE_NOTE_PATCH_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "summary": {"type": "string"},
-        "note_id": {"type": ["integer", "null"]},
-        "notetype_id": {"type": "integer"},
-        "field_updates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "html": {"type": "string"},
-                },
-                "required": ["name", "html"],
-                "additionalProperties": False,
-            },
+_FIELD_LIST_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "html": {"type": "string"},
         },
-        "tags": {
-            "type": "object",
-            "properties": {
-                "replace": {
-                    "type": ["array", "null"],
-                    "items": {"type": "string"},
-                },
-                "add": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-                "remove": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-            },
-            "required": ["replace", "add", "remove"],
-            "additionalProperties": False,
-        },
+        "required": ["name", "html"],
+        "additionalProperties": False,
     },
-    "required": [
-        "summary",
-        "note_id",
-        "notetype_id",
-        "field_updates",
-        "tags",
-    ],
-    "additionalProperties": False,
 }
+_STRING_LIST_SCHEMA: dict[str, Any] = {"type": "array", "items": {"type": "string"}}
 
-MULTI_NOTE_PATCH_SCHEMA: dict[str, Any] = {
+# One patch shape for every provider and context: updates to existing notes,
+# new notes, and what the agent assumed or would have asked.
+PATCH_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "summary": {"type": "string"},
@@ -124,24 +93,51 @@ MULTI_NOTE_PATCH_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "note_id": {"type": "integer"},
+                    "note_id": {"type": ["integer", "null"]},
                     "notetype_id": {"type": "integer"},
-                    "field_updates": SINGLE_NOTE_PATCH_SCHEMA["properties"][
-                        "field_updates"
-                    ],
-                    "tags": SINGLE_NOTE_PATCH_SCHEMA["properties"]["tags"],
+                    "field_updates": _FIELD_LIST_SCHEMA,
+                    "tags": {
+                        "type": "object",
+                        "properties": {
+                            "replace": {
+                                "type": ["array", "null"],
+                                "items": {"type": "string"},
+                            },
+                            "add": _STRING_LIST_SCHEMA,
+                            "remove": _STRING_LIST_SCHEMA,
+                        },
+                        "required": ["replace", "add", "remove"],
+                        "additionalProperties": False,
+                    },
                 },
-                "required": [
-                    "note_id",
-                    "notetype_id",
-                    "field_updates",
-                    "tags",
-                ],
+                "required": ["note_id", "notetype_id", "field_updates", "tags"],
                 "additionalProperties": False,
             },
         },
+        "note_creates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "notetype_id": {"type": "integer"},
+                    "deck_id": {"type": "integer"},
+                    "fields": _FIELD_LIST_SCHEMA,
+                    "tags": _STRING_LIST_SCHEMA,
+                },
+                "required": ["notetype_id", "deck_id", "fields", "tags"],
+                "additionalProperties": False,
+            },
+        },
+        "assumptions": _STRING_LIST_SCHEMA,
+        "questions": _STRING_LIST_SCHEMA,
     },
-    "required": ["summary", "note_updates"],
+    "required": [
+        "summary",
+        "note_updates",
+        "note_creates",
+        "assumptions",
+        "questions",
+    ],
     "additionalProperties": False,
 }
 
@@ -165,13 +161,7 @@ CODEX_OUTPUT_SCHEMA: dict[str, Any] = {
         },
         "message": {"type": "string"},
         "message_html": {"type": "string"},
-        "patch": {
-            "anyOf": [
-                {"type": "null"},
-                SINGLE_NOTE_PATCH_SCHEMA,
-                MULTI_NOTE_PATCH_SCHEMA,
-            ]
-        },
+        "patch": {"anyOf": [{"type": "null"}, PATCH_SCHEMA]},
     },
     "required": ["message", "message_html", "patch", "card_request"],
     "additionalProperties": False,
@@ -204,7 +194,8 @@ Return a JSON object matching the supplied schema:
   blockquote, table, and a. Use MathJax delimiters like \\(...\\) or \\[...\\]
   for math. Do not include scripts, styles, iframes, event handlers, images, or
   javascript: links.
-- patch: null unless you are proposing changes to the current note.
+- patch: null unless you are proposing changes: edits to existing notes or
+  new notes (see "When proposing a patch").
 - card_request: null for a final answer. To inspect other cards, return an
   object with query (Anki search syntax, empty string for all permitted cards),
   offset (starting at 0), and limit (1 to 20). Use cid:123 to read a specific
@@ -225,15 +216,27 @@ Do not include hidden chain-of-thought or private scratchpad reasoning. It is
 fine to include a concise rationale or evidence summary in message and
 message_html, especially when proposing a patch.
 
+The user may not be watching this run and cannot be asked anything now.
+Make a best-effort proposal instead of asking: record what you decided without
+asking in patch.assumptions, and what you would have asked in patch.questions.
+The user answers by replying.
+
 When proposing a patch:
-- If context_json.mode is "browse_multi", target only notes listed in
-  context_json.notes and return note_updates. Each note_update edits a note
-  that may be shared by multiple selected cards.
-- Otherwise, target only the current note and return field_updates/tags at the
-  top level of patch.
-- Use exact field names from the editor context.
+- note_updates edits existing notes. If context_json.mode is "browse_multi",
+  target only notes listed in context_json.notes (a note may be shared by
+  several selected cards). Otherwise target only the current note: at most one
+  entry, with note_id set to context_json.note_id (null when the note has not
+  been added yet, mode "add").
+- note_creates adds new notes, e.g. a disambiguation or comparison card. Unless
+  the request implies otherwise, use the source note's note type and the
+  default deck (both marked default in the available note types and decks
+  section). Give every field of the note type by its exact name, in any order;
+  the first field must not be empty. Keep the source note's field conventions:
+  copy its house style (structure, formatting, notes and source lines) into the
+  new note's fields, and its relevant tags.
+- Use exact field names from the editor context or the note type.
 - Preserve HTML where appropriate.
-- Field update HTML must be an Anki field fragment only. Do not include
+- Field HTML must be an Anki field fragment only. Do not include
   StartFragment/EndFragment comments, <!doctype>, <html>, <head>, or <body>
   wrapper tags.
 - For delimiter conversions, legacy Anki LaTeX delimiters are [$]...[/$] for
@@ -244,11 +247,24 @@ When proposing a patch:
   for each changed field. Do not merely describe the change.
 - Explain briefly in message/message_html why the proposed change improves the
   note or selected cards.
-- Include tags.replace, tags.add, and tags.remove. Use null for tags.replace
-  unless you intend to replace the complete tag list.
-- If there are no field or tag changes, return patch: null instead of an empty
-  patch object.
+- In each note update include tags.replace, tags.add, and tags.remove. Use null
+  for tags.replace unless you intend to replace the complete tag list.
+- Always include summary, note_updates, note_creates, assumptions and
+  questions; use empty lists for parts you do not need.
+- If there are no edits and no new notes, return patch: null instead of an
+  empty patch object. A null patch means no change.
 - The patch will only be shown to the user; Anki applies it after approval.
+"""
+
+
+# A resumed CLI session already holds the instructions, the editor context and
+# the earlier turns; only the new turn is sent.
+RESUME_PROMPT_TEMPLATE = """Continuing this Anki editor conversation. Your earlier
+instructions, the editor context and the response format still apply: return
+a JSON object matching the supplied schema, as before.
+
+User request:
+{user_prompt}
 """
 
 
@@ -262,6 +278,9 @@ class AgentResult:
     proposals: tuple[AgentPatch, ...]
     event_count: int = 0
     card_request: Any = None
+    # The provider CLI's session for this run (Claude session_id, Codex
+    # thread_id), for resuming it on the next turn; None for Ollama.
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -271,6 +290,7 @@ class _CodexProcessResult:
     stdout: str
     stderr: str
     event_count: int
+    session_id: str | None = None
 
 
 CodexEventCallback = Callable[[dict[str, Any]], None]
@@ -279,6 +299,16 @@ StopRequestedCallback = Callable[[], bool]
 
 class AgentStopped(RuntimeError):
     pass
+
+
+class ResumeUnavailable(RuntimeError):
+    """A resume that never started: the CLI does not know the session, or it
+    exited before starting it. Nothing ran, so replaying instead is safe."""
+
+
+# Codex's error for an unknown thread id (codex-cli 0.159.3: "thread/resume
+# failed: no rollout found for thread id <id>").
+CODEX_UNKNOWN_THREAD = "no rollout found"
 
 
 class CodexCliAgent:
@@ -293,8 +323,11 @@ class CodexCliAgent:
         fast_mode: bool = False,
         reasoning_effort: str = "",
         stream_reasoning_summaries: bool = True,
+        persist_session: bool = False,
     ) -> None:
         self.codex_path = resolve_codex_path(codex_path)
+        # Keep the session on disk (no --ephemeral) so a later turn can resume it.
+        self.persist_session = persist_session
         self.model = model.strip()
         self.reasoning_effort = effort_value(reasoning_effort)
         self.timeout_seconds = timeout_seconds
@@ -315,11 +348,19 @@ class CodexCliAgent:
         event_callback: CodexEventCallback | None = None,
         run_logger: AgentRunLogger | None = None,
         stop_requested: StopRequestedCallback | None = None,
+        resume_session_id: str | None = None,
+        resume_images: bool = False,
     ) -> AgentResult:
+        """With ``resume_session_id``, continue that Codex session
+        (``codex exec resume``) and send ``prompt`` as the only new turn;
+        ``resume_images`` attaches the note's images to that turn too (the
+        note changed since the session saw them). Raises ResumeUnavailable
+        when the resume never started."""
         _log_agent_event(
             run_logger,
             "run_start",
             model=self.model or "default",
+            resumed=resume_session_id is not None,
             reasoning_effort=self.reasoning_effort or "default",
             sandbox=self.project_folder_access,
             timeout_seconds=self.timeout_seconds,
@@ -352,6 +393,8 @@ class CodexCliAgent:
                 schema_path,
                 output_path,
                 snapshot.image_paths(),
+                resume_session_id=resume_session_id,
+                resume_images=resume_images,
             )
             _log_agent_event(
                 run_logger,
@@ -363,7 +406,11 @@ class CodexCliAgent:
             try:
                 completed = self._run(
                     command,
-                    self._prompt(prompt, snapshot, history),
+                    (
+                        RESUME_PROMPT_TEMPLATE.format(user_prompt=prompt)
+                        if resume_session_id
+                        else self._prompt(prompt, snapshot, history)
+                    ),
                     event_callback=event_callback,
                     run_logger=run_logger,
                     stop_requested=stop_requested,
@@ -392,7 +439,13 @@ class CodexCliAgent:
                     stderr_lines=line_count(completed.stderr),
                     stderr_preview=text_preview(completed.stderr),
                 )
-                raise RuntimeError(_format_codex_error(completed))
+                message = _format_codex_error(completed)
+                if resume_session_id and (
+                    completed.session_id is None
+                    or CODEX_UNKNOWN_THREAD in completed.stderr.lower()
+                ):
+                    raise ResumeUnavailable(message)
+                raise RuntimeError(message)
             if not output_path.exists():
                 _log_agent_event(
                     run_logger,
@@ -457,6 +510,7 @@ class CodexCliAgent:
                 proposals=proposals,
                 event_count=completed.event_count,
                 card_request=data.get("card_request"),
+                session_id=completed.session_id,
             )
 
     def _working_directory(self, project_root: str, fallback: Path) -> Path:
@@ -470,14 +524,25 @@ class CodexCliAgent:
         schema_path: Path,
         output_path: Path,
         image_paths: tuple[str, ...],
+        *,
+        resume_session_id: str | None = None,
+        resume_images: bool = False,
     ) -> list[str]:
+        if resume_session_id:
+            return self._resume_command(
+                cwd,
+                schema_path,
+                output_path,
+                resume_session_id,
+                image_paths if resume_images else (),
+            )
         command = [
             self.codex_path,
             "exec",
             "--sandbox",
             self.project_folder_access,
             "--skip-git-repo-check",
-            "--ephemeral",
+            *([] if self.persist_session else ["--ephemeral"]),
             "--color",
             "never",
             "-c",
@@ -500,6 +565,51 @@ class CodexCliAgent:
         if self.model:
             command.extend(["--model", self.model])
         command.append("-")
+        return command
+
+    def _resume_command(
+        self,
+        cwd: Path,
+        schema_path: Path,
+        output_path: Path,
+        session_id: str,
+        image_paths: tuple[str, ...] = (),
+    ) -> list[str]:
+        # `codex exec resume` takes no --sandbox/--cd/--color of its own: they
+        # go on `exec` before the subcommand, and the sandbox is repeated as a
+        # config override. Images are in the session already; ``image_paths``
+        # re-attaches them when the note changed since.
+        command = [
+            self.codex_path,
+            "exec",
+            "--sandbox",
+            self.project_folder_access,
+            "--skip-git-repo-check",
+            "--color",
+            "never",
+            "--cd",
+            str(cwd),
+            "resume",
+            "-c",
+            f'sandbox_mode="{self.project_folder_access}"',
+            "-c",
+            _model_reasoning_summary_config(
+                self.model,
+                self.stream_reasoning_summaries,
+            ),
+            *_reasoning_effort_config_args(self.reasoning_effort),
+            *_fast_mode_config_args(self.fast_mode),
+            "--json",
+            "--output-schema",
+            str(schema_path),
+            "--output-last-message",
+            str(output_path),
+        ]
+        for path in image_paths:
+            command.extend(["--image", path])
+        if self.model:
+            command.extend(["--model", self.model])
+        command.extend([session_id, "-"])
         return command
 
     def _prompt(
@@ -557,6 +667,7 @@ class CodexCliAgent:
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
         event_count = 0
+        session_id: str | None = None
         stdout_done = False
         stderr_done = False
 
@@ -597,6 +708,10 @@ class CodexCliAgent:
                     stdout_chunks.append(line)
                     if event := _parse_stream_event(line):
                         event_count += 1
+                        if event.get("type") == "thread.started" and isinstance(
+                            event.get("thread_id"), str
+                        ):
+                            session_id = event["thread_id"]
                         _log_agent_event(
                             run_logger,
                             "stream_event",
@@ -620,6 +735,7 @@ class CodexCliAgent:
                     stdout="".join(stdout_chunks),
                     stderr="".join(stderr_chunks),
                     event_count=event_count,
+                    session_id=session_id,
                 )
 
             if stop_requested is not None and stop_requested():
@@ -762,9 +878,15 @@ def _validate_agent_patch(
     patch_data: dict[str, Any],
     snapshot: EditorSnapshot | MultiCardSnapshot,
 ) -> AgentPatch:
-    if isinstance(snapshot, MultiCardSnapshot):
-        return validate_multi_note_patch(patch_data, snapshot)
-    return validate_note_patch(patch_data, snapshot)
+    # Structure only: the queue runner validates again against the
+    # collection's note types and decks.
+    return validate_patch(
+        patch_data,
+        snapshot,
+        notetypes=None,
+        deck_ids=None,
+        defaults=snapshot_create_defaults(snapshot),
+    )
 
 
 def _validate_optional_agent_patch(
@@ -774,7 +896,7 @@ def _validate_optional_agent_patch(
     try:
         return _validate_agent_patch(patch_data, snapshot)
     except PatchValidationError as exc:
-        if str(exc) == "Patch does not contain any changes.":
+        if str(exc) == NO_CHANGES:
             return None
         raise
 

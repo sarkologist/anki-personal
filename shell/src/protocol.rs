@@ -268,6 +268,15 @@ fn handle_post(shell: &Shell, label: &str, endpoint: &str, req: &Request<Vec<u8>
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
+    // a sandboxed frame (an add-on's web view) has no API
+    if req
+        .headers()
+        .get("Origin")
+        .is_some_and(|o| o != ORIGIN.trim_end_matches('/'))
+    {
+        tracing::warn!(endpoint, label, "rejected API call from another origin");
+        return text(StatusCode::FORBIDDEN, "no API access");
+    }
     if ctype != "application/binary" {
         tracing::warn!(
             endpoint,
@@ -362,6 +371,14 @@ fn legacy_page(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespon
     let Some(html) = page.html else {
         return text(StatusCode::NOT_FOUND, "page not found");
     };
+    if page.kind == WebviewKind::AddonView {
+        let mut resp = respond(StatusCode::OK, "text/html", html);
+        resp.headers_mut().insert(
+            CONTENT_SECURITY_POLICY,
+            "sandbox allow-scripts".parse().unwrap(),
+        );
+        return resp;
+    }
     if page.kind != WebviewKind::Editor {
         return respond(StatusCode::OK, "text/html", html);
     }
@@ -722,6 +739,39 @@ mod test {
         // a real backend method, but not one mediasrv exposes
         let missing = post(&f, "editor", "removeNotes", "application/binary", vec![]);
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn add_on_web_views_are_sandboxed_and_get_no_api() {
+        let f = fixture();
+        f.shell.pages.set(
+            "editor-side-w3",
+            WebviewKind::AddonView,
+            Some("<p>model output".into()),
+        );
+        let page = get(&f, "editor", "_anki/legacyPageData?id=editor-side-w3");
+        assert_eq!(page.status(), StatusCode::OK);
+        assert_eq!(
+            page.headers()[CONTENT_SECURITY_POLICY],
+            "sandbox allow-scripts"
+        );
+        // the sandboxed frame is in the editor's webview, but its origin is
+        // opaque: the editor's API isn't its
+        let req = Request::post("anki://localhost/_anki/getDeckNames")
+            .header(CONTENT_TYPE, "application/binary")
+            .header("Origin", "null")
+            .body(vec![])
+            .unwrap();
+        assert_eq!(
+            handle(&f.shell, "editor", &req).status(),
+            StatusCode::FORBIDDEN
+        );
+        let req = Request::post("anki://localhost/_anki/getDeckNames")
+            .header(CONTENT_TYPE, "application/binary")
+            .header("Origin", "anki://localhost")
+            .body(vec![])
+            .unwrap();
+        assert_eq!(handle(&f.shell, "editor", &req).status(), StatusCode::OK);
     }
 
     #[test]

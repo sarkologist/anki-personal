@@ -4,23 +4,19 @@
 from __future__ import annotations
 
 import os
-import time
 import weakref
-from collections.abc import Callable
-from concurrent.futures import Future, TimeoutError
-from threading import Event
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future
 from typing import Any
 
 import aqt
 from aqt import gui_hooks
 from aqt.editor import Editor, EditorMode
-from aqt.operations.note import update_note, update_notes
+from aqt.operations.note import update_note
 from aqt.qt import (
     QAction,
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QDockWidget,
     QFileDialog,
     QFormLayout,
@@ -32,7 +28,6 @@ from aqt.qt import (
     QPushButton,
     QSplitter,
     Qt,
-    QTextCursor,
     QTimer,
     QToolButton,
     QVBoxLayout,
@@ -42,22 +37,18 @@ from aqt.qt import (
 from aqt.utils import openFolder, showWarning, tooltip
 from aqt.webview import AnkiWebView
 
-from .activity import ClaudeActivityRenderer, CodexActivityRenderer
-from .agent_log import JsonLineAgentRunLogger, ensure_agent_log_folder
+from . import queue_badge, queue_runtime, queue_window
+from .agent_log import ensure_agent_log_folder
 from .card_access import (
     CARD_ACCESS_OPTIONS,
     CardReadScope,
     normalize_card_access,
-    read_cards,
-    send_with_card_reads,
 )
-from .claude_client import ClaudeCliAgent, resolve_claude_path
+from .claude_client import resolve_claude_path
 from .codex_client import (
     DEFAULT_PROJECT_FOLDER_ACCESS,
     PROJECT_FOLDER_ACCESS_READ_ONLY,
     PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE,
-    AgentStopped,
-    CodexCliAgent,
     normalize_project_folder_access,
     project_root_status,
     resolve_codex_path,
@@ -72,7 +63,6 @@ from .effort_options import (
     effort_supported_by_options,
     effort_value,
 )
-from .latex_preview import LegacyLatexPreviewRenderer
 from .model_options import (
     CLAUDE_MODEL_OPTIONS,
     DEFAULT_PROVIDER,
@@ -92,7 +82,6 @@ from .model_options import (
 from .note_images import collect_note_images
 from .ollama_client import (
     DEFAULT_OLLAMA_HOST,
-    OllamaCliAgent,
     discover_ollama_models,
     normalize_ollama_host,
     ollama_model_names,
@@ -110,30 +99,48 @@ from .patches import (
     SelectedTextSnapshot,
     validate_selected_text_snapshot,
 )
+from .queue_store import (
+    APPLIED,
+    READY,
+    Proposal,
+    QueueTransitionError,
+    Thread,
+)
 from .recent_folders import (
     NO_PROJECT_FOLDER_LABEL,
     project_folder_choices,
     remember_project_folder,
 )
+from .snapshots import Patch, Snapshot
 from .surface import (
-    js_append_to_activity,
-    js_append_transcript,
     js_apply_agent_proposal,
-    js_clear_proposal,
-    js_clear_transcript,
-    js_replace_element,
-    js_set_proposal,
-    multi_note_patch_card_ids,
-    render_activity_line,
-    render_activity_start,
-    render_activity_summary,
-    render_assistant_message,
-    render_error_message,
-    render_multi_note_card_proposal_diff,
-    render_proposal_diff,
-    render_user_message,
     selection_context_label_text,
     surface_body,
+)
+from .thread_panel import (
+    APPLY_ANYWAY_LABEL,
+    APPLY_ANYWAY_TIP,
+    MultiCardProposalDialog,
+    PromptEdit,
+    ThreadPanel,
+    prepare_multi_note_updates,  # noqa: F401 (re-exported)
+)
+from .thread_view import (
+    ACTIVE_STATUSES,
+    REPLYABLE_STATUSES,
+    REVIEWER_SELECTION_JS,
+    SOURCE_ADD_CARDS,
+    SOURCE_BROWSER,
+    SOURCE_BROWSER_MULTI,
+    SOURCE_EDIT_CURRENT,
+    pick_thread,
+    reviewer_card_html,
+    selected_text_of,
+    snapshot_card_ids,
+    stale_reason,
+    thread_context,
+    thread_label,
+    unsaved_note_stale_reason,
 )
 from .ui_text import AGENT_BUTTON_LABEL, AGENT_BUTTON_TIP, AGENT_PANE_SHORTCUT
 
@@ -142,6 +149,7 @@ TOGGLE_COMMAND = "editorAgentPane"
 DEFAULT_SPLITTER_SIZES = [570, 80]
 PROMPT_HISTORY_LIMIT = 10
 SELECTION_CONTEXT_REFRESH_MS = 500
+PROMPT_NOT_SENT = "The note changed before the request was sent, so it was not sent."
 SELECTION_CONTEXT_JS = (
     "typeof getAgentSelectedTextContext === 'function' "
     "? getAgentSelectedTextContext() : null"
@@ -162,27 +170,25 @@ DEFAULT_CONFIG = {
     "prompt_history_by_model": {},
     "project_folder": "",
     "project_folder_access": DEFAULT_PROJECT_FOLDER_ACCESS,
-    "card_access": "current",
+    "card_access": "all",
     "recent_project_folders": [],
     "fast_mode": False,
     "stream_reasoning_summaries": True,
     "timeout_seconds": 300,
     "splitter_sizes": DEFAULT_SPLITTER_SIZES,
+    "queue_concurrency": 1,
+    "queue_notify": True,
+    "queue_retention_days": 30,
+    "queue_show_badge": True,
+    "queue_shortcut": queue_window.DEFAULT_SHORTCUT,
+    "queue_window_geometry": "",
+    "queue_window_splitter": [],
 }
+
 PROJECT_FOLDER_ACCESS_OPTIONS = (
     ("Writable project folder", PROJECT_FOLDER_ACCESS_WORKSPACE_WRITE),
     ("Read-only project folder", PROJECT_FOLDER_ACCESS_READ_ONLY),
 )
-PROVIDER_LABELS = {
-    PROVIDER_CODEX: "Codex",
-    PROVIDER_OLLAMA: "Ollama",
-    PROVIDER_CLAUDE: "Claude",
-}
-PROVIDER_ACTIVITY_START_STATUS = {
-    PROVIDER_CODEX: "[Live Codex activity]",
-    PROVIDER_OLLAMA: "[Running local Ollama model]",
-    PROVIDER_CLAUDE: "[Live Claude activity]",
-}
 
 _installed = False
 _panes: weakref.WeakKeyDictionary[Editor, "EditorAgentPane"] = (
@@ -203,6 +209,18 @@ def install() -> None:
     gui_hooks.editor_did_load_note.append(_on_editor_did_load_note)
     gui_hooks.browser_will_show.append(_on_browser_will_show)
     gui_hooks.browser_did_change_row.append(_on_browser_did_change_row)
+    gui_hooks.add_cards_did_add_note.append(_on_add_cards_did_add_note)
+    queue_runtime.install(addon=ADDON, config=_config, panes=_all_panes)
+    queue_window.install(config=_config, write_config=_write_config)
+    queue_badge.install(config=_config)
+
+
+def _all_panes() -> Iterator[Any]:
+    """Everything that shows queue threads: panes and the queue window."""
+    yield from list(_panes.values())
+    yield from list(_browser_panes.values())
+    yield from queue_window.open_windows()
+    yield queue_badge.listener()
 
 
 def _config() -> dict[str, Any]:
@@ -394,39 +412,6 @@ def _effort_options(provider: str, model: str) -> tuple[tuple[str, str], ...]:
     return codex_effort_options(model)
 
 
-def _format_agent_turn_duration(elapsed_seconds: float) -> str:
-    seconds = max(0.0, elapsed_seconds)
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    total_seconds = int(round(seconds))
-    minutes, remaining_seconds = divmod(total_seconds, 60)
-    return f"{minutes}m {remaining_seconds:02d}s"
-
-
-def _activity_summary_with_elapsed(
-    summary: str,
-    *,
-    elapsed_seconds: float,
-    verb: str = "took",
-) -> str:
-    elapsed = _format_agent_turn_duration(elapsed_seconds)
-    clean = summary.strip()
-    suffix = f"{verb} {elapsed}"
-    if clean.startswith("[") and " activity: " in clean and clean.endswith("]"):
-        return f"{clean[:-1]}, {suffix}]\n"
-    return f"{clean} ({suffix})\n"
-
-
-def _activity_status_summary(
-    status: str,
-    *,
-    elapsed_seconds: float,
-    role: str = "Codex",
-) -> str:
-    elapsed = _format_agent_turn_duration(elapsed_seconds)
-    return f"[{role} activity: {status} after {elapsed}]\n"
-
-
 def _add_editor_button(buttons: list[str], editor: Editor) -> None:
     buttons.append(
         editor.addButton(
@@ -454,6 +439,14 @@ def _add_editor_menu_action(editor: Editor) -> None:
 def _on_editor_did_load_note(editor: Editor) -> None:
     if pane := _panes.get(editor):
         pane.on_editor_context_changed()
+
+
+def _on_add_cards_did_add_note(_note: Any) -> None:
+    # Add Cards keeps its note id at None across adds, so the pane would not
+    # notice the switch to the next note.
+    for editor, pane in list(_panes.items()):
+        if editor.editorMode is EditorMode.ADD_CARDS:
+            pane.on_note_added()
 
 
 def _on_browser_did_change_row(browser: Any) -> None:
@@ -520,212 +513,7 @@ def _sync_browser_multi_card_pane(browser: Any) -> None:
             editor.web.show()
 
 
-class PromptEdit(QPlainTextEdit):
-    def __init__(
-        self,
-        send_callback: Callable[[], None],
-        history_callback: Callable[[], tuple[str, ...]],
-        parent: QWidget,
-    ) -> None:
-        super().__init__(parent)
-        self._send_callback = send_callback
-        self._history_callback = history_callback
-        self._history_index: int | None = None
-        self._draft_text: str | None = None
-
-    def keyPressEvent(self, event: Any) -> None:
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (
-            event.modifiers() & Qt.KeyboardModifier.ShiftModifier
-        ):
-            self._reset_history_navigation()
-            self._send_callback()
-            event.accept()
-            return
-        if event.key() == Qt.Key.Key_Up and self._cursor_on_first_line():
-            if self._show_previous_history_item():
-                event.accept()
-                return
-        if event.key() == Qt.Key.Key_Down and self._cursor_on_last_line():
-            if self._show_next_history_item():
-                event.accept()
-                return
-        if event.key() not in (Qt.Key.Key_Up, Qt.Key.Key_Down):
-            self._reset_history_navigation()
-        super().keyPressEvent(event)
-
-    def _cursor_on_first_line(self) -> bool:
-        return self.textCursor().blockNumber() == 0
-
-    def _cursor_on_last_line(self) -> bool:
-        return self.textCursor().blockNumber() == self.document().blockCount() - 1
-
-    def _show_previous_history_item(self) -> bool:
-        history = self._history_callback()
-        if not history:
-            return False
-        if self._history_index is None:
-            self._draft_text = self.toPlainText()
-            self._history_index = 0
-        elif self._history_index < len(history) - 1:
-            self._history_index += 1
-        self._replace_text(history[self._history_index])
-        return True
-
-    def _show_next_history_item(self) -> bool:
-        if self._history_index is None:
-            return False
-        history = self._history_callback()
-        if self._history_index > 0 and self._history_index <= len(history):
-            self._history_index -= 1
-            self._replace_text(history[self._history_index])
-            return True
-        draft = self._draft_text or ""
-        self._reset_history_navigation()
-        self._replace_text(draft)
-        return True
-
-    def _replace_text(self, text: str) -> None:
-        self.setPlainText(text)
-        self.moveCursor(QTextCursor.MoveOperation.End)
-
-    def _reset_history_navigation(self) -> None:
-        self._history_index = None
-        self._draft_text = None
-
-
-class MultiCardProposalDialog(QDialog):
-    def __init__(
-        self,
-        *,
-        parent: QWidget,
-        snapshot: MultiCardSnapshot,
-        patch: MultiNotePatch,
-        apply_callback: Callable[[set[int]], bool],
-        discard_callback: Callable[[], None],
-    ) -> None:
-        super().__init__(parent, Qt.WindowType.Window)
-        self.snapshot = snapshot
-        self.patch = patch
-        self.apply_callback = apply_callback
-        self.discard_callback = discard_callback
-        self.cards = tuple(
-            card
-            for card in snapshot.cards
-            if patch.update_for_note(card.note_id) is not None
-        )
-        self.index = 0
-        self.checked_note_ids = set(patch.affected_note_ids())
-
-        self.setWindowTitle("Agent proposal")
-        self.resize(1000, 720)
-        layout = QVBoxLayout()
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-        self.setLayout(layout)
-
-        top_row = QHBoxLayout()
-        self.previous_button = QPushButton("Previous")
-        self.next_button = QPushButton("Next")
-        self.page_label = QLabel("")
-        qconnect(self.previous_button.clicked, self._previous_card)
-        qconnect(self.next_button.clicked, self._next_card)
-        top_row.addWidget(self.previous_button)
-        top_row.addWidget(self.next_button)
-        top_row.addWidget(self.page_label, 1)
-        layout.addLayout(top_row)
-
-        self.apply_note_checkbox = QCheckBox("")
-        qconnect(self.apply_note_checkbox.toggled, self._on_note_checked)
-        layout.addWidget(self.apply_note_checkbox)
-
-        self.surface = AnkiWebView(self)
-        self.surface.stdHtml(
-            surface_body(),
-            js=[
-                "js/mathjax.js",
-                "js/vendor/mathjax/tex-chtml-full.js",
-            ],
-            context=self,
-        )
-        layout.addWidget(self.surface, 1)
-
-        buttons = QDialogButtonBox()
-        self.apply_button = buttons.addButton(
-            "Apply checked",
-            QDialogButtonBox.ButtonRole.AcceptRole,
-        )
-        self.discard_button = buttons.addButton(
-            "Discard",
-            QDialogButtonBox.ButtonRole.RejectRole,
-        )
-        assert self.apply_button is not None
-        assert self.discard_button is not None
-        qconnect(self.apply_button.clicked, self._apply_checked)
-        qconnect(self.discard_button.clicked, self._discard)
-        layout.addWidget(buttons)
-
-        self._show_current_card()
-
-    def _current_card(self) -> SelectedCardSnapshot:
-        return self.cards[self.index]
-
-    def _show_current_card(self) -> None:
-        if not self.cards:
-            self.page_label.setText("No affected cards")
-            self.apply_note_checkbox.setEnabled(False)
-            self.apply_button.setEnabled(False)
-            self.surface.eval(js_clear_proposal())
-            return
-
-        card = self._current_card()
-        note_cards = self.snapshot.cards_for_note(card.note_id)
-        self.page_label.setText(f"Card {self.index + 1} of {len(self.cards)}")
-        self.previous_button.setEnabled(self.index > 0)
-        self.next_button.setEnabled(self.index < len(self.cards) - 1)
-        self.apply_note_checkbox.blockSignals(True)
-        self.apply_note_checkbox.setText(
-            f"Apply changes to note {card.note_id} "
-            f"({len(note_cards)} selected card{'s' if len(note_cards) != 1 else ''})"
-        )
-        self.apply_note_checkbox.setChecked(card.note_id in self.checked_note_ids)
-        self.apply_note_checkbox.blockSignals(False)
-        self.surface.eval(
-            js_set_proposal(
-                render_multi_note_card_proposal_diff(
-                    self.snapshot,
-                    self.patch,
-                    card.card_id,
-                )
-            )
-        )
-
-    def _previous_card(self) -> None:
-        if self.index > 0:
-            self.index -= 1
-            self._show_current_card()
-
-    def _next_card(self) -> None:
-        if self.index < len(self.cards) - 1:
-            self.index += 1
-            self._show_current_card()
-
-    def _on_note_checked(self, checked: bool) -> None:
-        card = self._current_card()
-        if checked:
-            self.checked_note_ids.add(card.note_id)
-        else:
-            self.checked_note_ids.discard(card.note_id)
-
-    def _apply_checked(self) -> None:
-        if self.apply_callback(set(self.checked_note_ids)):
-            self.accept()
-
-    def _discard(self) -> None:
-        self.discard_callback()
-        self.reject()
-
-
-class EditorAgentPane(QWidget):
+class EditorAgentPane(ThreadPanel, QWidget):
     def __init__(
         self,
         editor: Editor | None = None,
@@ -740,20 +528,24 @@ class EditorAgentPane(QWidget):
         self.editor = editor
         self.browser = browser
         self.embedded = embedded
-        self.history: list[tuple[str, str]] = []
-        self.pending_patch: NotePatch | MultiNotePatch | None = None
-        self.pending_snapshot: EditorSnapshot | MultiCardSnapshot | None = None
+        # The pane shows one thread from the queue store at a time; the store is
+        # the source of truth for its transcript, status and proposal.
+        self._thread_id: str | None = None
+        self._threads_shown: list[Thread] = []
+        # Threads without a note id (Add Cards, multi-card Browser selections)
+        # stay listed in this pane for its lifetime.
+        self._local_thread_ids: list[str] = []
+        self._force_new_thread = False
+        self._suppress_autopick = False
+        self._updating_thread_combo = False
+        self._last_rendered: tuple[str, str] | None = None
         self._activity_id: str | None = None
-        self._activity_counter = 0
         self._activity_open = False
-        self._agent_stop_event: Event | None = None
         self._context_generation = 0
-        self._last_browser_note_id = self._current_browser_note_id()
-        self._last_browser_multi_card_ids = self._current_browser_multi_card_ids()
+        self._shown_context = self._context_key()
         self._selected_text_snapshot: SelectedTextSnapshot | None = None
         self._selection_context_refresh_pending = False
         self._selection_context_request_id = 0
-        self._activity_role = "Codex"
         self._model_provider = PROVIDER_CODEX
         self._instructions_scope = (PROVIDER_CODEX, "")
         self._ollama_models: tuple[str, ...] = ()
@@ -795,6 +587,7 @@ class EditorAgentPane(QWidget):
             qconnect(self.dock.visibilityChanged, self._on_dock_visibility_changed)
         qconnect(self.text_splitter.splitterMoved, self._save_splitter_sizes)
         self.refresh_context_label()
+        self._load_threads()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout()
@@ -832,6 +625,13 @@ class EditorAgentPane(QWidget):
         self.instructions_edit.setMaximumHeight(110)
         layout.addWidget(self.instructions_edit)
 
+        self.thread_combo = QComboBox()
+        self.thread_combo.setEditable(False)
+        self.thread_combo.setToolTip("Agent requests for this note")
+        qconnect(self.thread_combo.currentIndexChanged, self._on_thread_combo_changed)
+        self.thread_combo.setVisible(False)
+        layout.addWidget(self.thread_combo)
+
         self.surface = AnkiWebView(self)
         self.surface.stdHtml(
             surface_body(),
@@ -841,6 +641,7 @@ class EditorAgentPane(QWidget):
             ],
             context=self,
         )
+        self.surface.set_bridge_command(self._on_bridge_cmd, self)
 
         self.prompt = PromptEdit(
             self._send,
@@ -875,22 +676,58 @@ class EditorAgentPane(QWidget):
         self.apply_button = QPushButton("Apply proposal")
         self.apply_button.setEnabled(False)
         qconnect(self.apply_button.clicked, self._apply_pending_patch)
-        discard_button = QPushButton("Discard")
-        qconnect(discard_button.clicked, self._discard_pending_patch)
+        self.discard_button = QPushButton("Discard")
+        self.discard_button.setEnabled(False)
+        qconnect(
+            self.discard_button.clicked,
+            lambda _checked=False: self._discard_pending_patch(),
+        )
+        self.apply_anyway_button = QPushButton(APPLY_ANYWAY_LABEL)
+        self.apply_anyway_button.setToolTip(APPLY_ANYWAY_TIP)
+        self.apply_anyway_button.setVisible(False)
+        qconnect(
+            self.apply_anyway_button.clicked,
+            lambda _checked=False: self._apply_anyway(),
+        )
+        self.rerun_button = QPushButton("Re-run")
+        self.rerun_button.setToolTip(
+            "Run the last request again against the note as it is now"
+        )
+        self.rerun_button.setEnabled(False)
+        qconnect(self.rerun_button.clicked, lambda _checked=False: self._rerun_thread())
+        self.retry_button = QPushButton("Retry")
+        self.retry_button.setToolTip("Run the failed request again")
+        self.retry_button.setVisible(False)
+        qconnect(self.retry_button.clicked, lambda _checked=False: self._retry_thread())
         action_row.addWidget(self.apply_button)
-        action_row.addWidget(discard_button)
+        action_row.addWidget(self.apply_anyway_button)
+        action_row.addWidget(self.rerun_button)
+        action_row.addWidget(self.retry_button)
+        action_row.addWidget(self.discard_button)
         layout.addLayout(action_row)
 
         send_row = QHBoxLayout()
-        self.reset_chat_button = QPushButton("Reset chat")
-        qconnect(self.reset_chat_button.clicked, self._reset_chat)
+        self.new_request_button = QPushButton("New request")
+        self.new_request_button.setToolTip(
+            "Start a new request instead of replying to the one shown"
+        )
+        qconnect(self.new_request_button.clicked, self._start_new_request)
+        self.queue_button = QPushButton("Queue")
+        self.queue_button.setToolTip(
+            "Open the agent queue for this note "
+            f"({queue_window.DEFAULT_SHORTCUT} opens all requests)"
+        )
+        qconnect(
+            self.queue_button.clicked, lambda _checked=False: self._open_queue_window()
+        )
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
         qconnect(self.stop_button.clicked, self._stop_running_agent)
         self.send_button = QPushButton("Send")
         qconnect(self.send_button.clicked, self._send)
         send_row.addStretch(1)
-        send_row.addWidget(self.reset_chat_button)
+        send_row.addWidget(self.queue_button)
+        send_row.addWidget(self.new_request_button)
         send_row.addWidget(self.stop_button)
         send_row.addWidget(self.send_button)
         layout.addLayout(send_row)
@@ -962,7 +799,7 @@ class EditorAgentPane(QWidget):
             "card's home deck (no subdecks), or the decks of selected cards. "
             "In Add Cards it uses the selected target deck. Current card only "
             "keeps the existing editor/selected-card context. Changing access "
-            "stops the active run and clears the chat."
+            "applies to the next request; replies keep their request's access."
         )
         qconnect(
             self.card_access_combo.currentIndexChanged, self._on_card_access_changed
@@ -1362,7 +1199,9 @@ class EditorAgentPane(QWidget):
     def _on_card_access_changed(self, _index: int) -> None:
         if getattr(self, "_loading_settings", False):
             return
-        self._clear_chat_context()
+        # A thread's permitted scope is part of its settings, so the next Send
+        # starts a new thread rather than replying with the old access.
+        self._force_new_thread = True
         self._save_settings()
         self.refresh_context_label()
 
@@ -1508,33 +1347,34 @@ class EditorAgentPane(QWidget):
     def on_editor_context_changed(self) -> None:
         self.refresh_context_label()
         self._set_selected_text_snapshot(None)
-        if self.editor is None:
-            return
-        if self.editor.editorMode is not EditorMode.BROWSER:
-            return
-        note_id = self._current_browser_note_id()
-        if note_id == self._last_browser_note_id:
-            return
-        self._last_browser_note_id = note_id
-        self._clear_chat_context()
+        self._on_context_changed()
+
+    def on_note_added(self) -> None:
+        """Add Cards added the note and loaded a blank one: start afresh."""
+        self._context_generation += 1
+        self._set_selected_text_snapshot(None)
+        self._start_new_request()
 
     def on_browser_context_changed(self) -> None:
         self.refresh_context_label()
-        card_ids = self._current_browser_multi_card_ids()
-        if card_ids == self._last_browser_multi_card_ids:
-            return
-        self._last_browser_multi_card_ids = card_ids
-        self._clear_chat_context()
+        self._on_context_changed()
 
-    def _current_browser_note_id(self) -> int | None:
-        if self.editor is None:
-            return None
-        if self.editor.editorMode is not EditorMode.BROWSER:
-            return None
-        note = self.editor.note
-        if not note or not note.id:
-            return None
-        return int(note.id)
+    def _on_context_changed(self) -> None:
+        key = self._context_key()
+        if key == self._shown_context:
+            return
+        self._shown_context = key
+        self._context_generation += 1
+        self._force_new_thread = False
+        self._suppress_autopick = False
+        self._load_threads()
+
+    def _context_key(self) -> tuple[str, Any]:
+        """What the pane is looking at: a note id, or a multi-card selection."""
+        if self.browser is not None:
+            return ("cards", self._current_browser_multi_card_ids())
+        note = self.editor.note if self.editor is not None else None
+        return ("note", int(note.id) if note is not None and note.id else None)
 
     def _current_browser_multi_card_ids(self) -> tuple[int, ...]:
         browser = self.browser
@@ -1544,27 +1384,6 @@ class EditorAgentPane(QWidget):
             return tuple(int(card_id) for card_id in browser.selected_cards())
         except Exception:
             return ()
-
-    def _reset_chat(self) -> None:
-        self._clear_chat_context()
-
-    def _clear_chat_context(self) -> None:
-        self._context_generation += 1
-        if self._agent_stop_event is not None:
-            self._agent_stop_event.set()
-            self._agent_stop_event = None
-        self.history.clear()
-        self._history_card_scope: CardReadScope | None = None
-        self.pending_patch = None
-        self.pending_snapshot = None
-        self._activity_id = None
-        self._activity_open = False
-        self._set_selected_text_snapshot(None)
-        self.send_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-        self.apply_button.setEnabled(False)
-        self.surface.eval(js_clear_transcript())
-        self._clear_proposal()
 
     def _on_dock_visibility_changed(self, visible: bool) -> None:
         if visible:
@@ -1646,61 +1465,125 @@ class EditorAgentPane(QWidget):
         )
         self.selection_context_label.setVisible(True)
 
-    def _append_transcript(self, fragment: str) -> None:
-        self.surface.eval(js_append_transcript(fragment))
+    def _threads_for_context(self) -> list[Thread]:
+        service = self._service()
+        if service is None:
+            return []
+        store = service.store
+        kind, value = self._shown_context
+        if kind == "note" and value is not None:
+            return store.threads_for_note(value)
+        threads = [
+            thread
+            for thread_id in self._local_thread_ids
+            if (thread := store.get_thread(thread_id)) is not None
+        ]
+        if kind == "cards":
+            threads = [
+                thread
+                for thread in threads
+                if (snapshot := self._thread_snapshot(thread)) is not None
+                and snapshot_card_ids(snapshot) == value
+            ]
+        return threads
 
-    def _replace_activity_with_summary(
-        self, summary: str, detail_lines: tuple[str, ...]
-    ) -> None:
-        if self._activity_id:
-            self.surface.eval(
-                js_replace_element(
-                    self._activity_id,
-                    render_activity_summary(
-                        self._activity_id,
-                        summary,
-                        detail_lines,
-                        role=getattr(self, "_activity_role", "Codex"),
-                    ),
-                )
-            )
-        self._activity_id = None
-        self._activity_open = False
+    # showing threads
 
-    def _append_activity_line(self, line: str) -> None:
-        if self._activity_open and self._activity_id:
-            self.surface.eval(
-                js_append_to_activity(self._activity_id, render_activity_line(line))
-            )
+    def _load_threads(self, select: str | None = None) -> None:
+        """List the current note's threads and show ``select`` (or the best one)."""
+        threads = self._threads_for_context()
+        self._threads_shown = threads
+        ids = {thread.id for thread in threads}
+        if select is None and not self._suppress_autopick:
+            picked = pick_thread(threads)
+            select = picked.id if picked is not None else None
+        self._thread_id = select if select in ids else None
+        self._refresh_thread_combo()
+        self._render_selected_thread()
 
-    def _append_activity_line_if_current(self, generation: int, line: str) -> None:
-        if generation == self._context_generation:
-            self._append_activity_line(line)
+    def _refresh_thread_combo(self) -> None:
+        combo = self.thread_combo
+        threads = sorted(self._threads_shown, key=lambda t: t.created_at, reverse=True)
+        self._updating_thread_combo = True
+        try:
+            combo.clear()
+            selected_index = -1
+            for index, thread in enumerate(threads):
+                combo.addItem(thread_label(thread), thread.id)
+                if thread.id == self._thread_id:
+                    selected_index = index
+            combo.setCurrentIndex(selected_index)
+        finally:
+            self._updating_thread_combo = False
+        combo.setVisible(len(threads) > 1)
 
-    def _clear_proposal(self) -> None:
-        self.surface.eval(js_clear_proposal())
+    def _on_thread_combo_changed(self, index: int) -> None:
+        if self._updating_thread_combo or index < 0:
+            return
+        thread_id = self.thread_combo.itemData(index)
+        if not thread_id or thread_id == self._thread_id:
+            return
+        self._force_new_thread = False
+        self._suppress_autopick = False
+        self._load_threads(select=str(thread_id))
 
-    def _set_proposal(
-        self,
-        snapshot: EditorSnapshot,
-        patch: NotePatch,
-        notetype: dict[str, Any],
-    ) -> None:
-        assert self.editor is not None
-        renderer = LegacyLatexPreviewRenderer(col=self.editor.mw.col, notetype=notetype)
-        self.surface.eval(
-            js_set_proposal(render_proposal_diff(snapshot, patch, renderer.render))
+    def on_thread_changed(self, thread_id: str) -> None:
+        """A thread changed in the store (run progress, apply, discard...)."""
+        self._sync_multi_proposal_dialog(thread_id)
+        if thread_id == self._thread_id:
+            self._load_threads(select=thread_id)
+            return
+        service = self._service()
+        if service is None:
+            return
+        thread = service.store.get_thread(thread_id)
+        if thread is None:
+            return
+        kind, value = self._shown_context
+        belongs = thread.id in self._local_thread_ids or (
+            kind == "note" and value is not None and thread.note_id == value
         )
+        if belongs:
+            self._load_threads(select=self._thread_id)
+
+    def _broadcast_thread_changed(self, thread_id: str) -> None:
+        self._load_threads(select=thread_id)
+        queue_runtime.thread_changed(thread_id, exclude=self)
+
+    def _open_queue_window(self) -> None:
+        """The queue window, filtered to this note (it has a show-all toggle)."""
+        note = self.editor.note if self.editor is not None else None
+        note_id = int(note.id) if note is not None and note.id else None
+        queue_window.open_window(note_id=note_id)
+
+    def _start_new_request(self) -> None:
+        """Deselect the shown thread; the next Send starts a new one."""
+        self._force_new_thread = False
+        self._suppress_autopick = True
+        self._thread_id = None
+        self._refresh_thread_combo()
+        self._render_selected_thread()
+
+    # sending
 
     def _send(self) -> None:
-        if self._agent_stop_event is not None:
-            return
         prompt = self.prompt.toPlainText().strip()
         if not prompt:
             return
+        if self._service() is None:
+            showWarning("The agent queue is not open yet.", parent=self)
+            return
+        # Cleared now so a second Send cannot repeat it; restored if the
+        # request is abandoned before it reaches the store.
         self.prompt.clear()
         self._save_settings()
         generation = self._context_generation
+        reply_to = self._reply_target()
+        if reply_to is not None:
+            self._after_note_saved(
+                lambda: self._reply_to_thread(reply_to, prompt, generation)
+            )
+            return
         self._query_selected_text_context(
             lambda selected_text: self._send_after_selection_snapshot(
                 prompt,
@@ -1709,6 +1592,29 @@ class EditorAgentPane(QWidget):
             ),
         )
 
+    def _restore_prompt(self, prompt: str, reason: str | None = None) -> None:
+        """Put back a prompt whose request was not stored, unless the user has
+        typed something new since."""
+        if not self.prompt.toPlainText().strip():
+            self.prompt.setPlainText(prompt)
+        if reason:
+            tooltip(reason, parent=self)
+
+    def _reply_target(self) -> str | None:
+        """The selected thread, when Send should reply to it."""
+        if self._force_new_thread:
+            return None
+        thread = self._selected_thread()
+        if thread is None or thread.status not in REPLYABLE_STATUSES:
+            return None
+        return thread.id
+
+    def _after_note_saved(self, callback: Callable[[], None]) -> None:
+        if self.editor is None:
+            callback()
+            return
+        self.editor.call_after_note_saved(callback, keepFocus=True)
+
     def _send_after_selection_snapshot(
         self,
         prompt: str,
@@ -1716,497 +1622,357 @@ class EditorAgentPane(QWidget):
         selected_text: Any,
     ) -> None:
         if generation != self._context_generation:
+            self._restore_prompt(prompt, PROMPT_NOT_SENT)
             return
-        if self.editor is None:
-            self._start_agent_request(prompt, generation, selected_text)
-            return
-        self.editor.call_after_note_saved(
-            lambda: self._start_agent_request(prompt, generation, selected_text),
-            keepFocus=True,
+        self._query_reviewer_context(
+            lambda reviewer: self._send_after_reviewer_context(
+                prompt, generation, selected_text, reviewer
+            )
         )
 
-    def _start_agent_request(
+    def _send_after_reviewer_context(
         self,
         prompt: str,
-        generation: int | None = None,
-        selected_text: Any = None,
+        generation: int,
+        selected_text: Any,
+        reviewer: dict[str, Any] | None,
     ) -> None:
-        if generation is None:
-            generation = self._context_generation
         if generation != self._context_generation:
+            self._restore_prompt(prompt, PROMPT_NOT_SENT)
             return
+        self._after_note_saved(
+            lambda: self._create_thread(prompt, generation, selected_text, reviewer)
+        )
+
+    def _query_reviewer_context(
+        self, callback: Callable[[dict[str, Any] | None], None]
+    ) -> None:
+        """Capture what the reviewer showed, when this is Edit Current on its card."""
+        editor = self.editor
+        reviewer = getattr(aqt.mw, "reviewer", None) if aqt.mw is not None else None
+        card = getattr(reviewer, "card", None)
+        if (
+            editor is None
+            or editor.editorMode is not EditorMode.EDIT_CURRENT
+            or card is None
+            or editor.card is None
+            or int(editor.card.id) != int(card.id)
+        ):
+            callback(None)
+            return
+        state = getattr(reviewer, "state", None)
+        context: dict[str, Any] = {
+            "side": state if state in ("question", "answer") else None,
+            "question_html": reviewer_card_html(card.question),
+            "answer_html": reviewer_card_html(card.answer),
+            "selection": "",
+        }
+        web = getattr(reviewer, "web", None)
+        if web is None:
+            callback(context)
+            return
+
+        def on_selection(selection: Any) -> None:
+            context["selection"] = (
+                selection.strip() if isinstance(selection, str) else ""
+            )
+            callback(context)
+
+        web.evalWithCallback(REVIEWER_SELECTION_JS, on_selection)
+
+    def _create_thread(
+        self,
+        prompt: str,
+        generation: int,
+        selected_text: Any = None,
+        reviewer: dict[str, Any] | None = None,
+    ) -> None:
+        if generation != self._context_generation:
+            self._restore_prompt(prompt, PROMPT_NOT_SENT)
+            return
+        service = self._service()
+        if service is None:
+            self._restore_prompt(prompt)
+            showWarning("The agent queue is not open yet.", parent=self)
+            return
+        snapshot: Snapshot
         try:
             browser = getattr(self, "browser", None)
             if browser is not None:
                 snapshot = browser_multi_card_snapshot(browser)
-                collection = browser.col
-                notetype: dict[str, Any] = {}
+                source = SOURCE_BROWSER_MULTI
             else:
                 assert self.editor is not None
                 snapshot = editor_snapshot(self.editor, selected_text)
-                collection = self.editor.mw.col
-                notetype = dict(self.editor.note_type())
+                source = _editor_source(self.editor)
             card_scope = self._card_read_scope(snapshot)
         except RuntimeError as exc:
+            self._restore_prompt(prompt)
             showWarning(str(exc), parent=self)
             return
-        previous_scope = getattr(self, "_history_card_scope", None)
-        if previous_scope is not None and previous_scope != card_scope:
-            # A different card or Add Cards target can change the permitted
-            # decks without changing the note or the permission selector.
-            self._clear_chat_context()
-            generation = self._context_generation
-        self._history_card_scope = card_scope
-        selected_snapshot = (
-            snapshot.selected_text if isinstance(snapshot, EditorSnapshot) else None
+        settings = self._thread_settings(card_scope)
+        if settings is None:
+            self._restore_prompt(prompt)
+            return
+        note_id = snapshot.note_id if isinstance(snapshot, EditorSnapshot) else None
+        note = self.editor.note if self.editor is not None else None
+        note_mod = getattr(note, "mod", None) if note_id else None
+        context = thread_context(
+            source,
+            snapshot,
+            reviewer=reviewer if source == SOURCE_EDIT_CURRENT else None,
+            note_mod=int(note_mod) if isinstance(note_mod, int) else None,
+            deck_id=self._default_deck_id(snapshot),
         )
+        thread = service.store.create_thread(context, settings, prompt, note_id=note_id)
+        if note_id is None:
+            self._local_thread_ids.append(thread.id)
+        self._force_new_thread = False
+        self._suppress_autopick = False
+        self._set_selected_text_snapshot(selected_text_of(snapshot))
+        self._record_prompt(settings, prompt)
+        service.runner.enqueue_kick()
+        self._load_threads(select=thread.id)
 
+    def _default_deck_id(self, snapshot: Snapshot) -> int | None:
+        """The deck new notes default to: the source card's home deck, or the
+        Add Cards target deck."""
+        try:
+            if isinstance(snapshot, MultiCardSnapshot):
+                return next(
+                    (card.deck_id for card in snapshot.cards if card.deck_id),
+                    None,
+                )
+            editor = self.editor
+            if editor is None:
+                return None
+            if editor.card is not None:
+                return int(editor.card.current_deck_id())
+            if editor.editorMode is EditorMode.ADD_CARDS:
+                chooser = getattr(
+                    getattr(editor, "parentWindow", None), "deck_chooser", None
+                )
+                return int(chooser.selected_deck_id) if chooser is not None else None
+            note = editor.note
+            if note is not None and note.id:
+                cards = note.cards()
+                return int(cards[0].current_deck_id()) if cards else None
+        except Exception:
+            return None
+        return None
+
+    def _reply_to_thread(self, thread_id: str, prompt: str, generation: int) -> None:
+        if generation != self._context_generation:
+            self._restore_prompt(prompt, PROMPT_NOT_SENT)
+            return
+        service = self._service()
+        if service is None:
+            self._restore_prompt(prompt)
+            showWarning("The agent queue is not open yet.", parent=self)
+            return
+        # A reply runs with the form as it is now, so changing the provider or
+        # model in the pane applies to the next run of the shown thread.
+        settings = self._reply_settings(service.store.get_thread(thread_id))
+        if settings is None:
+            self._restore_prompt(prompt)
+            return
+        try:
+            service.store.reply(thread_id, prompt)
+        except QueueTransitionError as exc:
+            self._restore_prompt(prompt)
+            showWarning(str(exc), parent=self)
+            return
+        service.store.set_settings(thread_id, settings)
+        self._record_prompt(settings, prompt)
+        service.runner.enqueue_kick()
+        self._broadcast_thread_changed(thread_id)
+
+    def _reply_settings(self, thread: Thread | None) -> dict[str, Any] | None:
+        if thread is None:
+            return None
+        snapshot = self._thread_snapshot(thread)
+        if snapshot is None:
+            return None
+        return self._thread_settings(self._card_read_scope(snapshot))
+
+    def _record_prompt(self, settings: dict[str, Any], prompt: str) -> None:
+        config = _config()
+        _record_prompt_history_for_model(
+            config,
+            provider=settings.get("provider", ""),
+            model=settings.get("model", ""),
+            prompt=prompt,
+        )
+        _write_config(config)
+
+    def _thread_settings(self, card_scope: CardReadScope) -> dict[str, Any] | None:
+        """Snapshot of the form for a new thread (see queue_runner.normalize_settings)."""
         config = _config()
         provider = self._provider()
         model = self._model_text() or self._saved_model_for_provider(provider, config)
-        prompt_history_scope = (provider, model)
         if provider == PROVIDER_OLLAMA and not model:
             showWarning("Select an Ollama model first.", parent=self)
-            return
-        provider_label = PROVIDER_LABELS.get(provider, "Codex")
-        reasoning_effort = (
-            self._reasoning_effort()
-            if provider in (PROVIDER_CODEX, PROVIDER_CLAUDE)
-            else ""
-        )
+            return None
         # Effort is shared across providers and models; drop a value the active
         # pair does not support (e.g. Codex's "none" must not reach Claude, and
         # "ultra" must not reach a Codex model that stops at "xhigh").
-        reasoning_effort = _effort_for_provider(provider, reasoning_effort, model)
-        project_root = self._project_folder_text()
-        project_folder_access = self._project_folder_access()
-        custom_instructions = self._custom_instructions_text()
-        codex_path = self.codex_path_edit.text().strip() or str(config["codex_path"])
-        ollama_path = self.ollama_path_edit.text().strip() or str(config["ollama_path"])
-        ollama_host = self.ollama_host_edit.text().strip() or str(config["ollama_host"])
-        claude_path = self.claude_path_edit.text().strip() or str(config["claude_path"])
-        fast_mode = self._fast_mode() if provider == PROVIDER_CODEX else False
-        stream_reasoning_summaries = (
-            self._stream_reasoning_summaries() if provider == PROVIDER_CODEX else False
+        effort = _effort_for_provider(
+            provider,
+            self._reasoning_effort()
+            if provider in (PROVIDER_CODEX, PROVIDER_CLAUDE)
+            else "",
+            model,
         )
-        self._set_selected_text_snapshot(selected_snapshot)
-        self._append_transcript(render_user_message(prompt, selected_snapshot))
-        stop_event = Event()
-        history = list(self.history)
-        started_at = time.monotonic()
-        self._agent_stop_event = stop_event
-        self.send_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-        self.apply_button.setEnabled(False)
-        self.pending_patch = None
-        self.pending_snapshot = None
-        self._clear_proposal()
-        self._activity_counter += 1
-        self._activity_id = f"agent-activity-{self._activity_counter}"
-        self._activity_open = True
-        self._activity_role = provider_label
-        self._append_transcript(
-            render_activity_start(
-                self._activity_id,
-                role=provider_label,
-                status=PROVIDER_ACTIVITY_START_STATUS.get(provider, "[Running agent]"),
-            )
-        )
-        activity: ClaudeActivityRenderer | CodexActivityRenderer = (
-            ClaudeActivityRenderer()
-            if provider == PROVIDER_CLAUDE
-            else CodexActivityRenderer(
-                stream_reasoning_summaries=stream_reasoning_summaries
-            )
-        )
-        assert aqt.mw is not None
-        taskman = aqt.mw.taskman
-        run_logger = JsonLineAgentRunLogger(aqt.mw.addonManager.get_logger(ADDON))
+        is_codex = provider == PROVIDER_CODEX
+        return {
+            "provider": provider,
+            "model": model,
+            "reasoning_effort": effort,
+            "card_access": card_scope.access,
+            "deck_ids": list(card_scope.deck_ids),
+            "project_folder": (
+                "" if provider == PROVIDER_OLLAMA else self._project_folder_text()
+            ),
+            "project_folder_access": self._project_folder_access(),
+            "custom_instructions": self._custom_instructions_text(),
+            "fast_mode": self._fast_mode() if is_codex else False,
+            "stream_reasoning_summaries": (
+                self._stream_reasoning_summaries() if is_codex else False
+            ),
+            "timeout_seconds": int(config["timeout_seconds"]),
+            "paths": {
+                "codex_path": self.codex_path_edit.text().strip()
+                or str(config["codex_path"]),
+                "claude_path": self.claude_path_edit.text().strip()
+                or str(config["claude_path"]),
+                "ollama_path": self.ollama_path_edit.text().strip()
+                or str(config["ollama_path"]),
+                "ollama_host": self.ollama_host_edit.text().strip()
+                or str(config["ollama_host"]),
+            },
+        }
 
-        def on_stream_event(event: dict[str, Any]) -> None:
-            line = activity.record(event)
-            if line is not None:
-                taskman.run_on_main(
-                    lambda line=line, generation=generation: (
-                        self._append_activity_line_if_current(generation, line)
-                    )
-                )
-
-        def lookup_cards(request: Any) -> dict[str, Any]:
-            # The CLI runs without the collection lock. Schedule each lookup
-            # separately on Anki's serialized collection executor.
-            response: Future = Future()
-
-            def begin_lookup() -> None:
-                if (
-                    stop_event.is_set()
-                    or generation != self._context_generation
-                    or aqt.mw is None
-                    or aqt.mw.col is not collection
-                ):
-                    response.set_exception(
-                        AgentStopped("Card access changed or collection closed.")
-                    )
-                    return
-
-                def query() -> dict[str, Any]:
-                    if stop_event.is_set():
-                        raise AgentStopped("Agent run stopped.")
-                    return read_cards(collection, card_scope, request)
-
-                def done(future: Future) -> None:
-                    try:
-                        response.set_result(future.result())
-                    except AgentStopped as exc:
-                        response.set_exception(exc)
-                    except Exception:
-                        response.set_result(
-                            {
-                                "error": "Card lookup failed. Check the Anki search query and retry."
-                            }
-                        )
-
-                self._append_activity_line_if_current(
-                    generation, "[cards] Reading permitted cards"
-                )
-                try:
-                    taskman.run_in_background(query, done, uses_collection=True)
-                except Exception as exc:
-                    response.set_exception(exc)
-
-            taskman.run_on_main(begin_lookup)
-            while True:
-                if stop_event.is_set():
-                    raise AgentStopped("Agent run stopped.")
-                try:
-                    return response.result(timeout=0.1)
-                except TimeoutError:
-                    continue
-
-        def send_agent(agent: Any, **kwargs: Any) -> Any:
-            return send_with_card_reads(
-                agent.send,
-                scope=card_scope,
-                read=lookup_cards,
-                **kwargs,
-            )
-
-        def task() -> tuple[
-            str,
-            str,
-            tuple[NotePatch | MultiNotePatch, ...],
-            str,
-            tuple[str, ...],
-        ]:
-            if provider == PROVIDER_OLLAMA:
-                agent = OllamaCliAgent(
-                    ollama_path=ollama_path,
-                    ollama_host=ollama_host,
-                    model=model,
-                    timeout_seconds=int(config["timeout_seconds"]),
-                    custom_instructions=custom_instructions,
-                )
-                result = send_agent(
-                    agent,
-                    prompt=prompt,
-                    snapshot=snapshot,
-                    project_root="",
-                    history=history,
-                    run_logger=run_logger,
-                    stop_requested=stop_event.is_set,
-                )
-                return (
-                    result.text,
-                    result.html,
-                    result.proposals,
-                    "[Ollama activity: local model run]\n",
-                    (),
-                )
-
-            if provider == PROVIDER_CLAUDE:
-                agent = ClaudeCliAgent(
-                    claude_path=claude_path,
-                    model=model,
-                    timeout_seconds=int(config["timeout_seconds"]),
-                    project_folder_access=project_folder_access,
-                    custom_instructions=custom_instructions,
-                    reasoning_effort=reasoning_effort,
-                )
-                result = send_agent(
-                    agent,
-                    prompt=prompt,
-                    snapshot=snapshot,
-                    project_root=project_root,
-                    history=history,
-                    event_callback=on_stream_event,
-                    run_logger=run_logger,
-                    stop_requested=stop_event.is_set,
-                )
-                return (
-                    result.text,
-                    result.html,
-                    result.proposals,
-                    activity.compact_summary(),
-                    tuple(activity.detail_lines),
-                )
-
-            agent = CodexCliAgent(
-                codex_path=codex_path,
-                model=model,
-                timeout_seconds=int(config["timeout_seconds"]),
-                project_folder_access=project_folder_access,
-                custom_instructions=custom_instructions,
-                fast_mode=fast_mode,
-                reasoning_effort=reasoning_effort,
-                stream_reasoning_summaries=stream_reasoning_summaries,
-            )
-            result = send_agent(
-                agent,
-                prompt=prompt,
-                snapshot=snapshot,
-                project_root=project_root,
-                history=history,
-                event_callback=on_stream_event,
-                run_logger=run_logger,
-                stop_requested=stop_event.is_set,
-            )
-            return (
-                result.text,
-                result.html,
-                result.proposals,
-                activity.compact_summary(),
-                tuple(activity.detail_lines),
-            )
-
-        def on_done(future: Future) -> None:
-            self._handle_agent_done(
-                future,
-                generation=generation,
-                stop_event=stop_event,
-                prompt=prompt,
-                snapshot=snapshot,
-                notetype=notetype,
-                activity=activity,
-                started_at=started_at,
-                prompt_history_scope=prompt_history_scope,
-            )
-
-        taskman.run_in_background(task, on_done, uses_collection=False)
-
-    def _handle_agent_done(
+    def _after_thread_rendered(
         self,
-        future: Future,
-        *,
-        generation: int,
-        stop_event: Event,
-        prompt: str,
-        snapshot: EditorSnapshot | MultiCardSnapshot,
-        notetype: dict[str, Any],
-        activity: ClaudeActivityRenderer | CodexActivityRenderer,
-        started_at: float | None = None,
-        prompt_history_scope: tuple[str, str] | None = None,
+        thread: Thread | None,
+        previous: tuple[str, str] | None,
+        snapshot: Snapshot | None,
+        shown: Patch | None,
     ) -> None:
-        if generation != self._context_generation:
+        """Open the multi-card review when the shown thread finishes running."""
+        if thread is None:
             return
-        elapsed_seconds = (
-            time.monotonic() - started_at if started_at is not None else None
+        became_ready = (
+            thread.status == READY
+            and previous is not None
+            and previous[0] == thread.id
+            and previous[1] in ACTIVE_STATUSES
         )
-        if self._agent_stop_event is stop_event:
-            self._agent_stop_event = None
-            self.send_button.setEnabled(True)
-            self.stop_button.setEnabled(False)
-        activity_role = getattr(self, "_activity_role", "Codex")
-        try:
-            (
-                text,
-                message_html,
-                proposals,
-                activity_summary,
-                activity_details,
-            ) = future.result()
-        except AgentStopped:
-            summary = (
-                _activity_status_summary(
-                    "stopped",
-                    elapsed_seconds=elapsed_seconds,
-                    role=activity_role,
-                )
-                if elapsed_seconds is not None
-                else f"{activity_role} run stopped."
-            )
-            self._replace_activity_with_summary(
-                summary,
-                tuple(activity.detail_lines),
-            )
+        if not (became_ready and isinstance(shown, MultiNotePatch)):
             return
-        except Exception as exc:
-            if elapsed_seconds is not None:
-                self._replace_activity_with_summary(
-                    _activity_status_summary(
-                        "failed",
-                        elapsed_seconds=elapsed_seconds,
-                        role=activity_role,
-                    ),
-                    tuple(activity.detail_lines),
-                )
-            else:
-                self._activity_open = False
-            self._append_transcript(render_error_message(str(exc)))
+        # Patch and version from one read, so the dialog knows what it shows.
+        found = self._current_proposal(thread.id)
+        if found is None:
             return
-        if elapsed_seconds is not None:
-            activity_summary = _activity_summary_with_elapsed(
-                activity_summary,
-                elapsed_seconds=elapsed_seconds,
+        _thread, proposal, found_snapshot, patch = found
+        if (
+            isinstance(patch, MultiNotePatch)
+            and patch.note_updates
+            and isinstance(found_snapshot, MultiCardSnapshot)
+        ):
+            self._show_multi_proposal_dialog(
+                thread.id, found_snapshot, patch, proposal.version
             )
-        self._replace_activity_with_summary(activity_summary, activity_details)
-        if text or message_html:
-            self._append_transcript(render_assistant_message(message_html, text))
-        self.history.append((prompt, text))
-        if prompt_history_scope is not None:
-            config = _config()
-            _record_prompt_history_for_model(
-                config,
-                provider=prompt_history_scope[0],
-                model=prompt_history_scope[1],
-                prompt=prompt,
-            )
-            _write_config(config)
-        if proposals:
-            self.pending_patch = proposals[-1]
-            self.pending_snapshot = snapshot
-            if isinstance(snapshot, MultiCardSnapshot) and isinstance(
-                proposals[-1], MultiNotePatch
-            ):
-                self._set_multi_proposal(snapshot, proposals[-1])
-            else:
-                assert isinstance(snapshot, EditorSnapshot)
-                assert isinstance(proposals[-1], NotePatch)
-                self._set_proposal(snapshot, proposals[-1], notetype)
-            self.apply_button.setEnabled(True)
 
-    def _stop_running_agent(self) -> None:
-        if self._agent_stop_event is None:
-            return
-        self._agent_stop_event.set()
-        self.stop_button.setEnabled(False)
-        self._append_activity_line("[status] stopping agent")
-
-    def _discard_pending_patch(self) -> None:
-        self.pending_patch = None
-        self.pending_snapshot = None
-        self._clear_proposal()
-        self.apply_button.setEnabled(False)
-        if hasattr(self.apply_button, "setText"):
-            self.apply_button.setText("Apply proposal")
-
-    def _apply_pending_patch(self) -> None:
-        patch = self.pending_patch
-        if patch is None:
-            return
-        if isinstance(patch, MultiNotePatch):
-            snapshot = self.pending_snapshot
-            if not isinstance(snapshot, MultiCardSnapshot):
-                return
-            self._show_multi_proposal_dialog(snapshot, patch)
-            return
+    def _apply_note_update(
+        self,
+        thread: Thread,
+        proposal: Proposal,
+        snapshot: Snapshot,
+        patch: NotePatch,
+        *,
+        force: bool = False,
+    ) -> None:
+        """Fill the editor (after saving what was typed) rather than writing the
+        note behind its back."""
         if self.editor is None:
+            super()._apply_note_update(thread, proposal, snapshot, patch, force=force)
             return
-        generation = self._context_generation
         self.editor.call_after_note_saved(
-            lambda: self._apply_patch_after_save(patch, generation),
+            lambda: self._apply_patch_after_save(
+                thread.id, proposal.version, force=force
+            ),
             keepFocus=True,
         )
 
-    def _apply_patch_after_save(self, patch: NotePatch, generation: int) -> None:
-        if generation != self._context_generation:
-            return
-        try:
-            apply_patch_to_editor(self.editor, patch)
-        except PatchValidationError as exc:
-            showWarning(str(exc), parent=self)
-            return
-        self._discard_pending_patch()
-        tooltip("Agent proposal applied.", parent=self)
-
-    def _set_multi_proposal(
-        self,
-        snapshot: MultiCardSnapshot,
-        patch: MultiNotePatch,
+    def _apply_patch_after_save(
+        self, thread_id: str, version: int, *, force: bool = False
     ) -> None:
-        card_ids = multi_note_patch_card_ids(snapshot, patch)
-        if not card_ids:
-            self._clear_proposal()
-            self.apply_button.setEnabled(False)
+        """``force`` (Apply anyway) skips the base-revision check."""
+        found = self._current_proposal(thread_id)
+        if found is None or self.editor is None:
             return
-        self.surface.eval(
-            js_set_proposal(
-                render_multi_note_card_proposal_diff(
-                    snapshot,
-                    patch,
-                    card_ids[0],
+        thread, proposal, snapshot, patch = found
+        if proposal.version != version or not isinstance(patch, NotePatch):
+            return
+        if thread.note_id is not None:
+            note = self.editor.note
+            if note is None or not note.id or int(note.id) != thread.note_id:
+                showWarning(
+                    "The editor is no longer showing the note this proposal is for.",
+                    parent=self,
                 )
+                return
+            reason = (
+                None
+                if force
+                else stale_reason(proposal.base, self._note_states([thread.note_id]))
             )
-        )
-        if hasattr(self.apply_button, "setText"):
-            self.apply_button.setText("Review proposal")
-        self._show_multi_proposal_dialog(snapshot, patch)
-
-    def _show_multi_proposal_dialog(
-        self,
-        snapshot: MultiCardSnapshot,
-        patch: MultiNotePatch,
-    ) -> None:
-        if self._multi_proposal_dialog is not None:
-            self._multi_proposal_dialog.raise_()
-            self._multi_proposal_dialog.activateWindow()
-            return
-        dialog = MultiCardProposalDialog(
-            parent=self,
-            snapshot=snapshot,
-            patch=patch,
-            apply_callback=self._apply_checked_multi_patch,
-            discard_callback=self._discard_pending_patch,
-        )
-        self._multi_proposal_dialog = dialog
-
-        def on_finished(_result: int) -> None:
-            self._multi_proposal_dialog = None
-
-        qconnect(dialog.finished, on_finished)
-        dialog.show()
-
-    def _apply_checked_multi_patch(self, checked_note_ids: set[int]) -> bool:
-        snapshot = self.pending_snapshot
-        patch = self.pending_patch
-        if not isinstance(snapshot, MultiCardSnapshot) or not isinstance(
-            patch, MultiNotePatch
-        ):
-            return False
-        browser = self.browser
-        if browser is None:
-            return False
-        try:
-            notes = prepare_multi_note_updates(
-                browser.col,
+            if reason is not None:
+                self._refuse_stale(thread_id, reason)
+                return
+        else:
+            # Add Cards: no note id, so check the editor still holds the note
+            # the proposal was made for, not the next one after Add.
+            note = self.editor.note
+            if note is None:
+                return
+            reason = unsaved_note_stale_reason(
                 snapshot,
-                patch,
-                checked_note_ids,
+                int(note.mid),
+                [str(html) for _name, html in note.items()],
+                list(note.tags),
             )
+        if reason is not None:
+            showWarning(reason, parent=self)
+            return
+        creates = patch.note_creates
+        try:
+            # With new notes, the current note is saved in the same undoable op.
+            apply_patch_to_editor(self.editor, patch, save=not creates)
         except PatchValidationError as exc:
             showWarning(str(exc), parent=self)
-            return False
-        if not notes:
-            showWarning("No checked cards have proposed changes.", parent=self)
-            return False
-
-        def on_success(_changes: Any) -> None:
-            self._discard_pending_patch()
+            return
+        if creates:
+            in_add_cards = self.editor.editorMode is EditorMode.ADD_CARDS
+            self._apply_changes(
+                thread_id,
+                thread.status,
+                version,
+                [] if in_add_cards else [self.editor.note],
+                creates,
+            )
+            return
+        if self._finish_thread(thread_id, thread.status, APPLIED):
             tooltip("Agent proposal applied.", parent=self)
 
-        update_notes(parent=self, notes=notes).success(on_success).run_in_background(
-            initiator=self
-        )
-        return True
+
+def _editor_source(editor: Editor) -> str:
+    if editor.editorMode is EditorMode.ADD_CARDS:
+        return SOURCE_ADD_CARDS
+    if editor.editorMode is EditorMode.BROWSER:
+        return SOURCE_BROWSER
+    return SOURCE_EDIT_CURRENT
 
 
 def editor_field_snapshots(editor: Editor) -> tuple[FieldSnapshot, ...]:
@@ -2318,7 +2084,14 @@ def browser_multi_card_snapshot(browser: Any) -> MultiCardSnapshot:
     return MultiCardSnapshot(cards=tuple(cards), notes=tuple(notes))
 
 
-def apply_patch_to_editor(editor: Editor, patch: NotePatch) -> None:
+def apply_patch_to_editor(
+    editor: Editor, patch: NotePatch, *, save: bool = True
+) -> None:
+    """Fill the editor with the patch's update to the current note.
+
+    Outside Add Cards the note is then saved, unless ``save`` is False (the
+    caller saves it as part of a larger op).
+    """
     note = editor.note
     if note is None:
         raise PatchValidationError("No current note.")
@@ -2350,55 +2123,8 @@ def apply_patch_to_editor(editor: Editor, patch: NotePatch) -> None:
     if field_updates:
         editor.checkValid()
 
-    if editor.editorMode is not EditorMode.ADD_CARDS:
+    if save and editor.editorMode is not EditorMode.ADD_CARDS:
         update_note(parent=editor.widget, note=note).run_in_background(initiator=editor)
-
-
-def prepare_multi_note_updates(
-    col: Any,
-    snapshot: MultiCardSnapshot,
-    patch: MultiNotePatch,
-    checked_note_ids: set[int],
-) -> list[Any]:
-    notes = []
-    for update in patch.note_updates:
-        if update.note_id not in checked_note_ids:
-            continue
-        snapshot_note = snapshot.note_by_id(update.note_id)
-        try:
-            note = col.get_note(update.note_id)
-        except Exception as exc:
-            raise PatchValidationError(
-                f"Selected note {update.note_id} no longer exists."
-            ) from exc
-        if int(note.mid) != snapshot_note.notetype_id:
-            raise PatchValidationError(
-                f"Selected note {update.note_id} has changed note type."
-            )
-
-        current_fields = tuple(
-            FieldSnapshot(name=str(name), html=str(html)) for name, html in note.items()
-        )
-        current_by_name = {field.name: field.html for field in current_fields}
-        field_names = [field.name for field in current_fields]
-        for field_name, html in update.field_updates.items():
-            if field_name not in current_by_name:
-                raise PatchValidationError(f"Unknown field: {field_name}.")
-            if current_by_name[field_name] != snapshot_note.field_html(field_name):
-                raise PatchValidationError(
-                    f"Selected note {update.note_id} has changed since the proposal."
-                )
-            note.fields[field_names.index(field_name)] = html
-
-        if update.tag_patch.has_changes():
-            if tuple(note.tags) != snapshot_note.tags:
-                raise PatchValidationError(
-                    f"Selected note {update.note_id} tags have changed since the proposal."
-                )
-            note.tags = list(update.tag_patch.apply(tuple(note.tags)))
-
-        notes.append(note)
-    return notes
 
 
 def _editor_mode_name(editor: Editor) -> str:

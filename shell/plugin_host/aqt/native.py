@@ -211,6 +211,14 @@ class Native:
             mw.col = None
         elif name == "shutdown":
             mw.loop.stop()
+        elif name == "widget_event":
+            from aqt import widgets
+
+            return widgets.handle_event(event)
+        elif name.startswith("editor_") or name == "add_cards_did_add_note":
+            from aqt import editor
+
+            return editor.handle(name, event)
         else:
             raise Exception(f"unknown event {name}")
         return None

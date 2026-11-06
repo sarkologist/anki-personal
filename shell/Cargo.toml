@@ -28,6 +28,7 @@ anki = { workspace = true, features = ["rustls"] }
 anki_proto.workspace = true
 anyhow.workspace = true
 axum.workspace = true
+block2.workspace = true
 chrono.workspace = true
 data-encoding.workspace = true
 dirs.workspace = true

@@ -295,7 +295,7 @@ class OllamaCliAgent:
         snapshot: EditorSnapshot | MultiCardSnapshot,
         previous_response: dict[str, Any],
     ) -> str:
-        return f"""Your previous JSON response for the Anki editor pane had a non-null patch object, but that patch contained no field or tag changes.
+        return f"""Your previous JSON response for the Anki editor pane had a non-null patch object, but that patch contained no field or tag changes and no new notes.
 
 Original user request:
 {prompt}
@@ -307,8 +307,12 @@ Previous response JSON:
 {json.dumps(previous_response, ensure_ascii=False)}
 
 Return only a corrected JSON object with message, message_html, and patch.
-If the user requested a note edit, patch must contain actual changes:
-- For a single note, include non-empty field_updates at the top level of patch.
+If the user requested a note edit or a new note, patch must contain actual changes:
+- patch has summary, note_updates, note_creates, assumptions and questions.
+- To edit the current note, give one note_updates entry with note_id,
+  notetype_id, non-empty field_updates and tags.
+- To add a note, give a note_creates entry with notetype_id, deck_id, every
+  field of the note type, and tags.
 - Use exact field names from context_json.fields.
 - Each field update must contain the full proposed HTML for that field.
 - Field update HTML must be an Anki field fragment only. Do not include
@@ -467,26 +471,44 @@ def _normalize_ollama_patch_data(
     patch_data: Any,
     snapshot: EditorSnapshot | MultiCardSnapshot,
 ) -> Any:
+    """Fill defaults a local model tends to leave out, before validation.
+
+    Accepts the unified shape, the legacy single-note shape (field_updates at
+    the top level) and a bare list of field updates.
+    """
     if isinstance(snapshot, EditorSnapshot) and isinstance(patch_data, list):
         return {
             "summary": "Proposed note update",
-            "note_id": snapshot.note_id,
-            "notetype_id": snapshot.notetype_id,
-            "field_updates": _normalize_ollama_field_updates(patch_data),
-            "tags": _normalize_ollama_tags(None),
+            "note_updates": [
+                {
+                    "note_id": snapshot.note_id,
+                    "notetype_id": snapshot.notetype_id,
+                    "field_updates": _normalize_ollama_field_updates(patch_data),
+                    "tags": _normalize_ollama_tags(None),
+                }
+            ],
         }
     if not isinstance(patch_data, dict):
         return patch_data
     normalized = dict(patch_data)
     normalized.setdefault("summary", "Proposed note update")
-    if isinstance(snapshot, MultiCardSnapshot):
-        updates = normalized.get("note_updates")
-        if isinstance(updates, list):
-            normalized["note_updates"] = [
-                _normalize_ollama_note_update(update, snapshot) for update in updates
-            ]
+    creates = normalized.get("note_creates")
+    if isinstance(creates, list):
+        normalized["note_creates"] = [
+            _normalize_ollama_note_create(create) for create in creates
+        ]
+    updates = normalized.get("note_updates")
+    if isinstance(updates, list):
+        normalized["note_updates"] = [
+            _normalize_ollama_note_update(update, snapshot) for update in updates
+        ]
+        return normalized
+    if isinstance(snapshot, MultiCardSnapshot) or not (
+        "field_updates" in normalized or "tags" in normalized
+    ):
         return normalized
 
+    # Legacy single-note shape.
     normalized.setdefault("note_id", snapshot.note_id)
     normalized.setdefault("notetype_id", snapshot.notetype_id)
     normalized["field_updates"] = _normalize_ollama_field_updates(
@@ -498,22 +520,39 @@ def _normalize_ollama_patch_data(
 
 def _normalize_ollama_note_update(
     update: Any,
-    snapshot: MultiCardSnapshot,
+    snapshot: EditorSnapshot | MultiCardSnapshot,
 ) -> Any:
     if not isinstance(update, dict):
         return update
     normalized = dict(update)
-    note_id = normalized.get("note_id")
-    try:
-        note = snapshot.note_by_id(int(note_id))
-    except Exception:
-        note = None
-    if note is not None:
-        normalized.setdefault("notetype_id", note.notetype_id)
+    if isinstance(snapshot, MultiCardSnapshot):
+        note_id = normalized.get("note_id")
+        try:
+            note = snapshot.note_by_id(int(note_id))
+        except Exception:
+            note = None
+        if note is not None:
+            normalized.setdefault("notetype_id", note.notetype_id)
+    else:
+        normalized.setdefault("note_id", snapshot.note_id)
+        normalized.setdefault("notetype_id", snapshot.notetype_id)
     normalized["field_updates"] = _normalize_ollama_field_updates(
         normalized.get("field_updates", [])
     )
     normalized["tags"] = _normalize_ollama_tags(normalized.get("tags"))
+    return normalized
+
+
+def _normalize_ollama_note_create(create: Any) -> Any:
+    if not isinstance(create, dict):
+        return create
+    normalized = dict(create)
+    normalized["fields"] = _normalize_ollama_field_updates(normalized.get("fields"))
+    tags = normalized.get("tags")
+    if tags is None:
+        normalized["tags"] = []
+    elif isinstance(tags, str):
+        normalized["tags"] = tags.split()
     return normalized
 
 

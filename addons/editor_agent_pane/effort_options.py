@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from .model_options import PROVIDER_CLAUDE, PROVIDER_OLLAMA, provider_value
+
 EFFORT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Codex default", ""),
     ("None", "none"),
@@ -67,6 +69,22 @@ def codex_effort_options(model: object = "") -> tuple[tuple[str, str], ...]:
 
 def claude_effort_options(model: object = "") -> tuple[tuple[str, str], ...]:
     return _options_for_model(CLAUDE_EFFORT_OPTIONS, CLAUDE_MODEL_EFFORT_LEVELS, model)
+
+
+# Ollama takes no effort setting.
+OLLAMA_EFFORT_OPTIONS: tuple[tuple[str, str], ...] = (("Model default", ""),)
+
+
+def effort_options_for(
+    provider: object, model: object = ""
+) -> tuple[tuple[str, str], ...]:
+    """Effort levels the provider *and* model both support."""
+    value = provider_value(provider)
+    if value == PROVIDER_OLLAMA:
+        return OLLAMA_EFFORT_OPTIONS
+    if value == PROVIDER_CLAUDE:
+        return claude_effort_options(model)
+    return codex_effort_options(model)
 
 
 def _options_for_model(

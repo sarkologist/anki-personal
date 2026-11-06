@@ -1,0 +1,162 @@
+/* Copyright: Ankitects Pty Ltd and contributors
+   License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html */
+
+/* an add-on's widgets in a side panel (widgets.js) */
+html,
+body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    font-size: 13px;
+}
+#widgets {
+    height: 100%;
+}
+#widgets > * {
+    height: 100%;
+}
+[hidden] {
+    display: none !important;
+}
+.qwidget {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+}
+.qwidget > .qlayout {
+    flex: 1 1 auto;
+}
+.qlayout {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    box-sizing: border-box;
+    gap: 6px;
+}
+.qv {
+    flex-direction: column;
+}
+.qh {
+    flex-direction: row;
+    align-items: center;
+}
+.qform {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    align-items: center;
+    gap: 6px 8px;
+}
+.qform-label {
+    grid-column: 1;
+    text-align: right;
+}
+.qform-field {
+    grid-column: 2;
+}
+.qform-span {
+    grid-column: 1 / -1;
+}
+.qdock {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+.qdock-bar {
+    display: flex;
+    align-items: center;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border, #ccc);
+    font-weight: 600;
+}
+.qdock-title {
+    flex: 1;
+}
+.qdock-close {
+    border: 0;
+    background: none;
+    font-size: 16px;
+    line-height: 1;
+    cursor: default;
+    color: var(--fg-subtle, #888);
+}
+.qdock-child {
+    flex: 1 1 0;
+    min-height: 0;
+}
+.qlabel {
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+.qlabel.wrap {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.qbutton {
+    white-space: nowrap;
+    min-width: 0;
+}
+.qbutton.checked {
+    font-weight: 600;
+}
+.qtoolbutton {
+    border: 0;
+    background: none;
+    padding: 0 2px;
+}
+.qcheckbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.qlineedit,
+.qcombo,
+.qcombo > select,
+.qcombo > input {
+    min-width: 0;
+    box-sizing: border-box;
+    width: 100%;
+}
+.qtextedit {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 40px;
+    resize: none;
+    font: inherit;
+}
+.qsplitter {
+    display: flex;
+    min-height: 0;
+    min-width: 0;
+}
+.qsplitter.vertical {
+    flex-direction: column;
+}
+.qsplitter-pane {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    min-height: 20px;
+    min-width: 20px;
+}
+.qsplitter-pane > * {
+    flex: 1 1 auto;
+}
+.qsplitter-handle {
+    flex: 0 0 6px;
+    cursor: col-resize;
+}
+.qsplitter.vertical > .qsplitter-handle {
+    cursor: row-resize;
+}
+.qweb {
+    border: 1px solid var(--border, #ccc);
+    width: 100%;
+    min-height: 60px;
+    box-sizing: border-box;
+}
+.disabled {
+    opacity: 0.6;
+}

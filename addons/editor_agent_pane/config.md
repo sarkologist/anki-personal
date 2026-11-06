@@ -43,6 +43,65 @@ direct OpenAI API billing.
   scratchpad content is not displayed.
 - `timeout_seconds`: Maximum time to wait for a Codex CLI response.
 - `splitter_sizes`: Saved rich agent surface/prompt pane sizes.
+- `queue_concurrency`: How many agent requests run at once (default 1). Every
+  request is queued and run in the background, independent of the editor
+  window that sent it.
+- `queue_notify`: Whether to show a tooltip when a queued request finishes
+  (proposal ready, reply ready, or failed). Default `true`.
+- `queue_retention_days`: Applied and discarded requests older than this many
+  days are deleted when the profile opens. Default 30.
+- `queue_resume_sessions`: Whether a reply resumes the Codex/Claude CLI session
+  of the thread's last run and sends only the new turn (plus the note, if it
+  changed), instead of replaying the whole transcript. Applies only while the
+  thread keeps the same provider and model; any resume failure falls back to a
+  replay in the same run. Runs keep their CLI sessions on disk while this is
+  on. Default `true`.
+- `queue_catalog_limit`: At most this many decks and note types are listed in
+  a prompt for new notes: the source deck's subdecks plus the Default deck,
+  and the note types used there. Any other existing deck or note type is still
+  accepted. Default 30.
+- `queue_show_badge`: Whether the top toolbar shows "Agent: N ready" (requests
+  with a proposal ready, an answer, or a stale proposal, not counting deferred
+  ones), which opens the queue window. Hidden while N is 0. Default `true`;
+  takes effect the next time the toolbar is drawn.
+- `queue_shortcut`: Opens the agent queue window from anywhere in Anki (also
+  Tools > Agent Queue). Default `Ctrl+Alt+Shift+Q`; takes effect on restart.
+- `queue_window_geometry`: Saved size and position of the queue window.
+- `queue_window_splitter`: Saved widths of the queue window's list and detail.
+
+The **queue window** lists every request across notes: results waiting on you
+first (proposal ready, stale, answered, failed), then running and queued ones,
+newest first; applied and discarded requests are hidden unless shown with the
+checkbox. Select one to see its captured context, transcript and proposal, then
+Apply (Ctrl+Shift+A), Apply and edit (Ctrl+Shift+E: applies, then opens the
+note in the Browser), Reply (type below and press Enter, or Ctrl+Shift+R),
+Re-run (Ctrl+Shift+N: the last request again, against the note as it is now),
+Retry a failed run (Ctrl+Shift+T), Discard with an optional reason
+(Ctrl+Shift+D), Defer (Ctrl+Shift+L: for an hour, until tomorrow 08:00, until
+next Monday 08:00, or a chosen date and time), Open in Browser (Ctrl+Shift+B)
+or Stop a running one (Ctrl+Shift+S). A reply, re-run or retry goes back to the
+agent and the selection moves on; the request returns to the top when its new
+proposal is ready. Deferred requests are hidden until their time (or shown,
+marked ⏸ with the time they come back, with "Show deferred"). The **Next run**
+row changes the provider, model, effort and card access a request's next reply,
+re-run or retry uses ("Use for next run"); its other settings are kept. The
+pane's **Queue** button opens the window filtered to the current note. Leaving
+the reviewer with results waiting shows a tooltip once per session.
+
+Requests are stored per profile in `agent_queue.sqlite` in the profile folder.
+Closing the editor or switching notes does not stop a request: reopen the
+editor on the note to see its transcript and proposal. Send on a note whose
+request has finished replies to it; **New request** starts a separate one.
+Requests that were running when Anki quit run again at the next start. Before
+applying, the pane and the queue window check that the note has not changed
+since the agent made the proposal. A stale proposal is not applied: the request
+is marked stale, with the reason in its transcript, and offers **Re-run**,
+**Apply anyway** (the proposed fields and tags overwrite the note's current
+ones; Ctrl+Shift+O in the window) or **Discard**. A failed request offers
+**Retry**. In Edit Current opened from the reviewer, a
+request also records the side you were shown, the rendered question and
+answer, and the text you had selected in the reviewer, so the agent can
+resolve references like "the example in blue".
 
 For Codex, run `codex login` first and choose ChatGPT sign-in. The add-on invokes
 `codex exec --json` with the selected project folder access and your normal
@@ -80,12 +139,14 @@ To smoke-test the real CLI integration manually, run the editor agent pane tests
 with `ANKI_CODEX_CLI_INTEGRATION=1`. Optionally set `ANKI_CODEX_CLI_PATH` to a
 specific Codex binary.
 
-`card_access` controls additional read-only card context: `current` (default),
-`deck`, or `all`. Invalid values fall back to `current`. This is independent of
-project folder access and applies to Codex, Claude, and Ollama. Change it using
-**Card access** in the pane; changes save immediately, stop any running request,
-and clear the chat. Current access keeps the existing current-note or selected
-Browser-card context.
+`card_access` controls additional read-only card context: `current`, `deck`, or
+`all` (default, since queued requests usually run while you are not watching
+and often need to compare with other cards). Invalid values fall back to
+`current`. This is independent of project folder access and applies to Codex,
+Claude, and Ollama. Change it using **Card access** in the pane; changes save
+immediately and apply to the next request (Send after a change starts a new
+request; replies keep the access their request was made with). Current access
+keeps the existing current-note or selected Browser-card context.
 
 Deck scope uses exact home deck IDs (including cards in filtered decks), without
 subdecks. In Add Cards it uses the selected target deck. A missing deck fails

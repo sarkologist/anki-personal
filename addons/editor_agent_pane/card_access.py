@@ -108,7 +108,7 @@ def send_with_card_reads(
     stop_requested: Callable[[], bool],
     **kwargs: Any,
 ) -> AgentResult:
-    from .codex_client import AgentStopped
+    from .codex_client import AgentStopped, ResumeUnavailable
 
     results: list[dict[str, Any]] = []
     for round_index in range(MAX_CARD_REQUESTS + 1):
@@ -119,13 +119,19 @@ def send_with_card_reads(
             "requests_remaining": MAX_CARD_REQUESTS - round_index,
             "results": results,
         }
-        result = send(
-            prompt=prompt
-            + "\n\nAnki read-only card access:\n"
-            + json.dumps(context, ensure_ascii=False),
-            stop_requested=stop_requested,
-            **kwargs,
-        )
+        try:
+            result = send(
+                prompt=prompt
+                + "\n\nAnki read-only card access:\n"
+                + json.dumps(context, ensure_ascii=False),
+                stop_requested=stop_requested,
+                **kwargs,
+            )
+        except ResumeUnavailable as exc:
+            if round_index == 0:
+                raise
+            # Earlier rounds already ran in the session: not safe to replay.
+            raise RuntimeError(str(exc)) from exc
         if stop_requested():
             raise AgentStopped("Agent run stopped.")
         if result.card_request is None:

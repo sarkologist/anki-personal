@@ -253,6 +253,35 @@ unsafe fn ime_input(webview: *mut std::ffi::c_void, steps: &[(String, String)]) 
     }
 }
 
+fn local_http(v: &Value) -> Result<Value> {
+    use std::io::Read;
+    use std::io::Write;
+    let port = v["port"].as_u64().context("port")? as u16;
+    let body = v["body"].as_str().unwrap_or_default();
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    write!(
+        stream,
+        "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\n\
+         Content-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n{body}",
+        v["method"].as_str().unwrap_or("GET"),
+        v["path"].as_str().unwrap_or("/"),
+        body.len(),
+    )?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let status = response
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b)
+        .unwrap_or_default();
+    Ok(json!({ "status": status, "body": body }))
+}
+
 fn wrap(script: &str, note: Option<i64>) -> String {
     format!(
         r#"(async () => {{
@@ -374,9 +403,29 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
     ui.shell
         .bridge
         .register("testSidePanel", move |_, label, html| {
-            crate::editor_window::set_side_panel(&u, label, Some(html.to_string()));
+            crate::editor_window::set_side_panel(&u, label, Some(html.to_string()), true);
             json!(true)
         });
+    // a file in the Anki base folder (what an add-on wrote there), as text
+    let u = ui.clone();
+    ui.shell.bridge.register("testReadFile", move |_, _, path| {
+        let base = u.settings.lock().unwrap().anki_base();
+        if std::path::Path::new(path)
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Value::Null;
+        }
+        std::fs::read_to_string(base.join(path))
+            .map(Value::from)
+            .unwrap_or(Value::Null)
+    });
+    // a request to a server on this machine (an add-on's):
+    // `{"port", "method", "path", "body"}` -> `{"status", "body"}`
+    ui.shell.bridge.register("testHttp", |_, _, args| {
+        let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+        local_http(&v).unwrap_or_else(|e| json!({ "error": e.to_string() }))
+    });
     // the open windows' labels
     let u = ui.clone();
     ui.shell.bridge.register("testWindows", move |_, _, _| {

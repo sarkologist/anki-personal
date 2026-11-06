@@ -1,0 +1,716 @@
+# Copyright: Ankitects Pty Ltd and contributors
+# License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+
+"""Persistent agent request threads (see agent-request-queue-plan.md).
+
+Pure Python over sqlite3 so it can be used from the worker thread and from
+tests. One connection, shared behind a lock.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import time
+import uuid
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+SCHEMA_VERSION = 3
+TITLE_CHARS = 60
+
+QUEUED = "queued"
+RUNNING = "running"
+READY = "ready"
+ANSWERED = "answered"
+FAILED = "failed"
+APPLIED = "applied"
+DISCARDED = "discarded"
+STALE = "stale"
+
+TERMINAL_STATUSES = (APPLIED, DISCARDED)
+
+# The plan's state machine, plus a few closing edges it leaves implicit:
+# answered/failed threads can be discarded, a queued thread can be cancelled
+# (-> failed) or discarded before it runs, and running -> queued is the
+# startup/shutdown reset. A failed run keeps the previous proposal current, so
+# failed -> applied applies it (failed -> stale when its base changed, for a
+# forced apply); applied -> ready/failed reverts an apply whose
+# collection write failed (applied -> stale for a failed forced apply).
+TRANSITIONS: dict[str, frozenset[str]] = {
+    QUEUED: frozenset({RUNNING, FAILED, DISCARDED}),
+    RUNNING: frozenset({READY, ANSWERED, FAILED, QUEUED}),
+    READY: frozenset({APPLIED, DISCARDED, STALE, QUEUED}),
+    ANSWERED: frozenset({QUEUED, DISCARDED}),
+    FAILED: frozenset({QUEUED, DISCARDED, APPLIED, STALE}),
+    STALE: frozenset({QUEUED, DISCARDED, APPLIED}),
+    APPLIED: frozenset({READY, FAILED, STALE}),
+    DISCARDED: frozenset(),
+}
+REPLY_FROM = (READY, ANSWERED, FAILED)
+# Re-run the last request against the current note, without a new user turn.
+RERUN_FROM = (STALE, READY, FAILED)
+RERUN_MESSAGE = "[Re-run requested: the note changed]"
+
+MESSAGE_ROLES = ("user", "agent", "system")
+
+PROPOSAL_CURRENT = "current"
+PROPOSAL_SUPERSEDED = "superseded"
+PROPOSAL_APPLIED = "applied"
+PROPOSAL_DISCARDED = "discarded"
+
+_SCHEMA_V1 = """
+create table threads (
+    id text primary key,
+    created_at real not null,
+    updated_at real not null,
+    status text not null,
+    title text not null,
+    note_id integer,
+    context_json text not null,
+    settings_json text not null,
+    session_json text,
+    run_log_path text,
+    error text
+);
+create index threads_note_id on threads (note_id);
+create index threads_status on threads (status, updated_at);
+create table messages (
+    thread_id text not null references threads (id) on delete cascade,
+    seq integer not null,
+    role text not null,
+    text text not null,
+    html text not null,
+    created_at real not null,
+    primary key (thread_id, seq)
+);
+create table proposals (
+    thread_id text not null references threads (id) on delete cascade,
+    version integer not null,
+    created_at real not null,
+    patch_json text not null,
+    base_json text not null,
+    status text not null,
+    primary key (thread_id, version)
+);
+"""
+# v2: what an apply produced, e.g. {"created_note_ids": [...]}.
+_MIGRATE_V2 = "alter table proposals add column result_json text"
+# v3: hidden from the queue until this time (epoch seconds); status unchanged.
+_MIGRATE_V3 = "alter table threads add column deferred_until real"
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"pragma table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
+class QueueTransitionError(RuntimeError):
+    """An illegal state change, or the thread was not in the expected state."""
+
+
+@dataclass(frozen=True)
+class Thread:
+    id: str
+    created_at: float
+    updated_at: float
+    status: str
+    title: str
+    note_id: int | None
+    context: dict[str, Any]
+    settings: dict[str, Any]
+    session: dict[str, Any] | None
+    run_log_path: str | None
+    error: str | None
+    deferred_until: float | None = None
+
+
+@dataclass(frozen=True)
+class Message:
+    thread_id: str
+    seq: int
+    role: str
+    text: str
+    html: str
+    created_at: float
+
+
+@dataclass(frozen=True)
+class Proposal:
+    thread_id: str
+    version: int
+    created_at: float
+    patch: dict[str, Any]
+    base: dict[str, Any]
+    status: str
+    result: dict[str, Any] | None = None
+
+
+def _title(prompt: str) -> str:
+    first_line = prompt.strip().splitlines()[0] if prompt.strip() else ""
+    if len(first_line) <= TITLE_CHARS:
+        return first_line
+    return first_line[: TITLE_CHARS - 1] + "…"
+
+
+def _dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _thread(row: sqlite3.Row) -> Thread:
+    return Thread(
+        id=row["id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        status=row["status"],
+        title=row["title"],
+        note_id=row["note_id"],
+        context=json.loads(row["context_json"]),
+        settings=json.loads(row["settings_json"]),
+        session=json.loads(row["session_json"]) if row["session_json"] else None,
+        run_log_path=row["run_log_path"],
+        error=row["error"],
+        deferred_until=row["deferred_until"],
+    )
+
+
+def _message(row: sqlite3.Row) -> Message:
+    return Message(
+        thread_id=row["thread_id"],
+        seq=row["seq"],
+        role=row["role"],
+        text=row["text"],
+        html=row["html"],
+        created_at=row["created_at"],
+    )
+
+
+def _proposal(row: sqlite3.Row) -> Proposal:
+    return Proposal(
+        thread_id=row["thread_id"],
+        version=row["version"],
+        created_at=row["created_at"],
+        patch=json.loads(row["patch_json"]),
+        base=json.loads(row["base_json"]),
+        status=row["status"],
+        result=json.loads(row["result_json"]) if row["result_json"] else None,
+    )
+
+
+class QueueStore:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._lock = threading.RLock()
+
+    @classmethod
+    def open(cls, path: str | Path) -> QueueStore:
+        conn = sqlite3.connect(str(path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("pragma foreign_keys = on")
+        store = cls(conn)
+        store._migrate()
+        return store
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    @contextmanager
+    def _tx(self) -> Iterator[sqlite3.Connection]:
+        with self._lock, self._conn:
+            yield self._conn
+
+    def _migrate(self) -> None:
+        """Bring the schema up to date in one explicit transaction.
+
+        sqlite3 runs DDL and pragmas outside its implicit transactions, so
+        without the explicit BEGIN a crash between the ALTER and the version
+        bump would leave a column that the next open tries to add again. Each
+        step also checks for what it adds, so such a half-migrated file opens.
+        """
+        with self._lock:
+            conn = self._conn
+            version = conn.execute("pragma user_version").fetchone()[0]
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Agent queue schema {version} is newer than this add-on supports."
+                )
+            if version == SCHEMA_VERSION:
+                return
+            conn.execute("begin immediate")
+            try:
+                if version < 1:
+                    for statement in _SCHEMA_V1.split(";"):
+                        if statement.strip():
+                            conn.execute(statement)
+                if version < 2 and not _has_column(conn, "proposals", "result_json"):
+                    conn.execute(_MIGRATE_V2)
+                if version < 3 and not _has_column(conn, "threads", "deferred_until"):
+                    conn.execute(_MIGRATE_V3)
+                conn.execute(f"pragma user_version = {SCHEMA_VERSION}")
+            except BaseException:
+                conn.rollback()
+                raise
+            conn.commit()
+
+    def schema_version(self) -> int:
+        with self._lock:
+            return int(self._conn.execute("pragma user_version").fetchone()[0])
+
+    # threads
+
+    def create_thread(
+        self,
+        context: dict[str, Any],
+        settings: dict[str, Any],
+        first_prompt: str,
+        note_id: int | None = None,
+        first_prompt_html: str = "",
+    ) -> Thread:
+        thread_id = uuid.uuid4().hex
+        now = time.time()
+        with self._tx() as conn:
+            conn.execute(
+                "insert into threads (id, created_at, updated_at, status, title,"
+                " note_id, context_json, settings_json) values (?,?,?,?,?,?,?,?)",
+                (
+                    thread_id,
+                    now,
+                    now,
+                    QUEUED,
+                    _title(first_prompt),
+                    note_id,
+                    _dumps(context),
+                    _dumps(settings),
+                ),
+            )
+            self._insert_message(
+                conn, thread_id, "user", first_prompt, first_prompt_html
+            )
+        thread = self.get_thread(thread_id)
+        assert thread is not None
+        return thread
+
+    def get_thread(self, thread_id: str) -> Thread | None:
+        with self._lock:
+            row = self._conn.execute(
+                "select * from threads where id = ?", (thread_id,)
+            ).fetchone()
+        return _thread(row) if row else None
+
+    def threads_for_note(self, note_id: int) -> list[Thread]:
+        with self._lock:
+            rows = self._conn.execute(
+                "select * from threads where note_id = ? order by created_at, rowid",
+                (note_id,),
+            ).fetchall()
+        return [_thread(row) for row in rows]
+
+    def list_threads(
+        self,
+        statuses: Iterable[str] | None = None,
+        *,
+        include_deferred: bool = False,
+        now: float | None = None,
+    ) -> list[Thread]:
+        """Threads, oldest first; deferred ones (``deferred_until`` after
+        ``now``) only with ``include_deferred``."""
+        clauses: list[str] = []
+        args: tuple[Any, ...] = ()
+        if statuses is not None:
+            wanted = tuple(statuses)
+            if not wanted:
+                return []
+            clauses.append(f"status in ({','.join('?' for _ in wanted)})")
+            args += wanted
+        if not include_deferred:
+            clauses.append("(deferred_until is null or deferred_until <= ?)")
+            args += (time.time() if now is None else now,)
+        sql = "select * from threads"
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        with self._lock:
+            rows = self._conn.execute(
+                sql + " order by created_at, rowid", args
+            ).fetchall()
+        return [_thread(row) for row in rows]
+
+    def defer(self, thread_id: str, until: float) -> None:
+        """Hide the thread from the default lists until ``until``. The status
+        and ``updated_at`` are unchanged, so it comes back where it was."""
+        self._set_deferred(thread_id, float(until))
+
+    def undefer(self, thread_id: str) -> None:
+        self._set_deferred(thread_id, None)
+
+    def _set_deferred(self, thread_id: str, until: float | None) -> None:
+        with self._tx() as conn:
+            cursor = conn.execute(
+                "update threads set deferred_until = ? where id = ?",
+                (until, thread_id),
+            )
+            if cursor.rowcount != 1:
+                raise QueueTransitionError(f"Thread {thread_id} is missing.")
+
+    def _set_column(
+        self, thread_id: str, column: str, value: Any, *, touch: bool = True
+    ) -> None:
+        """``touch=False`` keeps ``updated_at``, which orders the queue."""
+        with self._tx() as conn:
+            if touch:
+                conn.execute(
+                    f"update threads set {column} = ?, updated_at = ? where id = ?",
+                    (value, time.time(), thread_id),
+                )
+            else:
+                conn.execute(
+                    f"update threads set {column} = ? where id = ?", (value, thread_id)
+                )
+
+    def set_error(self, thread_id: str, error: str | None) -> None:
+        self._set_column(thread_id, "error", error)
+
+    def set_settings(self, thread_id: str, settings: dict[str, Any]) -> None:
+        """Replace the settings used for the thread's next run."""
+        self._set_column(thread_id, "settings_json", _dumps(settings), touch=False)
+
+    def set_session(self, thread_id: str, session: dict[str, Any] | None) -> None:
+        self._set_column(
+            thread_id,
+            "session_json",
+            _dumps(session) if session is not None else None,
+            touch=False,
+        )
+
+    def set_run_log_path(self, thread_id: str, path: str | None) -> None:
+        self._set_column(thread_id, "run_log_path", path)
+
+    # state machine
+
+    def transition(self, thread_id: str, from_status: str, to_status: str) -> None:
+        if to_status not in TRANSITIONS.get(from_status, frozenset()):
+            raise QueueTransitionError(
+                f"Illegal thread transition: {from_status} -> {to_status}."
+            )
+        with self._tx() as conn:
+            self._transition(conn, thread_id, from_status, to_status)
+
+    def _transition(
+        self,
+        conn: sqlite3.Connection,
+        thread_id: str,
+        from_status: str,
+        to_status: str,
+    ) -> None:
+        cursor = conn.execute(
+            "update threads set status = ?, updated_at = ? where id = ? and status = ?",
+            (to_status, time.time(), thread_id, from_status),
+        )
+        if cursor.rowcount != 1:
+            row = conn.execute(
+                "select status from threads where id = ?", (thread_id,)
+            ).fetchone()
+            actual = row["status"] if row else "missing"
+            raise QueueTransitionError(
+                f"Thread {thread_id} is {actual}, not {from_status}."
+            )
+        closing = {APPLIED: PROPOSAL_APPLIED, DISCARDED: PROPOSAL_DISCARDED}
+        if to_status in closing:
+            conn.execute(
+                "update proposals set status = ? where thread_id = ? and status = ?",
+                (closing[to_status], thread_id, PROPOSAL_CURRENT),
+            )
+        elif from_status == APPLIED:
+            # Reverting a failed apply: the applied proposal is current again.
+            conn.execute(
+                "update proposals set status = ? where thread_id = ? and version ="
+                " (select max(version) from proposals where thread_id = ?"
+                " and status = ?)",
+                (PROPOSAL_CURRENT, thread_id, thread_id, PROPOSAL_APPLIED),
+            )
+
+    def reply(self, thread_id: str, text: str, html: str = "") -> None:
+        """Append a user message and send the thread back to the worker."""
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if status not in REPLY_FROM:
+                raise QueueTransitionError(f"Cannot reply to a {status} thread.")
+            self._insert_message(conn, thread_id, "user", text, html)
+            self._transition(conn, thread_id, status, QUEUED)
+            conn.execute("update threads set error = null where id = ?", (thread_id,))
+
+    def _status(self, conn: sqlite3.Connection, thread_id: str) -> str:
+        row = conn.execute(
+            "select status from threads where id = ?", (thread_id,)
+        ).fetchone()
+        return row["status"] if row else "missing"
+
+    def mark_stale(self, thread_id: str, reason: str) -> None:
+        """ready/failed -> stale, recording ``reason`` as a system message,
+        atomically.
+
+        The proposal stays current so it can still be applied (forced),
+        re-run, or discarded (a failed run keeps the previous proposal
+        current). Raises QueueTransitionError and writes nothing unless the
+        thread is ready or failed.
+        """
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if status not in (READY, FAILED):
+                raise QueueTransitionError(f"Cannot mark a {status} thread stale.")
+            self._insert_message(conn, thread_id, "system", reason, "")
+            self._transition(conn, thread_id, status, STALE)
+
+    def rerun(self, thread_id: str) -> None:
+        """stale/ready/failed -> queued, so the worker re-runs the last request
+        against the current note. Adds RERUN_MESSAGE, which also tells the
+        runner to re-send the last user turn when none is pending."""
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if status not in RERUN_FROM:
+                raise QueueTransitionError(f"Cannot re-run a {status} thread.")
+            self._insert_message(conn, thread_id, "system", RERUN_MESSAGE, "")
+            self._transition(conn, thread_id, status, QUEUED)
+            conn.execute("update threads set error = null where id = ?", (thread_id,))
+
+    def retry(self, thread_id: str) -> None:
+        """failed -> queued without a new user message; the runner re-sends the
+        unanswered request, or the last one (queue_runner.pending_request)."""
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if status != FAILED:
+                raise QueueTransitionError(f"Cannot retry a {status} thread.")
+            self._transition(conn, thread_id, FAILED, QUEUED)
+            conn.execute("update threads set error = null where id = ?", (thread_id,))
+
+    def discard(self, thread_id: str, reason: str | None = None) -> None:
+        """Discard a thread, recording ``reason`` as "Discarded: …", atomically.
+
+        Raises QueueTransitionError (and writes nothing) unless the thread is
+        in a state that can be discarded, e.g. a run started meanwhile.
+        """
+        with self._tx() as conn:
+            status = self._status(conn, thread_id)
+            if DISCARDED not in TRANSITIONS.get(status, frozenset()):
+                raise QueueTransitionError(f"Cannot discard a {status} thread.")
+            if reason:
+                self._insert_message(
+                    conn, thread_id, "user", f"Discarded: {reason}", ""
+                )
+            self._transition(conn, thread_id, status, DISCARDED)
+
+    def complete_run(
+        self,
+        thread_id: str,
+        *,
+        to_status: str,
+        messages: Iterable[tuple[str, str, str]] = (),
+        proposal: dict[str, Any] | None = None,
+        base: dict[str, Any] | None = None,
+        drop_proposal: bool = False,
+        error: str | None = None,
+        session: dict[str, Any] | None = None,
+        clear_session: bool = False,
+    ) -> None:
+        """Record a run's outcome in one transaction: running -> ``to_status``.
+
+        ``messages`` are (role, text, html). ``proposal`` (with its ``base``)
+        becomes the current proposal; ``drop_proposal`` instead supersedes the
+        current one. ``session`` replaces the stored CLI session and
+        ``clear_session`` removes it; otherwise it is kept. Nothing is written
+        if the thread is not running.
+        """
+        if to_status not in TRANSITIONS[RUNNING]:
+            raise QueueTransitionError(
+                f"Illegal thread transition: {RUNNING} -> {to_status}."
+            )
+        with self._tx() as conn:
+            self._transition(conn, thread_id, RUNNING, to_status)
+            for role, text, html in messages:
+                self._insert_message(conn, thread_id, role, text, html)
+            if proposal is not None:
+                self._insert_proposal(conn, thread_id, proposal, base or {})
+            elif drop_proposal:
+                self._supersede_current(conn, thread_id)
+            conn.execute(
+                "update threads set error = ? where id = ?", (error, thread_id)
+            )
+            if session is not None or clear_session:
+                conn.execute(
+                    "update threads set session_json = ? where id = ?",
+                    (_dumps(session) if session is not None else None, thread_id),
+                )
+
+    def next_runnable(self) -> Thread | None:
+        with self._lock:
+            row = self._conn.execute(
+                "select * from threads where status = ? order by updated_at, rowid"
+                " limit 1",
+                (QUEUED,),
+            ).fetchone()
+        return _thread(row) if row else None
+
+    def claim_next(self) -> Thread | None:
+        """Atomically pop the oldest queued thread and mark it running."""
+        with self._lock:
+            thread = self.next_runnable()
+            if thread is None:
+                return None
+            self.transition(thread.id, QUEUED, RUNNING)
+            return self.get_thread(thread.id)
+
+    def reset_interrupted(self) -> int:
+        with self._tx() as conn:
+            # An interrupted run may have reached its CLI session; replay it.
+            cursor = conn.execute(
+                "update threads set status = ?, session_json = null where status = ?",
+                (QUEUED, RUNNING),
+            )
+            return cursor.rowcount
+
+    def sweep(self, retention_days: float) -> int:
+        cutoff = time.time() - retention_days * 86400
+        placeholders = ",".join("?" for _ in TERMINAL_STATUSES)
+        with self._tx() as conn:
+            cursor = conn.execute(
+                f"delete from threads where status in ({placeholders})"
+                " and updated_at < ?",
+                (*TERMINAL_STATUSES, cutoff),
+            )
+            return cursor.rowcount
+
+    def _set_updated_at_for_tests(self, thread_id: str, updated_at: float) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "update threads set updated_at = ? where id = ?",
+                (updated_at, thread_id),
+            )
+
+    # messages
+
+    def add_message(
+        self, thread_id: str, role: str, text: str, html: str = ""
+    ) -> Message:
+        with self._tx() as conn:
+            seq = self._insert_message(conn, thread_id, role, text, html)
+            row = conn.execute(
+                "select * from messages where thread_id = ? and seq = ?",
+                (thread_id, seq),
+            ).fetchone()
+        return _message(row)
+
+    def _insert_message(
+        self,
+        conn: sqlite3.Connection,
+        thread_id: str,
+        role: str,
+        text: str,
+        html: str,
+    ) -> int:
+        if role not in MESSAGE_ROLES:
+            raise ValueError(f"Unknown message role: {role!r}.")
+        seq = conn.execute(
+            "select coalesce(max(seq), 0) + 1 from messages where thread_id = ?",
+            (thread_id,),
+        ).fetchone()[0]
+        now = time.time()
+        conn.execute(
+            "insert into messages (thread_id, seq, role, text, html, created_at)"
+            " values (?,?,?,?,?,?)",
+            (thread_id, seq, role, text, html or "", now),
+        )
+        conn.execute("update threads set updated_at = ? where id = ?", (now, thread_id))
+        return int(seq)
+
+    def messages(self, thread_id: str) -> list[Message]:
+        with self._lock:
+            rows = self._conn.execute(
+                "select * from messages where thread_id = ? order by seq",
+                (thread_id,),
+            ).fetchall()
+        return [_message(row) for row in rows]
+
+    # proposals
+
+    def add_proposal(
+        self,
+        thread_id: str,
+        patch: dict[str, Any],
+        base: dict[str, Any],
+    ) -> Proposal:
+        with self._tx() as conn:
+            version = self._insert_proposal(conn, thread_id, patch, base)
+            row = conn.execute(
+                "select * from proposals where thread_id = ? and version = ?",
+                (thread_id, version),
+            ).fetchone()
+        return _proposal(row)
+
+    def _supersede_current(self, conn: sqlite3.Connection, thread_id: str) -> None:
+        conn.execute(
+            "update proposals set status = ? where thread_id = ? and status = ?",
+            (PROPOSAL_SUPERSEDED, thread_id, PROPOSAL_CURRENT),
+        )
+
+    def _insert_proposal(
+        self,
+        conn: sqlite3.Connection,
+        thread_id: str,
+        patch: dict[str, Any],
+        base: dict[str, Any],
+    ) -> int:
+        now = time.time()
+        version = conn.execute(
+            "select coalesce(max(version), 0) + 1 from proposals where thread_id = ?",
+            (thread_id,),
+        ).fetchone()[0]
+        self._supersede_current(conn, thread_id)
+        conn.execute(
+            "insert into proposals (thread_id, version, created_at, patch_json,"
+            " base_json, status) values (?,?,?,?,?,?)",
+            (
+                thread_id,
+                version,
+                now,
+                _dumps(patch),
+                _dumps(base),
+                PROPOSAL_CURRENT,
+            ),
+        )
+        conn.execute("update threads set updated_at = ? where id = ?", (now, thread_id))
+        return int(version)
+
+    def set_proposal_result(
+        self, thread_id: str, version: int, result: dict[str, Any] | None
+    ) -> None:
+        """Record what applying a proposal produced (e.g. created note ids)."""
+        with self._tx() as conn:
+            conn.execute(
+                "update proposals set result_json = ? where thread_id = ?"
+                " and version = ?",
+                (_dumps(result) if result is not None else None, thread_id, version),
+            )
+            conn.execute(
+                "update threads set updated_at = ? where id = ?",
+                (time.time(), thread_id),
+            )
+
+    def current_proposal(self, thread_id: str) -> Proposal | None:
+        with self._lock:
+            row = self._conn.execute(
+                "select * from proposals where thread_id = ? and status = ?",
+                (thread_id, PROPOSAL_CURRENT),
+            ).fetchone()
+        return _proposal(row) if row else None
+
+    def proposals(self, thread_id: str) -> list[Proposal]:
+        with self._lock:
+            rows = self._conn.execute(
+                "select * from proposals where thread_id = ? order by version",
+                (thread_id,),
+            ).fetchall()
+        return [_proposal(row) for row in rows]

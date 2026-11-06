@@ -108,7 +108,9 @@ await until("the deck name", () => deckButton.textContent !== "" && deckButton.t
 check("deck chosen", deckButton.textContent, String(deckName).replaceAll("\x1f", "::"));
 
 // 3. Format buttons: all thirteen, and they act on the selection.
-const formatButtons = [...document.querySelectorAll(".anki-addon-button")].map((b) => b.dataset.command);
+const formatButtons = [...document.querySelectorAll(".anki-addon-button[data-command^=\"format:\"]")].map((b) =>
+    b.dataset.command
+);
 check("format buttons", formatButtons.length, 13);
 const stamp = String(Date.now());
 await type(0, `shell add ${stamp}`);

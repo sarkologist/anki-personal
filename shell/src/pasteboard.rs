@@ -142,6 +142,49 @@ pub fn shift_held() -> bool {
     NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Shift)
 }
 
+/// `QFileDialog.getExistingDirectory`: a modal open panel for a folder,
+/// starting in `folder`. Blocks as [choose_file].
+pub fn choose_folder(app: &tauri::AppHandle, title: &str, folder: &str) -> Option<PathBuf> {
+    let title = title.to_string();
+    let folder = folder.to_string();
+    on_main(app, move || {
+        let mtm = MainThreadMarker::new().expect("on the main thread");
+        let panel = NSOpenPanel::openPanel(mtm);
+        panel.setCanChooseFiles(false);
+        panel.setCanChooseDirectories(true);
+        panel.setCanCreateDirectories(true);
+        panel.setAllowsMultipleSelection(false);
+        let title = NSString::from_str(&title);
+        panel.setTitle(Some(&title));
+        panel.setMessage(Some(&title));
+        if !folder.is_empty() {
+            if let Some(url) = NSURL::from_directory_path(&folder) {
+                panel.setDirectoryURL(Some(&url));
+            }
+        }
+        if panel.runModal() != NSModalResponseOK {
+            return None;
+        }
+        panel.URL()?.to_file_path()
+    })
+}
+
+/// Run `f` on the main thread and wait for it (or run it, if this is it).
+fn on_main<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    f: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    if MainThreadMarker::new().is_some() {
+        return f();
+    }
+    let (tx, rx) = mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f());
+    })
+    .ok()?;
+    rx.recv().ok().flatten()
+}
+
 /// `getFile`: a modal open panel for one file with one of `extensions`.
 /// Blocks until it closes; call it off the main thread (on it, the panel
 /// is run directly).
@@ -166,15 +209,7 @@ pub fn choose_file(app: &tauri::AppHandle, title: &str, extensions: &[&str]) -> 
         }
         panel.URL()?.to_file_path()
     };
-    if MainThreadMarker::new().is_some() {
-        return run();
-    }
-    let (tx, rx) = mpsc::channel();
-    app.run_on_main_thread(move || {
-        let _ = tx.send(run());
-    })
-    .ok()?;
-    rx.recv().ok().flatten()
+    on_main(app, run)
 }
 
 /// A uniquely named pasteboard, released on drop: for tests, which must
