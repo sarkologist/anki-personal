@@ -54,6 +54,7 @@ def main(base: Path) -> None:
         # ProfileManager.get_answer_key; the dict's keys are ints
         "answerKeys": {str(k): v for k, v in (meta.get("answer_keys") or {}).items()},
         "spacebarRatesCard": meta.get("spacebar_rates_card"),
+        "theme": meta.get("theme") if isinstance(meta.get("theme"), int) else None,
     }
     json.dump(out, sys.stdout)
 

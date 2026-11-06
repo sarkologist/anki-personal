@@ -343,7 +343,9 @@ impl Ui {
         if self.background {
             builder = builder.focused(false);
         }
+        let builder = builder.background_color(crate::theme::canvas(self.shell.night.get()));
         let window = builder.build()?;
+        crate::theme::style_window(&window, self.shell.night.get());
         if self.background {
             send_to_back(&window)?;
         }
@@ -385,7 +387,9 @@ impl Ui {
         if self.background {
             builder = builder.focused(false);
         }
+        let builder = builder.background_color(crate::theme::canvas(self.shell.night.get()));
         let window = builder.build()?;
+        crate::theme::style_window(&window, self.shell.night.get());
         if self.background {
             send_to_back(&window)?;
         }
@@ -417,7 +421,9 @@ impl Ui {
         if self.background {
             builder = builder.focused(false);
         }
+        let builder = builder.background_color(crate::theme::canvas(self.shell.night.get()));
         let window = builder.build()?;
+        crate::theme::style_window(&window, self.shell.night.get());
         if self.background {
             send_to_back(&window)?;
         }
@@ -707,6 +713,7 @@ fn register_bridge(ui: &Arc<Ui>) {
         if let Err(err) = u.reimport() {
             *u.status.lock().unwrap() = format!("Re-import failed: {err:#}");
         }
+        crate::theme::apply(&u, None);
         let _ = u.show_main();
         Value::Null
     });
@@ -860,6 +867,7 @@ pub fn run(args: Args) -> Result<()> {
         plugins: crate::plugins::ui::Plugins::new(shell.clone()),
         paste_trackers: Default::default(),
     });
+    crate::theme::apply(&ui, None);
     register_bridge(&ui);
     crate::editor_window::register(&ui);
     crate::plugins::ui::register(&ui);
@@ -979,6 +987,18 @@ pub fn run(args: Args) -> Result<()> {
             event: tauri::WindowEvent::Focused(focused),
             ..
         } => crate::plugins::ui::window_focused(&exit_ui, &label, focused),
+        // the system's appearance changed (or a forced one was applied)
+        RunEvent::WindowEvent {
+            event: tauri::WindowEvent::ThemeChanged(theme),
+            ..
+        } => {
+            // it takes the settings and reviewer locks, which bridge
+            // threads hold across backend calls
+            let ui = exit_ui.clone();
+            std::thread::spawn(move || {
+                crate::theme::apply(&ui, Some(theme == tauri::Theme::Dark))
+            });
+        }
         RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,

@@ -257,6 +257,7 @@ Exit: a week of adding and editing only in the shell.
 - [ ] Card browser: table, sidebar, search, column config including the plugin
       column API (suspended_card_priority), find/replace, duplicates,
       previewer, card info.
+- [x] Dark mode.
 - [ ] Card layout, notetypes, fields, filtered decks, custom study,
       preferences, import/export, media check, empty cards, LaTeX toolchain
       setting.
@@ -1019,3 +1020,37 @@ exit criterion, a week of adding and editing only in the shell.
   - the old Anki's editor geometry;
   - drawing masks in a test;
   - the agent pane and alfred events: done since, below.
+
+### Phase 4: dark mode (2026-11-06)
+
+The shell was always light; the old Anki follows the system (`_global.theme`
+is 0), and macOS is dark here.
+
+- **Theme** (`src/theme.rs`): system, light or dark (`theme` in the
+  settings file; the profile import takes the old Anki's as `anki_theme`,
+  and the shell's own wins). Night mode is that, or for "system" the
+  global `AppleInterfaceStyle`, read directly since the windows' own
+  appearance follows a forced theme. Windows get the matching appearance
+  (`AppHandle::set_theme`). A change of the system's appearance arrives as
+  Tauri's `ThemeChanged`, and is handled off the main thread, since it
+  takes the settings and reviewer locks.
+- **Pages:** the protocol adds Qt's markers to every HTML page it serves:
+  `night-mode` and `data-bs-theme="dark"` on `<html>` (what
+  `theme_manager` and the ts/ pages' `pageTheme` use), and
+  `nightMode`/`night_mode` on `<body>`. That covers the SvelteKit shell,
+  the assembled pages (`legacyPageData`) and add-on panels, so a page
+  never loads light and then switches. Open pages, and their same-origin
+  frames (the reviewer's bars), get Qt's `on_theme_did_change` script. The
+  reviewer's card body gets `nightMode night_mode` with each card.
+- **No white flash:** wry's webview background colour does nothing on
+  macOS. So each window gets Anki's canvas colour (`#f5f5f5`/`#2c2c2c`)
+  as its NSWindow background, and its WKWebView stops drawing its own
+  (`drawsBackground` off, as transparent webviews do).
+- **Checks:** `harness/dark-mode.js` (`--test-page main`): the setting
+  and a simulated system appearance switching the open deck list live;
+  the overview and reviewer, with both bars, served dark; the card body's
+  classes switching with a card shown; the window's background and the
+  webview's `drawsBackground`, read from AppKit. Unit tests cover the
+  markers, the protocol's theming, the preference and the import.
+  `main-flow.js` and `editor-add.js` still pass in dark mode.
+
