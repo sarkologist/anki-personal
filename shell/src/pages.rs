@@ -30,6 +30,10 @@ pub enum WebviewKind {
     ImportLog,
     CardLayout,
     Preferences,
+    FilteredDeck,
+    CustomStudy,
+    MediaCheck,
+    EmptyCards,
     /// A [crate::main_window::ask] window.
     Dialog,
     /// An add-on's web view (`AnkiWebView`) in an editor's side panel,
@@ -54,6 +58,10 @@ impl WebviewKind {
                 | WebviewKind::ImportAnkiPackage
                 | WebviewKind::ImportLog
                 | WebviewKind::Preferences
+                | WebviewKind::FilteredDeck
+                | WebviewKind::CustomStudy
+                | WebviewKind::MediaCheck
+                | WebviewKind::EmptyCards
         )
     }
 
@@ -62,6 +70,20 @@ impl WebviewKind {
     pub fn own_backend(self) -> &'static [&'static str] {
         match self {
             WebviewKind::Preferences => &["get_preferences", "set_preferences"],
+            WebviewKind::FilteredDeck => &[
+                "get_or_create_filtered_deck",
+                "add_or_update_filtered_deck",
+                "filtered_deck_order_labels",
+            ],
+            WebviewKind::CustomStudy => &["custom_study_defaults", "custom_study"],
+            WebviewKind::MediaCheck => &[
+                "check_media",
+                "trash_media_files",
+                "empty_trash",
+                "restore_trash",
+                "add_note_tags",
+            ],
+            WebviewKind::EmptyCards => &["get_empty_cards", "remove_cards"],
             _ => &[],
         }
     }

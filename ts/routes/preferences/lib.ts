@@ -1,7 +1,9 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-import { bridgeCommand } from "@tslib/bridgecommand";
+import { shellCommand } from "$lib/shell/shell";
+
+export { shellCommand };
 
 export type Theme = "system" | "light" | "dark";
 
@@ -17,10 +19,6 @@ export interface ShellUpdate {
     theme?: Theme;
     latex?: { png: string; svg: string };
     resetLatex?: boolean;
-}
-
-export function shellCommand<T>(command: string): Promise<T> {
-    return new Promise((resolve) => bridgeCommand<T>(command, resolve));
 }
 
 /** Save the shell's preferences; the error message if they were refused. */

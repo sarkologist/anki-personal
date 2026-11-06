@@ -90,14 +90,32 @@ static SCREEN_SCRIPT: std::sync::Mutex<Option<(String, String, u32)>> = std::syn
 fn screen_label(page: &str) -> Option<&'static str> {
     match page {
         "preferences" => Some(crate::preferences::LABEL),
+        "filtered-deck" => Some(crate::screens::FILTERED_DECK),
+        "custom-study" => Some(crate::screens::CUSTOM_STUDY),
+        "media-check" => Some(crate::screens::MEDIA_CHECK),
+        "empty-cards" => Some(crate::screens::EMPTY_CARDS),
         _ => None,
     }
 }
 
+/// Filtered decks open as a new one, custom study on the current deck.
 fn open_screen(ui: &Arc<Ui>, page: &str) {
-    if page == "preferences" {
-        crate::preferences::open(ui);
+    match page {
+        "preferences" => crate::preferences::open(ui),
+        "filtered-deck" => crate::screens::open_filtered_deck(ui, 0),
+        "custom-study" => crate::screens::open_custom_study(ui, current_deck(ui)),
+        "media-check" => crate::screens::open_media_check(ui),
+        "empty-cards" => crate::screens::open_empty_cards(ui),
+        _ => {}
     }
+}
+
+fn current_deck(ui: &Ui) -> i64 {
+    ui.shell
+        .api
+        .call::<anki_proto::decks::Deck>("get_current_deck", &anki_proto::generic::Empty {})
+        .map(|d| d.id)
+        .unwrap_or(1)
 }
 
 /// A webview loaded a page (its `domDone`): run a screen's script there.
@@ -289,6 +307,51 @@ unsafe fn ime_input(webview: *mut std::ffi::c_void, steps: &[(String, String)]) 
     }
 }
 
+fn add_note(shell: &crate::Shell, args: &str) -> Result<Value> {
+    let v: Value = serde_json::from_str(args)?;
+    let ntid: anki_proto::notetypes::NotetypeId = shell.api.call(
+        "get_notetype_id_by_name",
+        &anki_proto::generic::String {
+            val: v["notetype"].as_str().unwrap_or("Basic").into(),
+        },
+    )?;
+    let mut note: anki_proto::notes::Note = shell.api.call("new_note", &ntid)?;
+    for (i, field) in v["fields"].as_array().into_iter().flatten().enumerate() {
+        if let Some(slot) = note.fields.get_mut(i) {
+            *slot = field.as_str().unwrap_or_default().into();
+        }
+    }
+    let added: anki_proto::notes::AddNoteResponse = shell.api.call(
+        "add_note",
+        &anki_proto::notes::AddNoteRequest {
+            note: Some(note),
+            deck_id: v["deck"].as_i64().unwrap_or(1),
+        },
+    )?;
+    Ok(json!(added.note_id))
+}
+
+fn update_note(shell: &crate::Shell, args: &str) -> Result<Value> {
+    let v: Value = serde_json::from_str(args)?;
+    let nid = v["nid"].as_i64().context("nid")?;
+    let mut note: anki_proto::notes::Note = shell
+        .api
+        .call("get_note", &anki_proto::notes::NoteId { nid })?;
+    for (i, field) in v["fields"].as_array().into_iter().flatten().enumerate() {
+        if let Some(slot) = note.fields.get_mut(i) {
+            *slot = field.as_str().unwrap_or_default().into();
+        }
+    }
+    let _: anki_proto::collection::OpChanges = shell.api.call(
+        "update_notes",
+        &anki_proto::notes::UpdateNotesRequest {
+            notes: vec![note],
+            skip_undo_entry: false,
+        },
+    )?;
+    Ok(json!(true))
+}
+
 fn local_http(v: &Value) -> Result<Value> {
     use std::io::Read;
     use std::io::Write;
@@ -346,6 +409,12 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
         let msg: Value = serde_json::from_str(args).unwrap_or(Value::Null);
         if msg["done"] == json!(true) && msg["result"]["next"] == json!(true) {
             println!("TEST stage {}", msg["result"]);
+            // a screen's script goes on in the window it opens (`in`)
+            if let Some(label) = msg["result"]["in"].as_str() {
+                if let Some((screen, _, _)) = SCREEN_SCRIPT.lock().unwrap().as_mut() {
+                    *screen = label.to_string();
+                }
+            }
         } else if msg["done"] == json!(true) {
             let result = &msg["result"];
             println!("TEST {result}");
@@ -530,6 +599,40 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
         }
         *stash = serde_json::from_str(value).unwrap_or(Value::Null);
         Value::Null
+    });
+    // a note: `{"notetype": name, "deck": id (default 1), "fields": [..]}`
+    ui.shell.bridge.register("testAddNote", |shell, _, args| {
+        add_note(shell, args).unwrap_or_else(|e| json!({ "error": format!("{e:#}") }))
+    });
+    // change a note's fields: `{"nid": id, "fields": [..]}`
+    ui.shell.bridge.register("testUpdateNote", |shell, _, args| {
+        update_note(shell, args).unwrap_or_else(|e| json!({ "error": format!("{e:#}") }))
+    });
+    // a media file with this text: `{"name", "text"}` -> the name used
+    ui.shell.bridge.register("testAddMediaFile", |shell, _, args| {
+        let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+        shell
+            .api
+            .call::<anki_proto::generic::String>(
+                "add_media_file",
+                &anki_proto::media::AddMediaFileRequest {
+                    desired_name: v["name"].as_str().unwrap_or("shell-test.txt").into(),
+                    data: v["text"].as_str().unwrap_or_default().as_bytes().to_vec(),
+                },
+            )
+            .map(|name| json!(name.val))
+            .unwrap_or_else(|e| json!({ "error": e.message }))
+    });
+    // LaTeX commands for this run only (`LatexCommands` JSON), so checks
+    // don't run the user's own toolchain
+    ui.shell.bridge.register("testLatexToolchain", |_, _, args| {
+        match serde_json::from_str(args) {
+            Ok(commands) => {
+                crate::latex::set_toolchain(commands);
+                json!(true)
+            }
+            Err(_) => json!(false),
+        }
     });
     // the settings file as the shell has it
     let u = ui.clone();

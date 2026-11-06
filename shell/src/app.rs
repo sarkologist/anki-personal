@@ -868,6 +868,7 @@ pub fn run(args: Args) -> Result<()> {
     crate::plugins::ui::register(&ui);
     crate::main_window::register(&ui);
     crate::preferences::register(&ui);
+    crate::screens::register(&ui);
     let (menu, menus) = crate::menus::build(&ui, &app)?;
     app.set_menu(menu)?;
     *ui.menus.lock().unwrap() = Some(menus);

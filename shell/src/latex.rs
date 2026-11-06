@@ -124,7 +124,7 @@ pub fn latex_config(api: &Api, notetype_id: i64) -> Result<LatexConfig> {
     latex_config_with(api, notetype_id, &toolchain())
 }
 
-fn latex_config_with(
+pub(crate) fn latex_config_with(
     api: &Api,
     notetype_id: i64,
     toolchain: &LatexCommands,
