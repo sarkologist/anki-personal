@@ -95,7 +95,11 @@ pub fn apply(ui: &std::sync::Arc<crate::app::Ui>, system_dark: Option<bool>) {
     if !changed {
         return;
     }
-    crate::plugins::ui::notify(ui, "theme_did_change", serde_json::json!({ "night": night }));
+    crate::plugins::ui::notify(
+        ui,
+        "theme_did_change",
+        serde_json::json!({ "night": night }),
+    );
     tracing::info!(night, "theme changed");
     let windows: Vec<(String, tauri::WebviewWindow)> = {
         use tauri::Manager;
