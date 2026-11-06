@@ -456,12 +456,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             return;
         }
 
+        // bind the save to the note shown now, not whichever is loaded when it fires
+        const noteId = getNoteId();
         fieldSave.schedule(
             () =>
                 bridgeCommand(
-                    `key:${index}:${getNoteId()}:${transformContentBeforeSave(
-                        content,
-                    )}`,
+                    `key:${index}:${noteId}:${transformContentBeforeSave(content)}`,
                 ),
             600,
         );

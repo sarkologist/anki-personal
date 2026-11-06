@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import warnings
+from collections import OrderedDict
 from collections.abc import Callable
 from enum import Enum
 from random import randrange
@@ -132,6 +133,7 @@ audio = (
 )
 
 EDITOR_SAVE_TIMEOUT_MS = 5000
+LATEX_PREVIEW_CACHE_SIZE = 256
 
 
 class EditorMode(Enum):
@@ -191,7 +193,7 @@ class Editor:
         self.state: EditorState = EditorState.INITIAL
         # used for the io mask editor's context menu
         self.last_io_image_path: str | None = None
-        self._latex_preview_cache: dict[str, LegacyLatexPreviewResult] = {}
+        self._latex_preview_cache = self._new_latex_preview_cache()
         # guards against reentrant / runaway webview crash recovery
         self._recovering_webview = False
         self._recent_recovery_times: list[float] = []
@@ -625,6 +627,21 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             "latexsvg": bool(notetype.get("latexsvg", False)),
         }
 
+    @staticmethod
+    def _new_latex_preview_cache() -> OrderedDict[str, LegacyLatexPreviewResult]:
+        return OrderedDict()
+
+    def _remember_latex_preview(
+        self, cache_key: str, result: LegacyLatexPreviewResult
+    ) -> None:
+        # Keys include the saved fields, so every note viewed and every saved
+        # edit adds entries; keep only the most recently used ones.
+        cache = self._latex_preview_cache
+        cache[cache_key] = result
+        cache.move_to_end(cache_key)
+        while len(cache) > LATEX_PREVIEW_CACHE_SIZE:
+            cache.popitem(last=False)
+
     def _latex_preview_cache_key(
         self,
         *,
@@ -670,6 +687,9 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
         request_id: str,
         result: LegacyLatexPreviewResult,
     ) -> None:
+        if not self.web:
+            # the editor was closed while the render was running
+            return
         self.web.eval(
             "globalThis.receiveLatexPreviewResult?.(%s);"
             % json.dumps(self._latex_preview_bridge_result(request_id, result))
@@ -691,13 +711,14 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
         )
 
         if cached := self._latex_preview_cache.get(cache_key):
+            self._latex_preview_cache.move_to_end(cache_key)
             return {
                 "status": "ready",
                 "result": self._latex_preview_bridge_result(request_id, cached),
             }
 
         def on_done(result: LegacyLatexPreviewResult) -> None:
-            self._latex_preview_cache[cache_key] = result
+            self._remember_latex_preview(cache_key, result)
             self._send_latex_preview_result(request_id, result)
 
         def on_failure(exception: Exception) -> None:
@@ -896,7 +917,12 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
         def refresh() -> None:
             # The editor may have been cleaned up or swapped out before the
             # timer fired; never touch a dead or replaced webview.
-            if not self.web or self.web is not web or not web.isVisible():
+            if (
+                not self.web
+                or self.web is not web
+                or sip.isdeleted(web)
+                or not web.isVisible()
+            ):
                 return
             focused = QApplication.focusWidget()
             if reset_surface:
@@ -909,7 +935,9 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             if focused and focused.window() is self.parentWindow.window():
                 focused.setFocus()
 
-        self.mw.progress.timer(0, refresh, False, parent=web)
+        # Not timer(parent=web): that timer would live as long as the webview,
+        # and the Browser calls this on every row and focus change.
+        self.mw.progress.single_shot(0, refresh, False)
 
     def recover_webview_after_crash(self) -> None:
         if not self.web or not self.note:

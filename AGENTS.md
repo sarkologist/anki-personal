@@ -1,4 +1,4 @@
-# Codex Configuration
+# Agent Configuration
 
 ## Project Overview
 
@@ -10,6 +10,13 @@ Anki is a spaced repetition flashcard program with a multi-layered architecture.
 - Core Rust layer in rslib/
 - Protobuf definitions in proto/ that are used by the different layers to
   talk to each other.
+
+## Platform
+
+This fork targets macOS only, and isn't meant to be merged upstream. Don't
+spend effort on Linux or Windows: no cross-platform guards, builds or checks
+for them, in new code or when fixing old code. Platform-specific code for
+other platforms that's already here can stay as it is.
 
 ## Building/checking
 
@@ -51,7 +58,7 @@ communicating with the Rust backend (which happens over POST requests).
 
 ## Testing (red/green TDD)
 
-Use red/green test-driven development for new behavior and bug fixes
+Use red/green test-driven development for new behavior and bug fixes.
 
 Minimize failing counterexamples before adding regression tests. Keep only the
 input and setup needed to reproduce the bug, and verify that the minimized test
@@ -95,9 +102,9 @@ in build scripts/tests is fine.
 
 ## Commit workflow
 
-Before implementing changes, create or switch to a dedicated git branch. Use
-the `codex/` branch prefix by default unless the user requests a different
-branch name.
+Before implementing changes, create or switch to a dedicated git branch. Prefix
+the branch with the agent's name (`codex/`, `claude/`) unless the user
+requests a different branch name.
 
 After completing work, create a git commit unless the user says not to or the
 current interaction is quick development iteration that should remain

@@ -5,7 +5,8 @@ import { LRUCache } from "lru-cache";
 
 /**
  * A rendered MathJax SVG is a pure function of its source, the inherited font
- * size, and the notetype template version. Caching the result lets us skip the
+ * size, whether it is block (display) or inline math, and the notetype template
+ * version. Caching the result lets us skip the
  * expensive `tex2svg` render when the same expression is shown again — which
  * happens far more than it looks:
  *
@@ -29,9 +30,27 @@ export type MathjaxConversion = [string, string];
 type Bucket = LRUCache<string, MathjaxConversion>;
 
 const buckets = new Map<string, Bucket>();
+/**
+ * The template version only ever increases, so once a newer one is seen the
+ * older buckets can never be hit again; keeping them would grow the cache by up
+ * to a full bucket of SVGs per notetype switch.
+ */
+let currentTemplateScriptVersion = -Infinity;
 
-function bucketFor(fontSize: number, templateScriptVersion: number): Bucket {
-    const key = `${fontSize}:${templateScriptVersion}`;
+function bucketFor(
+    fontSize: number,
+    block: boolean,
+    templateScriptVersion: number,
+): Bucket | null {
+    if (templateScriptVersion < currentTemplateScriptVersion) {
+        // A render that started before a notetype switch: don't cache it.
+        return null;
+    }
+    if (templateScriptVersion > currentTemplateScriptVersion) {
+        currentTemplateScriptVersion = templateScriptVersion;
+        buckets.clear();
+    }
+    const key = `${fontSize}:${block}`;
     let bucket = buckets.get(key);
     if (!bucket) {
         bucket = new LRUCache<string, MathjaxConversion>({ max: MAX_ENTRIES_PER_BUCKET });
@@ -41,23 +60,25 @@ function bucketFor(fontSize: number, templateScriptVersion: number): Bucket {
 }
 
 /**
- * Return the cached conversion for `mathjax` at the given font size / template
- * version, computing and caching it with `compute` on a miss.
+ * Return the cached conversion for `mathjax` at the given font size, math style
+ * (block vs inline) and template version, computing and caching it with
+ * `compute` on a miss.
  */
 export function getCachedMathjaxConversion(
     mathjax: string,
     fontSize: number,
+    block: boolean,
     templateScriptVersion: number,
     compute: () => MathjaxConversion,
 ): MathjaxConversion {
-    const bucket = bucketFor(fontSize, templateScriptVersion);
-    const cached = bucket.get(mathjax);
+    const bucket = bucketFor(fontSize, block, templateScriptVersion);
+    const cached = bucket?.get(mathjax);
     if (cached) {
         return cached;
     }
 
     const conversion = compute();
-    bucket.set(mathjax, conversion);
+    bucket?.set(mathjax, conversion);
     return conversion;
 }
 
@@ -68,6 +89,7 @@ export function getCachedMathjaxConversion(
 export async function getCachedMathjaxConversionAfterLoad(
     mathjax: string,
     fontSize: number,
+    block: boolean,
     templateScriptVersion: number,
     load: () => Promise<void>,
     compute: () => MathjaxConversion,
@@ -76,6 +98,7 @@ export async function getCachedMathjaxConversionAfterLoad(
     return getCachedMathjaxConversion(
         mathjax,
         fontSize,
+        block,
         templateScriptVersion,
         compute,
     );
@@ -84,4 +107,10 @@ export async function getCachedMathjaxConversionAfterLoad(
 /** Test seam: drop all cached conversions. */
 export function resetMathjaxCache(): void {
     buckets.clear();
+    currentTemplateScriptVersion = -Infinity;
+}
+
+/** Test seam: number of live (font size, math style) buckets. */
+export function mathjaxCacheBucketCount(): number {
+    return buckets.size;
 }

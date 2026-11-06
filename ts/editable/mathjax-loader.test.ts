@@ -171,9 +171,10 @@ test("converts and caches the real SVG only after loading", async () => {
     const pending = getCachedMathjaxConversionAfterLoad(
         "x^2",
         20,
+        false,
         0,
         () => loading,
-        () => convertMathjax("x^2", 20),
+        () => convertMathjax("x^2", 20, false),
     );
     expect(tex2svg).not.toHaveBeenCalled();
 

@@ -1,3 +1,7 @@
+[graph]
+# this fork is built for macOS only (see AGENTS.md), so other platforms'
+# dependencies aren't audited
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 # all-features = true
 # features = []
 

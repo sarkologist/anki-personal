@@ -752,6 +752,14 @@
     "repository": "https://github.com/servo/rust-cssparser"
   },
   {
+    "authors": "Simon Sapin <simon.sapin@exyr.org>",
+    "description": "Procedural macros for cssparser",
+    "license": "MPL-2.0",
+    "license_file": null,
+    "name": "cssparser-macros",
+    "repository": "https://github.com/servo/rust-cssparser"
+  },
+  {
     "authors": "Andrew Gallant <jamslam@gmail.com>",
     "description": "Fast CSV parsing with support for serde.",
     "license": "MIT OR Unlicense",
@@ -1984,14 +1992,6 @@
     "repository": "https://github.com/krisprice/ipnet"
   },
   {
-    "authors": "YOSHIOKA Takuma <nop_thread@nops.red>",
-    "description": "IRI as string types",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "iri-string",
-    "repository": "https://github.com/lo48576/iri-string"
-  },
-  {
     "authors": "bluss",
     "description": "Extra iterator adaptors, iterator methods, free functions, and macros.",
     "license": "Apache-2.0 OR MIT",
@@ -2029,7 +2029,7 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "js-sys",
-    "repository": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/js-sys"
+    "repository": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys"
   },
   {
     "authors": "Timothée Haudebourg <author@haudebourg.net>|Sean Kerr <sean@metatomic.io>",
@@ -2350,6 +2350,14 @@
     "license_file": null,
     "name": "new_debug_unreachable",
     "repository": "https://github.com/mbrubeck/rust-debug-unreachable"
+  },
+  {
+    "authors": null,
+    "description": "Rust friendly bindings to *nix APIs",
+    "license": "MIT",
+    "license_file": null,
+    "name": "nix",
+    "repository": "https://github.com/nix-rust/nix"
   },
   {
     "authors": "contact@geoffroycouprie.com",
@@ -2685,6 +2693,14 @@
     "license": "MIT",
     "license_file": null,
     "name": "phf_generator",
+    "repository": "https://github.com/rust-phf/rust-phf"
+  },
+  {
+    "authors": "Steven Fackler <sfackler@gmail.com>",
+    "description": "Macros to generate types in the phf crate",
+    "license": "MIT",
+    "license_file": null,
+    "name": "phf_macros",
     "repository": "https://github.com/rust-phf/rust-phf"
   },
   {
@@ -3456,6 +3472,14 @@
     "repository": "https://github.com/dtolnay/serde-repr"
   },
   {
+    "authors": null,
+    "description": "Serde-compatible spanned Value",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "serde_spanned",
+    "repository": "https://github.com/toml-rs/toml"
+  },
+  {
     "authors": "Jacob Brown <kardeiz@gmail.com>",
     "description": "De/serialize structs with named fields as array of values",
     "license": "MIT",
@@ -3710,6 +3734,14 @@
     "license_file": null,
     "name": "symlink",
     "repository": "https://gitlab.com/chris-morgan/symlink"
+  },
+  {
+    "authors": "David Tolnay <dtolnay@gmail.com>",
+    "description": "Parser for Rust source code",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "syn",
+    "repository": "https://github.com/dtolnay/syn"
   },
   {
     "authors": "David Tolnay <dtolnay@gmail.com>",
@@ -4080,6 +4112,14 @@
     "repository": "https://github.com/kardeiz/type-map"
   },
   {
+    "authors": "Chip Senkbeil <chip@senkbeil.org>",
+    "description": "Provides typed variants of Path and PathBuf for Unix and Windows",
+    "license": "Apache-2.0 OR MIT",
+    "license_file": null,
+    "name": "typed-path",
+    "repository": "https://github.com/chipsenkbeil/typed-path"
+  },
+  {
     "authors": "Paho Lurie-Gregg <paho@paholg.com>|Andre Bogus <bogusandre@gmail.com>",
     "description": "Typenum is a Rust library for type-level numbers evaluated at     compile time. It currently supports bits, unsigned integers, and signed     integers. It also provides a type-level array of type-level numbers, but its     implementation is incomplete.",
     "license": "Apache-2.0 OR MIT",
@@ -4341,15 +4381,7 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "wasm-bindgen",
-    "repository": "https://github.com/rustwasm/wasm-bindgen"
-  },
-  {
-    "authors": "The wasm-bindgen Developers",
-    "description": "Backend code generation of the wasm-bindgen tool",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "wasm-bindgen-backend",
-    "repository": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/backend"
+    "repository": "https://github.com/wasm-bindgen/wasm-bindgen"
   },
   {
     "authors": "The wasm-bindgen Developers",
@@ -4357,7 +4389,7 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "wasm-bindgen-futures",
-    "repository": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/futures"
+    "repository": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/futures"
   },
   {
     "authors": "The wasm-bindgen Developers",
@@ -4365,15 +4397,15 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "wasm-bindgen-macro",
-    "repository": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/macro"
+    "repository": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro"
   },
   {
     "authors": "The wasm-bindgen Developers",
-    "description": "The part of the implementation of the `#[wasm_bindgen]` attribute that is not in the shared backend crate",
+    "description": "Implementation APIs for the `#[wasm_bindgen]` attribute",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "wasm-bindgen-macro-support",
-    "repository": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/macro-support"
+    "repository": "https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support"
   },
   {
     "authors": "The wasm-bindgen Developers",
@@ -4381,7 +4413,7 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "wasm-bindgen-shared",
-    "repository": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/shared"
+    "repository": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared"
   },
   {
     "authors": "Mattias Buelens <mattias@buelens.com>",
@@ -4397,7 +4429,7 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "web-sys",
-    "repository": "https://github.com/rustwasm/wasm-bindgen/tree/master/crates/web-sys"
+    "repository": "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys"
   },
   {
     "authors": null,
@@ -5109,7 +5141,7 @@
     "license": "MIT",
     "license_file": null,
     "name": "zip",
-    "repository": "https://github.com/zip-rs/zip2.git"
+    "repository": "https://github.com/zip-rs/zip2"
   },
   {
     "authors": null,
@@ -5138,7 +5170,7 @@
   {
     "authors": "Alexandre Bury <alexandre.bury@gmail.com>",
     "description": "Binding for the zstd compression library.",
-    "license": "MIT",
+    "license": "BSD-3-Clause",
     "license_file": null,
     "name": "zstd",
     "repository": "https://github.com/gyscos/zstd-rs"
@@ -5146,7 +5178,7 @@
   {
     "authors": "Alexandre Bury <alexandre.bury@gmail.com>",
     "description": "Safe low-level bindings for the zstd compression library.",
-    "license": "Apache-2.0 OR MIT",
+    "license": "BSD-3-Clause",
     "license_file": null,
     "name": "zstd-safe",
     "repository": "https://github.com/gyscos/zstd-rs"
@@ -5154,7 +5186,7 @@
   {
     "authors": "Alexandre Bury <alexandre.bury@gmail.com>",
     "description": "Low-level bindings for the zstd compression library.",
-    "license": "Apache-2.0 OR MIT",
+    "license": "BSD-3-Clause",
     "license_file": null,
     "name": "zstd-sys",
     "repository": "https://github.com/gyscos/zstd-rs"

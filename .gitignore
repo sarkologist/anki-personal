@@ -20,7 +20,11 @@ ts/.svelte-kit
 .yarn
 .claude/settings.local.json
 .claude/user.md
+.Codex/user.md
 addons/editor_agent_pane/meta.json
+addons/chinese_frontier/meta.json
+addons/chinese_frontier/user_files/
 .venv
 docs/_build/
 docs/autoapi/
+tools/frontier_eval/cache/

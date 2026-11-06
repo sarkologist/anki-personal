@@ -1,0 +1,15 @@
+{
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "Anki Shell",
+    "identifier": "net.ankiweb.anki-shell",
+    "app": {
+        "windows": [],
+        "security": {
+            "csp": null
+        }
+    },
+    "bundle": {
+        "active": false,
+        "icon": ["icons/icon.png", "icons/icon.icns"]
+    }
+}
