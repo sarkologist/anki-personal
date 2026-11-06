@@ -45,6 +45,7 @@ PROBE = textwrap.dedent(
 
     gui_hooks.profile_did_open.append(opened)
     gui_hooks.profile_will_close.append(lambda: seen.append(["closing"]))
+    gui_hooks.theme_did_change.append(lambda: seen.append(["theme"]))
     gui_hooks.state_did_change.append(lambda new, old: seen.append(["state", new, old]))
     gui_hooks.operation_did_execute.append(
         lambda changes, initiator: seen.append(["op", changes.note_text, changes.notetype])
@@ -77,6 +78,9 @@ PROBE = textwrap.dedent(
     def message(handled, text, context):
         if text == "probe:seen":
             return (True, seen)
+        if text == "probe:night":
+            from aqt.theme import theme_manager
+            return (True, theme_manager.night_mode)
         if text == "probe:child":
             import subprocess
             return (True, subprocess.Popen(["sleep", "60"]).pid)
@@ -271,6 +275,16 @@ def test_reviewer_hooks_get_the_card(host):
     shell.event("state_did_change", new="review", old="overview")
     seen = shell.message("probe:seen")["value"]
     assert ["answered", card_id, 3] in seen and ["state", "review", "overview"] in seen
+
+
+def test_add_ons_see_the_shells_theme(host):
+    shell, _proc, _probe = host
+    shell.event("set_theme", night=True)
+    assert shell.message("probe:night")["value"] is True
+    assert ["theme"] not in shell.message("probe:seen")["value"]
+    shell.event("theme_did_change", night=False)
+    assert shell.message("probe:night")["value"] is False
+    assert ["theme"] in shell.message("probe:seen")["value"]
 
 
 def test_the_deck_browser_gets_the_add_ons_html(host):

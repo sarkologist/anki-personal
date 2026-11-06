@@ -289,6 +289,44 @@ unsafe fn ime_input(webview: *mut std::ffi::c_void, steps: &[(String, String)]) 
     }
 }
 
+unsafe fn window_look(
+    ns_window: Option<*mut std::ffi::c_void>,
+    webview: *mut std::ffi::c_void,
+) -> Value {
+    use objc2::msg_send;
+    use objc2::runtime::AnyClass;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSNumber;
+    use objc2_foundation::NSString;
+    let Some(ns_window) = ns_window else {
+        return Value::Null;
+    };
+    let window = ns_window as *mut AnyObject;
+    let color: *mut AnyObject = msg_send![window, backgroundColor];
+    let Some(space) = AnyClass::get(c"NSColorSpace") else {
+        return Value::Null;
+    };
+    let srgb: *mut AnyObject = msg_send![space, sRGBColorSpace];
+    let rgb: *mut AnyObject = msg_send![color, colorUsingColorSpace: srgb];
+    if rgb.is_null() {
+        return Value::Null;
+    }
+    let component = |sel: &str| -> u8 {
+        let v: f64 = match sel {
+            "r" => msg_send![rgb, redComponent],
+            "g" => msg_send![rgb, greenComponent],
+            _ => msg_send![rgb, blueComponent],
+        };
+        (v * 255.0).round() as u8
+    };
+    let key = NSString::from_str("drawsBackground");
+    let draws: *mut NSNumber = msg_send![webview as *mut AnyObject, valueForKey: &*key];
+    json!({
+        "background": [component("r"), component("g"), component("b")],
+        "drawsBackground": draws.as_ref().map(|n| n.as_bool()),
+    })
+}
+
 fn local_http(v: &Value) -> Result<Value> {
     use std::io::Read;
     use std::io::Write;
@@ -566,6 +604,44 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
                 .and_then(|name| std::fs::read(media.join(name)).ok())
                 .map(|data| String::from_utf8_lossy(&data).into_owned());
             json!({ "html": html, "errors": errors, "image": image, "svg": cfg.svg })
+        });
+    // the theme setting (system, light or dark), applied as the shell does
+    let u = ui.clone();
+    ui.shell.bridge.register("testTheme", move |_, _, pref| {
+        let Ok(pref) = serde_json::from_value(json!(pref)) else {
+            return json!(false);
+        };
+        u.settings.lock().unwrap().theme = Some(pref);
+        crate::theme::apply(&u, None);
+        json!(u.shell.night.get())
+    });
+    // the system's appearance changing to `dark` or `light` (what Tauri's
+    // ThemeChanged reports), without changing the user's
+    let u = ui.clone();
+    ui.shell
+        .bridge
+        .register("testSystemAppearance", move |_, _, look| {
+            crate::theme::apply(&u, Some(look == "dark"));
+            json!(u.shell.night.get())
+        });
+    // a window's background ([r, g, b]) and whether its webview draws one
+    let u = ui.clone();
+    ui.shell
+        .bridge
+        .register("testWindowLook", move |_, _, label| {
+            use tauri::Manager;
+            let Some(window) = u.app.get_webview_window(label) else {
+                return Value::Null;
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let w = window.clone();
+            let _ = window.with_webview(move |webview| {
+                // SAFETY: AppKit objects, on the main thread
+                let look = unsafe { window_look(w.ns_window().ok(), webview.inner()) };
+                let _ = tx.send(look);
+            });
+            rx.recv_timeout(Duration::from_secs(5))
+                .unwrap_or(Value::Null)
         });
     let u = ui.clone();
     ui.shell.bridge.register("testEval", move |_, _, args| {

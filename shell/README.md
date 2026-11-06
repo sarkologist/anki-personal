@@ -34,6 +34,12 @@ old Anki.
   (`autoSync`). Sync redirects are kept (`currentSyncUrl`). A profile copy
   (any `--anki-base` other than the default) can only sync with a server on
   this machine (`customSyncUrl` pointing at 127.0.0.1), never AnkiWeb.
+- Dark mode follows the system's appearance, also when it changes while
+  the shell runs, as in Anki. `"theme": "light"` or `"dark"` in the
+  settings file fixes it instead; the default is the old Anki's theme
+  (imported), else the system. Pages and cards (`.nightMode`) switch at
+  once, and windows show Anki's background colour while a page loads.
+  Add-ons get it too (Frontier's panels take it when they open).
 - Not yet: custom study, filtered deck creation, deck descriptions editing,
   "Set due date", "Forget", "Create copy", recording your own voice, and
   add-ons other than those below.
@@ -45,9 +51,7 @@ that the shell uses: the theme, the review and scheduling options, the
 editing and search defaults, backups, and the LaTeX commands. Changes are
 saved as you make them.
 
-- **Dark mode:** the theme follows the system, or is always light or dark;
-  it starts as the old Anki's. Pages switch as soon as it changes,
-  including cards (`.nightMode`).
+- **Theme:** system, light or dark (see "Reviewing").
 - **LaTeX commands:** the commands that turn `tmp.tex` into `tmp.png` or
   `tmp.svg`, one per line. They start as the ones the "Edit LaTeX
   toolchain" add-on sets in the old Anki (the profile import reads its
@@ -165,6 +169,9 @@ Options:
   Preferences window (`--test-page` also takes the other screens' names;
   see `src/testchan.rs`): the theme, a collection preference and the LaTeX
   commands; the copy's `addons21` needs the "Edit LaTeX toolchain" add-on.
+  `--test harness/dark-mode.js --test-page main` switches the theme and a
+  simulated system appearance through the deck list, overview and
+  reviewer (it changes no system setting).
   `harness/agent-pane.js` (`--test-page add`, and `--test-page editor
   --test-note 0`) drives the agent pane with a real request; it needs the
   add-on in the copy's `addons21` with its provider set to Ollama and a
