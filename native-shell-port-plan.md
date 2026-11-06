@@ -729,6 +729,15 @@ Anki as before, from the same `addons21` folder. How to turn it on is in
   errors losing their cause, a 5 s wait on unknown page commands, a panel
   left blank by a busy host, replies missing from a panel's diffing, the
   host's initial state, and unnormalised collection paths.
+- **After merging phase 3:**
+  - Media HTML is now sandboxed. Add-on files are served without that
+    sandbox, or a panel's page loses its scripts.
+  - All the WebKit harnesses pass on a profile copy with the plugin host
+    running: main flow, Add Cards, the editor's selection, save, features
+    and occlusion checks, and Frontier's UI.
+  - Not wired yet (with editor_agent_pane and the alfred bridge): phase
+    3's `Editors::listen` events and `editor_window::set_side_panel`. The
+    shim would need an `aqt.editor` stand-in for those add-ons' hooks.
 
 ### Phase 3 (2026-11-06)
 
