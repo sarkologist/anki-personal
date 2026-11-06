@@ -1099,8 +1099,9 @@ already exist in `ts/`; hosting them is small when they're wanted.
   import, and add-on panel pages not themed.
 - **Build trap:** after a rebuilt SvelteKit bundle, one chunk on disk came
   from an earlier build (another `__sveltekit_*` global), and every page
-  failed to start. A clean `out/sveltekit` fixed it; see the stale-output
-  note in the build's findings.
+  failed to start. Removing `out/sveltekit` and
+  `out/qt/_aqt/data/web/sveltekit` and building again fixed it (the build
+  doesn't prune old outputs).
 - **Checks:** `harness/preferences.js` (`--test-page preferences`, a new
   test mode that opens a screen's window and runs the script there on
   each load). It checks the imported commands, dark mode in the open page
