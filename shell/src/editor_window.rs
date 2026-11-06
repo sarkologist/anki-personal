@@ -165,6 +165,7 @@ fn open_page(
     if mode == Mode::Add {
         update_choosers(ui);
     }
+    crate::plugins::editors::page_opened(ui, label);
     Ok(())
 }
 
@@ -434,10 +435,22 @@ fn format_buttons_js() -> String {
             )
         })
         .collect();
+    // One group for them and the plugin host's buttons
+    // ([add_addon_buttons]): every AddonButtons group handles the clicks
+    // of all the page's add-on buttons, so a second one would run each
+    // button twice. Redrawn, in turn, when the add-ons' buttons come.
     format!(
-        "require(\"anki/ui\").loaded.then(() => \
-         require(\"anki/NoteEditor\").instances[0].toolbar.toolbar.append({{ \
-         component: editorToolbar.AddonButtons, id: \"addons\", props: {{ buttons: {} }} }}));",
+        r#"window.shellToolbarButtons = {{ format: {}, addons: [] }};
+window.shellDrawToolbarButtons = () => {{
+    const b = window.shellToolbarButtons;
+    b.drawn = (b.drawn || require("anki/ui").loaded).then(async (group) => {{
+        group?.destroy?.();
+        return require("anki/NoteEditor").instances[0].toolbar.toolbar.append({{
+            component: editorToolbar.AddonButtons, id: "addons",
+            props: {{ buttons: [...b.format, ...b.addons] }} }});
+    }});
+}};
+shellDrawToolbarButtons();"#,
         json!(buttons)
     )
 }
@@ -501,16 +514,18 @@ fn update_choosers(ui: &Ui) {
 
 /// An add-on's side panel beside the fields, or none. The panel is its own
 /// document in a frame (`/_anki/legacyPageData`), so it can have scripts;
-/// it shares the editor's bridge and API.
-pub fn set_side_panel(ui: &Ui, label: &str, html: Option<String>) {
+/// it shares the editor's bridge and API. It loads hidden or shown, and
+/// [show_side_panel] shows or hides it.
+pub fn set_side_panel(ui: &Ui, label: &str, html: Option<String>, visible: bool) {
     let id = format!("{label}-side");
     let js = match html {
         Some(html) => {
             ui.shell.pages.set(&id, WebviewKind::Dialog, Some(html));
             format!(
                 "(() => {{ const f = document.getElementById(\"shell-side\"); \
-                 f.src = {}; f.hidden = false; }})();",
-                js(pages::legacy_page_url(&id))
+                 f.src = {}; f.hidden = {}; }})();",
+                js(pages::legacy_page_url(&id)),
+                !visible
             )
         }
         None => {
@@ -521,6 +536,89 @@ pub fn set_side_panel(ui: &Ui, label: &str, html: Option<String>) {
         }
     };
     ui.eval(label, js);
+}
+
+pub fn show_side_panel(ui: &Ui, label: &str, visible: bool) {
+    ui.eval(
+        label,
+        format!(
+            "(() => {{ const f = document.getElementById(\"shell-side\"); \
+             if (f && f.src) f.hidden = {}; }})();",
+            !visible
+        ),
+    );
+}
+
+/// Add-ons' toolbar buttons (`Editor.addButton`'s HTML) and their keys
+/// (Qt's names: Ctrl is Cmd), as `editor_did_init_buttons` adds them.
+pub fn add_addon_buttons(ui: &Ui, label: &str, buttons: &[String], keys: &[(String, String)]) {
+    let keys: Vec<Value> = keys
+        .iter()
+        .map(|(hotkey, cmd)| {
+            let hotkey = hotkey
+                .split('+')
+                .map(|part| match part {
+                    "Ctrl" => "Cmd",
+                    "Meta" => "Ctrl",
+                    other => other,
+                })
+                .collect::<Vec<_>>()
+                .join("+");
+            let mut spec = key_spec(&hotkey);
+            spec["ctrl"] = json!(hotkey.split('+').any(|p| p == "Ctrl"));
+            spec["cmd"] = json!(cmd);
+            spec
+        })
+        .collect();
+    let mut js = String::new();
+    if !buttons.is_empty() {
+        js += &format!(
+            "window.shellToolbarButtons.addons = {}; shellDrawToolbarButtons();",
+            json!(buttons)
+        );
+    }
+    if !keys.is_empty() {
+        js += &format!(
+            "(() => {{ const keys = {}; document.addEventListener(\"keydown\", (e) => {{ \
+             for (const k of keys) {{ if (e.code === k.code && e.metaKey === k.meta && \
+             e.shiftKey === k.shift && e.altKey === k.alt && e.ctrlKey === k.ctrl) {{ \
+             e.preventDefault(); e.stopPropagation(); pycmd(k.cmd); return; }} }} }}, true); }})();",
+            Value::Array(keys)
+        );
+    }
+    ui.eval(label, js);
+}
+
+/// `Editor.doPaste` for an add-on: filtered as Qt does, then `pasteHTML`.
+pub fn paste_from_addon(ui: &Arc<Ui>, label: &str, html: &str, internal: bool, extended: bool) {
+    let media = crate::paste::ShellMedia::new(&ui.shell);
+    let html = crate::paste::pre_filter(html, internal, &media);
+    let warnings = media.take_warnings();
+    if !warnings.is_empty() {
+        crate::main_window::message(ui, &warnings.join("\n"));
+    }
+    ui.eval(
+        label,
+        format!("pasteHTML({}, {internal}, {extended});", js(&html)),
+    );
+}
+
+/// `Editor.checkValid`: the duplicate mark.
+pub fn check_valid(ui: &Ui, label: &str) {
+    show_duplicates(ui, label);
+}
+
+/// `activateWindow` on an editor's window.
+pub fn raise(ui: &Ui, label: &str) {
+    if let Some(w) = ui.app.get_webview_window(label) {
+        if !ui.background {
+            let _ = w.set_focus();
+        }
+    }
+}
+
+pub fn tooltip(ui: &Ui, label: &str, msg: &str) {
+    editor_tooltip(ui, label, msg);
 }
 
 // Closing

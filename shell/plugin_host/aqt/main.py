@@ -10,6 +10,7 @@ from __future__ import annotations
 import heapq
 import itertools
 import json
+import logging
 import os
 import queue
 import threading
@@ -17,6 +18,8 @@ import time
 import traceback
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 from typing import Any
 
 from anki.collection import Collection
@@ -38,6 +41,8 @@ class Loop:
         self._seq = itertools.count()
         self._stopped = False
         self.thread = threading.current_thread()
+        # run after each task (aqt.editor sends the notes add-ons changed)
+        self.after_task: list[Callable[[], None]] = []
 
     def post(self, fn: Callable[[], None]) -> None:
         self._queue.put(fn)
@@ -95,12 +100,16 @@ class Loop:
                 due.append(heapq.heappop(self._timers)[2])
         return due
 
-    @staticmethod
-    def _run(fn: Callable[[], None]) -> None:
+    def _run(self, fn: Callable[[], None]) -> None:
         try:
             fn()
         except Exception:
             report_exception(getattr(fn, "__qualname__", repr(fn)))
+        for hook in self.after_task:
+            try:
+                hook()
+            except Exception:
+                report_exception(getattr(hook, "__qualname__", repr(hook)))
 
 
 class TaskManager:
@@ -262,6 +271,30 @@ class AddonManager:
     def setConfigUpdatedAction(self, module: str, fn: Callable[[Any], None]) -> None:
         pass
 
+    def logs_folder(self, module: str) -> Path:
+        """As Anki's: `logs/addons/<add-on>` in the base folder."""
+        base = os.path.dirname(os.path.abspath(self.folder))
+        return Path(base) / "logs" / "addons" / self.addonFromModule(module)
+
+    def get_logger(self, module: str) -> logging.Logger:
+        """The add-on's logger, writing to `<add-on>.log` in its logs folder
+        (kept for 10 days), as in Anki."""
+        addon = self.addonFromModule(module)
+        logger = logging.getLogger(f"addon.{addon}")
+        if not logger.handlers:
+            path = self.logs_folder(addon) / f"{addon}.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handler = TimedRotatingFileHandler(
+                filename=path, when="D", interval=1, backupCount=10, encoding="utf-8"
+            )
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s")
+            )
+            logger.addHandler(handler)
+            # not in the host's own log
+            logger.propagate = False
+        return logger
+
     def setWebExports(self, module: str, pattern: str) -> None:
         addon = self.addonFromModule(module)
         self.web_exports[addon] = pattern
@@ -317,11 +350,14 @@ class DeckBrowser:
 
 
 class Reviewer:
-    """What reviewer hooks see: the shown card."""
+    """What reviewer hooks see: the shown card, and which side."""
 
     def __init__(self, mw: MainWindow) -> None:
         self.mw = mw
         self.card: Any = None
+        self.state: str | None = None
+        # the reviewer's page isn't the add-ons'
+        self.web: Any = None
 
 
 class ProfileManager:

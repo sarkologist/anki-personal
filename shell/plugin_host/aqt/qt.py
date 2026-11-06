@@ -1,61 +1,49 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-"""The few Qt classes the plugin host supports: signals, actions for the
-shell's menus, and timers on the host's loop. There are no widgets; add-on
-UI is web panels (aqt.native). The widget names exist so modules that only
-mention them (type hints, `_aqt.hooks`) still import."""
+"""The Qt the plugin host supports: signals, actions for the shell's
+menus, timers on the host's loop, and the widgets the shell can draw
+(aqt.widgets). Other Qt names can be imported and named, but not created
+(see `unsupported`); add-ons can also use web panels (aqt.native)."""
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable
 from typing import Any
 
-
-class Signal:
-    def __init__(self) -> None:
-        self._slots: list[Callable[..., Any]] = []
-        self._blocked = False
-
-    def connect(self, slot: Callable[..., Any]) -> None:
-        self._slots.append(slot)
-
-    def disconnect(self, slot: Callable[..., Any] | None = None) -> None:
-        if slot is None:
-            self._slots.clear()
-        elif slot in self._slots:
-            self._slots.remove(slot)
-
-    def emit(self, *args: Any) -> None:
-        if self._blocked:
-            return
-        for slot in list(self._slots):
-            slot(*args[: _positional_count(slot, len(args))])
-
-
-def _positional_count(slot: Callable[..., Any], available: int) -> int:
-    """Qt drops trailing arguments a slot doesn't take (`triggered(bool)`
-    to a function of none, say)."""
-    try:
-        params = inspect.signature(slot).parameters.values()
-    except (TypeError, ValueError):
-        return available
-    if any(p.kind == p.VAR_POSITIONAL for p in params):
-        return available
-    return min(
-        available,
-        sum(p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params),
-    )
-
-
-def qconnect(signal: Any, func: Callable) -> None:
-    signal.connect(func)
-
-
-class QObject:
-    def __init__(self, parent: Any = None) -> None:
-        self._parent = parent
+from .widgets import (  # noqa: F401
+    AnkiWebView,
+    QAbstractButton,
+    QBoxLayout,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDockWidget,
+    QEvent,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QKeyEvent,
+    QLabel,
+    QLayout,
+    QLineEdit,
+    QMainWindow,
+    QObject,
+    QPlainTextEdit,
+    QPushButton,
+    QSizePolicy,
+    QSplitter,
+    Qt,
+    QTextCursor,
+    QTextEdit,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+    Signal,
+    qconnect,
+    unsupported,
+)
 
 
 class QAction(QObject):
@@ -112,8 +100,23 @@ class QAction(QObject):
     def setShortcut(self, *_args: Any) -> None:
         pass
 
+    def setShortcutContext(self, *_args: Any) -> None:
+        pass
+
     def setToolTip(self, *_args: Any) -> None:
         pass
+
+    def setIcon(self, *_args: Any) -> None:
+        pass
+
+    def setMenuRole(self, *_args: Any) -> None:
+        pass
+
+    def setData(self, data: Any) -> None:
+        self._data = data
+
+    def data(self) -> Any:
+        return getattr(self, "_data", None)
 
     def trigger(self) -> None:
         if self._enabled:
@@ -204,35 +207,60 @@ class QTimer(QObject):
         aqt.mw.loop.call_later(ms / 1000, func)
 
 
-class _NoWidgets:
-    """Qt widgets can't be shown by the native shell."""
+class QKeySequence:
+    class StandardKey(metaclass=type(Qt)):
+        pass
 
-    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-        raise NotImplementedError(
-            f"{type(self).__name__}: Qt widgets aren't available in the native "
-            "shell's plugin host; use a web panel (aqt.native.open_panel)"
-        )
+    def __init__(self, keys: Any = "") -> None:
+        self._keys = keys if isinstance(keys, str) else str(keys)
 
-
-class QWidget(_NoWidgets):
-    pass
+    def toString(self, *_args: Any) -> str:
+        return self._keys
 
 
-class QDialog(QWidget):
-    pass
+class QShortcut(QObject):
+    """Shortcuts on Qt windows: the shell has its own, so these never fire."""
+
+    def __init__(
+        self, key: Any = None, parent: Any = None, *_args: Any, **kwargs: Any
+    ) -> None:
+        super().__init__(parent)
+        self.activated = Signal()
+        if callable(kwargs.get("activated")):
+            self.activated.connect(kwargs["activated"])
+
+    def setKey(self, *_args: Any) -> None:
+        pass
+
+    def setContext(self, *_args: Any) -> None:
+        pass
+
+    def setEnabled(self, *_args: Any) -> None:
+        pass
 
 
-class QEvent:
-    pass
+class QApplication:
+    """The focus as the shell last reported it (aqt.editor)."""
+
+    @staticmethod
+    def focusWidget() -> Any:
+        from aqt import editor
+
+        return editor.focus_widget()
+
+    @staticmethod
+    def instance() -> Any:
+        return None
+
+    @staticmethod
+    def beep() -> None:
+        pass
 
 
-class QModelIndex:
-    pass
-
-
-class QMimeData:
-    pass
-
-
-class Qt:
-    pass
+def __getattr__(name: str) -> Any:
+    # other Qt classes: nameable, not creatable
+    if name.startswith("Q"):
+        value = unsupported(name)
+        globals()[name] = value
+        return value
+    raise AttributeError(name)

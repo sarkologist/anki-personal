@@ -28,6 +28,7 @@ pub mod settings;
 pub mod shortcuts;
 pub mod sync;
 pub mod testchan;
+pub mod webkit;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

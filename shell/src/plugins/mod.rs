@@ -12,6 +12,7 @@
 //! plugin can't block the shell: every event the shell waits for has a
 //! timeout, and its output goes to a log file.
 
+pub mod editors;
 pub mod ui;
 pub mod wire;
 
@@ -46,8 +47,9 @@ use crate::api::Api;
 use crate::profile::ProfilePaths;
 use crate::Shell;
 
-/// Gets the host's requests to the shell: (op, the whole message).
-pub type HostHandler = Arc<dyn Fn(&str, &Value) + Send + Sync>;
+/// Gets the host's requests to the shell: (op, the whole message), and
+/// returns the reply to the ones that wait for one (null if none).
+pub type HostHandler = Arc<dyn Fn(&str, &Value) -> Option<Value> + Send + Sync>;
 
 /// Backend methods add-ons can't call: the shell owns the collection's
 /// lifecycle and syncing.
@@ -386,7 +388,7 @@ impl PluginHost {
 
     fn host_request(&self, op: &str, msg: &Value) {
         if let Some(handler) = self.handler.read().unwrap().clone() {
-            handler(op, msg);
+            let _ = handler(op, msg);
         }
     }
 }
@@ -431,17 +433,19 @@ fn serve(mut stream: UnixStream, conn: Arc<Conn>, shell: Arc<Shell>, handler: Op
     let replies = conn.clone();
     std::thread::spawn(move || {
         for frame in queue {
+            let mut reply = None;
             match serde_json::from_slice::<Value>(&frame.payload) {
                 Ok(msg) => {
                     let op = msg["op"].as_str().unwrap_or_default().to_string();
                     if let Some(handler) = &handler {
-                        handler(&op, &msg);
+                        reply = handler(&op, &msg);
                     }
                 }
                 Err(err) => tracing::warn!(%err, "bad plugin host request"),
             }
             if frame.id != 0 {
-                let _ = replies.send(wire::OK, frame.id, b"null");
+                let reply = reply.unwrap_or(Value::Null).to_string();
+                let _ = replies.send(wire::OK, frame.id, reply.as_bytes());
             }
         }
     });

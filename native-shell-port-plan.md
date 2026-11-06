@@ -247,8 +247,8 @@ better under real use, stop here.
       entry points.
 - [x] Notetype/deck/tag choosers.
 - [x] Formatting buttons (Mini Format Pack).
-- [ ] editor_agent_pane as a web side panel; alfred bridge events (need the
-      phase 2 plugin host; the editor's hook points are in place).
+- [x] editor_agent_pane as a side panel; alfred bridge events (both
+      unchanged, in the plugin host).
 
 Exit: a week of adding and editing only in the shell.
 
@@ -735,9 +735,82 @@ Anki as before, from the same `addons21` folder. How to turn it on is in
   - All the WebKit harnesses pass on a profile copy with the plugin host
     running: main flow, Add Cards, the editor's selection, save, features
     and occlusion checks, and Frontier's UI.
-  - Not wired yet (with editor_agent_pane and the alfred bridge): phase
-    3's `Editors::listen` events and `editor_window::set_side_panel`. The
-    shim would need an `aqt.editor` stand-in for those add-ons' hooks.
+  - Wired since: phase 3's editor hooks, for the agent pane and the
+    Alfred bridge (below).
+
+### Phase 3: agent pane and Alfred bridge (2026-11-06)
+
+Both add-ons run unchanged in the plugin host, so the old Anki keeps
+running them as before.
+
+- **Which versions:** the user's `editor_agent_pane` (addons21) is the
+  agent-queue stack (PR #108 and the ones below it), not main's older
+  copy, so that's the one ported; this PR carries the stack until it's
+  merged. `alfred_anki_html_bridge` is only in addons21: a localhost HTTP
+  server (`/insert`, `/media`, `/health`, token in
+  `<base>/alfred-anki-bridge.json`) that pastes into the last field left.
+- **Qt widgets, drawn by the shell.** Rewriting the pane's ~2k lines of
+  Qt UI as a web page would have meant two UIs to keep in step. Instead
+  the shim has the widgets it uses (`aqt/widgets.py`): box and form
+  layouts, labels, buttons, tool buttons, combo boxes (editable too),
+  line and plain text edits, check boxes, splitters, docks, `AnkiWebView`
+  and the folder picker. Python keeps their state and Qt's signal rules
+  (a first `addItem` selects it, `clear` signals -1, `blockSignals`). A
+  dock added to an editor window is its side panel: a generic page
+  (`src/plugins/widgets.js`) asks for the tree, applies ordered batches of
+  changes, and sends input back (`addonWidget:`). Typing goes with the next
+  message, so a click handler sees it. A `keyPressEvent` override (the
+  prompt's Enter, and Up/Down for history) gets those keys first, and the
+  page does Qt's default if the base class is called.
+  - Other Qt names import but can't be created (the queue window's table
+    and date picker); top-level windows and dialogs can't be shown yet.
+  - Web views are sandboxed frames (an opaque origin): the transcript is
+    model output, and in the editor's webview it could otherwise reach the
+    editor's bridge and API, which Qt's own webview couldn't. They talk to
+    the panel by messages. Their evals since the last `stdHtml` are
+    replayed when the panel is drawn again (a page redraw).
+  - The panel loads hidden with the window, so a hidden pane's evals land,
+    as in Qt.
+- **`aqt.editor`:** an `Editor` per window (`add`, `editor`) with the hooks
+  `editor_did_init(_buttons)`, `editor_did_load_note`,
+  `editor_did_focus/unfocus_field`, `editor_did_fire_typing_timer`,
+  `editor_did_update_tags`, `editor_state_did_change` and
+  `add_cards_did_add_note`. The shell sends the note with each event;
+  `editor.note` stays one object while the window shows that note. What an
+  add-on changes in it goes back after each task on the host's loop (only
+  the changed fields), so Add and the next save have it, as with Qt's
+  in-memory note. Also `loadNote`, `call_after_note_saved`, `doPaste`
+  (filtered as `_pastePreFilter`), `checkValid`, `addButton` with keys
+  (Qt's Ctrl is Cmd), and `QApplication.focusWidget`.
+  - `web.evalWithCallback` uses WKWebView's `evaluateJavaScript` with a
+    completion handler (`src/webkit.rs`): the editor's CSP has no `eval`.
+  - The format buttons and the add-ons' buttons are one toolbar group:
+    each `AddonButtons` group handles the clicks of every add-on button in
+    the page, so with two each click ran twice.
+  - Host requests can now get replies (the folder picker waits for one).
+  - The add-on logger and logs folder are Anki's (`logs/addons/<add-on>`).
+- **Checks** (on a copy of the real profile, with both add-ons):
+  - `harness/agent-pane.js` in Add and in Edit Current: the shortcut and
+    button open and close the pane; the form; Enter sends a request to
+    Ollama (`qwen3:30b-a3b`); the transcript shows it with a proposal;
+    Apply fills the field; the note is added (Add) or saved (Edit
+    Current) with it.
+  - `harness/alfred-bridge.js`: the field left is remembered
+    (`editor_did_unfocus_field`); `/insert` pastes there and adds the
+    source link; a wrong token is refused; `/media` stores the file; the
+    added note has it all.
+  - `plugin_host/tests/test_widgets.py` (the widgets and editors in
+    process) and `tests/plugin_host.rs` (replies).
+- **Not ported:**
+  - the agent queue window, the pane in the browser (phase 4), the
+    toolbar badge;
+  - the reviewer's selection in a request's context (the reviewer's page
+    isn't the host's);
+  - Alfred's paste at the caret: the add-on's caret script uses
+    `ShadowRoot.getSelection`, which WebKit lacks, so it pastes at the
+    field's end (the add-on itself would need `getComposedRanges`);
+  - after a plugin host restart, open editor windows get the add-ons back
+    when they're reopened.
 
 ### Phase 3 (2026-11-06)
 
@@ -929,4 +1002,4 @@ exit criterion, a week of adding and editing only in the shell.
     Edit Current instead);
   - the old Anki's editor geometry;
   - drawing masks in a test;
-  - the agent pane and alfred events (phase 2).
+  - the agent pane and alfred events: done since, below.

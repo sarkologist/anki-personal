@@ -59,6 +59,7 @@ pub struct Plugins {
     panels: Mutex<HashMap<String, u64>>,
     /// The add-ons' items in Tools.
     pub tools: Mutex<Vec<MenuItem>>,
+    pub editors: super::editors::State,
 }
 
 impl Plugins {
@@ -67,6 +68,7 @@ impl Plugins {
             host: PluginHost::new(shell),
             panels: Mutex::new(HashMap::new()),
             tools: Mutex::new(vec![]),
+            editors: Default::default(),
         }
     }
 }
@@ -110,7 +112,13 @@ pub fn register(ui: &Arc<Ui>) {
         });
     let u = ui.clone();
     ui.shell.bridge.set_fallback(move |_, label, cmd| {
-        if label != MAIN || !u.plugins.host.is_running() {
+        if !u.plugins.host.is_running() {
+            return None;
+        }
+        if crate::editor_window::is_editor(label) {
+            return super::editors::bridge_command(&u, label, cmd, UNKNOWN_COMMAND_TIMEOUT);
+        }
+        if label != MAIN {
             return None;
         }
         let context = state_name(*u.main.state.lock().unwrap());
@@ -121,6 +129,7 @@ pub fn register(ui: &Arc<Ui>) {
         )?;
         (out["handled"] == true).then(|| out["value"].clone())
     });
+    super::editors::register(ui);
     let u = ui.clone();
     ui.shell
         .bridge
@@ -242,15 +251,26 @@ pub fn menu_action(ui: &Ui, id: u64) {
     notify(ui, "menu_action", json!({"id": id}));
 }
 
-/// A panel window went away (closed by the user, or by the add-on).
+/// A window went away: an add-on panel (closed by the user, or by the
+/// add-on), or an editor.
 pub fn window_destroyed(ui: &Ui, label: &str) {
     if let Some(panel) = ui.plugins.panels.lock().unwrap().remove(label) {
         notify(ui, "panel_closed", json!({"panel": panel}));
+    }
+    if crate::editor_window::is_editor(label) {
+        super::editors::closed(ui, label);
+    }
+}
+
+pub fn window_focused(ui: &Ui, label: &str, focused: bool) {
+    if crate::editor_window::is_editor(label) {
+        super::editors::window_focused(ui, label, focused);
     }
 }
 
 /// The host's end: its menu items and panels go with it.
 fn forget_host_ui(ui: &Arc<Ui>) {
+    super::editors::host_stopped(ui);
     ui.plugins.tools.lock().unwrap().clear();
     crate::menus::set_tools(ui, vec![]);
     let labels: Vec<String> = ui
@@ -268,8 +288,11 @@ fn forget_host_ui(ui: &Arc<Ui>) {
     }
 }
 
-fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) {
+fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> Option<Value> {
     let text = msg["text"].as_str().unwrap_or_default();
+    if super::editors::on_host(ui, op, msg) {
+        return None;
+    }
     match op {
         "ready" => {
             tracing::info!(addons = %msg["addons"], "add-ons loaded");
@@ -297,7 +320,20 @@ fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) {
                 );
             }
         }
-        "tooltip" => main_window::tooltip(ui, text),
+        "tooltip" => match msg["window"].as_str() {
+            Some(label) if crate::editor_window::is_editor(label) => {
+                crate::editor_window::tooltip(ui, label, text)
+            }
+            _ => main_window::tooltip(ui, text),
+        },
+        "choose_folder" => {
+            let folder = crate::pasteboard::choose_folder(
+                &ui.app,
+                msg["title"].as_str().unwrap_or_default(),
+                msg["folder"].as_str().unwrap_or_default(),
+            );
+            return Some(json!(folder.map(|f| f.to_string_lossy().into_owned())));
+        }
         "show_info" => main_window::message(ui, text),
         "operation_did_execute" => {
             let changes = msg["changes"]
@@ -345,6 +381,7 @@ fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) {
         }
         op => tracing::warn!(op, "unknown plugin host request"),
     }
+    None
 }
 
 fn panel_label(ui: &Ui, panel: Option<u64>) -> Option<String> {

@@ -70,6 +70,9 @@ def main(argv: list[str]) -> None:
     mw = MainWindow(native, addons_folder)
     native.mw = mw
     aqt.mw = mw
+    from aqt import editor
+
+    mw.loop.after_task.append(editor.sync_notes)
     # the shell going away ends the host
     native.connection = remote.Connection(sock, native.on_request, mw.loop.stop)
     mw.addonManager.on_web_exports = lambda module, pattern: native.notify(
