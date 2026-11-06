@@ -3,10 +3,10 @@
 A native macOS shell for Anki (Tauri 2 on the system WebKit). It runs the
 existing `ts/` pages against an in-process Rust backend, without Qt, Python
 or a bundled Chromium. See `native-shell-port-plan.md` for the plan and
-findings. Phases 0 and 1 are done: profile, collection, page protocol,
-bridge, settings import, AnkiConnect, the editor in WebKit (Edit only), and
-reviewing: deck list, overview, reviewer, sync and native menus. Adding
-cards, the browser, add-ons and most dialogs still need the old Anki.
+findings. Phases 0, 1 and 3 are done: profile, collection, page protocol,
+bridge, settings import, AnkiConnect, reviewing (deck list, overview,
+reviewer, sync, native menus) and editing (Add Cards, Edit Current). The
+browser, add-ons and most dialogs still need the old Anki.
 
 ## Reviewing
 
@@ -35,6 +35,35 @@ cards, the browser, add-ons and most dialogs still need the old Anki.
 - Not yet: custom study, filtered deck creation, deck descriptions editing,
   "Set due date", "Forget", "Create copy", recording your own voice, dark
   mode, and add-ons.
+
+## Editing
+
+- **Add** (toolbar, or `a` in the main window) opens Add Cards: the stock
+  editor with Type and Deck choosers above it (type to filter, Enter to
+  pick) and History, Close and Add below. Cmd+Enter adds, Escape closes
+  (asking first if there's unsaved input), Cmd+Shift+H shows the history;
+  a history entry opens the note in Edit Current. Sticky fields (the pin
+  on each field) carry over to the next note, as do the
+  tags.
+- **Edit** (`e` while reviewing) opens Edit Current on the card's note;
+  edits are saved as you type, and the reviewer shows them when the window
+  closes. Cmd+Enter closes it.
+- Everything on the editor's toolbar works: formatting, cloze, colours,
+  MathJax and LaTeX (with previews), attach (a file picker), record (asks
+  for the microphone the first time), image occlusion, the HTML editor and
+  the options menu. Paste filters HTML from other apps as Anki does,
+  downloads remote images into the media folder, and keeps HTML copied
+  from a field as is; Shift while pasting flips "strip formatting". Files
+  dropped from Finder go into the media folder.
+- The Mini Format Pack buttons are on the toolbar's right, with the
+  add-on's hotkeys (Qt's Ctrl is Cmd): strikethrough (Option+Shift+5),
+  `<abbr>` (Cmd+Shift+Option+A), code block (Cmd+.), inline code (Cmd+,),
+  horizontal line (Cmd+Shift+Option+_), lists (Cmd+[ and Cmd+]),
+  indent/outdent (Cmd+Shift+] and Cmd+Shift+[), and alignment
+  (Cmd+Shift+Option+S/L/R/B).
+- Not yet: Cards (card layout) and Fields open nothing but a note; "Show
+  Duplicates" lists the duplicates and opens the one you pick in Edit
+  Current, since there's no browser yet.
 
 ## Build and run
 
@@ -86,7 +115,12 @@ Options:
   `--test-note 0` creates a fresh cloze note. The exit status is 0 on
   success. `--test` and `--bench` refuse to run on the live Anki folder.
   `harness/editor-save.js` checks that edits made just before a note switch
-  are saved. `--test harness/main-flow.js --test-page main` adds a test deck
+  are saved. `harness/editor-features.js` (same page) checks paste, undo,
+  input method composition, MathJax/LaTeX, format buttons and options;
+  pastes come from a scratch pasteboard, never the clipboard.
+  `--test harness/editor-add.js --test-page add` drives Add Cards: the
+  choosers, sticky fields, adding, history, duplicates and format buttons.
+  `--test harness/main-flow.js --test-page main` adds a test deck
   and reviews it through the deck list, overview and reviewer: keys, undo,
   typed answers, audio, TTS and LaTeX. `harness/sync-flow.js` syncs through
   the UI against a local server (`anki-sync-server` with

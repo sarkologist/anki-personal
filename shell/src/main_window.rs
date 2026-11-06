@@ -441,7 +441,8 @@ pub fn apply(ui: &Arc<Ui>, effects: Vec<Effect>) {
             Effect::DeckBrowser => show_deck_browser(ui),
             Effect::Tooltip(msg) => tooltip(ui, &msg),
             Effect::EditNote(nid) => {
-                if let Err(err) = ui.open_editor(nid) {
+                let card = ui.main.reviewer.lock().unwrap().card_id();
+                if let Err(err) = crate::editor_window::open_edit_current(ui, nid, card) {
                     tooltip(ui, &format!("{err:#}"));
                 }
             }
@@ -514,6 +515,8 @@ pub fn apply(ui: &Arc<Ui>, effects: Vec<Effect>) {
             Effect::UndoChanged => crate::menus::refresh(ui),
         }
     }
+    // the reviewer may have changed the note Edit Current shows (mark, undo)
+    crate::editor_window::note_changed_elsewhere(ui);
 }
 
 pub fn tooltip(ui: &Ui, msg: &str) {
@@ -564,7 +567,7 @@ pub const TOOLTIP_SCRIPT: &str = r#"window._shellTooltip = (msg) => {
 // Shortcuts
 //////////////////////////////////////////////////////////////////////////
 
-const GLOBAL_ACTIONS: &[&str] = &["decks", "study", "chooseDeck", "stats", "sync"];
+const GLOBAL_ACTIONS: &[&str] = &["decks", "add", "study", "chooseDeck", "stats", "sync"];
 const OVERVIEW_ACTIONS: &[&str] = &["showAnswer", "options"];
 
 fn shortcuts(ui: &Ui) -> crate::shortcuts::Shortcuts {
@@ -606,6 +609,11 @@ pub fn action_for_state(ui: &Arc<Ui>, action: &str) {
     match (state(ui), action) {
         (MainState::Home, _) => {}
         (_, "decks") => show_deck_browser(ui),
+        (_, "add") => {
+            if let Err(err) = crate::editor_window::open_add(ui) {
+                message(ui, &format!("{err:#}"));
+            }
+        }
         (_, "study") => show_overview(ui),
         (_, "chooseDeck") => choose_deck(ui),
         (_, "stats") => open_stats(ui),
@@ -766,6 +774,29 @@ pub fn ask(
     }
 }
 
+/// A dialog window with its own page body (`html`, trusted), which answers
+/// with `pycmd("dialogAnswer:" + JSON.stringify({button, fields}))`.
+pub fn ask_html(
+    ui: &Arc<Ui>,
+    title: &str,
+    html: String,
+    height: f64,
+    done: impl FnOnce(&Arc<Ui>, Option<DialogAnswer>) + Send + 'static,
+) {
+    let id = ui.main.next_dialog.fetch_add(1, Ordering::SeqCst);
+    let label = format!("dialog-{id}");
+    ui.main
+        .dialogs
+        .lock()
+        .unwrap()
+        .insert(label.clone(), (Box::new(done), title.to_string()));
+    let html = pages::std_html(&ui.shell.web, &html, &[], &[], true);
+    if let Err(err) = ui.open_dialog_window(&label, title, html, height) {
+        tracing::error!(%err, "opening dialog failed");
+        dialog_closed(ui, &label);
+    }
+}
+
 /// `aqt.studydeck.StudyDeck` from the main window: pick a deck by typing
 /// parts of its name, then study it.
 pub fn choose_deck(ui: &Arc<Ui>) {
@@ -778,45 +809,64 @@ pub fn choose_deck(ui: &Arc<Ui>) {
     ) else {
         return;
     };
-    let decks: Vec<(i64, String)> = names.entries.into_iter().map(|d| (d.id, d.name)).collect();
+    let decks: Vec<(String, String)> = names
+        .entries
+        .into_iter()
+        .map(|d| (d.id.to_string(), d.name))
+        .collect();
     let title = ui.main.tr.qt_misc_study_deck().replace("...", "");
+    let current = current_deck_id(ui).to_string();
+    pick(ui, &title, &decks, &current, |ui, did| {
+        let did = did.and_then(|d| d.parse::<i64>().ok());
+        // the picker doesn't block the main window, whose profile may
+        // have closed or changed since it opened
+        let Some(did) = did.filter(|_| state(ui) != MainState::Home) else {
+            return;
+        };
+        let chosen = ui.shell.api.call::<anki_proto::collection::OpChanges>(
+            "set_current_deck",
+            &anki_proto::decks::DeckId { did },
+        );
+        if chosen.is_ok() {
+            show_overview(ui);
+        }
+    });
+}
+
+/// A `StudyDeck`-style picker window over `items` (id, name); `done` gets
+/// the chosen id, or None.
+pub fn pick(
+    ui: &Arc<Ui>,
+    title: &str,
+    items: &[(String, String)],
+    current: &str,
+    done: impl FnOnce(&Arc<Ui>, Option<String>) + Send + 'static,
+) {
     let id = ui.main.next_dialog.fetch_add(1, Ordering::SeqCst);
     let label = format!("dialog-{id}");
     ui.main.dialogs.lock().unwrap().insert(
         label.clone(),
         (
-            Box::new(|ui: &Arc<Ui>, answer: Option<DialogAnswer>| {
-                let did = answer.and_then(|a| a.fields.get("deck")?.parse::<i64>().ok());
-                // the picker doesn't block the main window, whose profile may
-                // have closed or changed since it opened
-                let Some(did) = did.filter(|_| state(ui) != MainState::Home) else {
-                    return;
-                };
-                let chosen = ui.shell.api.call::<anki_proto::collection::OpChanges>(
-                    "set_current_deck",
-                    &anki_proto::decks::DeckId { did },
-                );
-                if chosen.is_ok() {
-                    show_overview(ui);
-                }
+            Box::new(move |ui: &Arc<Ui>, answer: Option<DialogAnswer>| {
+                done(ui, answer.and_then(|a| a.fields.get("id").cloned()))
             }),
-            title.clone(),
+            title.to_string(),
         ),
     );
-    let html = deck_picker_html(&ui.shell.web, &decks, current_deck_id(ui));
-    if let Err(err) = ui.open_dialog_window(&label, &title, html, 480.0) {
-        tracing::error!(%err, "opening deck picker failed");
+    let html = picker_html(&ui.shell.web, items, current);
+    if let Err(err) = ui.open_dialog_window(&label, title, html, 480.0) {
+        tracing::error!(%err, "opening picker failed");
         dialog_closed(ui, &label);
     }
 }
 
-/// The deck picker page: a filter box over the deck names, which match when
-/// they contain every typed word (as in `StudyDeck`). Enter or a double
-/// click answers `{deck: id}`; Escape answers without one.
-fn deck_picker_html(web: &Path, decks: &[(i64, String)], current: i64) -> String {
-    let list: Vec<Value> = decks
+/// The picker page: a filter box over the names, which match when they
+/// contain every typed word (as in `StudyDeck`). Enter or a double click
+/// answers `{id}`; Escape answers without one.
+fn picker_html(web: &Path, items: &[(String, String)], current: &str) -> String {
+    let list: Vec<Value> = items
         .iter()
-        .map(|(id, name)| serde_json::json!({ "id": id.to_string(), "name": name }))
+        .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
         .collect();
     // inside <script>, so no raw "<" from a deck name may end it
     let list = serde_json::to_string(&list)
@@ -833,11 +883,11 @@ fn deck_picker_html(web: &Path, decks: &[(i64, String)], current: i64) -> String
              li.sel {{ background: var(--highlight-bg, #3478f6); color: var(--highlight-fg, #fff); }}\
              </style><input id=filter autofocus autocomplete=off spellcheck=false><ul id=list></ul>\
              <script>{{\
-               const decks = {list}; const current = '{current}';\
+               const decks = {list}; const current = {current};\
                const filter = document.getElementById('filter'), ul = document.getElementById('list');\
                let shown = [], sel = 0;\
                const answer = (d) => pycmd('dialogAnswer:' + JSON.stringify(\
-                 {{ button: d ? 0 : 1, fields: d ? {{ deck: d.id }} : {{}} }}));\
+                 {{ button: d ? 0 : 1, fields: d ? {{ id: d.id }} : {{}} }}));\
                const render = () => {{\
                  const words = filter.value.toLowerCase().split(/\\s+/).filter(Boolean);\
                  shown = decks.filter((d) => words.every((w) => d.name.toLowerCase().includes(w)));\
@@ -859,7 +909,10 @@ fn deck_picker_html(web: &Path, decks: &[(i64, String)], current: i64) -> String
                  else return;\
                  e.preventDefault(); }});\
                render(); filter.focus();\
-             }}</script>"
+             }}</script>",
+            current = serde_json::to_string(current)
+                .unwrap()
+                .replace('<', "\\u003c"),
         ),
         &[],
         &[],
@@ -1400,6 +1453,12 @@ pub fn register(ui: &Arc<Ui>) {
         }
         Value::Null
     });
+    reg("add", |ui, label, _| {
+        if label == MAIN && state(ui) != MainState::Home {
+            action_for_state(ui, "add");
+        }
+        Value::Null
+    });
     reg("open", |ui, label, did| {
         if label == MAIN && matches!(state(ui), MainState::DeckBrowser | MainState::Overview) {
             if let Ok(did) = did.parse::<i64>() {
@@ -1583,15 +1642,18 @@ mod test {
     use super::*;
 
     #[test]
-    fn deck_picker_lists_decks_without_letting_a_name_end_the_script() {
-        let decks = vec![(1, "Default".to_string()), (7, "x</script><b>".to_string())];
-        let html = deck_picker_html(Path::new("/nonexistent"), &decks, 7);
+    fn picker_lists_items_without_letting_a_name_end_the_script() {
+        let decks = vec![
+            ("1".to_string(), "Default".to_string()),
+            ("7".to_string(), "x</script><b>".to_string()),
+        ];
+        let html = picker_html(Path::new("/nonexistent"), &decks, "7");
         assert!(html.contains(r#"{"id":"1","name":"Default"}"#), "{html}");
         assert!(html.contains(r#"x\u003c/script>\u003cb>"#), "{html}");
         assert_eq!(
             html.matches("</script>").count(),
             html.matches("<script").count()
         );
-        assert!(html.contains("const current = '7'"));
+        assert!(html.contains(r#"const current = "7""#));
     }
 }
