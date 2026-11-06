@@ -11,6 +11,7 @@ pub mod app;
 pub mod audio;
 pub mod bench;
 pub mod bridge;
+pub mod card_layout;
 pub mod card_text;
 pub mod editor;
 pub mod editor_window;

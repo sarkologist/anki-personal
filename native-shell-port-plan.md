@@ -261,7 +261,7 @@ Exit: a week of adding and editing only in the shell.
 - [x] Preferences and the LaTeX toolchain setting.
 - [x] Filtered decks and custom study.
 - [x] Media check and empty cards.
-- [ ] Card layout.
+- [x] Card layout.
 - Deferred, as unused (see "Phase 4: the other screens"): Manage Note
   Types, Fields, import/export, deck description editing, Set due date,
   Forget, Create copy, and recording your own voice.
@@ -1197,3 +1197,42 @@ already exist in `ts/`; hosting them is small when they're wanted.
   (`{next: true, in: label}`), and a test whose last window closes
   without a result now fails (it used to exit 0). Vitest covers the pages'
   logic; `screens.rs` tests `render_all_latex`.
+- **Card layout** (`src/card_layout.rs`, `ts/routes/card-layout`): a new
+  page, opened by the editor's Cards… once the note's edits are saved
+  (`after_saved`), on the editor's note, including Add mode's unsaved one.
+  - Front, back and styling are edited as text; the preview follows after
+    a 200 ms pause. Card types can be added (a copy of the current one),
+    removed (with its card count), renamed, repositioned and flipped;
+    adding or removing warns of the full sync. Saving is
+    `update_notetype`; then the editor and reviewer redraw.
+  - The preview shows card templates, so it's a frame served with `CSP:
+    sandbox` and the iframe's `sandbox`: an opaque origin, whose requests
+    the protocol refuses and which can't reach into the page, which may
+    save the notetype. The shell renders each side as the reviewer does
+    (`render_uncommitted_card` with the edited template and styling, then
+    LaTeX, play buttons, and Qt's sample type box), and the page posts it
+    to the frame. MathJax's fonts load there.
+  - Left out: Deck Override, Browser Appearance, Restore to Default, Copy
+    Info, Add Field (Fields is deferred), the template search box, audio
+    in the preview, and the mobile class.
+  - Qt's dialog is application-modal; this window isn't. So a second
+    Cards… focuses the open one, and saving keeps notetype changes made
+    meanwhile (a sticky pin in Add, a sync): if the notetype's mtime
+    moved, the window's templates and styling go into the current copy.
+    Quitting with unsaved changes drops them, as closing the main window
+    does for other windows.
+  - Review (an independent Opus pass), fixed: after switching card types
+    the textarea could keep what was typed for another (Svelte left the
+    DOM alone when the new text equalled the last one drawn), so the next
+    keystroke overwrote that card type; a saved cloze note previewed every
+    cloze as cloze 1 (the template's ord 0 found its first card; as
+    `ephemeral_card`, the ord is now the cloze's); new card type names
+    kept Fluent's invisible isolation marks; a second Cards… reloaded the
+    window and its changes away; repositioning didn't warn of the full
+    sync; a second save could follow the first.
+  - Checks: `harness/card-layout.js` on a fresh copy of a stock notetype
+    (the preview following edits, sides and night mode; the frame's
+    isolation; renaming, adding and removing card types; the discard
+    prompt; the saved templates in the collection) and, in Edit Current,
+    the Cards button. Unit tests render previews (edited template and
+    styling, the sample type box) and check the frame is sandboxed.

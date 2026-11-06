@@ -7,8 +7,11 @@ findings. Phases 0 to 3 are done: profile, collection, page protocol,
 bridge, settings import, AnkiConnect, reviewing (deck list, overview,
 reviewer, sync, native menus), editing (Add Cards, Edit Current), and a
 plugin host running Chinese/French Frontier, the editor agent pane and the
-Alfred bridge. The browser, other add-ons and most dialogs still need the
-old Anki.
+Alfred bridge. Phase 4 adds Preferences (with dark mode and the LaTeX
+commands), filtered decks, custom study, Check Media, Empty Cards and the
+card layout. The browser, other add-ons, and the screens the plan defers as
+unused (Manage Note Types, Fields, import/export, ...) still need the old
+Anki.
 
 ## Reviewing
 
@@ -112,9 +115,13 @@ needs an Anki install's Python, found as for the profile import
   horizontal line (Cmd+Shift+Option+_), lists (Cmd+[ and Cmd+]),
   indent/outdent (Cmd+Shift+] and Cmd+Shift+[), and alignment
   (Cmd+Shift+Option+S/L/R/B).
-- Not yet: Cards (card layout) and Fields open nothing but a note; "Show
-  Duplicates" lists the duplicates and opens the one you pick in Edit
-  Current, since there's no browser yet.
+- **Cards…** opens the card layout, as in Anki: each card type's front,
+  back and styling, with a live preview (front or back, Fill Empty, night
+  mode), and Add, Remove, Rename, Reposition and Flip for card types.
+  Cmd+Enter saves; Cancel or closing asks before discarding changes.
+- Not yet: Fields opens nothing but a note; "Show Duplicates" lists the
+  duplicates and opens the one you pick in Edit Current, since there's no
+  browser yet.
 
 ## Build and run
 
@@ -175,6 +182,9 @@ Options:
   Preferences window (`--test-page` also takes the other screens' names;
   see `src/testchan.rs`): the theme, a collection preference and the LaTeX
   commands; the copy's `addons21` needs the "Edit LaTeX toolchain" add-on.
+  `harness/card-layout.js` (`--test-page card-layout`, on a fresh copy of
+  a stock notetype; and `--test-page editor --test-note 0` for the Cards
+  button) checks the card layout.
   `harness/filtered-deck.js`, `custom-study.js`, `media-check.js` and
   `empty-cards.js` (`--test-page` with the same names) drive those screens
   and follow the windows they open; they change the copy (the media check
