@@ -7,8 +7,11 @@ findings. Phases 0 to 3 are done: profile, collection, page protocol,
 bridge, settings import, AnkiConnect, reviewing (deck list, overview,
 reviewer, sync, native menus), editing (Add Cards, Edit Current), and a
 plugin host running Chinese/French Frontier, the editor agent pane and the
-Alfred bridge. The browser, other add-ons and most dialogs still need the
-old Anki.
+Alfred bridge. Phase 4 adds Preferences (with dark mode and the LaTeX
+commands), filtered decks, custom study, Check Media, Empty Cards and the
+card layout. The browser, other add-ons, and the screens the plan defers as
+unused (Manage Note Types, Fields, import/export, ...) still need the old
+Anki.
 
 ## Reviewing
 
