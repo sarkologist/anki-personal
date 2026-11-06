@@ -60,22 +60,37 @@ of in a second dialog.
             : String(count);
     }
 
-    $: title =
-        choice === "new"
-            ? tr.customStudyAvailableNewCards2({
-                  countString: withChildren(
-                      defaults.availableNew,
-                      defaults.availableNewInChildren,
-                  ),
-              })
-            : choice === "review"
-              ? tr.customStudyAvailableReviewCards2({
-                    countString: withChildren(
-                        defaults.availableReview,
-                        defaults.availableReviewInChildren,
-                    ),
-                })
-              : "";
+    function titleFor(choice: Choice): string {
+        if (choice === "new") {
+            return tr.customStudyAvailableNewCards2({
+                countString: withChildren(
+                    defaults.availableNew,
+                    defaults.availableNewInChildren,
+                ),
+            });
+        }
+        if (choice === "review") {
+            return tr.customStudyAvailableReviewCards2({
+                countString: withChildren(
+                    defaults.availableReview,
+                    defaults.availableReviewInChildren,
+                ),
+            });
+        }
+        return "";
+    }
+
+    function afterFor(choice: Choice, count: number): string {
+        if (choice === "new" || choice === "review") {
+            return tr.customStudyCards({ count });
+        }
+        if (choice === "cram") {
+            return tr.customStudyCardsFromTheDeck({ count });
+        }
+        return tr.customStudyDays({ count });
+    }
+
+    $: title = titleFor(choice);
     $: before = {
         new: tr.customStudyIncreaseTodaysNewCardLimitBy(),
         review: tr.customStudyIncreaseTodaysReviewLimitBy(),
@@ -84,12 +99,7 @@ of in a second dialog.
         preview: tr.customStudyPreviewNewCardsAddedInThe(),
         cram: tr.customStudySelect(),
     }[choice];
-    $: after =
-        choice === "new" || choice === "review"
-            ? tr.customStudyCards({ count: value })
-            : choice === "cram"
-              ? tr.customStudyCardsFromTheDeck({ count: value })
-              : tr.customStudyDays({ count: value });
+    $: after = afterFor(choice, value);
 
     let error = "";
     let busy = false;
@@ -145,13 +155,7 @@ of in a second dialog.
         {/if}
         <label class="spin">
             {before}
-            <input
-                type="number"
-                id="value"
-                min={spin.min}
-                max={spin.max}
-                bind:value
-            />
+            <input type="number" id="value" min={spin.min} max={spin.max} bind:value />
             {after}
         </label>
 

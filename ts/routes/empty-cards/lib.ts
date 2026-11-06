@@ -34,7 +34,5 @@ export function parseReport(html: string): ReportSection[] {
 /** The cards to delete (EmptyCardsDialog._delete_cards): keeping notes
 leaves the first card of a note that would lose all of them. */
 export function cardsToDelete(report: EmptyCardsReport, keepNotes: boolean): bigint[] {
-    return report.notes.flatMap((note) =>
-        keepNotes && note.willDeleteNote ? note.cardIds.slice(1) : note.cardIds
-    );
+    return report.notes.flatMap((note) => keepNotes && note.willDeleteNote ? note.cardIds.slice(1) : note.cardIds);
 }

@@ -54,16 +54,22 @@ async function takeOver() {
     errors.push(...(state?.errors ?? []));
     return state ?? {};
 }
-const finish = () => ({ ok: checks.every((c) => c.ok) && errors.length === 0, checks: checks.filter((c) => !c.ok), errors });
+const finish = () => ({
+    ok: checks.every((c) => c.ok) && errors.length === 0,
+    checks: checks.filter((c) => !c.ok),
+    errors,
+});
 
 const store = JSON.parse(sessionStorage.getItem("emptyTest") || "{}");
 const cards = async (nid) => (await query(`select count() from cards where nid = ${nid}`))[0][0];
 
 if (testStage === 0) {
-    const nid = await bridge(`testAddNote:${JSON.stringify({
-        notetype: "Basic (optional reversed card)",
-        fields: [`shell empty ${Date.now()}`, "back", "y"],
-    })}`);
+    const nid = await bridge(`testAddNote:${
+        JSON.stringify({
+            notetype: "Basic (optional reversed card)",
+            fields: [`shell empty ${Date.now()}`, "back", "y"],
+        })
+    }`);
     check("two cards to start with", await cards(nid), 2);
     await bridge(`testUpdateNote:${JSON.stringify({ nid, fields: ["shell empty", "back", ""] })}`);
     sessionStorage.setItem("emptyTest", JSON.stringify({ nid, checks, errors }));
@@ -83,5 +89,9 @@ check("notes are kept by default", document.querySelector("#keep-notes").checked
 document.querySelector("#delete").click();
 await until("the delete", () => document.querySelector("#done"));
 check("its empty card is gone", await cards(store.nid), 1);
-check("the deleted count is shown", /^Deleted \d+ cards?\.$/.test(document.querySelector("#done").textContent.replace(/[⁨⁩]/g, "")), true);
+check(
+    "the deleted count is shown",
+    /^Deleted \d+ cards?\.$/.test(document.querySelector("#done").textContent.replace(/[⁨⁩]/g, "")),
+    true,
+);
 return finish();

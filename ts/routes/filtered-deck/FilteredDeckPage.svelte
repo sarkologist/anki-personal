@@ -20,7 +20,10 @@ Building a filtered deck, or changing one, as qt/aqt/filtered_deck.py.
     const config = deck.config!;
     const existing = deck.id !== 0n;
     let name = deck.name;
-    let { first, second, secondEnabled } = loadTerms(deck);
+    const loaded = loadTerms(deck);
+    const first = loaded.first;
+    const second = loaded.second;
+    let secondEnabled = loaded.secondEnabled;
     let reschedule = config.reschedule;
     let previewAgain = config.previewAgainSecs;
     let previewHard = config.previewHardSecs;
@@ -132,7 +135,9 @@ Building a filtered deck, or changing one, as qt/aqt/filtered_deck.py.
         {#if !reschedule}
             <div class="delays">
                 <label class="row">
-                    <span>{tr.decksDelayForButton({ button: tr.studyingAgain() })}</span>
+                    <span>
+                        {tr.decksDelayForButton({ button: tr.studyingAgain() })}
+                    </span>
                     <span>
                         <input type="number" min="0" bind:value={previewAgain} />
                         {tr.schedulingSeconds()}

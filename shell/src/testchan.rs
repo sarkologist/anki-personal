@@ -636,35 +636,40 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
         add_note(shell, args).unwrap_or_else(|e| json!({ "error": format!("{e:#}") }))
     });
     // change a note's fields: `{"nid": id, "fields": [..]}`
-    ui.shell.bridge.register("testUpdateNote", |shell, _, args| {
-        update_note(shell, args).unwrap_or_else(|e| json!({ "error": format!("{e:#}") }))
-    });
+    ui.shell
+        .bridge
+        .register("testUpdateNote", |shell, _, args| {
+            update_note(shell, args).unwrap_or_else(|e| json!({ "error": format!("{e:#}") }))
+        });
     // a media file with this text: `{"name", "text"}` -> the name used
-    ui.shell.bridge.register("testAddMediaFile", |shell, _, args| {
-        let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
-        shell
-            .api
-            .call::<anki_proto::generic::String>(
-                "add_media_file",
-                &anki_proto::media::AddMediaFileRequest {
-                    desired_name: v["name"].as_str().unwrap_or("shell-test.txt").into(),
-                    data: v["text"].as_str().unwrap_or_default().as_bytes().to_vec(),
-                },
-            )
-            .map(|name| json!(name.val))
-            .unwrap_or_else(|e| json!({ "error": e.message }))
-    });
+    ui.shell
+        .bridge
+        .register("testAddMediaFile", |shell, _, args| {
+            let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+            shell
+                .api
+                .call::<anki_proto::generic::String>(
+                    "add_media_file",
+                    &anki_proto::media::AddMediaFileRequest {
+                        desired_name: v["name"].as_str().unwrap_or("shell-test.txt").into(),
+                        data: v["text"].as_str().unwrap_or_default().as_bytes().to_vec(),
+                    },
+                )
+                .map(|name| json!(name.val))
+                .unwrap_or_else(|e| json!({ "error": e.message }))
+        });
     // LaTeX commands for this run only (`LatexCommands` JSON), so checks
     // don't run the user's own toolchain
-    ui.shell.bridge.register("testLatexToolchain", |_, _, args| {
-        match serde_json::from_str(args) {
+    ui.shell.bridge.register(
+        "testLatexToolchain",
+        |_, _, args| match serde_json::from_str(args) {
             Ok(commands) => {
                 crate::latex::set_toolchain(commands);
                 json!(true)
             }
             Err(_) => json!(false),
-        }
-    });
+        },
+    );
     // close a window as its close button does (CloseRequested)
     let u = ui.clone();
     ui.shell.bridge.register("testClose", move |_, _, label| {

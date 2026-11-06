@@ -57,7 +57,11 @@ async function takeOver() {
     errors.push(...(state?.errors ?? []));
     return state ?? {};
 }
-const finish = () => ({ ok: checks.every((c) => c.ok) && errors.length === 0, checks: checks.filter((c) => !c.ok), errors });
+const finish = () => ({
+    ok: checks.every((c) => c.ok) && errors.length === 0,
+    checks: checks.filter((c) => !c.ok),
+    errors,
+});
 
 const report = () => document.querySelector("#report")?.textContent ?? "";
 const store = JSON.parse(sessionStorage.getItem("mediaTest") || "{}");
@@ -74,17 +78,21 @@ async function act(id, what, confirm = false) {
 }
 
 if (testStage === 0) {
-    await bridge(`testLatexToolchain:${JSON.stringify({
-        png: [["sh", "-c", "printf shellpng > tmp.png"]],
-        svg: [["sh", "-c", "printf shellsvg > tmp.svg"]],
-    })}`);
+    await bridge(`testLatexToolchain:${
+        JSON.stringify({
+            png: [["sh", "-c", "printf shellpng > tmp.png"]],
+            svg: [["sh", "-c", "printf shellsvg > tmp.svg"]],
+        })
+    }`);
     const stamp = Date.now();
     const unused = await bridge(`testAddMediaFile:${JSON.stringify({ name: `shell-unused-${stamp}.txt`, text: "x" })}`);
     const missing = `shell-missing-${stamp}.png`;
-    const nid = await bridge(`testAddNote:${JSON.stringify({
-        notetype: "Basic",
-        fields: [`<img src="${missing}"> [$]shell ${stamp}[/$]`, ""],
-    })}`);
+    const nid = await bridge(`testAddNote:${
+        JSON.stringify({
+            notetype: "Basic",
+            fields: [`<img src="${missing}"> [$]shell ${stamp}[/$]`, ""],
+        })
+    }`);
     sessionStorage.setItem("mediaTest", JSON.stringify({ unused, missing, nid, checks, errors }));
     // the check runs when the page loads
     location.reload();
@@ -116,5 +124,8 @@ check("restored", report().includes(`Unused: ${store.unused}`), true);
 
 await act("#delete-unused", "the delete", true);
 await act("#empty-trash", "the empty trash");
-check("the trash is empty", [document.querySelector("#status").textContent, !!document.querySelector("#empty-trash")], ["The trash folder is now empty.", false]);
+check("the trash is empty", [document.querySelector("#status").textContent, !!document.querySelector("#empty-trash")], [
+    "The trash folder is now empty.",
+    false,
+]);
 return finish();

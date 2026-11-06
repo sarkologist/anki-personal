@@ -131,11 +131,15 @@ pub fn register(ui: &Arc<Ui>) {
         close(ui, CUSTOM_STUDY);
         Value::Null
     });
-    reg("renderAllLatex", MEDIA_CHECK, |ui, _| match render_all_latex(ui) {
-        Ok(None) => json!({ "done": true }),
-        Ok(Some((nid, error))) => json!({ "nid": nid, "error": error }),
-        Err(err) => json!({ "error": format!("{err:#}") }),
-    });
+    reg(
+        "renderAllLatex",
+        MEDIA_CHECK,
+        |ui, _| match render_all_latex(ui) {
+            Ok(None) => json!({ "done": true }),
+            Ok(Some((nid, error))) => json!({ "nid": nid, "error": error }),
+            Err(err) => json!({ "error": format!("{err:#}") }),
+        },
+    );
     reg("openMediaFolder", MEDIA_CHECK, |ui, _| {
         if let Some(media) = ui.shell.media_folder() {
             let _ = std::process::Command::new("open").arg(media).spawn();

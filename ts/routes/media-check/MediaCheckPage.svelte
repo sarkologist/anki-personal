@@ -135,7 +135,9 @@ action.
 </main>
 
 <div class="buttons">
-    <button on:click={() => bridgeCommand("openMediaFolder")}>{tr.addonsViewFiles()}</button>
+    <button on:click={() => bridgeCommand("openMediaFolder")}>
+        {tr.addonsViewFiles()}
+    </button>
     <span class="spacer"></span>
     {#if result?.unused.length}
         <button id="delete-unused" disabled={busy} on:click={() => (askDelete = true)}>

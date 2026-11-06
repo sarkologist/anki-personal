@@ -56,7 +56,11 @@ async function takeOver() {
     errors.push(...(state?.errors ?? []));
     return state ?? {};
 }
-const finish = () => ({ ok: checks.every((c) => c.ok) && errors.length === 0, checks: checks.filter((c) => !c.ok), errors });
+const finish = () => ({
+    ok: checks.every((c) => c.ok) && errors.length === 0,
+    checks: checks.filter((c) => !c.ok),
+    errors,
+});
 
 const cardsIn = async (name) =>
     (await query(`select count() from cards where did = (select id from decks where name = '${name}')`))[0][0];

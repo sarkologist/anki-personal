@@ -56,7 +56,11 @@ async function takeOver() {
     errors.push(...(state?.errors ?? []));
     return state ?? {};
 }
-const finish = () => ({ ok: checks.every((c) => c.ok) && errors.length === 0, checks: checks.filter((c) => !c.ok), errors });
+const finish = () => ({
+    ok: checks.every((c) => c.ok) && errors.length === 0,
+    checks: checks.filter((c) => !c.ok),
+    errors,
+});
 
 const SESSION = "Custom Study Session";
 const choose = async (value) => {
@@ -67,7 +71,11 @@ const choose = async (value) => {
 
 if (testStage === 0) {
     await until("the dialog", () => document.querySelector("#value"));
-    check("new cards first, with what's available", document.querySelector("#title")?.textContent.startsWith("Available new cards"), true);
+    check(
+        "new cards first, with what's available",
+        document.querySelector("#title")?.textContent.startsWith("Available new cards"),
+        true,
+    );
     await choose("forgot");
     check("forgotten cards go back 30 days at most", document.querySelector("#value").max, "30");
     check("no counts for it", document.querySelector("#title"), null);
@@ -80,7 +88,8 @@ if (testStage === 0) {
 
 await takeOver();
 await until("the overview", () => document.querySelector("h3")?.textContent === SESSION);
-const count = (await query(`select count() from cards where did = (select id from decks where name = '${SESSION}')`))[0][0];
+const count =
+    (await query(`select count() from cards where did = (select id from decks where name = '${SESSION}')`))[0][0];
 check("7 cards in the session deck", count, 7);
 check("it's a filtered deck", !!button("Rebuild"), true);
 return finish();

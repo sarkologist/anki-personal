@@ -256,7 +256,12 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         &titled(ui, &tr.qt_misc_create_filtered_deck(), "createFiltered"),
         None,
     )?;
-    let check_media = item(app, "checkMedia", &tr.media_check_check_media_action(), None)?;
+    let check_media = item(
+        app,
+        "checkMedia",
+        &tr.media_check_check_media_action(),
+        None,
+    )?;
     let empty_cards = item(app, "emptyCards", &tr.qt_misc_empty_cards(), None)?;
     let tools = SubmenuBuilder::new(app, "Tools")
         .item(&create_filtered)
@@ -464,8 +469,16 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
         // the card menu's key equivalents (flags, delete) are the main
         // window's, as in Qt, not the editor's
         id if crate::editor_window::focused_editor(ui).is_some()
-            && !["decks", "add", "study", "chooseDeck", "stats", "sync", "createFiltered"]
-                .contains(&id) => {}
+            && ![
+                "decks",
+                "add",
+                "study",
+                "chooseDeck",
+                "stats",
+                "sync",
+                "createFiltered",
+            ]
+            .contains(&id) => {}
         id => main_window::action_for_state(ui, id),
     }
     crate::editor_window::note_changed_elsewhere(ui);

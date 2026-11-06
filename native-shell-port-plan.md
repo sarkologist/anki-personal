@@ -1143,4 +1143,3 @@ already exist in `ts/`; hosting them is small when they're wanted.
   (`{next: true, in: label}`), and a test whose last window closes
   without a result now fails (it used to exit 0). Vitest covers the pages'
   logic; `screens.rs` tests `render_all_latex`.
-
