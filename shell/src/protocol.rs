@@ -154,6 +154,7 @@ const SVELTEKIT_PAGES: &[&str] = &[
     "import-csv",
     "import-page",
     "image-occlusion",
+    "preferences",
 ];
 
 pub type HttpResponse = Response<Vec<u8>>;
@@ -335,6 +336,7 @@ fn handle_post(shell: &Shell, label: &str, endpoint: &str, req: &Request<Vec<u8>
         shell.frontend(label, &method, req.body())
     } else if EXPOSED_BACKEND.contains(&method.as_str())
         || FORWARDED_POST_HANDLERS.contains(&method.as_str())
+        || kind.is_some_and(|k| k.own_backend().contains(&method.as_str()))
     {
         shell.api.raw(&method, req.body()).map_err(|e| e.message)
     } else {
@@ -753,6 +755,21 @@ mod test {
         // a real backend method, but not one mediasrv exposes
         let missing = post(&f, "editor", "removeNotes", "application/binary", vec![]);
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn screens_get_their_own_backend_calls_only() {
+        let f = fixture();
+        f.shell
+            .pages
+            .set("preferences", WebviewKind::Preferences, None);
+        let call = |label: &str, endpoint: &str| {
+            post(&f, label, endpoint, "application/binary", vec![]).status()
+        };
+        assert_eq!(call("preferences", "getPreferences"), StatusCode::OK);
+        assert_eq!(call("preferences", "getDeckNames"), StatusCode::OK);
+        assert_eq!(call("editor", "getPreferences"), StatusCode::NOT_FOUND);
+        assert_eq!(call("preferences", "removeNotes"), StatusCode::NOT_FOUND);
     }
 
     #[test]

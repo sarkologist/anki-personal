@@ -21,6 +21,7 @@ pub mod pages;
 pub mod paste;
 pub mod pasteboard;
 pub mod plugins;
+pub mod preferences;
 pub mod profile;
 pub mod protocol;
 pub mod reviewer;

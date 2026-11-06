@@ -42,7 +42,21 @@ old Anki.
   Add-ons get it too (Frontier's panels take it when they open).
 - Not yet: custom study, filtered deck creation, deck descriptions editing,
   "Set due date", "Forget", "Create copy", recording your own voice, and
-  add-ons other than Frontier.
+  add-ons other than those below.
+
+## Preferences
+
+**Anki > Preferences…** (Cmd+,) has what the old Anki's preferences offer
+that the shell uses: the theme, the review and scheduling options, the
+editing and search defaults, backups, and the LaTeX commands. Changes are
+saved as you make them.
+
+- **Theme:** system, light or dark (see "Reviewing").
+- **LaTeX commands:** the commands that turn `tmp.tex` into `tmp.png` or
+  `tmp.svg`, one per line. They start as the ones the "Edit LaTeX
+  toolchain" add-on sets in the old Anki (the profile import reads its
+  file without running it), or latex.py's defaults. "Use Default Commands"
+  goes back to those.
 
 ## Add-ons
 
@@ -151,6 +165,10 @@ Options:
   pastes come from a scratch pasteboard, never the clipboard.
   `--test harness/editor-add.js --test-page add` drives Add Cards: the
   choosers, sticky fields, adding, history, duplicates and format buttons.
+  `--test harness/preferences.js --test-page preferences` drives the
+  Preferences window (`--test-page` also takes the other screens' names;
+  see `src/testchan.rs`): the theme, a collection preference and the LaTeX
+  commands; the copy's `addons21` needs the "Edit LaTeX toolchain" add-on.
   `--test harness/dark-mode.js --test-page main` switches the theme and a
   simulated system appearance through the deck list, overview and
   reviewer (it changes no system setting).

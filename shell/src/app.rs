@@ -444,6 +444,7 @@ impl Ui {
         let mut settings = self.settings.lock().unwrap();
         settings.import_from_anki()?;
         settings.save(&self.settings_path)?;
+        crate::latex::set_toolchain(settings.latex_toolchain());
         tracing::info!(
             profiles = settings.profiles.len(),
             "imported profiles from Anki"
@@ -702,6 +703,7 @@ fn register_bridge(ui: &Arc<Ui>) {
     bridge.register("domDone", move |_, label, _| {
         u.evals.dom_done(&u.app, label);
         crate::main_window::dom_done(&u, label);
+        crate::testchan::page_loaded(&u, label);
         Value::Null
     });
     let u = ui.clone();
@@ -873,11 +875,13 @@ pub fn run(args: Args) -> Result<()> {
         plugins: crate::plugins::ui::Plugins::new(shell.clone()),
         paste_trackers: Default::default(),
     });
+    crate::latex::set_toolchain(ui.settings().latex_toolchain());
     crate::theme::apply(&ui, None);
     register_bridge(&ui);
     crate::editor_window::register(&ui);
     crate::plugins::ui::register(&ui);
     crate::main_window::register(&ui);
+    crate::preferences::register(&ui);
     let (menu, menus) = crate::menus::build(&ui, &app)?;
     app.set_menu(menu)?;
     *ui.menus.lock().unwrap() = Some(menus);
@@ -937,6 +941,15 @@ pub fn run(args: Args) -> Result<()> {
             api.prevent_close();
             crate::editor_window::close(&exit_ui, &label);
         }
+        // Preferences saves what's being typed first
+        RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == crate::preferences::LABEL => {
+            api.prevent_close();
+            crate::preferences::close_requested(&exit_ui);
+        }
         // closing the main window quits, once the editors are saved (or
         // the user keeps the Add window's input)
         RunEvent::WindowEvent {
@@ -948,6 +961,12 @@ pub fn run(args: Args) -> Result<()> {
             if !crate::editor_window::exit_requested(&exit_ui, 0) {
                 app.exit(0);
             }
+        }
+        // Preferences saves what's being typed, then the exit goes on
+        RunEvent::ExitRequested { api, code, .. }
+            if crate::preferences::exit_requested(&exit_ui, code.unwrap_or(0)) =>
+        {
+            api.prevent_exit();
         }
         RunEvent::ExitRequested { api, code, .. }
             if crate::editor_window::exit_requested(&exit_ui, code.unwrap_or(0)) =>

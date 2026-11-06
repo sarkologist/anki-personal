@@ -14,6 +14,7 @@ use std::process::Command;
 use std::process::Stdio;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::RwLock;
 
 use anki::prelude::I18n;
 use anki_proto::card_rendering::ExtractLatexRequest;
@@ -28,6 +29,8 @@ use anki_proto::notetypes::Notetype;
 use anki_proto::notetypes::NotetypeId;
 use anyhow::Context;
 use anyhow::Result;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::api::Api;
 
@@ -64,22 +67,75 @@ const SVG_COMMANDS: [&[&str]; 2] = [
 /// Standard TeX install locations, which a GUI app's minimal PATH lacks.
 const MAC_TEX_DIRS: [&str; 2] = ["/usr/texbin", "/Library/TeX/texbin"];
 
+/// latex.py's `pngCommands`/`svgCommands`, where they aren't its defaults
+/// (an add-on such as "Edit LaTeX toolchain" replaces them). Each command
+/// runs in the render folder with `tmp.tex`, and the last leaves `tmp.png`
+/// or `tmp.svg`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LatexCommands {
+    pub png: Option<Vec<Vec<String>>>,
+    pub svg: Option<Vec<Vec<String>>>,
+}
+
+impl LatexCommands {
+    pub fn is_empty(&self) -> bool {
+        self.png.is_none() && self.svg.is_none()
+    }
+
+    /// The commands for one kind of image, defaults included.
+    pub fn for_kind(&self, svg: bool) -> Vec<Vec<String>> {
+        let custom = if svg { &self.svg } else { &self.png };
+        custom.clone().unwrap_or_else(|| {
+            latex_commands(svg)
+                .iter()
+                .map(|c| c.iter().map(|s| s.to_string()).collect())
+                .collect()
+        })
+    }
+}
+
+/// The toolchain from the settings, as latex.py's module globals.
+static TOOLCHAIN: RwLock<LatexCommands> = RwLock::new(LatexCommands {
+    png: None,
+    svg: None,
+});
+
+pub fn set_toolchain(commands: LatexCommands) {
+    *TOOLCHAIN.write().unwrap() = commands;
+}
+
+pub fn toolchain() -> LatexCommands {
+    TOOLCHAIN.read().unwrap().clone()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LatexConfig {
     pub latex_pre: String,
     pub latex_post: String,
     pub svg: bool,
+    /// The commands to run (latex.py's by default).
+    pub toolchain: LatexCommands,
 }
 
 /// The notetype's LaTeX header/footer and svg flag (from the backend's
-/// get_notetype: Notetype.config latex_pre / latex_post / latex_svg).
+/// get_notetype: Notetype.config latex_pre / latex_post / latex_svg), with
+/// the toolchain.
 pub fn latex_config(api: &Api, notetype_id: i64) -> Result<LatexConfig> {
+    latex_config_with(api, notetype_id, &toolchain())
+}
+
+fn latex_config_with(
+    api: &Api,
+    notetype_id: i64,
+    toolchain: &LatexCommands,
+) -> Result<LatexConfig> {
     let notetype: Notetype = api.call("get_notetype", &NotetypeId { ntid: notetype_id })?;
     let config = notetype.config.unwrap_or_default();
     Ok(LatexConfig {
         latex_pre: config.latex_pre,
         latex_post: config.latex_post,
         svg: config.latex_svg,
+        toolchain: toolchain.clone(),
     })
 }
 
@@ -186,7 +242,7 @@ fn save_latex_image<'a>(
 
 /// A LaTeX command that failed, with the files to look at.
 struct Failed {
-    command: &'static str,
+    command: String,
     tex: PathBuf,
     log: PathBuf,
 }
@@ -201,7 +257,7 @@ impl Failed {
 
     /// latex.py's _err_msg.
     fn html(&self, tr: &I18n) -> String {
-        let mut msg = format!("{}<br>", tr.media_error_executing(self.command));
+        let mut msg = format!("{}<br>", tr.media_error_executing(self.command.as_str()));
         msg += &format!(
             "{}<br>",
             tr.media_generated_file(self.tex.display().to_string())
@@ -215,7 +271,7 @@ impl Failed {
 
     /// The editor preview's plain-text version (`_latex_error_text`).
     fn text(&self, tr: &I18n) -> String {
-        let mut msg = format!("{}\n", tr.media_error_executing(self.command));
+        let mut msg = format!("{}\n", tr.media_error_executing(self.command.as_str()));
         msg += &format!(
             "{}\n",
             tr.media_generated_file(self.tex.display().to_string())
@@ -241,10 +297,15 @@ fn render_image(body: &str, cfg: &LatexConfig) -> Result<std::result::Result<Vec
     let log =
         File::create(&log_path).with_context(|| format!("creating {}", log_path.display()))?;
     let path = tex_path();
-    for command in latex_commands(cfg.svg) {
+    for command in cfg
+        .toolchain
+        .for_kind(cfg.svg)
+        .iter()
+        .filter(|c| !c.is_empty())
+    {
         if !run(command, &dir, &path, &log)? {
             return Ok(Err(Failed {
-                command: command[0],
+                command: command[0].clone(),
                 tex,
                 log: log_path,
             }));
@@ -347,8 +408,8 @@ pub fn render_preview(
 
 /// Whether the command ran and succeeded (a missing binary counts as a
 /// failure, as in anki.utils.call).
-fn run(command: &[&str], dir: &Path, path: &OsString, log: &File) -> Result<bool> {
-    let status = Command::new(command[0])
+fn run(command: &[String], dir: &Path, path: &OsString, log: &File) -> Result<bool> {
+    let status = Command::new(&command[0])
         .args(&command[1..])
         .current_dir(dir)
         .env("PATH", path)
@@ -548,7 +609,7 @@ mod test {
         std::fs::write(&log, "").unwrap();
         let tex = dir.path().join("tmp.tex");
         let msg = Failed {
-            command: "latex",
+            command: "latex".into(),
             tex: tex.clone(),
             log,
         }
@@ -561,6 +622,61 @@ mod test {
                 tex.display()
             )
         );
+    }
+
+    #[test]
+    fn a_custom_toolchain_makes_the_image() {
+        // as "Edit LaTeX toolchain" sets: pdflatex, pdfcrop and sips here
+        let fx = collection(true);
+        let cfg = LatexConfig {
+            toolchain: LatexCommands {
+                png: Some(vec![
+                    vec!["sh".into(), "-c".into(), "test -s tmp.tex".into()],
+                    vec!["sh".into(), "-c".into(), "printf custom > tmp.png".into()],
+                ]),
+                svg: None,
+            },
+            ..stock_config(&fx.api)
+        };
+        let (html, errors) = render_latex(&fx.api, &fx.media, "[$]x[/$]", &cfg);
+        assert!(errors.is_empty(), "{errors:?}");
+        let files = media_files(&fx.media);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(html.contains(&format!("src=\"{}\"", files[0])), "{html}");
+        assert_eq!(std::fs::read(fx.media.join(&files[0])).unwrap(), b"custom");
+    }
+
+    #[test]
+    fn a_failing_custom_command_is_named() {
+        let fx = collection(true);
+        let cfg = LatexConfig {
+            toolchain: LatexCommands {
+                png: Some(vec![vec!["true".into()], vec!["false".into(), "x".into()]]),
+                svg: None,
+            },
+            ..stock_config(&fx.api)
+        };
+        let (_, errors) = render_latex(&fx.api, &fx.media, "[$]x[/$]", &cfg);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let err = errors[0].replace(['\u{2068}', '\u{2069}'], "");
+        assert!(err.starts_with("Error executing false."), "{err}");
+        assert!(media_files(&fx.media).is_empty());
+    }
+
+    #[test]
+    fn the_toolchain_gives_commands_per_image_kind() {
+        let fx = collection(true);
+        let names: NotetypeNames = fx.api.call("get_notetype_names", &Empty {}).unwrap();
+        let toolchain = LatexCommands {
+            png: Some(vec![vec!["pdflatex".into(), "tmp.tex".into()]]),
+            svg: None,
+        };
+        let cfg = latex_config_with(&fx.api, names.entries[0].id, &toolchain).unwrap();
+        assert_eq!(cfg.toolchain, toolchain);
+        assert_eq!(toolchain.for_kind(false), vec![vec!["pdflatex", "tmp.tex"]]);
+        // a kind the toolchain leaves alone keeps latex.py's commands
+        assert_eq!(toolchain.for_kind(true)[1][0], "dvisvgm");
+        assert_eq!(LatexCommands::default().for_kind(false)[1][0], "dvipng");
     }
 
     #[test]

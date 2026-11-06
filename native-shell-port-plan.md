@@ -258,9 +258,13 @@ Exit: a week of adding and editing only in the shell.
       column API (suspended_card_priority), find/replace, duplicates,
       previewer, card info.
 - [x] Dark mode.
-- [ ] Card layout, notetypes, fields, filtered decks, custom study,
-      preferences, import/export, media check, empty cards, LaTeX toolchain
-      setting.
+- [x] Preferences and the LaTeX toolchain setting.
+- [ ] Filtered decks and custom study.
+- [ ] Media check and empty cards.
+- [ ] Card layout.
+- Deferred, as unused (see "Phase 4: the other screens"): Manage Note
+  Types, Fields, import/export, deck description editing, Set due date,
+  Forget, Create copy, and recording your own voice.
 
 Exit: the old Anki is no longer opened for a month, then it is retired.
 
@@ -1069,3 +1073,81 @@ is 0), and macOS is dark here.
   after a switch, the reviewer could copy the old value during a switch,
   quick system flips could apply out of order, and earlier installs had
   no imported theme.
+
+### Phase 4: the other screens (2026-11-06)
+
+What the user uses, from the old Anki's `prefs21.db` and a copy of the
+collection (read only). Qt saves a window's geometry under a key with the
+Qt version, and the daily Anki (25.9.2) runs Qt 6.11, so a 6.11 key means
+the window was opened recently:
+
+| Screen                         | Evidence                                               | Plan  |
+| ------------------------------ | ------------------------------------------------------ | ----- |
+| Card layout                    | `CardLayoutGeometry6.11`                               | port  |
+| Filtered deck                  | `dyndeckconfGeometry6.11`; 69 filtered reviews in 2026 | port  |
+| Custom study                   | (no geometry key); the filtered reviews                | port  |
+| Media check, empty cards       | `checkmediadb…6.11`, `emptycards…6.11`                 | port  |
+| Preferences                    | non-default settings                                   | port  |
+| Dark mode                      | `theme` 0 (follow system), and macOS is dark           | port  |
+| LaTeX toolchain                | "Edit LaTeX toolchain" enabled, custom pipeline        | port  |
+| Manage Note Types, its options | `models…6.6`, `modelopts…6.6` (not since)              | defer |
+| Fields                         | no trace (the dialog saves no geometry)                | defer |
+| Import                         | `import…6.6`; last bulk import in 2017                 | defer |
+| Export                         | an `exportDirectory`, nothing recent                   | defer |
+| Deck description editing       | every deck description is empty                        | defer |
+| Set due date, Forget           | no manual revlog entries, ever                         | defer |
+| Create copy, record own voice  | no trace                                               | defer |
+
+Deferred screens stay in the old Anki. The change-notetype and import pages
+already exist in `ts/`; hosting them is small when they're wanted.
+
+- **Dark mode:** see "Phase 4: dark mode" above; Preferences sets
+  its theme.
+- **Preferences** (`src/preferences.rs`, `ts/routes/preferences`): a new
+  page, saved as you go. The collection's preferences go through
+  `get_preferences`/`set_preferences`, which only this page gets (a
+  per-kind list, `WebviewKind::own_backend`). The theme and LaTeX commands
+  go through two bridge commands accepted only from this window. Left out:
+  language, UI size and style, the Qt-only distractions settings, and the
+  sync options, which are imported from the old Anki.
+- **LaTeX toolchain:** the user's add-on replaces latex.py's commands with
+  pdflatex, pdfcrop (`--gscmd /usr/local/bin/gs`) and `sips` (PNG) or
+  pdf2svg (SVG). The shell rendered with latex and dvipng/dvisvgm, so new
+  images would have looked different from the old ones.
+  - The profile import reads the commands from any enabled add-on that
+    assigns `latex.pngCommands`/`svgCommands` at module level. It parses
+    the files with `ast` and never runs them.
+  - Preferences shows them one per line, shell-quoted; a line with an
+    unmatched quote is refused. The shell's own commands win over the
+    imported ones, and "Use Default Commands" clears them.
+  - Checked with the user's pipeline on the copy: an SVG came out of
+    pdflatex, pdfcrop and pdf2svg. The pipeline includes a debugging
+    `cp tmp.pdf ~/tmp.pdf`, so every SVG render rewrites that file, as in
+    the old Anki.
+- **Saving:** each change is saved shortly after typing stops, one save at
+  a time. Closing the window or quitting first runs the page's flush
+  (2 s at most), since a closing webview runs no more timers. Number
+  boxes are clamped as Qt's spin boxes: the backend stores the rollover
+  in a byte, so 300 would wrap to 44. A save refreshes the deck list and
+  the undo menu, but not the reviewer's card, whose redraw would replay
+  its audio. A full sync closes the window, which holds a copy of the
+  settings. Each save is an undoable "Update Preferences" step.
+- **Review** (two independent Opus passes), fixed: edits lost on close
+  and quit, saves landing out of order, an emptied number box failing
+  every later save, no refresh after a save, Preferences left open over a
+  full sync, re-import not reapplying the commands and theme, the theme
+  handler locking on the main thread, odd add-on files failing the whole
+  import, and add-on panel pages not themed.
+- **Build trap:** after a rebuilt SvelteKit bundle, one chunk on disk came
+  from an earlier build (another `__sveltekit_*` global), and every page
+  failed to start. Removing `out/sveltekit` and
+  `out/qt/_aqt/data/web/sveltekit` and building again fixed it (the build
+  doesn't prune old outputs).
+- **Checks:** `harness/preferences.js` (`--test-page preferences`, a new
+  test mode that opens a screen's window and runs the script there on
+  each load). It checks the imported commands, dark mode in the open page
+  and in a newly loaded one, a collection preference in the collection,
+  the refused line, a render with custom commands, and the reset. Unit
+  tests cover the theme markers, the protocol's theming and per-page API,
+  the toolchain in `latex.rs`, the command text, and the import
+  (`plugin_host/tests/test_import_prefs.py`).
