@@ -89,18 +89,57 @@ pub fn apply(ui: &std::sync::Arc<crate::app::Ui>, system_dark: Option<bool>) {
     let pref = ui.settings.lock().unwrap().theme_pref();
     ui.app.set_theme(pref.window_theme());
     let night = pref.night_mode(system_dark.unwrap_or_else(self::system_dark));
+    // the shell's first: start_review copies it into the reviewer
+    let changed = ui.shell.night.set(night);
     ui.main.reviewer.lock().unwrap().night_mode = night;
-    if !ui.shell.night.set(night) {
+    if !changed {
         return;
     }
+    crate::plugins::ui::notify(
+        ui,
+        "theme_did_change",
+        serde_json::json!({ "night": night }),
+    );
     tracing::info!(night, "theme changed");
-    let labels: Vec<String> = {
+    let windows: Vec<(String, tauri::WebviewWindow)> = {
         use tauri::Manager;
-        ui.app.webview_windows().keys().cloned().collect()
+        ui.app.webview_windows().into_iter().collect()
     };
-    for label in labels {
+    for (label, window) in windows {
+        style_window(&window, night);
         ui.eval(&label, toggle_js(night));
     }
+}
+
+/// Anki's `--canvas` (`colors.CANVAS`), behind every page.
+pub fn canvas(night: bool) -> tauri::window::Color {
+    if night {
+        tauri::window::Color(0x2c, 0x2c, 0x2c, 0xff)
+    } else {
+        tauri::window::Color(0xf5, 0xf5, 0xf5, 0xff)
+    }
+}
+
+/// A window shows the canvas colour until its page draws, not white (wry
+/// turns the webview's own background off).
+pub fn style_window(window: &tauri::WebviewWindow, night: bool) {
+    let _ = window.set_background_color(Some(canvas(night)));
+}
+
+/// Tauri's `ThemeChanged` (on the main thread). Applied off it, since that
+/// takes the settings and reviewer locks, which bridge threads hold across
+/// backend calls; an event newer than the one a thread has is left to its
+/// own thread, so quick flips can't land out of order.
+pub fn system_changed(ui: &std::sync::Arc<crate::app::Ui>, dark: bool) {
+    use std::sync::atomic::AtomicU64;
+    static LATEST: AtomicU64 = AtomicU64::new(0);
+    let seq = LATEST.fetch_add(1, Ordering::SeqCst) + 1;
+    let ui = ui.clone();
+    std::thread::spawn(move || {
+        if LATEST.load(Ordering::SeqCst) == seq {
+            apply(&ui, Some(dark));
+        }
+    });
 }
 
 /// Add the night-mode markers to a page's `<html>` and `<body>` tags.
