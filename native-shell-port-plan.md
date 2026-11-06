@@ -258,8 +258,8 @@ Exit: a week of adding and editing only in the shell.
       column API (suspended_card_priority), find/replace, duplicates,
       previewer, card info.
 - [x] Preferences, dark mode, and the LaTeX toolchain setting.
-- [ ] Filtered decks and custom study.
-- [ ] Media check and empty cards.
+- [x] Filtered decks and custom study.
+- [x] Media check and empty cards.
 - [ ] Card layout.
 - Deferred, as unused (see "Phase 4: the other screens"): Manage Note
   Types, Fields, import/export, deck description editing, Set due date,
@@ -1110,3 +1110,37 @@ already exist in `ts/`; hosting them is small when they're wanted.
   tests cover the theme markers, the protocol's theming and per-page API,
   the toolchain in `latex.rs`, the command text, and the import
   (`plugin_host/tests/test_import_prefs.py`).
+- **Filtered decks, custom study, Check Media, Empty Cards**
+  (`src/screens.rs`, `ts/routes/{filtered-deck,custom-study,media-check,empty-cards}`):
+  new Svelte pages. Each gets only its own backend calls (`own_backend`);
+  what needs the shell (moving the main window on, LaTeX, the media
+  folder) goes through bridge commands accepted only from that window.
+  - Filtered deck: `FilteredDeckConfigDialog`'s form. Tools > Create
+    Filtered Deck… (`f`) builds a new one; the deck options of a filtered
+    deck (overview, deck list gear, `o`) open it instead, as
+    `onDeckConf`. A search that matches nothing shows the backend's error
+    and keeps the dialog. Building shows the deck's overview. Left out:
+    the Search and hint buttons, which open the browser.
+  - Custom study: all six choices with Qt's ranges. The tag lists
+    (`taglimit.py`) are shown under "Study by card state or tag" rather
+    than in a second dialog. The overview has the button (`c`) for normal
+    decks.
+  - Check Media: the report, then Qt's buttons (Delete Unused with a
+    confirmation, Tag Missing, Render LaTeX, Empty Trash, Restore Deleted,
+    View Files). Render LaTeX is `render_all_latex` in Rust, with the
+    toolchain; its first failure is shown as text. The report is run
+    again after each action.
+  - Empty Cards: the backend's HTML report is parsed into text (its
+    notetype and card names are the user's), and Delete keeps a note's
+    first card if asked, as `_delete_cards`.
+  - A full sync closes all four, as it does the editor and deck options.
+- **Checks:** `harness/filtered-deck.js` (refused search, build, the
+  overview, Options reopening it, rebuild with a new limit),
+  `custom-study.js` (ranges, cramming into the session deck),
+  `media-check.js` (unused and missing files, tagging, rendering with
+  scratch commands, delete/restore/empty trash) and `empty-cards.js`, all
+  against the collection. A screen's script follows the windows it opens
+  (`{next: true, in: label}`), and a test whose last window closes
+  without a result now fails (it used to exit 0). Vitest covers the pages'
+  logic; `screens.rs` tests `render_all_latex`.
+

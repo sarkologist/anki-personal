@@ -85,6 +85,20 @@ static MAIN_SCRIPT: std::sync::Mutex<Option<(String, u32, i64)>> = std::sync::Mu
 /// label, the script, and how often it ran, as for [MAIN_SCRIPT].
 static SCREEN_SCRIPT: std::sync::Mutex<Option<(String, String, u32)>> = std::sync::Mutex::new(None);
 
+/// Set once the script reported its result.
+static FINISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The exit code when the last window closes: a test that ended without a
+/// result (its window went away) failed.
+pub fn exit_code_for_last_window(ui: &Ui) -> i32 {
+    if ui.test_mode && !FINISHED.load(std::sync::atomic::Ordering::SeqCst) {
+        println!("TEST ended without a result");
+        3
+    } else {
+        0
+    }
+}
+
 /// The screens a test can open, by `--test-page` name: their window's
 /// label.
 fn screen_label(page: &str) -> Option<&'static str> {
@@ -110,11 +124,27 @@ fn open_screen(ui: &Arc<Ui>, page: &str) {
     }
 }
 
+/// The current deck if it's a normal one, else the normal deck with the
+/// most cards (custom study is for normal decks).
 fn current_deck(ui: &Ui) -> i64 {
+    let current = ui
+        .shell
+        .api
+        .call::<anki_proto::decks::Deck>("get_current_deck", &anki_proto::generic::Empty {});
+    if let Ok(deck) = current {
+        if matches!(deck.kind, Some(anki_proto::decks::deck::Kind::Normal(_))) {
+            return deck.id;
+        }
+    }
     ui.shell
         .api
-        .call::<anki_proto::decks::Deck>("get_current_deck", &anki_proto::generic::Empty {})
-        .map(|d| d.id)
+        .query(
+            // cards in a filtered deck have their home deck in odid
+            "select did from cards where odid = 0 group by did order by count() desc limit 1",
+            &[],
+        )
+        .ok()
+        .and_then(|rows| rows.first().and_then(|r| r[0].as_i64()))
         .unwrap_or(1)
 }
 
@@ -416,6 +446,7 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
                 }
             }
         } else if msg["done"] == json!(true) {
+            FINISHED.store(true, std::sync::atomic::Ordering::SeqCst);
             let result = &msg["result"];
             println!("TEST {result}");
             let unknown = shell.bridge.unknown_commands();

@@ -34,9 +34,15 @@ old Anki.
   (`autoSync`). Sync redirects are kept (`currentSyncUrl`). A profile copy
   (any `--anki-base` other than the default) can only sync with a server on
   this machine (`customSyncUrl` pointing at 127.0.0.1), never AnkiWeb.
-- Not yet: custom study, filtered deck creation, deck descriptions editing,
-  "Set due date", "Forget", "Create copy", recording your own voice, and
-  add-ons other than those below.
+- Filtered decks: **Tools > Create Filtered Deck…** (`f`) builds one, as
+  in Anki; a filtered deck's Options (the overview's, the deck list's gear,
+  or `o`) reopen the dialog to rebuild it. The overview's **Custom Study**
+  (`c`) has all of Anki's choices, with the tags to include or exclude
+  shown under "Study by card state or tag".
+- **Tools > Check Media** and **Tools > Empty Cards…** work as in Anki
+  (Render LaTeX uses the LaTeX commands from Preferences).
+- Not yet: deck descriptions editing, "Set due date", "Forget", "Create
+  copy", recording your own voice, and add-ons other than those below.
 
 ## Preferences
 
@@ -165,6 +171,10 @@ Options:
   Preferences window (`--test-page` also takes the other screens' names;
   see `src/testchan.rs`): the theme, a collection preference and the LaTeX
   commands; the copy's `addons21` needs the "Edit LaTeX toolchain" add-on.
+  `harness/filtered-deck.js`, `custom-study.js`, `media-check.js` and
+  `empty-cards.js` (`--test-page` with the same names) drive those screens
+  and follow the windows they open; they change the copy (the media check
+  trashes its unused files, Empty Cards deletes its empty cards).
   `harness/agent-pane.js` (`--test-page add`, and `--test-page editor
   --test-note 0`) drives the agent pane with a real request; it needs the
   add-on in the copy's `addons21` with its provider set to Ollama and a

@@ -75,8 +75,10 @@ if (testStage === 0) {
 checks.push(...store.checks);
 errors.push(...store.errors);
 await until("the report", () => document.querySelector("li"));
-const line = [...document.querySelectorAll("li")].find((li) => li.textContent.startsWith(`${store.nid}:`));
-check("the note is listed", line?.textContent.includes("1 of 2 cards empty"), true);
+// without Fluent's isolation marks
+const text = (el) => el.textContent.replace(/[\u2068\u2069]/g, "");
+const line = [...document.querySelectorAll("li")].find((li) => text(li).startsWith(`${store.nid}:`));
+check("the note is listed", line && text(line).includes("1 of 2 cards empty"), true);
 check("notes are kept by default", document.querySelector("#keep-notes").checked, true);
 document.querySelector("#delete").click();
 await until("the delete", () => document.querySelector("#done"));

@@ -4,7 +4,8 @@
 // Custom study in WKWebView, on the current deck: the choices' ranges,
 // then "study by card state or tag" making the Custom Study Session deck,
 // checked against the collection and in the overview. Run with
-// --test-page custom-study; the current deck needs 7 or more cards.
+// --test-page custom-study (on the current deck if it's a normal one,
+// else the normal deck with the most cards).
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(what, f, ms = 15000) {

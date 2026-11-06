@@ -1025,7 +1025,7 @@ pub fn run(args: Args) -> Result<()> {
             crate::plugins::ui::window_destroyed(&exit_ui, &label);
             exit_shell.pages.remove(&label);
             if label == MAIN || app.webview_windows().is_empty() {
-                app.exit(0);
+                app.exit(crate::testchan::exit_code_for_last_window(&exit_ui));
             }
         }
         RunEvent::Exit => {

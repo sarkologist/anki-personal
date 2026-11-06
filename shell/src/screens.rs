@@ -110,15 +110,16 @@ pub fn register(ui: &Arc<Ui>) {
                 .api
                 .call("set_current_deck", &anki_proto::decks::DeckId { did });
         }
-        close(ui, FILTERED_DECK);
+        // the overview first: closing the last window would quit
         main_window::show_overview(ui);
+        close(ui, FILTERED_DECK);
         crate::menus::refresh(ui);
         Value::Null
     });
     // custom study made its session deck current, or raised today's limits
     reg("customStudyDone", CUSTOM_STUDY, |ui, _| {
-        close(ui, CUSTOM_STUDY);
         main_window::show_overview(ui);
+        close(ui, CUSTOM_STUDY);
         crate::menus::refresh(ui);
         Value::Null
     });
