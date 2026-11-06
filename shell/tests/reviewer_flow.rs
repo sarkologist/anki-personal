@@ -1,8 +1,6 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-#![cfg(target_os = "macos")]
-
 //! The reviewer driver against a real collection, without a webview: the
 //! effects it asks for, and what ends up in the collection.
 

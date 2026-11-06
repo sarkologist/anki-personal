@@ -269,7 +269,6 @@ impl Ui {
             builder = builder.focused(false);
         }
         let window = builder.build()?;
-        #[cfg(target_os = "macos")]
         if self.background {
             send_to_back(&window)?;
         }
@@ -312,7 +311,6 @@ impl Ui {
             builder = builder.focused(false);
         }
         let window = builder.build()?;
-        #[cfg(target_os = "macos")]
         if self.background {
             send_to_back(&window)?;
         }
@@ -446,7 +444,6 @@ impl Ui {
 /// Hidden pages (all of them while the screen is locked) also get their
 /// timers throttled more the longer they stay hidden, which stalls test
 /// scripts, so that's turned off too (WKPreferences SPI).
-#[cfg(target_os = "macos")]
 fn send_to_back(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     let w = window.clone();
     // AppKit only on the main thread; callers may be on bridge threads
@@ -487,7 +484,6 @@ fn send_to_back(window: &tauri::WebviewWindow) -> tauri::Result<()> {
 }
 
 /// Just enough of the Objective-C runtime for [send_to_back].
-#[cfg(target_os = "macos")]
 mod objc {
     use std::ffi::c_char;
     use std::ffi::c_void;
@@ -774,7 +770,6 @@ pub fn run(args: Args) -> Result<()> {
         })
         .build(tauri::generate_context!())
         .context("starting Tauri")?;
-    #[cfg(target_os = "macos")]
     if args.background {
         // Test and bench windows mustn't take focus or keystrokes from the
         // user. tao activates the app at launch, which Prohibited turns into
@@ -846,7 +841,6 @@ pub fn run(args: Args) -> Result<()> {
     let exit_ui = ui.clone();
     let background = args.background;
     tauri_app.run(move |app, event| match event {
-        #[cfg(target_os = "macos")]
         RunEvent::Ready if background => {
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             for window in app.webview_windows().values() {

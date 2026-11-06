@@ -1,8 +1,6 @@
 // Copyright: Ankitects Pty Ltd and contributors
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-#![cfg(target_os = "macos")]
-
 //! Sync against rslib's own sync server, in process on 127.0.0.1. Nothing
 //! here may reach AnkiWeb: every base folder is a temp dir, so the guard
 //! refuses anything but a loopback server.
