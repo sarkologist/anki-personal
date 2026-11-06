@@ -951,6 +951,14 @@ pub fn run(args: Args) -> Result<()> {
                 app.exit(0);
             }
         }
+        // the last window closed (Tauri exits on its own, with no code)
+        // during a test that has no result yet: that's a failure
+        RunEvent::ExitRequested {
+            api, code: None, ..
+        } if crate::testchan::exit_code_for_last_window(&exit_ui) != 0 => {
+            api.prevent_exit();
+            app.exit(3);
+        }
         // Preferences saves what's being typed, then the exit goes on
         RunEvent::ExitRequested { api, code, .. }
             if crate::preferences::exit_requested(&exit_ui, code.unwrap_or(0)) =>

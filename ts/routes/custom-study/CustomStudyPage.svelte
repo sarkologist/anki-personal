@@ -115,11 +115,13 @@ of in a second dialog.
         busy = true;
         try {
             await customStudy(request, quiet);
-            bridgeCommand("customStudyDone");
+            // a limit change shows this deck; the others made the session
+            // deck current. Still busy: the window closes.
+            const limits = choice === "new" || choice === "review";
+            bridgeCommand(limits ? `customStudyDone:${deckId}` : "customStudyDone");
         } catch (err) {
             // most likely nothing matched; keep the dialog open
             error = errorMessage(err);
-        } finally {
             busy = false;
         }
     }

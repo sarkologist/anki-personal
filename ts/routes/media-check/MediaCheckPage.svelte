@@ -61,8 +61,10 @@ action.
 
     function deleteUnused(): void {
         askDelete = false;
-        const unused = result?.unused ?? [];
         run(async () => {
+            // checked again: the window isn't modal, and a note may use a
+            // file now (a paste in the editor)
+            const unused = (await checkMedia({}, quiet)).unused;
             for (const fnames of chunks(unused, 25)) {
                 await trashMediaFiles({ fnames }, quiet);
             }
