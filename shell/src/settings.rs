@@ -201,7 +201,7 @@ impl Settings {
         }
         if !self.latex_imported {
             self.anki_latex_commands = imported.latex_commands.filter(|c| !c.is_empty());
-        self.latex_imported = true;
+            self.latex_imported = true;
             self.latex_imported = true;
         }
         Ok(())
@@ -341,7 +341,10 @@ mod test {
         };
         settings.merge_theme(IMPORTED.as_bytes()).unwrap();
         assert_eq!(settings.anki_theme, Some(ThemePref::Dark));
-        assert_eq!(settings.latex_toolchain().png.unwrap()[1], vec!["sips", "tmp.pdf"]);
+        assert_eq!(
+            settings.latex_toolchain().png.unwrap()[1],
+            vec!["sips", "tmp.pdf"]
+        );
         assert_eq!(settings.profiles[0].name, "Kept");
         // none in the old Anki: the system's, so it's asked once only
         settings.anki_theme = None;

@@ -1073,6 +1073,7 @@ is 0), and macOS is dark here.
   after a switch, the reviewer could copy the old value during a switch,
   quick system flips could apply out of order, and earlier installs had
   no imported theme.
+
 ### Phase 4: the other screens (2026-11-06)
 
 What the user uses, from the old Anki's `prefs21.db` and a copy of the
