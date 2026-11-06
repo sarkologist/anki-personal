@@ -260,7 +260,7 @@ Exit: a week of adding and editing only in the shell.
 - [x] Preferences, dark mode, and the LaTeX toolchain setting.
 - [x] Filtered decks and custom study.
 - [x] Media check and empty cards.
-- [ ] Card layout.
+- [x] Card layout.
 - Deferred, as unused (see "Phase 4: the other screens"): Manage Note
   Types, Fields, import/export, deck description editing, Set due date,
   Forget, Create copy, and recording your own voice.
@@ -1156,3 +1156,28 @@ already exist in `ts/`; hosting them is small when they're wanted.
   (`{next: true, in: label}`), and a test whose last window closes
   without a result now fails (it used to exit 0). Vitest covers the pages'
   logic; `screens.rs` tests `render_all_latex`.
+- **Card layout** (`src/card_layout.rs`, `ts/routes/card-layout`): a new
+  page, opened by the editor's Cards… once the note's edits are saved
+  (`after_saved`), on the editor's note, including Add mode's unsaved one.
+  - Front, back and styling are edited as text; the preview follows after
+    a 200 ms pause. Card types can be added (a copy of the current one),
+    removed (with its card count), renamed, repositioned and flipped;
+    adding or removing warns of the full sync. Saving is
+    `update_notetype`; then the editor and reviewer redraw.
+  - The preview shows card templates, so it's a frame served with `CSP:
+    sandbox` and the iframe's `sandbox`: an opaque origin, whose requests
+    the protocol refuses and which can't reach into the page, which may
+    save the notetype. The shell renders each side as the reviewer does
+    (`render_uncommitted_card` with the edited template and styling, then
+    LaTeX, play buttons, and Qt's sample type box), and the page posts it
+    to the frame. MathJax's fonts load there.
+  - Left out: Deck Override, Browser Appearance, Restore to Default, Copy
+    Info, Add Field (Fields is deferred), the template search box, audio
+    in the preview, and the mobile class.
+  - Checks: `harness/card-layout.js` on a fresh copy of a stock notetype
+    (the preview following edits, sides and night mode; the frame's
+    isolation; renaming, adding and removing card types; the discard
+    prompt; the saved templates in the collection) and, in Edit Current,
+    the Cards button. Unit tests render previews (edited template and
+    styling, the sample type box) and check the frame is sandboxed.
+

@@ -111,6 +111,7 @@ fn screen_label(page: &str) -> Option<&'static str> {
         "custom-study" => Some(crate::screens::CUSTOM_STUDY),
         "media-check" => Some(crate::screens::MEDIA_CHECK),
         "empty-cards" => Some(crate::screens::EMPTY_CARDS),
+        "card-layout" => Some(crate::card_layout::LABEL),
         _ => None,
     }
 }
@@ -123,6 +124,10 @@ fn open_screen(ui: &Arc<Ui>, page: &str) {
         "custom-study" => crate::screens::open_custom_study(ui, current_deck(ui)),
         "media-check" => crate::screens::open_media_check(ui),
         "empty-cards" => crate::screens::open_empty_cards(ui),
+        "card-layout" => match layout_test_note(&ui.shell) {
+            Ok(note) => crate::card_layout::open(ui, note, 0, ""),
+            Err(err) => println!("TEST {}", json!({ "ok": false, "error": format!("{err:#}") })),
+        },
         _ => {}
     }
 }
@@ -297,6 +302,42 @@ fn stock_notetype(
         &anki_proto::generic::Json { json: json.json },
     )?;
     Ok(anki_proto::notetypes::NotetypeId { ntid: added.id })
+}
+
+/// For the card layout: a note of a new copy of the stock "Basic (and
+/// reversed card)" notetype, so saving changes no notetype of the user's.
+fn layout_test_note(shell: &crate::Shell) -> Result<anki_proto::notes::Note> {
+    let json: anki_proto::generic::Json = shell.api.call(
+        "get_stock_notetype_legacy",
+        // StockNotetype.Kind.BASIC_AND_REVERSED_CARD
+        &anki_proto::notetypes::StockNotetype { kind: 1 },
+    )?;
+    let mut nt: Value = serde_json::from_slice(&json.json)?;
+    nt["name"] = json!(format!("shell layout {}", chrono::Utc::now().timestamp_millis()));
+    let added: anki_proto::collection::OpChangesWithId = shell.api.call(
+        "add_notetype_legacy",
+        &anki_proto::generic::Json {
+            json: serde_json::to_vec(&nt)?,
+        },
+    )?;
+    let mut note: anki_proto::notes::Note = shell.api.call(
+        "new_note",
+        &anki_proto::notetypes::NotetypeId { ntid: added.id },
+    )?;
+    note.fields = vec!["shell front".into(), "shell back".into()];
+    let added: anki_proto::notes::AddNoteResponse = shell.api.call(
+        "add_note",
+        &anki_proto::notes::AddNoteRequest {
+            note: Some(note),
+            deck_id: 1,
+        },
+    )?;
+    Ok(shell.api.call(
+        "get_note",
+        &anki_proto::notes::NoteId {
+            nid: added.note_id,
+        },
+    )?)
 }
 
 /// 0.3 s of 8 kHz 8-bit mono silence.

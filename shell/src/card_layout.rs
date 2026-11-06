@@ -115,6 +115,13 @@ fn preview_html(web: &std::path::Path) -> String {
         document.documentElement.dataset.bsTheme = night ? "dark" : "light";
         _showAnswer(html, bodyClass);
     });
+    // what's shown, for the page (its tests can't look inside the frame)
+    const qa = document.getElementById("qa");
+    const report = () => window.parent.postMessage({
+        shown: qa.innerText,
+        night: document.documentElement.classList.contains("night-mode"),
+    }, "*");
+    new MutationObserver(report).observe(qa, { childList: true, subtree: true, characterData: true });
     window.parent.postMessage({ previewReady: true }, "*");
 </script></body>"#,
         1,
@@ -193,7 +200,7 @@ pub fn register(ui: &Arc<Ui>) {
     reg("clayoutSaved", |ui, _| {
         let editor = SESSION.lock().unwrap().take().map(|s| s.editor);
         close(ui);
-        if let Some(editor) = editor {
+        if let Some(editor) = editor.filter(|e| ui.editors.session(e).is_some()) {
             crate::editor_window::reload_note_keeping_focus(ui, &editor);
         }
         crate::editor_window::note_changed_elsewhere(ui);
