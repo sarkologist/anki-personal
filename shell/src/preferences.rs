@@ -7,6 +7,7 @@
 //! commands) through the bridge commands here.
 
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -31,6 +32,9 @@ pub const LABEL: &str = "preferences";
 static CLOSING: AtomicBool = AtomicBool::new(false);
 /// Counts the windows opened, so a late close timeout leaves a new one.
 static OPENED: AtomicU64 = AtomicU64::new(0);
+/// The exit code to quit with once the page is saved, or [NO_EXIT].
+static EXIT_CODE: AtomicI32 = AtomicI32::new(NO_EXIT);
+const NO_EXIT: i32 = i32::MIN;
 /// How long closing waits for the page.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -54,16 +58,28 @@ pub fn open(ui: &Ui) {
     }
 }
 
-/// Whether a close request should first save what's being typed (not when
-/// the page already did, or doesn't answer).
-pub fn wants_flush(_ui: &Ui) -> bool {
-    !CLOSING.load(Ordering::SeqCst)
+/// The window's close button: save the page's pending changes, then
+/// close (changes are saved shortly after typing stops, and a closing
+/// webview runs no more timers). The close is always held: a second one
+/// during the flush waits for it too.
+pub fn close_requested(ui: &Arc<Ui>) {
+    if !CLOSING.swap(true, Ordering::SeqCst) {
+        flush_then_close(ui, None);
+    }
 }
 
-/// Save the page's pending changes, then close: changes are saved shortly
-/// after typing stops, and a closing webview runs no more timers.
-pub fn close(ui: &Arc<Ui>) {
-    CLOSING.store(true, Ordering::SeqCst);
+/// Quitting with the window open: flush it first, then exit with `code`.
+/// True if the exit waits for that.
+pub fn exit_requested(ui: &Arc<Ui>, code: i32) -> bool {
+    if ui.app.get_webview_window(LABEL).is_none() || CLOSING.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    flush_then_close(ui, Some(code));
+    true
+}
+
+fn flush_then_close(ui: &Arc<Ui>, exit: Option<i32>) {
+    EXIT_CODE.store(exit.unwrap_or(NO_EXIT), Ordering::SeqCst);
     ui.eval(
         LABEL,
         "(async () => { try { await window.shellFlush?.(); } finally { \
@@ -75,9 +91,19 @@ pub fn close(ui: &Arc<Ui>) {
     std::thread::spawn(move || {
         std::thread::sleep(FLUSH_TIMEOUT);
         if OPENED.load(Ordering::SeqCst) == opened {
-            destroy(&u);
+            closed(&u);
         }
     });
+}
+
+/// The page saved (or didn't answer): close it, or go on quitting. When
+/// quitting, the window stays for the exit to close, since destroying the
+/// last window would exit first, with code 0.
+fn closed(ui: &Ui) {
+    match EXIT_CODE.swap(NO_EXIT, Ordering::SeqCst) {
+        NO_EXIT => destroy(ui),
+        code => ui.app.exit(code),
+    }
 }
 
 fn destroy(ui: &Ui) {
@@ -91,7 +117,7 @@ pub fn register(ui: &Arc<Ui>) {
     let u = ui.clone();
     bridge.register("preferencesClosed", move |_, label, _| {
         if label == LABEL {
-            destroy(&u);
+            closed(&u);
         }
         Value::Null
     });
@@ -100,7 +126,12 @@ pub fn register(ui: &Arc<Ui>) {
     bridge.register("preferencesChanged", move |_, label, _| {
         if label == LABEL {
             crate::menus::refresh(&u);
-            crate::main_window::refresh(&u);
+            // not the reviewer's card, whose redraw would replay its audio;
+            // it gets the new options with the next review, as in Qt
+            let reviewing = *u.main.state.lock().unwrap() == crate::main_window::MainState::Review;
+            if !reviewing {
+                crate::main_window::refresh(&u);
+            }
         }
         Value::Null
     });

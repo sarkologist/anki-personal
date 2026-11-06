@@ -1315,7 +1315,7 @@ fn full_sync_prompt(
                 } else {
                     message(
                         ui,
-                        "Close the editor and the deck options, then sync again for the full sync.",
+                        "Close the editor, deck options and Preferences, then sync again for the full sync.",
                     );
                     finish(ui);
                     return;
