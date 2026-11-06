@@ -126,7 +126,10 @@ fn open_screen(ui: &Arc<Ui>, page: &str) {
         "empty-cards" => crate::screens::open_empty_cards(ui),
         "card-layout" => match layout_test_note(&ui.shell) {
             Ok(note) => crate::card_layout::open(ui, note, 0, ""),
-            Err(err) => println!("TEST {}", json!({ "ok": false, "error": format!("{err:#}") })),
+            Err(err) => println!(
+                "TEST {}",
+                json!({ "ok": false, "error": format!("{err:#}") })
+            ),
         },
         _ => {}
     }
@@ -313,7 +316,10 @@ fn layout_test_note(shell: &crate::Shell) -> Result<anki_proto::notes::Note> {
         &anki_proto::notetypes::StockNotetype { kind: 1 },
     )?;
     let mut nt: Value = serde_json::from_slice(&json.json)?;
-    nt["name"] = json!(format!("shell layout {}", chrono::Utc::now().timestamp_millis()));
+    nt["name"] = json!(format!(
+        "shell layout {}",
+        chrono::Utc::now().timestamp_millis()
+    ));
     let added: anki_proto::collection::OpChangesWithId = shell.api.call(
         "add_notetype_legacy",
         &anki_proto::generic::Json {
@@ -334,9 +340,7 @@ fn layout_test_note(shell: &crate::Shell) -> Result<anki_proto::notes::Note> {
     )?;
     Ok(shell.api.call(
         "get_note",
-        &anki_proto::notes::NoteId {
-            nid: added.note_id,
-        },
+        &anki_proto::notes::NoteId { nid: added.note_id },
     )?)
 }
 

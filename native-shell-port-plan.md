@@ -1180,4 +1180,3 @@ already exist in `ts/`; hosting them is small when they're wanted.
     prompt; the saved templates in the collection) and, in Edit Current,
     the Cards button. Unit tests render previews (edited template and
     styling, the sample type box) and check the frame is sandboxed.
-

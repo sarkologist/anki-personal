@@ -14,7 +14,12 @@ test("new card types get the first free name and the current sides", () => {
     expect(newCardName([template("Card 1"), template("Card 3")], cardName)).toBe("Card 4");
     expect(newCardName([template("Card 1"), template("Reverse")], cardName)).toBe("Card 3");
     const t = newTemplate("Card 2", template("Card 1", "{{Front}}", "{{Back}}"));
-    expect([t.name, t.ord, t.config?.qFormat, t.config?.aFormat]).toEqual(["Card 2", undefined, "{{Front}}", "{{Back}}"]);
+    expect([t.name, t.ord, t.config?.qFormat, t.config?.aFormat]).toEqual([
+        "Card 2",
+        undefined,
+        "{{Front}}",
+        "{{Back}}",
+    ]);
 });
 
 test("flipping needs the answer line", () => {

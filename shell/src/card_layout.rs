@@ -190,7 +190,10 @@ pub fn register(ui: &Arc<Ui>) {
         };
         ui.shell
             .api
-            .query(&format!("select count() from notes where mid = {ntid}"), &[])
+            .query(
+                &format!("select count() from notes where mid = {ntid}"),
+                &[],
+            )
             .ok()
             .and_then(|rows| rows.first().and_then(|r| r[0].as_i64()))
             .map_or(Value::Null, Value::from)
@@ -349,12 +352,17 @@ fn type_boxes(api: &Api, text: &str, answer: bool) -> String {
         "<center><input id='typeans' type=text value='example' readonly='readonly'></center>"
             .to_string()
     };
-    let out = TYPE.replace(&without_hr, regex::NoExpand(&first)).into_owned();
+    let out = TYPE
+        .replace(&without_hr, regex::NoExpand(&first))
+        .into_owned();
     let warning = format!(
         "<center><b>{}</b></center>",
-        crate::latex::html_escape(&crate::latex::backend_tr(api).card_templates_type_boxes_warning())
+        crate::latex::html_escape(
+            &crate::latex::backend_tr(api).card_templates_type_boxes_warning()
+        )
     );
-    TYPE.replace_all(&out, regex::NoExpand(&warning)).into_owned()
+    TYPE.replace_all(&out, regex::NoExpand(&warning))
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -429,7 +437,10 @@ mod test {
         let (_dir, api, _media) = collection();
         let q = type_boxes(&api, "[[type:Front]] and [[type:Back]]", false);
         assert!(q.starts_with("<center><input id='typeans'"), "{q}");
-        assert!(q.ends_with("Only one typing box per card template is supported.</b></center>"), "{q}");
+        assert!(
+            q.ends_with("Only one typing box per card template is supported.</b></center>"),
+            "{q}"
+        );
     }
 
     #[test]

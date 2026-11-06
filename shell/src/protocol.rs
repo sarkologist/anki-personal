@@ -789,7 +789,11 @@ mod test {
             WebviewKind::CardLayout,
             Some("<p>card".into()),
         );
-        let page = get(&f, "card-layout", "_anki/legacyPageData?id=card-layout-preview");
+        let page = get(
+            &f,
+            "card-layout",
+            "_anki/legacyPageData?id=card-layout-preview",
+        );
         assert_eq!(page.status(), StatusCode::OK);
         assert_eq!(
             page.headers()[CONTENT_SECURITY_POLICY],
@@ -797,14 +801,23 @@ mod test {
         );
         // the editing page may save the notetype; the frame's requests come
         // from an opaque origin and are refused
-        let ok = post(&f, "card-layout", "updateNotetype", "application/binary", vec![]);
+        let ok = post(
+            &f,
+            "card-layout",
+            "updateNotetype",
+            "application/binary",
+            vec![],
+        );
         assert_ne!(ok.status(), StatusCode::FORBIDDEN);
         let req = Request::post("anki://localhost/_anki/updateNotetype")
             .header(CONTENT_TYPE, "application/binary")
             .header("Origin", "null")
             .body(vec![])
             .unwrap();
-        assert_eq!(handle(&f.shell, "card-layout", &req).status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            handle(&f.shell, "card-layout", &req).status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[test]

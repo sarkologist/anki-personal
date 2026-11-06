@@ -2,11 +2,7 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import type { Notetype } from "@generated/anki/notetypes_pb";
-import {
-    Notetype_Config_Kind,
-    Notetype_Template,
-    Notetype_Template_Config,
-} from "@generated/anki/notetypes_pb";
+import { Notetype_Config_Kind, Notetype_Template, Notetype_Template_Config } from "@generated/anki/notetypes_pb";
 
 export function isCloze(notetype: Notetype): boolean {
     return notetype.config?.kind === Notetype_Config_Kind.CLOZE;

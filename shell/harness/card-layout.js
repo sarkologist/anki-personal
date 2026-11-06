@@ -58,7 +58,11 @@ async function takeOver() {
     errors.push(...(state?.errors ?? []));
     return state ?? {};
 }
-const finish = () => ({ ok: checks.every((c) => c.ok) && errors.length === 0, checks: checks.filter((c) => !c.ok), errors });
+const finish = () => ({
+    ok: checks.every((c) => c.ok) && errors.length === 0,
+    checks: checks.filter((c) => !c.ok),
+    errors,
+});
 
 if (!location.pathname.startsWith("/card-layout")) {
     // the editor: Cards... saves the note, then opens the card layout
@@ -124,7 +128,10 @@ let dialog = await answer();
 dialog.input.value = "Shell Reverse";
 dialog.input.dispatchEvent(new Event("input", { bubbles: true }));
 dialog.done();
-await until("the rename", () => document.querySelector("#card option:nth-child(2)")?.textContent === "2: Shell Reverse");
+await until(
+    "the rename",
+    () => document.querySelector("#card option:nth-child(2)")?.textContent === "2: Shell Reverse",
+);
 document.querySelector("#add-card-type").click();
 (await answer()).done();
 await until("a third card type", () => document.querySelectorAll("#card option").length === 3);

@@ -44,12 +44,16 @@ shell/src/card_layout.rs) and this page posts it there.
         index: number;
     }
     $: cards = cloze
-        ? clozeCards(clozeNumbers, ord).map(
-              (n): Card => ({ label: tr.cardTemplatesCloze({ val: n }), ord: n - 1, index: 0 }),
-          )
-        : notetype.templates.map(
-              (t, i): Card => ({ label: `${i + 1}: ${t.name}`, ord: i, index: i }),
-          );
+        ? clozeCards(clozeNumbers, ord).map((n): Card => ({
+              label: tr.cardTemplatesCloze({ val: n }),
+              ord: n - 1,
+              index: 0,
+          }))
+        : notetype.templates.map((t, i): Card => ({
+              label: `${i + 1}: ${t.name}`,
+              ord: i,
+              index: i,
+          }));
     let selected = cloze
         ? Math.max(0, clozeCards(clozeNumbers, ord).indexOf(ord + 1))
         : Math.min(ord, notetype.templates.length - 1);
@@ -112,9 +116,11 @@ shell/src/card_layout.rs) and this page posts it there.
             answer: back,
             night: previewNight,
         };
-        const out = await shellCommand<{ html?: string; bodyClass?: string; error?: string }>(
-            `clayoutRender:${JSON.stringify(args)}`,
-        );
+        const out = await shellCommand<{
+            html?: string;
+            bodyClass?: string;
+            error?: string;
+        }>(`clayoutRender:${JSON.stringify(args)}`);
         if (out.error) {
             error = out.error;
             return;
@@ -134,7 +140,7 @@ shell/src/card_layout.rs) and this page posts it there.
         window.removeEventListener("message", onMessage);
         clearTimeout(timer);
     });
-    $: card, back, fillEmpty, previewNight, schedulePreview();
+    $: (card, back, fillEmpty, previewNight, schedulePreview());
 
     // Card types
     interface Ask {
@@ -163,7 +169,9 @@ shell/src/card_layout.rs) and this page posts it there.
             message: `${tr.cardTemplatesThisWillCreateCardProceed({ count: notes ?? 0 })}\n\n${tr.qtMiscTheRequestedChangeWillRequireA()}`,
             confirm: tr.cardTemplatesAddCardType().replace("...", ""),
             action: () => {
-                const name = newCardName(notetype.templates, (n) => tr.cardTemplatesCard({ val: n }));
+                const name = newCardName(notetype.templates, (n) =>
+                    tr.cardTemplatesCard({ val: n }),
+                );
                 notetype.templates.push(newTemplate(name, template));
                 selected = notetype.templates.length - 1;
                 changed();
@@ -178,9 +186,12 @@ shell/src/card_layout.rs) and this page posts it there.
         }
         const index = card.index;
         const existing = template.ord?.val;
-        const count = existing === undefined
-            ? 0
-            : ((await shellCommand<number | null>(`clayoutCardCount:${existing}`)) ?? 0);
+        const count =
+            existing === undefined
+                ? 0
+                : ((await shellCommand<number | null>(
+                      `clayoutCardCount:${existing}`,
+                  )) ?? 0);
         open({
             title: tr.cardTemplatesRemoveCardType().replace("...", ""),
             message: `${tr.cardTemplatesDeleteTheAsCardTypeAnd({
@@ -219,7 +230,9 @@ shell/src/card_layout.rs) and this page posts it there.
         const index = card.index;
         open({
             title: tr.cardTemplatesRepositionCardType().replace("...", ""),
-            message: tr.cardTemplatesEnterNewCardPosition1({ val: notetype.templates.length }),
+            message: tr.cardTemplatesEnterNewCardPosition1({
+                val: notetype.templates.length,
+            }),
             input: String(index + 1),
             inputType: "number",
             confirm: tr.actionsReposition(),
@@ -270,7 +283,8 @@ shell/src/card_layout.rs) and this page posts it there.
         }
     }
     // the window's close button
-    (window as unknown as { shellCloseRequested?: () => void }).shellCloseRequested = cancel;
+    (window as unknown as { shellCloseRequested?: () => void }).shellCloseRequested =
+        cancel;
     function stay(): void {
         askDiscard = false;
         bridgeCommand("clayoutStay");
@@ -367,7 +381,11 @@ shell/src/card_layout.rs) and this page posts it there.
                 <span class="spacer"></span>
                 {#if hasEmptyField}
                     <label class="check">
-                        <input type="checkbox" id="fill-empty" bind:checked={fillEmpty} />
+                        <input
+                            type="checkbox"
+                            id="fill-empty"
+                            bind:checked={fillEmpty}
+                        />
                         {tr.cardTemplatesFillEmpty()}
                     </label>
                 {/if}
