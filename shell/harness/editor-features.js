@@ -205,9 +205,9 @@ check("closeHTMLTags toggled", before !== after, true);
 // share the editor's bridge) and another window's page don't.
 await bridge("testSidePanel:<p id=panel>side panel</p>");
 const side = document.getElementById("shell-side");
-const panelText = await until("the side panel", () =>
-    side.contentDocument?.getElementById("panel")?.textContent
-).catch(() => null);
+const panelText = await until("the side panel", () => side.contentDocument?.getElementById("panel")?.textContent).catch(
+    () => null,
+);
 check("side panel shown", [side.hidden, panelText], [false, "side panel"]);
 const blocked = [];
 document.addEventListener("securitypolicyviolation", (e) => blocked.push(e.effectiveDirective));
