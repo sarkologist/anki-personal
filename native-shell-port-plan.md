@@ -217,16 +217,16 @@ editor selection tests pass in WebKit.
 
 ### Phase 1: review-only daily driver
 
-- [ ] Deck list, overview, congrats, top toolbar (Svelte).
-- [ ] Reviewer: question/answer, answer bar, configurable shortcuts (replaces
+- [x] Deck list, overview, congrats, top toolbar (Svelte).
+- [x] Reviewer: question/answer, answer bar, configurable shortcuts (replaces
       hjkl), undo/redo, flags, marks, bury/suspend, auto-advance, timers,
       typed answers, card text preparation, the scheduling-state endpoints.
-- [ ] LaTeX image generation ported to Rust.
-- [ ] Audio via HTML5 `<audio>` in the page (mpv fallback if formats need
+- [x] LaTeX image generation ported to Rust.
+- [x] Audio via HTML5 `<audio>` in the page (mpv fallback if formats need
       it); TTS via `AVSpeechSynthesizer`.
-- [ ] Sync: login, normal and media sync, full-sync prompts, sync on open and
+- [x] Sync: login, normal and media sync, full-sync prompts, sync on open and
       close.
-- [ ] Native menus.
+- [x] Native menus.
 
 Exit: a week of real reviews only in the shell; memory checked with the
 `memtrack` sampler. **Decision gate:** if memory or latency isn't still clearly
@@ -426,3 +426,173 @@ checks in WKWebView. How to build, run and check it is in `shell/README.md`.
   notes, so it needs no user data). It measured 108 MB idle, 161 MB after 40
   cards and 190 MB after 240, against budgets of 400 MB total and 150 MB
   growth. `--compare-stock` reruns the spike's stock-Anki side.
+
+### Phase 1 (2026-11-06)
+
+Everything in phase 1 works on a copy of the real profile (29,857 cards).
+What remains is the exit criterion: a week of real reviews in the shell.
+
+- **Main window:** one webview with three states, as `moveToState` has:
+  deck browser, overview and reviewer (`shell/src/main_window.rs`).
+  - The deck browser and overview are new SvelteKit routes
+    (`ts/routes/deck-browser`, `ts/routes/deck-overview`) over existing
+    backend calls, with the shared `ts/routes/toolbar`.
+  - The overview shows the stock congrats page when the deck is done.
+  - The toolbar has Decks, Stats and Sync; Add and Browse come with
+    phases 3 and 4.
+- **Page access:** the webview's kind is switched before it navigates.
+  - `Main` pages get a 20-method list (`MAIN_PAGE_BACKEND`): the deck
+    tree, rename/delete/reparent/add deck, queue counts, filtered-deck
+    rebuild and empty, unbury, and a few more.
+  - The reviewer, in the same webview, gets only the four-endpoint
+    whitelist.
+  - The kind changes before the webview navigates, so the reviewer's
+    document (with card JS) still runs as `Main` for a moment. So each
+    main page gets a fresh capability in its URL (`?cap=`), and the bridge
+    script adds it to that document's `/_anki/` calls; the leaving document
+    never sees it. Those two routes also refuse framing
+    (`frame-ancestors 'none'`). `Referer` was not enough: a page can set any
+    same-origin referrer itself (`fetch`'s `referrer`,
+    `history.replaceState`).
+  - Card JS can call `pycmd`, as in Qt, but Qt never let it undo, bury or
+    suspend. So shortcuts count only from real key presses (`isTrusted`),
+    sent with a per-process token kept in the key script's closure through
+    a `fetch` captured before page scripts run. The home page's phase 0
+    commands (re-import, open editor) work only on the home page.
+  - Deck descriptions are user HTML, so they render in a sandboxed iframe
+    without scripts.
+- **Reviewer page:** the stock `reviewer.js` page, with the stock bottom bar
+  (`reviewer-bottom.js`) and the toolbar framed into it.
+  - The frames keep card CSS away from the bars.
+  - Same-origin frames share the page's WebContent process, so there are
+    no extra webviews.
+- **Reviewer driver:** `shell/src/reviewer.rs` is `reviewer.py` in Rust,
+  v3 only.
+  - The queue, the answer buttons (with intervals and remaining counts) and
+    the answer timer (`show_timer`, capped).
+  - The timebox prompt.
+  - Auto advance: it waits for audio if set, and stops when the window
+    loses focus.
+  - Flags, marks, bury/suspend for card or note, delete note, undo/redo, and
+    the leech notice.
+  - Edit, which opens the phase 0 editor and redraws after; card info,
+    previous card info and deck options.
+  - Custom scheduling (`mutateNextCardStates` with the per-session key). A
+    syntax error in the user's code now still shows the buttons.
+  - It returns effects instead of driving windows, so
+    `tests/reviewer_flow.rs` checks it against a collection without a
+    webview.
+- **Card text** (`card_text.rs`):
+  - rendering, AV tag extraction and LaTeX;
+  - `prepare_card_text_for_display`: IRI encoding and play buttons;
+  - the `[[type:]]` filters, with rslib's comparison.
+- **Phase 0 bug:** legacy pages had no `<base href>`, so relative media
+  (every image on a card) resolved under `/_anki/` and failed to load. Qt's
+  `stdHtml` sets `<base href>` to the server root; `std_html` now does too.
+- **Shortcuts:** single keys stay in the page, because a menu key equivalent
+  would also fire while typing in the editor.
+  - A capture-phase listener in every `anki:` frame sends `shortcut:<combo>`
+    for the keys the shell lists for the current state, except in text
+    fields.
+  - Cmd shortcuts are menu items.
+  - The defaults are Qt's, plus h/j/k/l for Again/Hard/Good/Easy.
+  - The profile import reads Anki's own `answer_keys` and the hjkl add-on's
+    settings (this user's are `; l k j`), which replace the h/j/k/l
+    defaults. `shortcuts` in the settings file overrides everything.
+- **Menus:**
+  - Anki;
+  - File (Sync, Log out, Re-import);
+  - Edit (Undo/Redo named after the operation);
+  - Go;
+  - Card (checked flags, bury/suspend/mark/delete, edit, info, options,
+    replay, auto advance);
+  - Window.
+
+  "More" pops up the Card menu. Menu updates are queued on the main thread:
+  Tauri's menu setters wait for it, and calling one from a bridge thread
+  hung the bridge.
+- **Audio:**
+  - This collection has no audio files (its media is 826 svg, 728 jpg, 40
+    png and 6 gif) and no TTS or type-in templates, so these features were
+    checked on synthetic notes.
+  - WebKit's `<audio>` plays mp3, m4a/aac, wav, ogg (Vorbis and Opus), flac
+    and webm (`canPlayType`). mpv (Anki's `anki_audio`, else Homebrew) is
+    only a fallback for a file `<audio>` refuses, with pause and seek over
+    its IPC socket.
+  - TTS uses the page's `speechSynthesis`, WebKit's binding of the system
+    synthesizer, so it needs no Objective-C. Voices are picked by name,
+    then by language.
+- **LaTeX:** `latex.rs` runs latex plus dvipng or dvisvgm in a temp folder
+  per render, as `latex.py` did, and adds the images through the media API.
+- **Sync:** the core is `sync.rs`; the UI is in `main_window.rs`.
+  - Login dialog, then normal sync and media sync; the toolbar spins until
+    the media sync is done.
+  - Full-sync prompts: a choice, or a confirmation when one side is empty.
+    A backup is made before a download.
+  - Sync on open and on close (`autoSync`), and a sync-needed indicator.
+  - Redirects (`currentSyncUrl`) and `hostNum` are saved.
+  - Guard: a profile copy (any base other than the live `Anki2`) may only
+    sync with a loopback server. It is checked with rslib's own URL
+    parsing before every network call. One gap is left: rslib follows a
+    308 redirect within a sync, so a loopback server that redirects
+    elsewhere would be followed for that one sync. rslib's own server
+    doesn't redirect.
+  - A full sync refuses to start while the editor or deck options are
+    open, since they would save into the replaced collection; when quitting
+    they're closed (the editor was saved first). Quitting during a sync
+    waits for it to finish. Sync on close runs even while a media sync is
+    still going.
+  - Checked end to end against `anki-sync-server` on 127.0.0.1:
+    - login and full upload of the copy (29,861 cards, 1,604 media files);
+    - sync on open and on close;
+    - full download into an empty profile.
+- **Dialogs:** one small window per dialog (`main_window::ask`): login,
+  full-sync choices, the timebox, errors. The Svelte pages use in-page
+  modals instead of `alert`/`confirm`/`prompt`, and their backend calls
+  report errors in the page rather than with `alert`.
+- **WebKit checks:**
+  - `harness/main-flow.js` reviews a test deck: deck browser, overview,
+    reviewer; keys, undo, typed answer, audio, TTS, LaTeX, and the windows
+    the reviewer opens.
+  - `harness/sync-flow.js` drives the sync UI.
+  - With the screen locked every page is hidden, and WebKit throttles
+    hidden pages' timers more the longer they stay hidden; a 50 ms poll
+    took close to a minute. Test and bench windows now turn that off with
+    WKPreferences SPI (`_setHiddenPageDOMTimerThrottlingEnabled:` and two
+    related settings).
+- **Benchmark** (`harness/bench.py --compare-stock`, release build): both
+  apps drive their real reviewer through 240 cards, question then answer
+  every 250 ms. The shell's run includes the toolbar and bottom bar. The
+  screen was locked, so both apps' pages were hidden.
+
+  | MB (footprint, all processes) | idle | 40 cards | 240 cards | startup |
+  | ----------------------------- | ---- | -------- | --------- | ------- |
+  | shell, synthetic (300 notes)  | 130  | 187      | 219       | 1.3 s   |
+  | stock, synthetic              | 478  | 585      | 755       | 1.8 s   |
+  | shell, copy of this profile   | 132  | 219      | 275       | 0.5 s   |
+  | stock, copy of this profile   | 449  | 715      | 1134      | 2.1 s   |
+
+  - Memory is 3.4x less on the synthetic profile and 4.1x less on the
+    real one. Most of stock's growth is its renderer (625 MB after 240
+    cards); the shell's WebContent process reaches 186 MB.
+  - Phase 0's bare reviewer page measured 108/161/190 MB, so the bottom
+    bar and toolbar frames add about 25 MB.
+
+  | latency, real profile (ms) | host p50/p95 | page p50/p95 |
+  | -------------------------- | ------------ | ------------ |
+  | shell question             | 0.6 / 1.6    | 5 / 14       |
+  | stock question             | 1.7 / 3.0    | 3.7 / 15.6   |
+  | shell answer               | 0.1 / 0.3    | 6 / 13       |
+  | stock answer               | 0.4 / 0.8    | 4.2 / 13.5   |
+
+  - "host" is rendering and preparing the card in Rust or Python.
+  - "page" is from the eval until the card is shown, with images loaded
+    and MathJax typeset. It is measured the same way in both apps
+    (`harness/page-timing.js`).
+  - Rendering is about 3x faster in Rust. WebKit shows a card about 1 ms
+    slower than Chromium at the median, with the same tail. Both are well
+    under a frame.
+- **Not ported:** custom study, creating filtered decks, editing deck
+  descriptions, set due date, forget, create copy, recording your own
+  voice, dark mode, and the deck browser's import and shared-deck links.
+  Add-on hooks on these screens wait for phase 2.

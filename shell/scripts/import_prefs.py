@@ -51,6 +51,9 @@ def main(base: Path) -> None:
     out = {
         "profiles": profiles,
         "lastLoaded": meta.get("last_loaded_profile_name"),
+        # ProfileManager.get_answer_key; the dict's keys are ints
+        "answerKeys": {str(k): v for k, v in (meta.get("answer_keys") or {}).items()},
+        "spacebarRatesCard": meta.get("spacebar_rates_card"),
     }
     json.dump(out, sys.stdout)
 

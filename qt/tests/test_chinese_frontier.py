@@ -492,8 +492,18 @@ def test_codex_cli_uses_subscription_and_schema(tmp_path: Path, monkeypatch) -> 
 def test_claude_defaults_to_a_cheaper_model_than_the_interactive_one(
     tmp_path: Path,
 ) -> None:
+    # stand-in executables, so the test doesn't depend on the CLIs being
+    # installed (they aren't on CI)
+    for name in ("claude", "codex"):
+        fake = tmp_path / name
+        fake.write_text("#!/bin/sh\n")
+        fake.chmod(0o755)
+
     def command(config):
-        generator = CliGenerator({"provider": "claude", **config}, Event())
+        generator = CliGenerator(
+            {"provider": "claude", "claude_path": str(tmp_path / "claude"), **config},
+            Event(),
+        )
         return cli_command(
             "claude", "/claude", tmp_path, {}, generator.model, generator.effort
         )
@@ -504,7 +514,9 @@ def test_claude_defaults_to_a_cheaper_model_than_the_interactive_one(
     chosen = command({"claude_model": "opus", "claude_effort": "high"})
     assert chosen[chosen.index("--model") + 1] == "opus"
     assert chosen[chosen.index("--effort") + 1] == "high"
-    codex = CliGenerator({"provider": "codex"}, Event())
+    codex = CliGenerator(
+        {"provider": "codex", "codex_path": str(tmp_path / "codex")}, Event()
+    )
     assert codex.model == codex.effort == ""
 
 

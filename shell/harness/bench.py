@@ -21,6 +21,12 @@ without copying it first. --compare-stock also runs the same workload in a
 second, isolated stock Anki (needs ANKI_STOCK_PYTHON, a Python with aqt
 installed; defaults to ~/.anki-stable/bin/python) for a side-by-side.
 
+Both apps run their real reviewer: the shell's main window (toolbar and
+bottom bar included) and Qt's main window. Latency: how long each card side
+takes to render in the app (`host`, Rust or Python) and to show in the page
+(`page`: from the eval until images are loaded and MathJax is typeset; the
+same `page-timing.js` in both), as median and 95th percentile in ms.
+
 Windows open in the background and don't take focus.
 """
 
@@ -40,6 +46,7 @@ import urllib.request
 from pathlib import Path
 
 HARNESS = Path(__file__).resolve().parent
+PAGE_TIMING_JS = (HARNESS / "page-timing.js").read_text()
 REPO = HARNESS.parents[1]
 GEOMETRY = (100, 100, 1600, 1000)
 INTERVAL_MS = 250
@@ -83,6 +90,22 @@ def process_name(pid: int) -> str:
         ["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True
     ).stdout.strip()
     return f"{comm.rsplit('/', 1)[-1].rsplit('.', 1)[-1]} {pid}"
+
+
+def summarize(latency: dict) -> dict:
+    """{"host": {"q": [...], "a": [...]}, "page": {...}} -> p50/p95 per list."""
+
+    def stats(values: list[float] | None) -> dict | None:
+        if not values:
+            return None
+        v = sorted(values)
+        pick = lambda q: round(v[min(len(v) - 1, int(q * len(v)))], 1)  # noqa: E731
+        return {"n": len(v), "p50": pick(0.5), "p95": pick(0.95)}
+
+    return {
+        part: {side: stats((latency.get(part) or {}).get(side)) for side in ("q", "a")}
+        for part in ("host", "page")
+    }
 
 
 def measure(pids: dict[str, int]) -> dict:
@@ -146,6 +169,11 @@ def run_shell(shell: Path, collection: Path | None) -> dict:
                     command(f"cycle {offset} {count}", "cycled")
                 time.sleep(SETTLE_S)
                 results["checkpoints"][label] = measure(pids)
+            proc.stdin.write("latency\n")
+            proc.stdin.flush()
+            line = proc.stdout.readline().strip()
+            assert line.startswith("latency "), line
+            results["latency"] = summarize(json.loads(line[len("latency ") :]))
             command("quit", "")
         finally:
             proc.kill()
@@ -223,12 +251,24 @@ def run_stock(collection: Path | None) -> dict:
                         cycle.replace("OFFSET", str(offset))
                         .replace("CARDS", str(count))
                         .replace("INTERVAL", str(INTERVAL_MS))
+                        .replace("PAGE_TIMING_JS", repr(PAGE_TIMING_JS))
                     )
                     ctl(code)
                     while "None" in ctl('result = mw._bench["done"]')["result"]:
                         time.sleep(0.5)
                 time.sleep(SETTLE_S)
                 results["checkpoints"][label] = measure(pids)
+            ctl(
+                "mw._bench['page'] = None\n"
+                "mw.reviewer.web.evalWithCallback("
+                "'JSON.stringify(window._benchLat || null)', "
+                "lambda v: mw._bench.__setitem__('page', v))\nresult = 1"
+            )
+            while "None" in ctl("result = mw._bench['page']")["result"]:
+                time.sleep(0.2)
+            page = json.loads(ctl("result = mw._bench['page']")["result"].strip("'\""))
+            host = json.loads(ctl("import json\nresult = json.dumps(mw._bench_host)")["result"].strip("'\""))
+            results["latency"] = summarize({"host": host, "page": page})
         finally:
             proc.kill()
             proc.wait()
@@ -247,14 +287,15 @@ def main() -> None:
     shell = run_shell(args.shell or default_shell(), args.collection)
     totals = {k: v["total"] for k, v in shell["checkpoints"].items()}
     report = {"app": "shell", "startup_s": shell["startup_s"], "totals_mb": totals,
-              "detail": shell["checkpoints"]}  # fmt: skip
+              "latency_ms": shell["latency"], "detail": shell["checkpoints"]}  # fmt: skip
     print(json.dumps(report), flush=True)
 
     if args.compare_stock:
         stock = run_stock(args.collection)
         stock_totals = {k: v["total"] for k, v in stock["checkpoints"].items()}
         print(json.dumps({"app": "stock", "startup_s": stock["startup_s"],
-                          "totals_mb": stock_totals, "detail": stock["checkpoints"]}),
+                          "totals_mb": stock_totals, "latency_ms": stock["latency"],
+                          "detail": stock["checkpoints"]}),
               flush=True)  # fmt: skip
 
     failures = []

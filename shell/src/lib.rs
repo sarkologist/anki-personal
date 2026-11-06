@@ -8,13 +8,21 @@
 pub mod ankiconnect;
 pub mod api;
 pub mod app;
+pub mod audio;
 pub mod bench;
 pub mod bridge;
+pub mod card_text;
 pub mod editor;
+pub mod latex;
+pub mod main_window;
+pub mod menus;
 pub mod pages;
 pub mod profile;
 pub mod protocol;
+pub mod reviewer;
 pub mod settings;
+pub mod shortcuts;
+pub mod sync;
 pub mod testchan;
 
 use std::collections::HashMap;

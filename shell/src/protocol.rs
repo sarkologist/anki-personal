@@ -109,8 +109,42 @@ const NO_ACCESS_WHITELIST: &[&str] = &[
     "congratsInfo",
 ];
 
+/// What the main window's own pages may call (the deck browser and
+/// overview; `deckbrowser.py`/`overview.py` did this in Python). The
+/// reviewer, in the same webview, gets only [NO_ACCESS_WHITELIST]: the
+/// shell changes the webview's kind before it navigates.
+const MAIN_PAGE_BACKEND: &[&str] = &[
+    "deck_tree",
+    "set_deck_collapsed",
+    "rename_deck",
+    "remove_decks",
+    "reparent_decks",
+    "new_deck",
+    "add_deck",
+    "get_deck",
+    "get_current_deck",
+    "set_current_deck",
+    "get_queued_cards",
+    "studied_today",
+    "render_markdown",
+    "rebuild_filtered_deck",
+    "empty_filtered_deck",
+    "unbury_deck",
+    "sched_timing_today",
+    "congrats_info",
+    "i18n_resources",
+    "get_undo_status",
+];
+
+/// The main window's own pages (the ones with [MAIN_PAGE_BACKEND]); they
+/// can't be framed (by card content, say).
+const MAIN_PAGE_ROUTES: &[&str] = &["deck-browser", "deck-overview"];
+
 /// SvelteKit routes, served through the SvelteKit fallback page.
 const SVELTEKIT_PAGES: &[&str] = &[
+    "deck-browser",
+    "deck-overview",
+    "toolbar",
     "graphs",
     "congrats",
     "card-info",
@@ -158,6 +192,14 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
 
     let mut path = path;
     let first = path.split('/').next().unwrap_or_default();
+    if MAIN_PAGE_ROUTES.contains(&first) {
+        let mut resp = bundled_file(&shell.web, "sveltekit/index.html");
+        resp.headers_mut().insert(
+            CONTENT_SECURITY_POLICY,
+            "frame-ancestors 'none'".parse().unwrap(),
+        );
+        return resp;
+    }
     if SVELTEKIT_PAGES.contains(&first) {
         path = format!("_anki/sveltekit/_app/{path}");
     } else if let Some(rest) = path.strip_prefix("_app/") {
@@ -232,6 +274,38 @@ fn handle_post(shell: &Shell, label: &str, endpoint: &str, req: &Request<Vec<u8>
         return text(StatusCode::FORBIDDEN, "unexpected content type");
     }
     let kind = shell.pages.get(label).map(|p| p.kind);
+    let method = camel_to_snake(endpoint);
+    if kind == Some(WebviewKind::Main) {
+        // The kind changes before the webview navigates, so the document
+        // leaving (the reviewer, with card JS) still runs as `Main` for a
+        // moment: the API also needs the capability that only the new
+        // document got, in its URL.
+        let cap = shell.pages.get(label).and_then(|p| p.cap);
+        let sent = req
+            .headers()
+            .get(crate::pages::CAP_HEADER)
+            .and_then(|v| v.to_str().ok());
+        if cap.is_none() || sent != cap.as_deref() {
+            tracing::warn!(
+                endpoint,
+                label,
+                "rejected API call from a non-main document"
+            );
+            return text(StatusCode::FORBIDDEN, "no API access");
+        }
+        if !MAIN_PAGE_BACKEND.contains(&method.as_str()) {
+            tracing::warn!(endpoint, label, "rejected API call from the main window");
+            return text(StatusCode::FORBIDDEN, "no API access");
+        }
+        if shell.media_folder().is_none() {
+            return text(StatusCode::NOT_FOUND, "collection not open");
+        }
+        return match shell.api.raw(&method, req.body()) {
+            Ok(data) if data.is_empty() => text(StatusCode::NO_CONTENT, ""),
+            Ok(data) => respond(StatusCode::OK, "application/binary", data),
+            Err(err) => text(StatusCode::INTERNAL_SERVER_ERROR, err.message),
+        };
+    }
     if !kind.is_some_and(WebviewKind::has_api_access) && !NO_ACCESS_WHITELIST.contains(&endpoint) {
         tracing::warn!(
             endpoint,
@@ -245,7 +319,6 @@ fn handle_post(shell: &Shell, label: &str, endpoint: &str, req: &Request<Vec<u8>
         return text(StatusCode::NOT_FOUND, "collection not open");
     }
 
-    let method = camel_to_snake(endpoint);
     let result = if SHELL_POST_HANDLERS.contains(&method.as_str()) {
         shell.frontend(label, &method, req.body())
     } else if EXPOSED_BACKEND.contains(&method.as_str())
@@ -486,6 +559,71 @@ mod test {
         // unknown webviews are treated as untrusted
         let denied = post(&f, "nobody", "getDeckNames", "application/binary", vec![]);
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+
+    fn post_from(f: &Fixture, cap: Option<&str>, endpoint: &str, body: Vec<u8>) -> HttpResponse {
+        let mut req = Request::post(format!("anki://localhost/_anki/{endpoint}"))
+            .header(CONTENT_TYPE, "application/binary");
+        if let Some(cap) = cap {
+            req = req.header(crate::pages::CAP_HEADER, cap);
+        }
+        handle(&f.shell, "main", &req.body(body).unwrap())
+    }
+
+    /// The main window showing a deck-list page whose document got `cap`.
+    fn main_page(f: &Fixture, kind: WebviewKind, cap: Option<&str>) {
+        f.shell
+            .pages
+            .set_with_cap("main", kind, None, cap.map(str::to_string));
+    }
+
+    #[test]
+    fn main_window_pages_get_only_the_deck_list_api() {
+        let f = fixture();
+        main_page(&f, WebviewKind::Main, Some("c1"));
+        let tree = anki_proto::decks::DeckTreeRequest { now: 0 }.encode_to_vec();
+        let ok = post_from(&f, Some("c1"), "deckTree", tree.clone());
+        assert_eq!(ok.status(), StatusCode::OK);
+        // not the editor's API, nor the rest of the backend
+        for endpoint in ["getDeckNames", "removeNotes", "setConfigJson"] {
+            let denied = post_from(&f, Some("c1"), endpoint, vec![]);
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{endpoint}");
+        }
+        // the same webview showing the reviewer gets the whitelist only
+        main_page(&f, WebviewKind::Reviewer, Some("c1"));
+        let denied = post_from(&f, Some("c1"), "deckTree", tree);
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn the_deck_list_api_needs_the_documents_capability() {
+        // The kind changes before the webview navigates, so the reviewer's
+        // document (card JS) still runs for a moment as `Main`. It never saw
+        // the new page's URL, so it can't send its capability.
+        let f = fixture();
+        main_page(&f, WebviewKind::Main, Some("new"));
+        let tree = anki_proto::decks::DeckTreeRequest { now: 0 }.encode_to_vec();
+        for cap in [None, Some("old"), Some("")] {
+            let denied = post_from(&f, cap, "deckTree", tree.clone());
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{cap:?}");
+        }
+        // a Main page without a capability (the home page) gets nothing
+        main_page(&f, WebviewKind::Main, None);
+        let denied = post_from(&f, Some(""), "deckTree", tree);
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn deck_list_pages_cant_be_framed() {
+        let f = fixture();
+        for path in ["deck-browser", "deck-overview"] {
+            let page = get(&f, "main", path);
+            let csp = page.headers()[CONTENT_SECURITY_POLICY].to_str().unwrap();
+            assert!(csp.contains("frame-ancestors 'none'"), "{path}: {csp}");
+        }
+        // the toolbar is framed by the reviewer
+        let toolbar = get(&f, "main", "toolbar");
+        assert!(toolbar.headers().get(CONTENT_SECURITY_POLICY).is_none());
     }
 
     #[test]

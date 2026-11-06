@@ -1,0 +1,364 @@
+// Copyright: Ankitects Pty Ltd and contributors
+// License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
+
+//! Native menus: the menu bar (`aqt/forms/main.ui` plus the reviewer's
+//! context menu, `Reviewer._contextMenu`) and the reviewer's "More" popup.
+//!
+//! Single-key shortcuts stay in the pages (`crate::shortcuts`), since a
+//! menu key equivalent would also fire while typing in the editor; the
+//! menu shows them in the item titles instead. Cmd shortcuts are real key
+//! equivalents.
+
+use std::sync::Arc;
+
+use tauri::menu::CheckMenuItem;
+use tauri::menu::CheckMenuItemBuilder;
+use tauri::menu::Menu;
+use tauri::menu::MenuBuilder;
+use tauri::menu::MenuItem;
+use tauri::menu::MenuItemBuilder;
+use tauri::menu::PredefinedMenuItem;
+use tauri::menu::Submenu;
+use tauri::menu::SubmenuBuilder;
+use tauri::AppHandle;
+use tauri::Manager;
+use tauri::Wry;
+
+use crate::app::Ui;
+use crate::app::EDITOR;
+use crate::app::MAIN;
+use crate::main_window;
+use crate::main_window::MainState;
+
+/// Flag ids and their names, `aqt.flags`.
+fn flag_names(ui: &Ui) -> [String; 7] {
+    let tr = &ui.main.tr;
+    [
+        tr.actions_flag_red().into_owned(),
+        tr.actions_flag_orange().into_owned(),
+        tr.actions_flag_green().into_owned(),
+        tr.actions_flag_blue().into_owned(),
+        tr.actions_flag_pink().into_owned(),
+        tr.actions_flag_turquoise().into_owned(),
+        tr.actions_flag_purple().into_owned(),
+    ]
+}
+
+/// Items whose state changes: undo/redo titles, flag and auto-advance
+/// checks, and what's enabled.
+pub struct Menus {
+    undo: MenuItem<Wry>,
+    redo: MenuItem<Wry>,
+    flags: Vec<CheckMenuItem<Wry>>,
+    auto_advance: CheckMenuItem<Wry>,
+    /// Enabled only while reviewing.
+    review_items: Vec<MenuItem<Wry>>,
+    /// Enabled with a profile open.
+    profile_items: Vec<MenuItem<Wry>>,
+    sync_logout: MenuItem<Wry>,
+}
+
+/// "Title (key)": the page shortcut, shown since it isn't a key equivalent.
+fn titled(ui: &Ui, title: &str, action: &str) -> String {
+    let settings = ui.settings.lock().unwrap();
+    let s = crate::shortcuts::Shortcuts::new(&settings.answer_keys, &settings.shortcuts);
+    match s.combos(action).first() {
+        Some(key) => format!("{title}\t{key}"),
+        None => title.to_string(),
+    }
+}
+
+fn item(
+    app: &AppHandle,
+    id: &str,
+    title: &str,
+    accel: Option<&str>,
+) -> tauri::Result<MenuItem<Wry>> {
+    let mut b = MenuItemBuilder::with_id(id, title);
+    if let Some(accel) = accel {
+        b = b.accelerator(accel);
+    }
+    b.build(app)
+}
+
+struct CardMenu {
+    menu: Submenu<Wry>,
+    flags: Vec<CheckMenuItem<Wry>>,
+    auto_advance: CheckMenuItem<Wry>,
+    items: Vec<MenuItem<Wry>>,
+}
+
+/// The card actions, shared by the menu bar and the "More" popup.
+fn card_submenu(ui: &Ui, app: &AppHandle, title: &str) -> tauri::Result<CardMenu> {
+    let tr = &ui.main.tr;
+    let flags: Vec<CheckMenuItem<Wry>> = flag_names(ui)
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            CheckMenuItemBuilder::with_id(format!("flag{}", i + 1), name)
+                .accelerator(format!("CmdOrCtrl+{}", i + 1))
+                .build(app)
+        })
+        .collect::<tauri::Result<_>>()?;
+    let mut flag_menu = SubmenuBuilder::new(app, tr.studying_flag_card());
+    for f in &flags {
+        flag_menu = flag_menu.item(f);
+    }
+    let flag_menu = flag_menu.build()?;
+    let i = |id: &str, title: std::borrow::Cow<str>, action: &str| {
+        item(app, id, &titled(ui, &title, action), None)
+    };
+    let items = vec![
+        i("buryCard", tr.studying_bury_card(), "buryCard")?,
+        i("suspendCard", tr.actions_suspend_card(), "suspendCard")?,
+        i("options", tr.actions_options(), "options")?,
+        i("cardInfo", tr.actions_card_info(), "cardInfo")?,
+        item(
+            app,
+            "previousCardInfo",
+            &tr.actions_previous_card_info(),
+            Some("CmdOrCtrl+Alt+I"),
+        )?,
+        i("mark", tr.studying_mark_note(), "mark")?,
+        i("buryNote", tr.studying_bury_note(), "buryNote")?,
+        i("suspendNote", tr.studying_suspend_note(), "suspendNote")?,
+        item(
+            app,
+            "deleteNote",
+            &tr.studying_delete_note(),
+            Some("CmdOrCtrl+Backspace"),
+        )?,
+        i("edit", tr.studying_edit(), "edit")?,
+        i("replay", tr.actions_replay_audio(), "replay")?,
+    ];
+    let auto_advance = CheckMenuItemBuilder::with_id(
+        "autoAdvance",
+        titled(ui, &tr.actions_auto_advance(), "autoAdvance"),
+    )
+    .build(app)?;
+    let sep = || PredefinedMenuItem::separator(app);
+    let menu = SubmenuBuilder::new(app, title)
+        .item(&flag_menu)
+        .item(&items[0])
+        .item(&items[1])
+        .item(&items[2])
+        .item(&items[3])
+        .item(&items[4])
+        .item(&sep()?)
+        .item(&items[5])
+        .item(&items[6])
+        .item(&items[7])
+        .item(&items[8])
+        .item(&sep()?)
+        .item(&items[9])
+        .item(&items[10])
+        .item(&auto_advance)
+        .build()?;
+    Ok(CardMenu {
+        menu,
+        flags,
+        auto_advance,
+        items,
+    })
+}
+
+pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
+    let tr = &ui.main.tr;
+    let app_menu = SubmenuBuilder::new(app, "Anki")
+        .item(&PredefinedMenuItem::about(app, None, None)?)
+        .separator()
+        .item(&PredefinedMenuItem::hide(app, None)?)
+        .item(&PredefinedMenuItem::hide_others(app, None)?)
+        .separator()
+        // not PredefinedMenuItem::quit: its terminate: skips ExitRequested,
+        // so the editor's pending edits couldn't be saved
+        .item(&item(app, "quit", "Quit Anki", Some("CmdOrCtrl+Q"))?)
+        .build()?;
+    let sync = item(app, "sync", &titled(ui, &tr.qt_misc_sync(), "sync"), None)?;
+    let sync_logout = item(app, "syncLogout", &tr.sync_log_out_button(), None)?;
+    let file = SubmenuBuilder::new(app, "File")
+        .item(&sync)
+        .item(&sync_logout)
+        .separator()
+        .item(&item(
+            app,
+            "reimport",
+            "Re-import Profiles from Anki",
+            None,
+        )?)
+        .build()?;
+    let undo = item(app, "undo", &tr.qt_accel_undo(), Some("CmdOrCtrl+Z"))?;
+    let redo = item(app, "redo", &tr.qt_accel_redo(), Some("CmdOrCtrl+Shift+Z"))?;
+    let edit = SubmenuBuilder::new(app, "Edit")
+        .item(&undo)
+        .item(&redo)
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    let decks = item(
+        app,
+        "decks",
+        &titled(ui, &tr.actions_decks(), "decks"),
+        None,
+    )?;
+    let study = item(app, "study", &titled(ui, "Study Deck", "study"), None)?;
+    let stats = item(
+        app,
+        "stats",
+        &titled(ui, &tr.qt_misc_stats(), "stats"),
+        None,
+    )?;
+    let go = SubmenuBuilder::new(app, "Go")
+        .item(&decks)
+        .item(&study)
+        .item(&stats)
+        .build()?;
+    let CardMenu {
+        menu: card,
+        flags,
+        auto_advance,
+        items: review_items,
+    } = card_submenu(ui, app, "Card")?;
+    let window = SubmenuBuilder::new(app, "Window")
+        .item(&PredefinedMenuItem::minimize(app, None)?)
+        .item(&PredefinedMenuItem::fullscreen(app, None)?)
+        .build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&app_menu, &file, &edit, &go, &card, &window])
+        .build()?;
+    let menus = Menus {
+        undo,
+        redo,
+        flags,
+        auto_advance,
+        review_items,
+        profile_items: vec![sync, decks, study, stats],
+        sync_logout,
+    };
+    Ok((menu, menus))
+}
+
+/// Update titles, checks and enabled items for the current state. The
+/// menu calls wait for the main thread, so they're queued there instead of
+/// blocking the caller (a bridge thread).
+pub fn refresh(ui: &Arc<Ui>) {
+    let tr = &ui.main.tr;
+    let profile = ui.shell.open_profile_paths().is_some();
+    let status: anki_proto::collection::UndoStatus = if profile {
+        ui.shell
+            .api
+            .call("get_undo_status", &anki_proto::generic::Empty {})
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
+    let undo = if status.undo.is_empty() {
+        tr.qt_accel_undo().into_owned()
+    } else {
+        tr.undo_undo_action(status.undo.clone()).into_owned()
+    };
+    let redo = if status.redo.is_empty() {
+        tr.qt_accel_redo().into_owned()
+    } else {
+        tr.undo_redo_action(status.redo.clone()).into_owned()
+    };
+    let reviewing = *ui.main.state.lock().unwrap() == MainState::Review;
+    let (flag, auto_advance) = {
+        let r = ui.main.reviewer.lock().unwrap();
+        (r.flag(), r.auto_advance)
+    };
+    let logged_in = main_window::sync_state_json(ui)["loggedIn"] == serde_json::Value::Bool(true);
+    let u = ui.clone();
+    let _ = ui.app.run_on_main_thread(move || {
+        let guard = u.menus.lock().unwrap();
+        let Some(m) = guard.as_ref() else {
+            return;
+        };
+        let _ = m.undo.set_text(undo);
+        let _ = m.redo.set_text(redo);
+        for (i, item) in m.flags.iter().enumerate() {
+            let _ = item.set_enabled(reviewing);
+            let _ = item.set_checked(reviewing && flag == i as u32 + 1);
+        }
+        let _ = m.auto_advance.set_enabled(reviewing);
+        let _ = m.auto_advance.set_checked(auto_advance);
+        for item in &m.review_items {
+            let _ = item.set_enabled(reviewing);
+        }
+        for item in &m.profile_items {
+            let _ = item.set_enabled(profile);
+        }
+        let _ = m.sync_logout.set_enabled(logged_in);
+    });
+}
+
+/// The reviewer's "More" button and `m`.
+pub fn popup_more(ui: &Arc<Ui>) {
+    let Some(window) = ui.app.get_webview_window(MAIN) else {
+        return;
+    };
+    let Ok(CardMenu {
+        menu: card,
+        flags,
+        auto_advance,
+        ..
+    }) = card_submenu(ui, &ui.app, "More")
+    else {
+        return;
+    };
+    let (flag, on) = {
+        let r = ui.main.reviewer.lock().unwrap();
+        (r.flag(), r.auto_advance)
+    };
+    for (i, item) in flags.iter().enumerate() {
+        let _ = item.set_checked(flag == i as u32 + 1);
+    }
+    let _ = auto_advance.set_checked(on);
+    let w = window.clone();
+    // AppKit only on the main thread
+    let _ = window.run_on_main_thread(move || {
+        if let Err(err) = w.popup_menu(&card) {
+            tracing::warn!(%err, "showing the More menu failed");
+        }
+    });
+}
+
+/// A menu item was chosen. Handled off the main thread, since a sync holds
+/// the collection and most actions need it.
+pub fn on_event(ui: &Arc<Ui>, id: &str) {
+    let ui = ui.clone();
+    let id = id.to_string();
+    std::thread::spawn(move || handle_event(&ui, &id));
+}
+
+fn handle_event(ui: &Arc<Ui>, id: &str) {
+    match id {
+        "quit" => ui.app.exit(0),
+        "reimport" => {
+            if let Err(err) = ui.reimport() {
+                main_window::message(ui, &format!("Re-import failed: {err:#}"));
+            }
+            refresh(ui);
+        }
+        "syncLogout" => main_window::logout(ui),
+        "undo" | "redo" => {
+            // text undo when the editor has the focus, as Qt's webview
+            // takes Cmd+Z before the menu does
+            let editor_focused = ui
+                .app
+                .get_webview_window(EDITOR)
+                .and_then(|w| w.is_focused().ok())
+                .unwrap_or(false);
+            if editor_focused {
+                ui.eval(EDITOR, format!("document.execCommand({:?});", id));
+            } else {
+                main_window::action_for_state(ui, id);
+            }
+        }
+        id => main_window::action_for_state(ui, id),
+    }
+    refresh(ui);
+}
