@@ -1134,6 +1134,19 @@ already exist in `ts/`; hosting them is small when they're wanted.
     notetype and card names are the user's), and Delete keeps a note's
     first card if asked, as `_delete_cards`.
   - A full sync closes all four, as it does the editor and deck options.
+- **Review** (an independent Opus pass), fixed:
+  - Cancel and Escape did nothing in the filtered deck dialog: a second
+    `screenClose` registration replaced the first.
+  - Render LaTeX didn't expand clozes, as `media.py` and the media check
+    do, so `[$]{{c1::x}}[/$]` images stayed missing while it reported
+    "All LaTeX rendered".
+  - A second Enter after a successful build or custom study submitted
+    again (a second deck, or twice the limit increase).
+  - The windows aren't modal as Qt's media check was, so Delete Unused
+    checks again first, and Empty Cards deletes only cards a fresh report
+    still has.
+  - Custom study's limit changes show the deck they changed, and opening
+    a screen that's already open focuses it instead of reloading it.
 - **Checks:** `harness/filtered-deck.js` (refused search, build, the
   overview, Options reopening it, rebuild with a new limit),
   `custom-study.js` (ranges, cramming into the session deck),

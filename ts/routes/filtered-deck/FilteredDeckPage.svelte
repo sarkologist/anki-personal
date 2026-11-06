@@ -47,11 +47,12 @@ Building a filtered deck, or changing one, as qt/aqt/filtered_deck.py.
         busy = true;
         try {
             const out = await addOrUpdateFilteredDeck(deck, quiet);
+            // still busy: the window closes, and a second build would add
+            // another deck
             bridgeCommand(`filteredDeckBuilt:${out.id}`);
         } catch (err) {
             // most likely nothing matched; let the search be changed
             error = errorMessage(err);
-        } finally {
             busy = false;
         }
     }

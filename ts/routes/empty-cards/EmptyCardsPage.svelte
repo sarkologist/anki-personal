@@ -6,13 +6,13 @@ Empty Cards, as qt/aqt/emptycards.py.
 -->
 <script lang="ts">
     import type { EmptyCardsReport } from "@generated/anki/card_rendering_pb";
-    import { removeCards } from "@generated/backend";
+    import { getEmptyCards, removeCards } from "@generated/backend";
     import * as tr from "@generated/ftl";
     import { bridgeCommand } from "@tslib/bridgecommand";
 
     import { errorMessage, quiet } from "$lib/shell/shell";
 
-    import { cardsToDelete, parseReport } from "./lib";
+    import { cardsToDelete, parseReport, stillEmpty } from "./lib";
 
     export let report: EmptyCardsReport;
 
@@ -25,7 +25,9 @@ Empty Cards, as qt/aqt/emptycards.py.
     async function remove(): Promise<void> {
         busy = true;
         try {
-            const cardIds = cardsToDelete(report, keepNotes);
+            // only cards still empty: the window isn't modal
+            const fresh = await getEmptyCards({}, quiet);
+            const cardIds = cardsToDelete(stillEmpty(report, fresh), keepNotes);
             await removeCards({ cardIds }, quiet);
             done = tr.emptyCardsDeletedCount({ cards: cardIds.length });
             bridgeCommand("emptyCardsDone");
@@ -48,8 +50,8 @@ Empty Cards, as qt/aqt/emptycards.py.
             <ol>
                 {#each section.lines as line}
                     <li class:allempty={line.allEmpty}>
-                        <span class="nid">{line.nid}</span>
-                        : {line.text}
+                        <span class="nid">{line.nid}:</span>
+                        {line.text}
                     </li>
                 {/each}
             </ol>

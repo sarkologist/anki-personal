@@ -26,6 +26,13 @@ pub const MEDIA_CHECK: &str = "media-check";
 pub const EMPTY_CARDS: &str = "empty-cards";
 
 fn open(ui: &Ui, label: &str, title: &str, kind: WebviewKind, route: String) {
+    // already open: keep what's typed there (`reopen` in Qt)
+    if let Some(window) = ui.app.get_webview_window(label) {
+        if !ui.background {
+            let _ = window.set_focus();
+        }
+        return;
+    }
     if let Err(err) = ui.open_window(label, title, kind, Content::Route(route)) {
         tracing::error!(%err, label, "opening a window failed");
     }
@@ -117,18 +124,26 @@ pub fn register(ui: &Arc<Ui>) {
         Value::Null
     });
     // custom study made its session deck current, or raised today's limits
-    reg("customStudyDone", CUSTOM_STUDY, |ui, _| {
+    // of deck `args` (which is then shown, though the main window may have
+    // moved on)
+    reg("customStudyDone", CUSTOM_STUDY, |ui, did| {
+        if let Ok(did) = did.parse::<i64>() {
+            let _: Result<anki_proto::collection::OpChanges, _> = ui
+                .shell
+                .api
+                .call("set_current_deck", &anki_proto::decks::DeckId { did });
+        }
         main_window::show_overview(ui);
         close(ui, CUSTOM_STUDY);
         crate::menus::refresh(ui);
         Value::Null
     });
-    reg("screenClose", FILTERED_DECK, |ui, _| {
-        close(ui, FILTERED_DECK);
-        Value::Null
-    });
-    reg("screenClose", CUSTOM_STUDY, |ui, _| {
-        close(ui, CUSTOM_STUDY);
+    // Cancel or Escape in either dialog (one handler per command name)
+    let u = ui.clone();
+    ui.shell.bridge.register("screenClose", move |_, from, _| {
+        if [FILTERED_DECK, CUSTOM_STUDY].contains(&from) {
+            close(&u, from);
+        }
         Value::Null
     });
     reg(
@@ -187,7 +202,8 @@ fn render_all_latex_in(
                 .entry(mid)
                 .or_insert(crate::latex::latex_config_with(api, mid, toolchain)?),
         };
-        let (_, errors) = crate::latex::render_latex(api, media, fields, cfg);
+        // clozes expanded, as media.py does and the media check looks
+        let (_, errors) = crate::latex::render_latex_expanding(api, media, fields, cfg, true);
         if !errors.is_empty() {
             let text: Vec<String> = errors.iter().map(|e| html_to_text(e)).collect();
             return Ok(Some((nid, text.join("\n"))));
@@ -224,8 +240,12 @@ mod test {
     use crate::profile::ProfilePaths;
 
     fn add_note(api: &Api, front: &str) -> i64 {
+        add_note_of(api, "Basic", front)
+    }
+
+    fn add_note_of(api: &Api, notetype: &str, front: &str) -> i64 {
         let names: NotetypeNames = api.call("get_notetype_names", &Empty {}).unwrap();
-        let basic = names.entries.iter().find(|e| e.name == "Basic").unwrap();
+        let basic = names.entries.iter().find(|e| e.name == notetype).unwrap();
         let mut note: Note = api
             .call(
                 "new_note",
@@ -287,6 +307,59 @@ mod test {
         let error = error.replace(['\u{2068}', '\u{2069}'], "");
         assert!(error.starts_with("Error executing sh."), "{error}");
         assert!(!error.contains("<br>"), "{error}");
+    }
+
+    #[test]
+    fn render_all_latex_makes_the_images_clozes_show() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProfilePaths::new(dir.path(), "User 1");
+        std::fs::create_dir_all(&paths.folder).unwrap();
+        let api = Api::new(vec!["en".into()]).unwrap();
+        open_collection(&api, &paths).unwrap();
+        let _: Empty = api
+            .call(
+                "set_config_bool",
+                &anki_proto::config::SetConfigBoolRequest {
+                    key: anki_proto::config::config_key::Bool::RenderLatex as i32,
+                    value: true,
+                    undoable: false,
+                },
+            )
+            .unwrap();
+        // the cloze is inside the LaTeX, so the image the card shows is of
+        // the expanded body
+        let text = "[$]{{c1::x}}[/$]";
+        add_note_of(&api, "Cloze", text);
+        let toolchain = LatexCommands {
+            png: Some(vec![vec![
+                "sh".into(),
+                "-c".into(),
+                "printf png > tmp.png".into(),
+            ]]),
+            svg: None,
+        };
+        assert_eq!(
+            render_all_latex_in(&api, &paths.media(), &toolchain).unwrap(),
+            None
+        );
+        let expanded: anki_proto::card_rendering::ExtractLatexResponse = api
+            .call(
+                "extract_latex",
+                &anki_proto::card_rendering::ExtractLatexRequest {
+                    text: text.into(),
+                    svg: false,
+                    expand_clozes: true,
+                },
+            )
+            .unwrap();
+        for latex in &expanded.latex {
+            assert!(
+                paths.media().join(&latex.filename).exists(),
+                "{}",
+                latex.filename
+            );
+        }
+        assert!(!expanded.latex.is_empty());
     }
 
     #[test]

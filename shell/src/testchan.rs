@@ -91,8 +91,11 @@ static FINISHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// The exit code when the last window closes: a test that ended without a
 /// result (its window went away) failed.
 pub fn exit_code_for_last_window(ui: &Ui) -> i32 {
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if ui.test_mode && !FINISHED.load(std::sync::atomic::Ordering::SeqCst) {
-        println!("TEST ended without a result");
+        if !REPORTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            println!("TEST ended without a result");
+        }
         3
     } else {
         0
