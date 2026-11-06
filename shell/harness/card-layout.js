@@ -87,7 +87,12 @@ function type(text) {
 async function answer(confirm = true) {
     await until("the dialog", () => document.querySelector(".dialog"));
     const input = document.querySelector("#ask-input");
-    return { input, done: () => document.querySelector(confirm ? ".dialog button.primary" : ".dialog button").click() };
+    const done = async () => {
+        document.querySelector(confirm ? ".dialog button.primary" : ".dialog button").click();
+        // gone before the next step looks for one
+        await until("the dialog to close", () => !document.querySelector(".dialog"));
+    };
+    return { input, done };
 }
 
 await until("the page", () => template());
@@ -127,13 +132,13 @@ document.querySelector("#rename-card-type").click();
 let dialog = await answer();
 dialog.input.value = "Shell Reverse";
 dialog.input.dispatchEvent(new Event("input", { bubbles: true }));
-dialog.done();
+await dialog.done();
 await until(
     "the rename",
     () => document.querySelector("#card option:nth-child(2)")?.textContent === "2: Shell Reverse",
 );
 document.querySelector("#add-card-type").click();
-(await answer()).done();
+await (await answer()).done();
 await until("a third card type", () => document.querySelectorAll("#card option").length === 3);
 // its name has no invisible isolation marks (they'd be saved)
 check("the new card type's name", document.querySelector("#card option:nth-child(3)").textContent, "3: Card 3");
@@ -149,12 +154,12 @@ check("switching shows the other card's front", template().value, "{{Back}}");
 set("#card", "2");
 await until("card 3's front", () => template().value === "{{Back}} copy");
 document.querySelector("#remove-card-type").click();
-(await answer()).done();
+await (await answer()).done();
 await until("two again", () => document.querySelectorAll("#card option").length === 2);
 
 // Cancel with changes asks first; keep them
 button("Cancel").click();
-(await answer(false)).done();
+await (await answer(false)).done();
 check("still open after keeping the changes", (await bridge("testWindows")).includes("card-layout"), true);
 
 // save: checked in the collection before the shell closes the window
