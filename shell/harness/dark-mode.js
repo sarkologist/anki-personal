@@ -28,7 +28,9 @@ function check(name, actual, expected) {
     checks.push({ name, ok, actual, expected });
     log(`${ok ? "pass" : "FAIL"} ${name}: ${JSON.stringify(actual)}`);
 }
-const marks = (doc = document) => [doc.documentElement.classList.contains("night-mode"), doc.documentElement.dataset.bsTheme];
+const marks = (
+    doc = document,
+) => [doc.documentElement.classList.contains("night-mode"), doc.documentElement.dataset.bsTheme];
 const DARK = [true, "dark"];
 const LIGHT = [false, "light"];
 const look = () => bridge("testWindowLook:main");
@@ -65,14 +67,19 @@ if (path === "/deck-browser" && testStage === 0) {
     await bridge("testSystemAppearance:dark");
     await until("the system going dark", () => marks()[0]);
     check("system dark", marks(), DARK);
-    const deck = [...document.querySelectorAll("button.deck-name")].find((e) => e.textContent.trim().startsWith("shell test"));
+    const deck = [...document.querySelectorAll("button.deck-name")].find((e) =>
+        e.textContent.trim().startsWith("shell test")
+    );
     return next(() => deck.click());
 }
 
 if (path === "/deck-overview" && testStage === 1) {
     // served dark, not switched after loading
     check("the overview loads dark", marks(), DARK);
-    const study = await until("Study Now", () => [...document.querySelectorAll("button")].find((b) => /study now/i.test(b.textContent)));
+    const study = await until(
+        "Study Now",
+        () => [...document.querySelectorAll("button")].find((b) => /study now/i.test(b.textContent)),
+    );
     return next(() => study.click());
 }
 

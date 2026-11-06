@@ -39,6 +39,7 @@ old Anki.
   settings file fixes it instead; the default is the old Anki's theme
   (imported), else the system. Pages and cards (`.nightMode`) switch at
   once, and windows show Anki's background colour while a page loads.
+  Add-ons get it too (Frontier's panels take it when they open).
 - Not yet: custom study, filtered deck creation, deck descriptions editing,
   "Set due date", "Forget", "Create copy", recording your own voice, and
   add-ons other than Frontier.

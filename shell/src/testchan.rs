@@ -546,26 +546,31 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
     // the system's appearance changing to `dark` or `light` (what Tauri's
     // ThemeChanged reports), without changing the user's
     let u = ui.clone();
-    ui.shell.bridge.register("testSystemAppearance", move |_, _, look| {
-        crate::theme::apply(&u, Some(look == "dark"));
-        json!(u.shell.night.get())
-    });
+    ui.shell
+        .bridge
+        .register("testSystemAppearance", move |_, _, look| {
+            crate::theme::apply(&u, Some(look == "dark"));
+            json!(u.shell.night.get())
+        });
     // a window's background ([r, g, b]) and whether its webview draws one
     let u = ui.clone();
-    ui.shell.bridge.register("testWindowLook", move |_, _, label| {
-        use tauri::Manager;
-        let Some(window) = u.app.get_webview_window(label) else {
-            return Value::Null;
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        let w = window.clone();
-        let _ = window.with_webview(move |webview| {
-            // SAFETY: AppKit objects, on the main thread
-            let look = unsafe { window_look(w.ns_window().ok(), webview.inner()) };
-            let _ = tx.send(look);
+    ui.shell
+        .bridge
+        .register("testWindowLook", move |_, _, label| {
+            use tauri::Manager;
+            let Some(window) = u.app.get_webview_window(label) else {
+                return Value::Null;
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let w = window.clone();
+            let _ = window.with_webview(move |webview| {
+                // SAFETY: AppKit objects, on the main thread
+                let look = unsafe { window_look(w.ns_window().ok(), webview.inner()) };
+                let _ = tx.send(look);
+            });
+            rx.recv_timeout(Duration::from_secs(5))
+                .unwrap_or(Value::Null)
         });
-        rx.recv_timeout(Duration::from_secs(5)).unwrap_or(Value::Null)
-    });
     let u = ui.clone();
     ui.shell.bridge.register("testEval", move |_, _, args| {
         let (label, js) = args.split_once('\n').unwrap_or((args, ""));

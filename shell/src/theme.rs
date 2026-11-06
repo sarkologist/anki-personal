@@ -89,10 +89,13 @@ pub fn apply(ui: &std::sync::Arc<crate::app::Ui>, system_dark: Option<bool>) {
     let pref = ui.settings.lock().unwrap().theme_pref();
     ui.app.set_theme(pref.window_theme());
     let night = pref.night_mode(system_dark.unwrap_or_else(self::system_dark));
+    // the shell's first: start_review copies it into the reviewer
+    let changed = ui.shell.night.set(night);
     ui.main.reviewer.lock().unwrap().night_mode = night;
-    if !ui.shell.night.set(night) {
+    if !changed {
         return;
     }
+    crate::plugins::ui::notify(ui, "theme_did_change", serde_json::json!({ "night": night }));
     tracing::info!(night, "theme changed");
     let windows: Vec<(String, tauri::WebviewWindow)> = {
         use tauri::Manager;
@@ -113,27 +116,26 @@ pub fn canvas(night: bool) -> tauri::window::Color {
     }
 }
 
-/// A window shows the canvas colour until its page draws, not white: the
-/// window gets that background, and its webview draws none of its own
-/// (wry's webview background colour does nothing on macOS).
+/// A window shows the canvas colour until its page draws, not white (wry
+/// turns the webview's own background off).
 pub fn style_window(window: &tauri::WebviewWindow, night: bool) {
     let _ = window.set_background_color(Some(canvas(night)));
-    let _ = window.with_webview(|webview| {
-        // SAFETY: inner() is the WKWebView; this runs on the main thread
-        unsafe { no_webview_background(webview.inner()) };
-    });
 }
 
-unsafe fn no_webview_background(webview: *mut std::ffi::c_void) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-    use objc2_foundation::NSNumber;
-    use objc2_foundation::NSString;
-    let view = webview as *mut AnyObject;
-    let no = NSNumber::new_bool(false);
-    let key = NSString::from_str("drawsBackground");
-    // the key Safari's and Tauri's transparent webviews use
-    let _: () = msg_send![view, setValue: &*no, forKey: &*key];
+/// Tauri's `ThemeChanged` (on the main thread). Applied off it, since that
+/// takes the settings and reviewer locks, which bridge threads hold across
+/// backend calls; an event newer than the one a thread has is left to its
+/// own thread, so quick flips can't land out of order.
+pub fn system_changed(ui: &std::sync::Arc<crate::app::Ui>, dark: bool) {
+    use std::sync::atomic::AtomicU64;
+    static LATEST: AtomicU64 = AtomicU64::new(0);
+    let seq = LATEST.fetch_add(1, Ordering::SeqCst) + 1;
+    let ui = ui.clone();
+    std::thread::spawn(move || {
+        if LATEST.load(Ordering::SeqCst) == seq {
+            apply(&ui, Some(dark));
+        }
+    });
 }
 
 /// Add the night-mode markers to a page's `<html>` and `<body>` tags.

@@ -823,6 +823,12 @@ pub fn run(args: Args) -> Result<()> {
             tracing::warn!("{err:#}");
         }
         settings.save(&args.settings)?;
+    } else {
+        match settings.import_theme_if_missing() {
+            Ok(true) => settings.save(&args.settings)?,
+            Ok(false) => {}
+            Err(err) => tracing::warn!("{err:#}"),
+        }
     }
 
     let shell = Arc::new(Shell::new(Api::new(vec!["en".into()])?, web));
@@ -991,14 +997,7 @@ pub fn run(args: Args) -> Result<()> {
         RunEvent::WindowEvent {
             event: tauri::WindowEvent::ThemeChanged(theme),
             ..
-        } => {
-            // it takes the settings and reviewer locks, which bridge
-            // threads hold across backend calls
-            let ui = exit_ui.clone();
-            std::thread::spawn(move || {
-                crate::theme::apply(&ui, Some(theme == tauri::Theme::Dark))
-            });
-        }
+        } => crate::theme::system_changed(&exit_ui, theme == tauri::Theme::Dark),
         RunEvent::WindowEvent {
             label,
             event: tauri::WindowEvent::Destroyed,

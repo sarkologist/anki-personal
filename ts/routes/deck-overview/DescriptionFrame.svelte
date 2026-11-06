@@ -11,11 +11,14 @@ link clicks.
     import { bridgeCommand } from "@tslib/bridgecommand";
     import { onDestroy } from "svelte";
 
+    import { pageTheme } from "$lib/sveltelib/theme";
+
     import { descriptionDocument } from "./lib";
 
     export let html: string;
 
-    function themeCss(): string {
+    /** The page's colours, for `theme` (read when it changes). */
+    function themeCss(_theme: { isDark: boolean }): string {
         const root = getComputedStyle(document.documentElement);
         const body = getComputedStyle(document.body);
         const v = (name: string) => root.getPropertyValue(name).trim();
@@ -24,7 +27,8 @@ body { color: ${v("--fg-subtle")}; font-family: ${body.fontFamily}; font-size: $
 a { color: ${v("--fg-link")}; text-decoration: none; }`;
     }
 
-    $: srcdoc = descriptionDocument(html, themeCss());
+    // drawn again when the theme changes: its colours are copied in
+    $: srcdoc = descriptionDocument(html, themeCss($pageTheme));
 
     let frame: HTMLIFrameElement;
     let height = 0;
