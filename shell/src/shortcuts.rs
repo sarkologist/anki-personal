@@ -50,6 +50,7 @@ pub const DEFAULTS: &[(&str, &[&str])] = &[
     // main window
     ("decks", &["d"]),
     ("study", &["s"]),
+    ("chooseDeck", &["/"]),
     ("stats", &["t"]),
     ("sync", &["y"]),
 ];
@@ -378,6 +379,13 @@ mod test {
         ] {
             assert_eq!(s.action(combo), Some(action), "{combo}");
         }
+    }
+
+    #[test]
+    fn slash_opens_the_deck_picker() {
+        // stock Anki's Tools > Study Deck... shortcut
+        let s = Shortcuts::new(&[], &BTreeMap::new());
+        assert_eq!(s.action("/"), Some("chooseDeck"));
     }
 
     #[test]

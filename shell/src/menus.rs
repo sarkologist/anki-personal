@@ -205,6 +205,12 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         None,
     )?;
     let study = item(app, "study", &titled(ui, "Study Deck", "study"), None)?;
+    let choose_deck = item(
+        app,
+        "chooseDeck",
+        &titled(ui, &tr.qt_misc_study_deck(), "chooseDeck"),
+        None,
+    )?;
     let stats = item(
         app,
         "stats",
@@ -214,6 +220,7 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
     let go = SubmenuBuilder::new(app, "Go")
         .item(&decks)
         .item(&study)
+        .item(&choose_deck)
         .item(&stats)
         .build()?;
     let CardMenu {
@@ -235,7 +242,7 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         flags,
         auto_advance,
         review_items,
-        profile_items: vec![sync, decks, study, stats],
+        profile_items: vec![sync, decks, study, choose_deck, stats],
         sync_logout,
     };
     Ok((menu, menus))

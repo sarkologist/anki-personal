@@ -374,6 +374,18 @@ fn legacy_page(shell: &Shell, req: &Request<Vec<u8>>) -> HttpResponse {
     resp
 }
 
+/// SvelteKit's page shell, with the page font every other page gets from
+/// `std_html`.
+fn with_system_font(html: &[u8]) -> Vec<u8> {
+    let html = String::from_utf8_lossy(html);
+    html.replacen(
+        "</head>",
+        &format!("<style>{}</style></head>", crate::pages::SYSTEM_FONT_CSS),
+        1,
+    )
+    .into_bytes()
+}
+
 fn bundled_file(web: &Path, path: &str) -> HttpResponse {
     let immutable = path.contains("immutable");
     let path = if path.starts_with("sveltekit/") && !immutable {
@@ -385,7 +397,10 @@ fn bundled_file(web: &Path, path: &str) -> HttpResponse {
         return text(StatusCode::FORBIDDEN, format!("invalid path: {path}"));
     };
     match std::fs::read(&full) {
-        Ok(data) => {
+        Ok(mut data) => {
+            if path == "sveltekit/index.html" {
+                data = with_system_font(&data);
+            }
             let mut resp = respond(StatusCode::OK, mime(path), data);
             if immutable {
                 resp.headers_mut()
@@ -500,7 +515,7 @@ mod test {
         std::fs::create_dir_all(web.join("css")).unwrap();
         std::fs::create_dir_all(web.join("sveltekit/_app/immutable")).unwrap();
         std::fs::write(web.join("css/reviewer.css"), "body {}").unwrap();
-        std::fs::write(web.join("sveltekit/index.html"), "<svelte>").unwrap();
+        std::fs::write(web.join("sveltekit/index.html"), "<head></head><svelte>").unwrap();
         std::fs::write(web.join("sveltekit/_app/immutable/a.js"), "a").unwrap();
         let shell = Shell::new(Api::new(vec!["en".into()]).unwrap(), web);
         let paths = ProfilePaths::new(dir.path(), "User 1");
@@ -677,13 +692,33 @@ mod test {
         assert_eq!(css.headers()[CONTENT_TYPE], "text/css");
         // legacy top-level reference
         assert_eq!(get(&f, "reviewer", "_anki/reviewer.css").body(), b"body {}");
-        assert_eq!(get(&f, "editor", "deck-options/1").body(), b"<svelte>");
+        assert!(
+            String::from_utf8_lossy(get(&f, "editor", "deck-options/1").body())
+                .ends_with("</head><svelte>")
+        );
         let asset = get(&f, "editor", "_app/immutable/a.js");
         assert_eq!(asset.body(), b"a");
         assert!(asset.headers().contains_key("Cache-Control"));
         let media = get(&f, "reviewer", "pic.png");
         assert_eq!(media.body(), b"png");
         assert_eq!(media.headers()[CONTENT_TYPE], "image/png");
+    }
+
+    #[test]
+    fn sveltekit_pages_default_to_the_system_sans_serif_font() {
+        // WebKit's default font is Times, where QtWebEngine's is sans-serif, and
+        // the SvelteKit pages set none of their own
+        let f = fixture();
+        for path in ["deck-options/1", "deck-browser"] {
+            let body = String::from_utf8_lossy(get(&f, "editor", path).body()).into_owned();
+            assert!(
+                body.contains(&format!(
+                    "<style>{}</style></head>",
+                    crate::pages::SYSTEM_FONT_CSS
+                )),
+                "{path}: {body}"
+            );
+        }
     }
 
     #[test]
