@@ -98,6 +98,10 @@ pub fn legacy_page_url(label: &str) -> String {
     format!("{ORIGIN}_anki/legacyPageData?id={label}")
 }
 
+/// The page font. QtWebEngine defaults to sans-serif, WebKit to Times, and
+/// most pages (all the SvelteKit ones) don't set their own.
+pub const SYSTEM_FONT_CSS: &str = "html { font-family: -apple-system, \"Helvetica\", sans-serif; }";
+
 /// `AnkiWebView.stdHtml`, minus Qt and add-on hooks. As there, `js`
 /// replaces the default jQuery, and scripts go at the start of the body.
 pub fn std_html(web: &Path, body: &str, css: &[&str], js: &[&str], default_css: bool) -> String {
@@ -105,8 +109,8 @@ pub fn std_html(web: &Path, body: &str, css: &[&str], js: &[&str], default_css: 
     if default_css {
         let webview_css = std::fs::read_to_string(web.join("css/webview.css")).unwrap_or_default();
         head += &format!("<style>{webview_css}</style>");
-        head += "<style>body { zoom: 1; background-color: var(--canvas); } \
-                 html { font-family: -apple-system, \"Helvetica\"; }</style>";
+        head += "<style>body { zoom: 1; background-color: var(--canvas); }</style>";
+        head += &format!("<style>{SYSTEM_FONT_CSS}</style>");
     }
     for c in css {
         head += &format!("<link rel=\"stylesheet\" type=\"text/css\" href=\"/_anki/{c}\">");
