@@ -383,12 +383,12 @@ shell/src/card_layout.rs) and this page posts it there.
                 </button>
             </div>
             {#key `${card.index}:${tab}:${version}`}
-            <textarea
-                id="template"
-                spellcheck="false"
-                value={text(tab, template)}
-                on:input={edit}
-            ></textarea>
+                <textarea
+                    id="template"
+                    spellcheck="false"
+                    value={text(tab, template)}
+                    on:input={edit}
+                ></textarea>
             {/key}
         </section>
 

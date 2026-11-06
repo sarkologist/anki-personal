@@ -306,9 +306,9 @@ fn render_side(
             ntid: note.notetype_id,
         },
     )?;
-    let cloze = notetype.config.is_some_and(|c| {
-        c.kind == anki_proto::notetypes::notetype::config::Kind::Cloze as i32
-    });
+    let cloze = notetype
+        .config
+        .is_some_and(|c| c.kind == anki_proto::notetypes::notetype::config::Kind::Cloze as i32);
     if cloze {
         template.ord = Some(anki_proto::generic::UInt32 { val: args.ord });
     }
@@ -473,7 +473,10 @@ mod test {
             )
             .unwrap();
         let note: Note = api
-            .call("get_note", &anki_proto::notes::NoteId { nid: added.note_id })
+            .call(
+                "get_note",
+                &anki_proto::notes::NoteId { nid: added.note_id },
+            )
             .unwrap();
         let notetype: anki_proto::notetypes::Notetype = api
             .call("get_notetype", &anki_proto::notetypes::NotetypeId { ntid })
