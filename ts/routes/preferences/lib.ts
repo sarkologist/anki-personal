@@ -40,3 +40,12 @@ export function secsToMins(secs: number): number {
 export function minsToSecs(mins: number): number {
     return Number.isFinite(mins) ? Math.max(0, Math.round(mins)) * 60 : 0;
 }
+
+/** A whole number in [min, max] for a number box; `fallback` if the box is
+empty or not a number (Svelte binds an empty box as null). */
+export function toUint(value: number | null | undefined, min: number, max: number, fallback: number): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return fallback;
+    }
+    return Math.min(max, Math.max(min, Math.round(value)));
+}

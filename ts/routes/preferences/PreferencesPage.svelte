@@ -10,6 +10,7 @@ Changes are saved as they're made, as on macOS.
     import type { Preferences } from "@generated/anki/config_pb";
     import { setPreferences } from "@generated/backend";
     import * as tr from "@generated/ftl";
+    import { bridgeCommand } from "@tslib/bridgecommand";
     import { onDestroy } from "svelte";
 
     import { errorMessage, quiet } from "$lib/shell/shell";
@@ -21,6 +22,7 @@ Changes are saved as they're made, as on macOS.
         shellCommand,
         type ShellPreferences,
         type Theme,
+        toUint,
     } from "./lib";
 
     export let prefs: Preferences;
@@ -34,53 +36,87 @@ Changes are saved as they're made, as on macOS.
     let error = "";
     let saved = false;
 
-    // backend preferences: saved shortly after the last change
+    // number boxes, clamped as Qt's spin boxes when saved
+    let rollover = scheduling.rollover;
+    let learnAheadMins = secsToMins(scheduling.learnAheadSecs);
+    let timeboxMins = secsToMins(reviewing.timeLimitSecs);
+    let daily = backups.daily;
+    let weekly = backups.weekly;
+    let monthly = backups.monthly;
+    let minInterval = backups.minimumIntervalMins;
+    let showPlayButtons = !reviewing.hideAudioPlayButtons;
+
+    function apply(): void {
+        scheduling.rollover = toUint(rollover, 0, 23, scheduling.rollover);
+        scheduling.learnAheadSecs = minsToSecs(learnAheadMins);
+        reviewing.timeLimitSecs = minsToSecs(timeboxMins);
+        reviewing.hideAudioPlayButtons = !showPlayButtons;
+        backups.daily = toUint(daily, 0, 9999, backups.daily);
+        backups.weekly = toUint(weekly, 0, 9999, backups.weekly);
+        backups.monthly = toUint(monthly, 0, 9999, backups.monthly);
+        backups.minimumIntervalMins = toUint(
+            minInterval,
+            5,
+            9999,
+            backups.minimumIntervalMins,
+        );
+    }
+
+    // Saved shortly after typing stops, one save at a time (each is a
+    // request of its own, which could otherwise land out of order).
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let saving: Promise<void> = Promise.resolve();
     function changed(): void {
         saved = false;
         clearTimeout(timer);
-        timer = setTimeout(save, 300);
+        timer = setTimeout(queueSave, 300);
     }
 
-    async function save(): Promise<void> {
+    function queueSave(): Promise<void> {
         timer = undefined;
+        apply();
+        const snapshot = prefs.clone();
+        saving = saving.then(() => save(snapshot));
+        return saving;
+    }
+
+    async function save(snapshot: Preferences): Promise<void> {
         try {
-            await setPreferences(prefs, quiet);
+            await setPreferences(snapshot, quiet);
             error = "";
             saved = true;
+            bridgeCommand("preferencesChanged");
         } catch (err) {
             error = errorMessage(err);
         }
     }
-    onDestroy(() => {
-        if (timer !== undefined) {
-            clearTimeout(timer);
-            void save();
-        }
-    });
 
     let theme: Theme = shell.theme;
     async function themeChanged(): Promise<void> {
         error = (await saveShellPreferences({ theme })) ?? "";
     }
 
-    let timeboxMins = secsToMins(reviewing.timeLimitSecs);
-    let learnAheadMins = secsToMins(scheduling.learnAheadSecs);
-    $: reviewing.timeLimitSecs = minsToSecs(timeboxMins);
-    $: scheduling.learnAheadSecs = minsToSecs(learnAheadMins);
-
-    let showPlayButtons = !reviewing.hideAudioPlayButtons;
-    $: reviewing.hideAudioPlayButtons = !showPlayButtons;
-
     let latexPng = shell.latex.png;
     let latexSvg = shell.latex.svg;
     let latexError = "";
-    async function latexChanged(): Promise<void> {
-        latexError =
-            (await saveShellPreferences({ latex: { png: latexPng, svg: latexSvg } })) ??
-            "";
+    let latexTimer: ReturnType<typeof setTimeout> | undefined;
+    let latexSaving: Promise<void> = Promise.resolve();
+    function latexChanged(): void {
+        clearTimeout(latexTimer);
+        latexTimer = setTimeout(queueLatexSave, 500);
+    }
+    function queueLatexSave(): Promise<void> {
+        latexTimer = undefined;
+        const latex = { png: latexPng, svg: latexSvg };
+        latexSaving = latexSaving.then(async () => {
+            latexError = (await saveShellPreferences({ latex })) ?? "";
+        });
+        return latexSaving;
     }
     async function latexReset(): Promise<void> {
+        clearTimeout(latexTimer);
+        latexTimer = undefined;
+        await latexSaving;
         latexError = (await saveShellPreferences({ resetLatex: true })) ?? "";
         if (!latexError) {
             // back to the old Anki's commands, or the defaults
@@ -89,6 +125,20 @@ Changes are saved as they're made, as on macOS.
             latexSvg = fresh.latex.svg;
         }
     }
+
+    // the shell calls this before the window closes
+    window.shellFlush = async () => {
+        if (timer !== undefined) {
+            clearTimeout(timer);
+            void queueSave();
+        }
+        if (latexTimer !== undefined) {
+            clearTimeout(latexTimer);
+            void queueLatexSave();
+        }
+        await Promise.all([saving, latexSaving]);
+    };
+    onDestroy(() => delete window.shellFlush);
 
     const themes: [Theme, string][] = [
         ["system", tr.preferencesThemeFollowSystem()],
@@ -117,14 +167,14 @@ Changes are saved as they're made, as on macOS.
     <section>
         <h2>{tr.preferencesReview()}</h2>
         <label class="check">
-            <input type="checkbox" bind:checked={showPlayButtons} on:change={changed} />
+            <input type="checkbox" bind:checked={showPlayButtons} on:input={changed} />
             {tr.preferencesShowPlayButtonsOnCardsWith()}
         </label>
         <label class="check">
             <input
                 type="checkbox"
                 bind:checked={reviewing.interruptAudioWhenAnswering}
-                on:change={changed}
+                on:input={changed}
             />
             {tr.preferencesInterruptCurrentAudioWhenAnswering()}
         </label>
@@ -132,7 +182,7 @@ Changes are saved as they're made, as on macOS.
             <input
                 type="checkbox"
                 bind:checked={reviewing.showRemainingDueCounts}
-                on:change={changed}
+                on:input={changed}
             />
             {tr.preferencesShowRemainingCardCount()}
         </label>
@@ -141,7 +191,7 @@ Changes are saved as they're made, as on macOS.
                 type="checkbox"
                 id="show-intervals"
                 bind:checked={reviewing.showIntervalsOnButtons}
-                on:change={changed}
+                on:input={changed}
             />
             {tr.preferencesShowNextReviewTimeAboveAnswer()}
         </label>
@@ -153,7 +203,7 @@ Changes are saved as they're made, as on macOS.
                     min="0"
                     max="9999"
                     bind:value={timeboxMins}
-                    on:change={changed}
+                    on:input={changed}
                 />
                 {tr.preferencesMins()}
             </span>
@@ -170,8 +220,8 @@ Changes are saved as they're made, as on macOS.
                     min="0"
                     max="23"
                     id="rollover"
-                    bind:value={scheduling.rollover}
-                    on:change={changed}
+                    bind:value={rollover}
+                    on:input={changed}
                 />
                 {tr.preferencesHoursPastMidnight()}
             </span>
@@ -184,7 +234,7 @@ Changes are saved as they're made, as on macOS.
                     min="0"
                     max="9999"
                     bind:value={learnAheadMins}
-                    on:change={changed}
+                    on:input={changed}
                 />
                 {tr.preferencesMins()}
             </span>
@@ -195,10 +245,7 @@ Changes are saved as they're made, as on macOS.
         <h2>{tr.preferencesEditing()}</h2>
         <label class="row">
             <span>{tr.preferencesDefaultDeck()}</span>
-            <select
-                bind:value={editing.addingDefaultsToCurrentDeck}
-                on:change={changed}
-            >
+            <select bind:value={editing.addingDefaultsToCurrentDeck} on:input={changed}>
                 <option value={true}>
                     {tr.preferencesWhenAddingDefaultToCurrentDeck()}
                 </option>
@@ -211,7 +258,7 @@ Changes are saved as they're made, as on macOS.
             <input
                 type="checkbox"
                 bind:checked={editing.pasteImagesAsPng}
-                on:change={changed}
+                on:input={changed}
             />
             {tr.preferencesPasteClipboardImagesAsPng()}
         </label>
@@ -219,7 +266,7 @@ Changes are saved as they're made, as on macOS.
             <input
                 type="checkbox"
                 bind:checked={editing.pasteStripsFormatting}
-                on:change={changed}
+                on:input={changed}
             />
             {tr.preferencesPasteWithoutShiftKeyStripsFormatting()}
         </label>
@@ -227,7 +274,7 @@ Changes are saved as they're made, as on macOS.
             <input
                 type="checkbox"
                 bind:checked={editing.renderLatex}
-                on:change={changed}
+                on:input={changed}
             />
             {tr.preferencesGenerateLatexImagesAutomatically()}
         </label>
@@ -241,14 +288,14 @@ Changes are saved as they're made, as on macOS.
                 type="text"
                 placeholder={tr.preferencesDefaultSearchTextExample()}
                 bind:value={editing.defaultSearchText}
-                on:change={changed}
+                on:input={changed}
             />
         </label>
         <label class="check">
             <input
                 type="checkbox"
                 bind:checked={editing.ignoreAccentsInSearch}
-                on:change={changed}
+                on:input={changed}
             />
             {tr.preferencesIgnoreAccentsInSearch()}
         </label>
@@ -264,7 +311,7 @@ Changes are saved as they're made, as on macOS.
                 rows="4"
                 spellcheck="false"
                 bind:value={latexPng}
-                on:change={latexChanged}
+                on:input={latexChanged}
             ></textarea>
         </label>
         <label class="block">
@@ -274,7 +321,7 @@ Changes are saved as they're made, as on macOS.
                 rows="4"
                 spellcheck="false"
                 bind:value={latexSvg}
-                on:change={latexChanged}
+                on:input={latexChanged}
             ></textarea>
         </label>
         {#if latexError}
@@ -288,39 +335,19 @@ Changes are saved as they're made, as on macOS.
         <p class="help">{tr.preferencesBackupExplanation()}</p>
         <label class="row">
             <span>{tr.preferencesDailyBackups()}</span>
-            <input
-                type="number"
-                min="0"
-                bind:value={backups.daily}
-                on:change={changed}
-            />
+            <input type="number" min="0" bind:value={daily} on:input={changed} />
         </label>
         <label class="row">
             <span>{tr.preferencesWeeklyBackups()}</span>
-            <input
-                type="number"
-                min="0"
-                bind:value={backups.weekly}
-                on:change={changed}
-            />
+            <input type="number" min="0" bind:value={weekly} on:input={changed} />
         </label>
         <label class="row">
             <span>{tr.preferencesMonthlyBackups()}</span>
-            <input
-                type="number"
-                min="0"
-                bind:value={backups.monthly}
-                on:change={changed}
-            />
+            <input type="number" min="0" bind:value={monthly} on:input={changed} />
         </label>
         <label class="row">
             <span>{tr.preferencesMinutesBetweenBackups()}</span>
-            <input
-                type="number"
-                min="5"
-                bind:value={backups.minimumIntervalMins}
-                on:change={changed}
-            />
+            <input type="number" min="5" bind:value={minInterval} on:input={changed} />
         </label>
     </section>
 

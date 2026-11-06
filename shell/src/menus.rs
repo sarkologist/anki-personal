@@ -412,6 +412,7 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
             if let Err(err) = ui.reimport() {
                 main_window::message(ui, &format!("Re-import failed: {err:#}"));
             }
+            crate::theme::apply(ui, None);
             refresh(ui);
         }
         "syncLogout" => main_window::logout(ui),

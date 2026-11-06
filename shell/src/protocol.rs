@@ -220,7 +220,7 @@ pub fn handle(shell: &Shell, label: &str, req: &Request<Vec<u8>>) -> HttpRespons
     }
     if let Some(rest) = path.strip_prefix("_addons/") {
         return match shell.addon_files.resolve(rest) {
-            Some((folder, file)) => file_response(&folder, &file),
+            Some((folder, file)) => themed(file_response(&folder, &file), shell.night.get()),
             None => text(StatusCode::NOT_FOUND, format!("not exported: {rest}")),
         };
     }
@@ -472,6 +472,15 @@ fn local_file(root: &Path, path: &str) -> HttpResponse {
 }
 
 /// `root/path` (guarded), as is.
+/// An HTML response in the current theme (an add-on's panel page).
+fn themed(mut resp: HttpResponse, night: bool) -> HttpResponse {
+    if night && resp.status() == StatusCode::OK && resp.headers()[CONTENT_TYPE] == "text/html" {
+        let html = crate::theme::apply_to_html(&String::from_utf8_lossy(resp.body()), true);
+        *resp.body_mut() = html.into_bytes();
+    }
+    resp
+}
+
 fn file_response(root: &Path, path: &str) -> HttpResponse {
     let Some(full) = safe_join(root, path) else {
         return text(StatusCode::FORBIDDEN, format!("invalid path: {path}"));
@@ -891,6 +900,21 @@ mod test {
         assert_eq!(
             get(&f, "reviewer", "_anki/css/reviewer.css").body(),
             b"body {}"
+        );
+        // add-on panels too
+        let addons = f._dir.path().join("addons21");
+        std::fs::create_dir_all(addons.join("frontier/web")).unwrap();
+        std::fs::write(addons.join("frontier/web/form.html"), "<html><body>").unwrap();
+        std::fs::write(addons.join("frontier/web/form.js"), "<html>").unwrap();
+        f.shell.addon_files.set_folder(Some(addons));
+        f.shell.addon_files.set_exports("frontier", r"web/.*");
+        assert_eq!(
+            get(&f, "addon-panel-1", "_addons/frontier/web/form.html").body(),
+            b"<html class=\"night-mode\" data-bs-theme=\"dark\"><body class=\"nightMode night_mode\">"
+        );
+        assert_eq!(
+            get(&f, "addon-panel-1", "_addons/frontier/web/form.js").body(),
+            b"<html>"
         );
     }
 

@@ -6,13 +6,18 @@
 //! (`get_preferences`/`set_preferences`); the shell's own (theme, LaTeX
 //! commands) through the bridge commands here.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::anyhow;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::json;
 use serde_json::Value;
+use tauri::Manager;
 
 use crate::app::Content;
 use crate::app::Ui;
@@ -22,7 +27,23 @@ use crate::theme::ThemePref;
 
 pub const LABEL: &str = "preferences";
 
+/// Set while the window flushes its page before closing.
+static CLOSING: AtomicBool = AtomicBool::new(false);
+/// Counts the windows opened, so a late close timeout leaves a new one.
+static OPENED: AtomicU64 = AtomicU64::new(0);
+/// How long closing waits for the page.
+const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+
 pub fn open(ui: &Ui) {
+    // already open: keep its page (and what's being typed)
+    if let Some(window) = ui.app.get_webview_window(LABEL) {
+        if !ui.background {
+            let _ = window.set_focus();
+        }
+        return;
+    }
+    CLOSING.store(false, Ordering::SeqCst);
+    OPENED.fetch_add(1, Ordering::SeqCst);
     if let Err(err) = ui.open_window(
         LABEL,
         &ui.main.tr.preferences_preferences(),
@@ -33,8 +54,56 @@ pub fn open(ui: &Ui) {
     }
 }
 
+/// Whether a close request should first save what's being typed (not when
+/// the page already did, or doesn't answer).
+pub fn wants_flush(_ui: &Ui) -> bool {
+    !CLOSING.load(Ordering::SeqCst)
+}
+
+/// Save the page's pending changes, then close: changes are saved shortly
+/// after typing stops, and a closing webview runs no more timers.
+pub fn close(ui: &Arc<Ui>) {
+    CLOSING.store(true, Ordering::SeqCst);
+    ui.eval(
+        LABEL,
+        "(async () => { try { await window.shellFlush?.(); } finally { \
+         pycmd('preferencesClosed'); } })();"
+            .into(),
+    );
+    let u = ui.clone();
+    let opened = OPENED.load(Ordering::SeqCst);
+    std::thread::spawn(move || {
+        std::thread::sleep(FLUSH_TIMEOUT);
+        if OPENED.load(Ordering::SeqCst) == opened {
+            destroy(&u);
+        }
+    });
+}
+
+fn destroy(ui: &Ui) {
+    if let Some(window) = ui.app.get_webview_window(LABEL) {
+        let _ = window.destroy();
+    }
+}
+
 pub fn register(ui: &Arc<Ui>) {
     let bridge = &ui.shell.bridge;
+    let u = ui.clone();
+    bridge.register("preferencesClosed", move |_, label, _| {
+        if label == LABEL {
+            destroy(&u);
+        }
+        Value::Null
+    });
+    // the collection's preferences changed: the queues and undo with them
+    let u = ui.clone();
+    bridge.register("preferencesChanged", move |_, label, _| {
+        if label == LABEL {
+            crate::menus::refresh(&u);
+            crate::main_window::refresh(&u);
+        }
+        Value::Null
+    });
     let u = ui.clone();
     bridge.register("shellPreferences", move |_, label, _| {
         if label != LABEL {
