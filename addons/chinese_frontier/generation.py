@@ -197,8 +197,7 @@ def validate_review(review: Any, candidate: Candidate, source: Source) -> bool:
             raise ValidationError("Malformed checked alternative")
         unit = (other.get("example"), other.get("ordinal"))
         word = other.get("word")
-        if unit in units and (word == units[unit] or (unit, word) in seen):
-            doubtful |= word != units[unit] and other.get("fits_context") is True
+        if unit in units and word == units[unit]:
             continue
         if unit not in units or not isinstance(word, str) or not is_word(word):
             raise ValidationError("Invalid checked alternative")
@@ -219,6 +218,9 @@ def validate_review(review: Any, candidate: Candidate, source: Source) -> bool:
             fits = len(word) == len(source.word) and all(
                 word[i] == char for i, char in enumerate(source.word) if char != hidden
             )
+        if (unit, word) in seen:
+            doubtful |= other["fits_context"] and fits
+            continue
         # The blank's shape decides this exactly; a reviewer that misjudges it
         # (e.g. answering about meaning) must not void the whole batch.
         other["fits_cloze"] = fits
@@ -422,23 +424,27 @@ Data:\n""" + json.dumps(
         if not isinstance(reports, list):
             reports = []
         expected = {(s.card_id, v.candidate.sentence): (s, v) for s, v in items}
-        indexed: dict[tuple[Any, Any], Any] = {}
+        indexed: dict[tuple[Any, Any], list[Any]] = {}
         for report in reports:
             key = (
                 (report.get("card_id"), report.get("sentence"))
                 if isinstance(report, dict)
                 else (None, None)
             )
-            # Unknown or repeated reviews are ignored; the first one counts.
-            if key in expected and key not in indexed:
-                indexed[key] = report
+            # Unknown reviews are ignored.
+            if key in expected:
+                indexed.setdefault(key, []).append(report)
         for key, (source, valid) in expected.items():
-            # A missing or malformed review rejects only its own candidate.
-            report = indexed.get(key)
+            # A missing or malformed review rejects only its own candidate, and
+            # a repeated review approves only if every copy approves.
             try:
-                if report is None:
+                if key not in indexed:
                     raise ValidationError("Language review omitted this candidate")
-                approved = validate_review(report, valid.candidate, source)
+                verdicts = [
+                    (validate_review(r, valid.candidate, source), r)
+                    for r in indexed[key]
+                ]
+                approved, report = next((v for v in verdicts if not v[0]), verdicts[0])
             except ValidationError as exc:
                 report = {"approved": False, "reason": str(exc), "alternatives": []}
                 approved = False

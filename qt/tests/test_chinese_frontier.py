@@ -1242,6 +1242,43 @@ def test_malformed_replies_cost_only_their_own_target(
     assert "omitted" in result.deferred[second.key]
 
 
+def test_a_repeated_review_approves_only_if_every_copy_does(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    target, c = source(), candidate()
+    rejecting = audit_report(target, c)
+    rejecting["alternatives"][0]["fits_context"] = True
+    fake_generator(
+        monkeypatch,
+        lexicon,
+        [
+            {"proposals": [{"card_id": 1, "reason": "", "candidates": [asdict(c)]}]},
+            {"reviews": [audit_report(target, c), rejecting]},
+        ],
+    )
+    result = generate(
+        [target],
+        {w: "familiar" for w in ("这", "本", "书", "有", "一", "页")},
+        {},
+        tmp_path,
+        Event(),
+    )
+    assert not result.drafts
+
+
+def test_a_repeated_row_that_misses_the_visible_characters_is_harmless() -> None:
+    target = source("学生")
+    c = Candidate(
+        "学生有一页。", "The student has one page.", "xué shēng", "", "characters"
+    )
+    report = audit_report(target, c)
+    # 千 cannot fill 学_ or _生, whatever the reviewer says about meaning.
+    report["alternatives"] += [
+        {**row, "fits_context": True} for row in report["alternatives"]
+    ]
+    assert validate_review(report, c, target)
+
+
 def test_review_skips_repeated_and_self_checks_but_keeps_their_doubts() -> None:
     target, c = source(), candidate()
     report = audit_report(target, c)

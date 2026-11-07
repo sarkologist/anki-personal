@@ -209,8 +209,8 @@ def sentence_problems(
 ) -> tuple[list[str], tuple[str, ...]]:
     """The checks on the example text alone, with its context words.
 
-    The writer's check_sentence tool runs exactly these, so a sentence the tool
-    accepts can only fail validation on its translation, pinyin or hint.
+    The writer's check_sentence tool runs exactly these; validate_candidate adds
+    the translation, pinyin, hint and contrast-pair checks.
     """
     problems = []
     if (

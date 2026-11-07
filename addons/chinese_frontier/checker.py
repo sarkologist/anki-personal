@@ -4,8 +4,9 @@
 
 Run as `python checker.py <data.json>`. It loads core and lexicon without the
 package __init__, so it needs neither aqt nor a profile, and it applies the same
-sentence_problems() the admission gate does: a sentence it accepts can only fail
-on its translation, pinyin or hint.
+sentence_problems() the admission gate does. A sentence it accepts can still fail
+on its translation, pinyin or hint, or as a contrast pair (the pair rules need
+both examples).
 """
 
 from __future__ import annotations
