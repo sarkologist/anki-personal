@@ -204,26 +204,49 @@ class Validated:
     card_count: int = 1
 
 
+def sentence_problems(
+    sentence: str, source: Source, known: set[str], lexicon: Lexicon, mode: str
+) -> tuple[list[str], tuple[str, ...]]:
+    """The checks on the example text alone, with its context words.
+
+    The writer's check_sentence tool runs exactly these, so a sentence the tool
+    accepts can only fail validation on its translation, pinyin or hint.
+    """
+    problems = []
+    if (
+        source.force_repair
+        and mode == "word"
+        and source.avoid_sentence
+        and sentence == source.avoid_sentence
+    ):
+        problems.append("Replace the rejected sentence with a different example")
+    if sentence in source.rejected_sentences:
+        problems.append("The learner rejected this sentence")
+    rest = sentence.replace(source.word, "", 1)
+    if avoided := [w for w in source.avoid_words if w in rest]:
+        problems.append("The learner asked to avoid: " + ", ".join(avoided))
+    if not 3 <= len(sentence) <= 60 or any(c in sentence for c in "<>{}\n\r"):
+        problems.append("Use a short plain Chinese sentence without markup")
+    if sentence.count(source.word) != 1:
+        problems.append("Target must occur exactly once")
+    tokens = lexicon.segment(sentence, extra=known | {source.word})
+    if tokens.count(source.word) != 1:
+        problems.append("Cloze a whole word, not part of a compound")
+    dependencies = tuple(dict.fromkeys(word for word in tokens if word != source.word))
+    if unknown := [word for word in dependencies if word not in known]:
+        problems.append("Unlearned context: " + ", ".join(unknown))
+    return problems, dependencies
+
+
 def validate_candidate(
     candidate: Candidate, source: Source, known: set[str], lexicon: Lexicon
 ) -> Validated:
     sentence = candidate.sentence
-    if (
-        source.force_repair
-        and candidate.mode == "word"
-        and source.avoid_sentence
-        and sentence == source.avoid_sentence
-    ):
-        raise ValidationError("Replace the rejected sentence with a different example")
-    if sentence in source.rejected_sentences:
-        raise ValidationError("The learner rejected this sentence")
-    rest = sentence.replace(source.word, "", 1)
-    if avoided := [w for w in source.avoid_words if w in rest]:
-        raise ValidationError("The learner asked to avoid: " + ", ".join(avoided))
-    if not 3 <= len(sentence) <= 60 or any(c in sentence for c in "<>{}\n\r"):
-        raise ValidationError("Use a short plain Chinese sentence without markup")
-    if sentence.count(source.word) != 1:
-        raise ValidationError("Target must occur exactly once")
+    problems, dependencies = sentence_problems(
+        sentence, source, known, lexicon, candidate.mode
+    )
+    if problems:
+        raise ValidationError(problems[0])
     if not candidate.translation or len(candidate.translation) > 500:
         raise ValidationError("A short English translation is required")
     if not candidate.pinyin or len(candidate.pinyin) > 100:
@@ -232,13 +255,6 @@ def validate_candidate(
         raise ValidationError("Use a short plain meaning hint")
     if source.word in candidate.hint:
         raise ValidationError("Hint reveals the Chinese answer")
-    tokens = lexicon.segment(sentence, extra=known | {source.word})
-    if tokens.count(source.word) != 1:
-        raise ValidationError("Cloze a whole word, not part of a compound")
-    dependencies = tuple(dict.fromkeys(word for word in tokens if word != source.word))
-    unknown = [word for word in dependencies if word not in known]
-    if unknown:
-        raise ValidationError("Unlearned context: " + ", ".join(unknown))
     if candidate.mode not in ("word", "contrast", "characters"):
         raise ValidationError("Invalid disambiguation mode")
     if len(candidate.explanation) > 1500:

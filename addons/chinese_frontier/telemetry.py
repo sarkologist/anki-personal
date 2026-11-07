@@ -27,6 +27,7 @@ def request_model(
     attempt: int,
     targets: list[dict[str, Any]],
     progress: Observer | None,
+    checker: dict[str, Any] | None = None,
 ) -> Any:
     provider = str(config.get("provider", "codex"))
     event = {
@@ -47,7 +48,11 @@ def request_model(
         progress(event.copy())
     started = time.monotonic()
     try:
-        response = client.request(prompt, schema)
+        response = (
+            client.request(prompt, schema, checker)
+            if checker is not None
+            else client.request(prompt, schema)
+        )
         event.update(
             status="ok", response_chars=len(json.dumps(response, ensure_ascii=False))
         )

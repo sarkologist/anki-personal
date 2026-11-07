@@ -1096,6 +1096,166 @@ def fake_generator(monkeypatch, lexicon: Lexicon, responses: list) -> list[str]:
     return prompts
 
 
+def test_check_sentence_server_applies_the_gates_segmentation(tmp_path: Path) -> None:
+    # The writer's tool must see the same compounds the gate does: 不+是 is
+    # the word 不是, unknown unless the learner knows it as a word.
+    import subprocess
+
+    from chinese_frontier import checker
+
+    words = ["不是", "吃饭", "我", "不", "是", "去", "吃", "饭", "想"]
+    words += [chr(0x4E00 + i) * 2 for i in range(10000)]
+    (tmp_path / "cedict-headwords.txt").write_text("\n".join(words), "utf-8")
+    data = tmp_path / "checker.json"
+    data.write_text(
+        json.dumps(
+            {
+                "dictionary": str(tmp_path),
+                "known": ["我", "不", "是", "去", "吃", "饭"],
+                "targets": {"7": {"word": "想", "avoid_words": ["饭"]}},
+            }
+        ),
+        "utf-8",
+    )
+
+    def call(n: int, arguments: dict) -> dict:
+        return {
+            "jsonrpc": "2.0",
+            "id": n,
+            "method": "tools/call",
+            "params": {"name": checker.TOOL, "arguments": arguments},
+        }
+
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        call(3, {"card_id": 7, "sentence": "我不是想去。", "mode": "word"}),
+        call(4, {"card_id": 7, "sentence": "我想去。", "mode": "word"}),
+        call(5, {"card_id": 7, "sentence": "我想吃饭。", "mode": "word"}),
+    ]
+    output = subprocess.run(
+        [sys.executable, "-I", checker.__file__, str(data)],
+        input="".join(json.dumps(m) + "\n" for m in messages),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout
+    replies = {r["id"]: r["result"] for r in map(json.loads, output.splitlines())}
+    assert set(replies) == {1, 2, 3, 4, 5}
+    assert replies[1]["capabilities"] == {"tools": {}}
+    assert [t["name"] for t in replies[2]["tools"]] == [checker.TOOL]
+    verdicts = {n: json.loads(replies[n]["content"][0]["text"]) for n in (3, 4, 5)}
+    assert verdicts[3]["unknown_words"] == ["不是"] and not verdicts[3]["ok"]
+    assert verdicts[4] == {
+        "ok": True,
+        "problems": [],
+        "context_words": ["我", "去"],
+        "unknown_words": [],
+    }
+    assert verdicts[5]["problems"] == [
+        "The learner asked to avoid: 饭",
+        "Unlearned context: 吃饭",
+    ]
+
+
+def test_claude_command_offers_only_the_check_tool(tmp_path: Path) -> None:
+    from chinese_frontier.checker import TOOL_NAME
+
+    plain = cli_command("claude", "/claude", tmp_path, {})
+    assert json.loads(plain[plain.index("--mcp-config") + 1]) == {"mcpServers": {}}
+    assert "--allowedTools" not in plain
+    server = ["/python", "-I", "checker.py", "data.json"]
+    command = cli_command("claude", "/claude", tmp_path, {}, checker=server)
+    assert command[command.index("--tools") + 1] == ""
+    assert json.loads(command[command.index("--mcp-config") + 1]) == {
+        "mcpServers": {"frontier": {"command": "/python", "args": server[1:]}}
+    }
+    assert command[command.index("--allowedTools") + 1] == TOOL_NAME
+    assert "--mcp-config" not in cli_command("codex", "/codex", tmp_path, {})
+
+
+def test_writer_sees_every_known_word_and_gets_the_checker(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    from chinese_frontier import generation
+
+    calls = []
+    monkeypatch.setattr(generation.Lexicon, "load", lambda _folder: lexicon)
+    monkeypatch.setattr(generation.CliGenerator, "__init__", lambda *args: None)
+    monkeypatch.setattr(generation.CliGenerator, "check_login", lambda self: None)
+    monkeypatch.setattr(generation, "checker_available", lambda provider: True)
+
+    def request(self, prompt, schema, checker=None):
+        calls.append((prompt, checker))
+        return {"proposals": []}
+
+    monkeypatch.setattr(generation.CliGenerator, "request", request)
+    known = {chr(0x5000 + i): "familiar" for i in range(1000)} | {"书": "book"}
+    target = replace(source(), avoid_words=("页",))
+    generate([target], known, {"provider": "claude"}, tmp_path, Event())
+    prompt, checker = calls[0]
+    data = json.loads(prompt.split("Data:\n", 1)[1])
+    assert len(data["known_words"]) <= 160
+    assert set(data["all_known_words"].split("、")) == set(known)
+    assert "check_sentence" in prompt
+    assert checker["known"] == sorted(known)
+    assert checker["dictionary"] == str(tmp_path)
+    assert checker["targets"]["1"]["word"] == "百"
+    assert checker["targets"]["1"]["avoid_words"] == ["页"]
+
+
+def test_malformed_replies_cost_only_their_own_target(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    # A voided batch defers nothing, so the next cycle would repeat it.
+    first, second = source(), Source(5, 6, 3, "学生", "xué shēng - student", "o")
+    c1 = candidate()
+    c2 = Candidate("学生有一页。", "The student has one page.", "xué shēng", "")
+    fake_generator(
+        monkeypatch,
+        lexicon,
+        [
+            {
+                "proposals": [
+                    {"card_id": 99, "reason": "", "candidates": [asdict(c1)]},
+                    {"card_id": 1, "reason": "", "candidates": [asdict(c1)] * 4},
+                    {"card_id": 1, "reason": "", "candidates": []},
+                    "garbage",
+                    {"card_id": 5, "reason": "", "candidates": [asdict(c2)]},
+                ]
+            },
+            # The review repeats one candidate and omits the other.
+            {"reviews": [audit_report(first, c1), audit_report(first, c1), "x"]},
+            {"proposals": []},
+        ],
+    )
+    result = generate(
+        [first, second],
+        {w: "familiar" for w in ("这", "本", "书", "有", "一", "页")},
+        {},
+        tmp_path,
+        Event(),
+    )
+    assert [d.source.word for d in result.drafts] == ["百"]
+    assert "omitted" in result.deferred[second.key]
+
+
+def test_review_skips_repeated_and_self_checks_but_keeps_their_doubts() -> None:
+    target, c = source(), candidate()
+    report = audit_report(target, c)
+    row = report["alternatives"][0]
+    report["alternatives"] = [
+        {**row, "word": "百", "fits_context": True},
+        row,
+        {**row, "fits_context": False},
+    ]
+    assert validate_review(report, c, target)
+    report["alternatives"].append({**row, "fits_context": True})
+    assert not validate_review(report, c, target)
+
+
 def test_ambiguous_word_examples_never_escalate_to_contrast(
     tmp_path: Path, lexicon: Lexicon, monkeypatch
 ) -> None:
