@@ -8,12 +8,15 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Iterable
 from pathlib import Path
 from threading import Event, Lock
 from typing import Any
+
+from .checker import SERVER, TOOL_NAME
 
 
 class GenerationStopped(Exception):
@@ -98,7 +101,9 @@ def cli_command(
     schema: dict[str, Any],
     model: str = "",
     effort: str = "",
+    checker: list[str] | None = None,
 ) -> list[str]:
+    """checker is a check_sentence server command; only Claude is given it."""
     if provider == "codex":
         command = [
             executable,
@@ -141,11 +146,19 @@ def cli_command(
             "",
             "--strict-mcp-config",
             "--mcp-config",
-            '{"mcpServers":{}}',
+            json.dumps(
+                {
+                    "mcpServers": {SERVER: {"command": checker[0], "args": checker[1:]}}
+                    if checker
+                    else {}
+                }
+            ),
             "--disable-slash-commands",
             "--json-schema",
             json.dumps(schema),
         ]
+        if checker:
+            command.extend(["--allowedTools", TOOL_NAME])
         if model.strip():
             command.extend(["--model", model.strip()])
         if effort.strip():
@@ -197,6 +210,12 @@ def parse_response(provider: str, stdout: str, answer: str = "") -> dict[str, An
     if not isinstance(value, dict):
         raise ValueError("Sentence generation did not return a JSON object")
     return value
+
+
+def checker_available(provider: str) -> bool:
+    """Only Claude is given check_sentence, and only from a real Python: a
+    frozen Anki's sys.executable is the app itself."""
+    return provider == "claude" and Path(sys.executable).name.startswith("python")
 
 
 class CliGenerator:
@@ -251,7 +270,13 @@ class CliGenerator:
                     "Select first-party Claude subscription authentication"
                 )
 
-    def request(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+    def request(
+        self,
+        prompt: str,
+        schema: dict[str, Any],
+        checker: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """checker is check_sentence's data (see checker.py), when it applies."""
         if self.stop.is_set():
             raise GenerationStopped()
         if self.budget:
@@ -259,12 +284,24 @@ class CliGenerator:
         with tempfile.TemporaryDirectory(prefix="anki-chinese-frontier-") as temporary:
             folder = Path(temporary)
             (folder / "schema.json").write_text(json.dumps(schema), encoding="utf-8")
+            server = None
+            if checker is not None and checker_available(self.provider):
+                data = folder / "checker.json"
+                data.write_text(json.dumps(checker, ensure_ascii=False), "utf-8")
+                script = Path(__file__).with_name("checker.py")
+                server = [sys.executable, "-I", str(script), str(data)]
             # A file, not a pipe: polling communicate() with input=None stops
             # writing, so a CLI that starts reading late never saw a prompt
             # larger than the pipe buffer (16 KB on macOS), nor EOF.
             (folder / "prompt.txt").write_text(prompt, encoding="utf-8")
             command = cli_command(
-                self.provider, self.executable, folder, schema, self.model, self.effort
+                self.provider,
+                self.executable,
+                folder,
+                schema,
+                self.model,
+                self.effort,
+                server,
             )
             with (
                 (folder / "prompt.txt").open("rb") as stdin,
