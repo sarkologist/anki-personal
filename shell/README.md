@@ -249,7 +249,9 @@ Options:
   port alone.
   `--test harness/main-flow.js --test-page main` adds a test deck
   and reviews it through the deck list, overview and reviewer: keys, undo,
-  typed answers, audio, TTS and LaTeX. `harness/sync-flow.js` syncs through
+  typed answers, audio, TTS and LaTeX. `harness/shortcuts-reload.js` checks
+  that the main window's shortcuts survive a reload of the deck list.
+  `harness/sync-flow.js` syncs through
   the UI against a local server (`anki-sync-server` with
   `SYNC_USER1=test:pass`; point the copy's `customSyncUrl` at it and clear
   `syncKey`): log in and full upload, then `--auto-sync` for the sync on

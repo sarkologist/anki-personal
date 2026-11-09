@@ -176,7 +176,6 @@ fn open_route(ui: &Arc<Ui>, route: &str) {
     ) {
         tracing::error!(%err, route, "showing page failed");
     }
-    set_keys(ui);
     push_sync_state(ui);
 }
 
@@ -468,7 +467,6 @@ pub fn apply(ui: &Arc<Ui>, effects: Vec<Effect>) {
                 {
                     tracing::error!(%err, "loading the reviewer failed");
                 }
-                set_keys(ui);
             }
             Effect::Overview => show_overview(ui),
             Effect::DeckBrowser => show_deck_browser(ui),
@@ -643,7 +641,9 @@ fn shortcuts(ui: &Ui) -> crate::shortcuts::Shortcuts {
     crate::shortcuts::Shortcuts::new(&settings.answer_keys, &settings.shortcuts)
 }
 
-/// Tell the page which keys to send (`shortcuts::key_script`).
+/// Tell the page which keys to send (`shortcuts::key_script`). Every
+/// document starts without them, reloads included, so this runs on each
+/// `domDone`: `refresh` reloads a page that hasn't mounted yet.
 fn set_keys(ui: &Ui) {
     let s = shortcuts(ui);
     let mut actions: Vec<&str> = GLOBAL_ACTIONS.to_vec();
@@ -1698,10 +1698,14 @@ pub fn register(ui: &Arc<Ui>) {
         });
 }
 
-/// The main window's `domDone`: the reviewer page shows its first card.
+/// The main window's `domDone`: the page gets its shortcut keys, and the
+/// reviewer page shows its first card.
 pub fn dom_done(ui: &Arc<Ui>, label: &str) {
     if label != MAIN {
         return;
+    }
+    if state(ui) != MainState::Home {
+        set_keys(ui);
     }
     crate::testchan::main_page_loaded(ui);
     let is_reviewer = ui
