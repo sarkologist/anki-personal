@@ -119,8 +119,9 @@ def previous_lessons(deferred: dict[str, Any], keys: Iterable[str]) -> dict[str,
 
 
 def reviewed_lessons(deferred: dict[str, Any], keys: Iterable[str]) -> dict[str, Any]:
-    """Lessons from an audit of a real sentence. A writer's refusal is left out:
-    shown again, it talks the next attempt into refusing the same way."""
+    """A target's latest failure, if it was an audit of a real sentence. A writer's
+    refusal is left out: shown again, it talks the next attempt into refusing the
+    same way."""
     return {
         key: {k: v for k, v in lesson.items() if k != "writer_reason"}
         for key, lesson in previous_lessons(deferred, keys).items()
