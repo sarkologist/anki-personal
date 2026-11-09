@@ -101,7 +101,8 @@ character; repeated characters share an ordinal to prevent copying.
 Single-character and repeated-only words cannot use that fallback; as a last resort
 their blank shows the first sound of the answer's pinyin instead, as `[p…]`.
 Only words you could answer count as competitors: known words, words with a reviewed
-card and confusions you reported. A word containing the target never counts.
+card and confusions you reported. A word containing the target counts only if you
+reported it.
 
 A confusion you report (**I answered** in **Fix this sentence...**) is recorded in
 the note's `Source` field and rejects the sentence. The new sentence's context must

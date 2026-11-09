@@ -336,6 +336,17 @@ def needs_audit(fields: dict[str, str]) -> bool:
     )
 
 
+def _cloze_card_words(
+    fields: dict[str, str], model: dict[str, Any], ordinal: int
+) -> tuple[str, ...]:
+    return tuple(
+        word
+        for name, value in fields.items()
+        if cloze_field(model["tmpls"][0]["qfmt"], name)
+        for word in cloze_words(value, ordinal)
+    )
+
+
 def _basic_words(
     fields: dict[str, str],
     model: dict[str, Any],
@@ -728,6 +739,15 @@ def _scan(
             tag.casefold() in ("leech", EXCLUDE_TAG, RESTORED_TAG) for tag in tags
         )
         if excluded:
+            # Leeches are the words the learner confuses most.
+            if reps > 0:
+                familiar.update(
+                    _cloze_card_words(fields, model, ordinal)
+                    if model["type"] == 1
+                    else _basic_words(
+                        fields, model, ordinal, decks[home]["name"], front_field
+                    )[0]
+                )
             if queue == -1 and nid not in seen_notes and home in scope:
                 skip("excluded or leech")
                 seen_notes.add(nid)
@@ -747,12 +767,7 @@ def _scan(
             )
         if model["type"] == 1:
             template = model["tmpls"][0]
-            words = tuple(
-                word
-                for name, value in fields.items()
-                if cloze_field(template["qfmt"], name)
-                for word in cloze_words(value, ordinal)
-            )
+            words = _cloze_card_words(fields, model, ordinal)
             if characters:
                 words = ()
                 word = str(source_data.get("word", ""))

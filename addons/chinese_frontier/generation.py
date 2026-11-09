@@ -184,7 +184,8 @@ def is_competitor(
     """Whether the learner could give this word instead of the target. Without
     `answerable` (an audit being rechecked), the verdict from its review stands."""
     word = other["word"]
-    if word in source.reported_confusions:
+    # A contrast pair's own target can be answered in its other blank.
+    if word in source.reported_confusions or word == source.word:
         return True
     if target in word:
         return False
@@ -650,7 +651,7 @@ not become trivial copy-the-visible-character drills; defer if no useful recall 
             records,
             query + " " + json.dumps(deferred, ensure_ascii=False),
             common + sorted(known),
-            # Characters and initial are alternatives, so only one of them runs.
+            # Characters and initial are alternatives for any one target.
             96 + (min(attempt_index, 3) - 1) * 32,
         )
         # Meanings gain a gloss per card (up to 2 kB a word) and were 60% of

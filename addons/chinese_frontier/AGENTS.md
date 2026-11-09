@@ -10,7 +10,7 @@
 
 - Show the complete, unclozed English translation alongside each Chinese example on the front. Do not use declarative definition hints inside the blank: the task is contextual recall.
 - Supply enough context for a learner; do not rely on prior knowledge of idiomatic preference or favor the shortest sentence. Consider plausible competing words for every target, and acknowledge genuine synonym overlap rather than calling an alternative wrong.
-- A competing word counts only if the learner could answer it: a known word, a word with a reviewed card, or a reported confusion. A word containing the target (玩耍 for 玩) never counts.
+- A competing word counts only if the learner could answer it: a known word, a word with a reviewed card, or a reported confusion. Unless reported, a word containing the target (玩耍 for 玩) does not count.
 - A word with fewer than two different characters has no character fallback; its last resort is `initial` mode, a form cue the code derives from the target's pinyin (`[p…]`). It is a cue about sound, not a definition hint.
 - If fuller context and translation still cannot disambiguate, character clozes are an allowed last resort. Keep each character card contextual and count every resulting card against the deck limit; never infer whole-word familiarity from one character answer.
 

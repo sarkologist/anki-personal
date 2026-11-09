@@ -4094,3 +4094,32 @@ def test_a_repair_audits_an_initial_note_as_an_initial_note(
         s for s in snapshot(collection, settings, {}).sources if s.word == "百"
     )
     assert target.existing_candidate["mode"] == "initial"
+    c = Candidate.from_dict(target.existing_candidate)
+    assert c.mode == "initial"
+    text = note["Text"]
+    draft = audited_draft(target, c, audit_only=True)
+    assert admit(collection, settings, {}, [draft], lexicon).updated == [note.id]
+    assert collection.get_note(note.id)["Text"] == text
+
+
+def test_a_leech_the_learner_has_reviewed_is_familiar(collection: Collection) -> None:
+    settings, *_ = setup_sentence(collection)
+    note, card = add_word(collection, "千")
+    collection.db.execute("update cards set reps=20 where id=?", card.id)
+    note.tags.append("leech")
+    collection.update_note(note)
+    assert "千" in snapshot(collection, settings, {}).familiar
+
+
+def test_a_contrast_pairs_own_target_competes_in_the_other_blank() -> None:
+    target = replace(source(), reported_confusions=("千",))
+    c = thousand_contrast()
+    report = audit_report(target, c)
+    report["alternatives"][1].update(word="百", fits_context=True)
+    assert not validate_review(report, c, target, set())
+
+
+def test_a_reported_confusion_counts_even_if_it_contains_the_target() -> None:
+    c = candidate()
+    target = replace(source(), reported_confusions=("百万",))
+    assert not validate_review(fitting_report(target, c, "百万"), c, target, set())
