@@ -30,7 +30,7 @@ from ..preparation import (
     TIMEOUT_LESSON,
     buffer_size,
     preparation_needed,
-    previous_lessons,
+    reviewed_lessons,
 )
 from ..providers import (
     CALL_BUDGET,
@@ -605,7 +605,7 @@ class Controller:
                 on_approved=checkpoint,
                 progress=report,
                 observe=report,
-                lessons=previous_lessons(
+                lessons=reviewed_lessons(
                     self.state.get("deferred", {}), (t.key for t in targets)
                 ),
             )

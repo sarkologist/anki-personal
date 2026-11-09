@@ -13,6 +13,7 @@ from chinese_frontier.preparation import (  # noqa: E402
     pack_lesson,
     preparation_needed,
     read_lesson,
+    reviewed_lessons,
 )
 
 
@@ -63,6 +64,29 @@ def test_lesson_preserves_actionable_rejections_as_valid_bounded_json():
     assert read_lesson(saved)["alternatives"][0]["answer"] == "date limite"
     assert read_lesson(saved)["context_checks"][0]["sufficient"] is False
     assert read_lesson("legacy truncated {")["reason"] == "legacy truncated {"
+
+
+def test_only_a_review_of_a_real_sentence_becomes_a_lesson():
+    review = {
+        "reason": "psycho also fits",
+        "alternatives": [{"answer": "psycho", "fits_cloze": True}],
+        "writer_reason": "Impossible without therapy vocabulary.",
+    }
+    deferred = {
+        "refused": {"reason": pack_lesson("Needs abeille or ruche.")},
+        "invalid": {"reason": "Alternative must be a competing answer"},
+        "truncated": {"reason": '{"key": "x", "reas'},
+        "reviewed": {"reason": pack_lesson(review)},
+        "sentence": {
+            "reason": pack_lesson(
+                {"reason": "Too generic.", "rejected_candidate": {"sentence": "Il a."}}
+            )
+        },
+    }
+    lessons = reviewed_lessons(deferred, [*deferred, "never tried"])
+    assert set(lessons) == {"reviewed", "sentence"}
+    assert lessons["reviewed"]["alternatives"][0]["answer"] == "psycho"
+    assert "writer_reason" not in lessons["reviewed"]
 
 
 def test_buffer_prepares_ahead_without_changing_native_admission_capacity():
