@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,46 @@ def test_unknown_context_is_rejected():
         validate(
             candidate(), target(), learned("je", "le", "regarde", "parle"), dictionary()
         )
+
+
+def annotated(sentence, surface, *known, lemma="avoir", features="ind:pre:3:s"):
+    """A valid card whose context carries one annotation, with `a` in the lexicon."""
+    forms = [f for group in dictionary().forms.values() for f in group]
+    lex = Lexicon([*forms, Form("a", "avoir", "VER", "ind:pre:3:s")], [])
+    k = Knowledge()
+    for word in ("je", "le", "train", "regarde", "parle", *known):
+        k.learn(word, lex, 1, word)
+    use = {"surface": surface, "lemma": lemma, "pos": "VER", "features": features}
+    c = replace(candidate(), sentence=sentence, uses=(use,))
+    return lambda: validate(c, target(), k, lex)
+
+
+def test_verb_inside_a_known_phrase_may_be_annotated():
+    annotated("Il y a le train, je emprunte.", "a", "il y a")()
+
+
+def test_verb_after_an_elided_clitic_is_read_without_the_clitic():
+    annotated("Le train n'a je emprunte.", "n'a", "ne", "a")()
+
+
+def test_verb_inside_a_known_elided_phrase_may_be_annotated():
+    annotated("Le train n'a je emprunte.", "n'a", "n'a")()
+
+
+def test_wrong_analysis_inside_a_known_phrase_is_still_rejected():
+    with pytest.raises(ValidationError, match="annotation: a"):
+        annotated("Il y a le train, je emprunte.", "a", "il y a", features="inf")()
+
+
+def test_annotating_a_word_absent_from_the_sentence_names_it():
+    with pytest.raises(ValidationError, match="annotation: regarde"):
+        annotated(
+            "Il y a le train, je emprunte.",
+            "regarde",
+            "il y a",
+            lemma="regarder",
+            features="ind:pre:1:s",
+        )()
 
 
 def test_whole_word_has_visible_translation_and_no_definition_hint():

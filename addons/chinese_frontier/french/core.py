@@ -61,6 +61,12 @@ def full_form(unit: str, surfaces: Any, following: str = "") -> str:
     return next((f for f in full or ELISIONS.get(unit, ()) if f in surfaces), unit)
 
 
+def without_clitic(surface: str) -> str:
+    """The word after an elided clitic (n'a is a), which the lexicon lists alone."""
+    pieces = tokens(surface)
+    return pieces[1] if len(pieces) == 2 and pieces[0] in ELISIONS else surface
+
+
 def answer_pattern(answer: str) -> re.Pattern[str]:
     """Match a whole answer, also after an elided clitic (l'aube, j'étais),
     but never after an apostrophe inside a word (aujourd'hui)."""
@@ -475,21 +481,29 @@ def validate(
             raise ValidationError("Unlearned construction: " + construction)
     # Exhaustively identify the dictionary analysis used for each context unit.
     uses = {}
+    # A known phrase (il y a) is one unit, but its words can still be annotated.
+    phrase_words = {
+        word
+        for unit in dependencies
+        if len(tokens(unit)) > 1
+        for word in tokens(unit)
+    }
     for use in c.uses:
         if not isinstance(use, dict) or any(
             not isinstance(use.get(k), str)
             for k in ("surface", "lemma", "pos", "features")
         ):
             raise ValidationError("Invalid morphology annotation")
+        written = normalize(use["surface"])
+        if not lexicon.analyses(written):
+            written = without_clitic(written)
         key = "|".join(
-            normalize(use[k]) if k in ("surface", "lemma") else use[k]
-            for k in ("surface", "lemma", "pos", "features")
+            (written, normalize(use["lemma"]), use["pos"], use["features"])
         )
-        surface = normalize(use["surface"])
-        surface = resolved.get(surface, full_form(surface, known.surfaces))
+        surface = resolved.get(written, full_form(written, known.surfaces))
         matching = [
             f
-            for f in lexicon.analyses(use["surface"]) or lexicon.analyses(surface)
+            for f in lexicon.analyses(written) or lexicon.analyses(surface)
             if f.lemma == normalize(use["lemma"])
             and f.pos == use["pos"]
             and (
@@ -504,12 +518,19 @@ def validate(
             if len(matching) == 1
             else next((f for f in matching if f.key == key), None)
         )
-        if selected and normalize(use["surface"]) == answer:
+        if selected and written == answer:
             if selected.key != form.key:
                 raise ValidationError("Incorrect target morphology annotation")
             continue
-        if not selected or surface not in dependencies:
-            raise ValidationError("Incorrect context morphology annotation")
+        if not selected or (
+            surface not in dependencies and surface not in phrase_words
+        ):
+            # Named, so the writer can correct this word on its next attempt.
+            raise ValidationError(
+                "Incorrect context morphology annotation: " + use["surface"]
+            )
+        if surface not in dependencies:
+            continue
         uses[surface] = selected
         if selected.pos == "VER" and not known.recognizes(selected, lexicon):
             raise ValidationError("Unlearned context verb form: " + selected.surface)

@@ -118,6 +118,18 @@ def previous_lessons(deferred: dict[str, Any], keys: Iterable[str]) -> dict[str,
     }
 
 
+def reviewed_lessons(deferred: dict[str, Any], keys: Iterable[str]) -> dict[str, Any]:
+    """Lessons from an audit of a real sentence. A writer's refusal is left out:
+    shown again, it talks the next attempt into refusing the same way."""
+    return {
+        key: {k: v for k, v in lesson.items() if k != "writer_reason"}
+        for key, lesson in previous_lessons(deferred, keys).items()
+        if lesson.get("alternatives")
+        or lesson.get("context_checks")
+        or lesson.get("rejected_candidate")
+    }
+
+
 def buffer_size(config: dict[str, Any]) -> int:
     return max(0, min(16, int(config.get("buffer_notes", 0))))
 
