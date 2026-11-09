@@ -7,6 +7,7 @@ import hashlib
 import html
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
@@ -27,6 +28,7 @@ FEEDBACK_REASONS = {
     "giveaway": "Gives the answer away",
 }
 CLOZE = re.compile(r"\{\{c(\d+)::([^{}]*?)\}\}")
+MODES = ("word", "contrast", "characters", "initial")
 
 
 class ValidationError(ValueError):
@@ -173,9 +175,7 @@ class Candidate:
             raise ValidationError("Candidate fields must be strings")
         mode = value.get("mode", "word")
         explanation = value.get("explanation", "")
-        if mode not in ("word", "contrast", "characters") or not isinstance(
-            explanation, str
-        ):
+        if mode not in MODES or not isinstance(explanation, str):
             raise ValidationError("Invalid disambiguation mode or explanation")
         contrast = None
         if item := value.get("contrast"):
@@ -238,6 +238,16 @@ def sentence_problems(
     return problems, dependencies
 
 
+def pinyin_initial(pinyin: str) -> str:
+    """The first sound of a reading, as shown in the blank: zh, ch and sh are one."""
+    plain = unicodedata.normalize("NFD", pinyin).casefold()
+    match = re.search(r"[a-z]", plain)
+    if not match:
+        raise ValidationError("Target pronunciation is required")
+    head = plain[match.start() : match.start() + 2]
+    return (head if head in ("zh", "ch", "sh") else head[0]) + "…"
+
+
 def validate_candidate(
     candidate: Candidate, source: Source, known: set[str], lexicon: Lexicon
 ) -> Validated:
@@ -255,7 +265,7 @@ def validate_candidate(
         raise ValidationError("Use a short plain meaning hint")
     if source.word in candidate.hint:
         raise ValidationError("Hint reveals the Chinese answer")
-    if candidate.mode not in ("word", "contrast", "characters"):
+    if candidate.mode not in MODES:
         raise ValidationError("Invalid disambiguation mode")
     if len(candidate.explanation) > 1500:
         raise ValidationError("Disambiguation explanation is too long")
@@ -272,6 +282,11 @@ def validate_candidate(
             "{{c" + str(ordinals[char]) + "::" + char + "}}" for char in source.word
         )
         count = len(characters)
+    elif candidate.mode == "initial":
+        if len(set(source.word)) != 1:
+            raise ValidationError("Character fallback already covers this word")
+        cue = pinyin_initial(candidate.pinyin)
+        replacement = "{{c1::" + source.word + "::" + cue + "}}"
     text = html.escape(sentence).replace(source.word, replacement, 1)
     translation = html.escape(candidate.translation)
     if candidate.mode == "contrast":

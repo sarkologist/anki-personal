@@ -1254,6 +1254,7 @@ def test_a_repeated_review_approves_only_if_every_copy_does(
         [
             {"proposals": [{"card_id": 1, "reason": "", "candidates": [asdict(c)]}]},
             {"reviews": [audit_report(target, c), rejecting]},
+            {"proposals": [{"card_id": 1, "reason": "x", "candidates": []}]},
         ],
     )
     result = generate(
@@ -1262,6 +1263,7 @@ def test_a_repeated_review_approves_only_if_every_copy_does(
         {},
         tmp_path,
         Event(),
+        familiar={"千"},
     )
     assert not result.drafts
 
@@ -1319,6 +1321,7 @@ def test_ambiguous_word_examples_never_escalate_to_contrast(
         {},
         tmp_path,
         Event(),
+        familiar={"学者"},
     )
     assert result.drafts[0].candidate.mode == "characters"
     assert not any('mode="contrast"' in prompt for prompt in prompts)
@@ -3895,3 +3898,228 @@ def test_logged_reviews_never_share_an_id(collection: Collection) -> None:
     assert (
         collection.db.scalar("select count() from revlog where cid = ?", card.id) == 3
     )
+
+
+def test_a_void_review_keeps_its_real_reason_through_admission(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, _original, _card, initial = setup_sentence(collection)
+    note = collection.get_note(
+        admit(collection, settings, {}, [initial], lexicon).admitted[0]
+    )
+    note["Disambiguation"] = ""
+    collection.update_note(note)
+    target = next(
+        s for s in snapshot(collection, settings, {}).sources if s.word == "百"
+    )
+    draft = audited_draft(
+        target, Candidate.from_dict(target.existing_candidate), audit_only=True
+    )
+    reason = "Review must check the learner's answer: 千"
+    draft.audit.update(status="deferred", reason=reason)
+    draft.audit["checks"][-1]["review"] = {
+        "approved": False,
+        "reason": reason,
+        "alternatives": [],
+    }
+    result = admit(collection, settings, {}, [draft], lexicon)
+    assert result.rejected == {target.key: reason}
+    assert result.updated == [note.id]
+
+
+def fitting_report(target: Source, c: Candidate, word: str) -> dict:
+    report = audit_report(target, c)
+    report["alternatives"][0].update(word=word, fits_context=True)
+    return report
+
+
+def test_a_word_the_learner_cannot_answer_is_not_a_competitor() -> None:
+    target, c = source(), candidate()
+    assert validate_review(fitting_report(target, c, "千"), c, target, {"万"})
+
+
+def test_a_word_the_learner_can_answer_still_rejects() -> None:
+    target, c = source(), candidate()
+    assert not validate_review(fitting_report(target, c, "千"), c, target, {"千"})
+
+
+def test_a_reported_confusion_rejects_even_if_unlearned() -> None:
+    c = candidate()
+    target = replace(source(), reported_confusions=("千",))
+    assert not validate_review(fitting_report(target, c, "千"), c, target, {"万"})
+
+
+def test_a_word_containing_the_target_is_not_a_competitor() -> None:
+    target, c = source(), candidate()
+    assert validate_review(fitting_report(target, c, "百万"), c, target, {"百万"})
+
+
+def test_the_verdict_at_review_time_holds_at_admission() -> None:
+    # The learner may learn the word between the review and admission.
+    target, c = source(), candidate()
+    report = fitting_report(target, c, "千")
+    assert validate_review(report, c, target, {"万"})
+    assert validate_review(json.loads(json.dumps(report)), c, target)
+
+
+def test_generate_counts_familiar_words_as_competitors(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    known = {w: "familiar" for w in ("这", "本", "书", "有", "一", "页")}
+    target = source("学生")
+    c = Candidate("学生有一页。", "The student has one page.", "xué shēng", "")
+
+    def run(familiar: set[str]) -> tuple[list, list[str]]:
+        prompts = fake_generator(
+            monkeypatch,
+            lexicon,
+            [
+                {
+                    "proposals": [
+                        {"card_id": 1, "reason": "", "candidates": [asdict(c)]}
+                    ]
+                },
+                {"reviews": [fitting_report(target, c, "老师")]},
+                {"proposals": [{"card_id": 1, "reason": "x", "candidates": []}]},
+            ],
+        )
+        result = generate([target], known, {}, tmp_path, Event(), familiar=familiar)
+        return result.drafts, prompts
+
+    assert run(set())[0]
+    drafts, prompts = run({"老师"})
+    assert not drafts
+    assert "老师" in prompts[1] and "老师" in prompts[0]
+
+
+def test_snapshot_lists_reviewed_words_as_familiar(collection: Collection) -> None:
+    settings, *_ = setup_sentence(collection)
+    _note, card = add_word(collection, "千")
+    add_word(collection, "万")
+    log_review(collection, card.id, days=1)
+    collection.db.execute("update cards set reps=1 where id=?", card.id)
+    familiar = snapshot(collection, settings, {}).familiar
+    assert "千" in familiar and "万" not in familiar
+
+
+@pytest.mark.parametrize(
+    "pinyin,cue",
+    [("pàng", "p…"), ("zhǎo", "zh…"), ("Chī", "ch…"), ("ài", "a…"), ("lǜ", "l…")],
+)
+def test_initial_cue_shows_the_first_sound(pinyin: str, cue: str) -> None:
+    c = replace(candidate(), mode="initial", pinyin=pinyin)
+    known = {"这", "本", "书", "有", "一", "页"}
+    lex = Lexicon(known | {"百"})
+    assert "{{c1::百::" + cue + "}}" in validate_candidate(c, source(), known, lex).text
+
+
+def test_initial_cue_needs_a_pronunciation(lexicon: Lexicon) -> None:
+    c = replace(candidate(), mode="initial", pinyin="???")
+    with pytest.raises(ValidationError, match="ronunciation"):
+        validate_candidate(c, source(), {"这", "本", "书", "有", "一", "页"}, lexicon)
+
+
+def test_initial_cue_is_only_for_words_without_a_character_fallback(
+    lexicon: Lexicon,
+) -> None:
+    c = replace(candidate("学生有一页。"), mode="initial", pinyin="xué shēng")
+    with pytest.raises(ValidationError, match="Character"):
+        validate_candidate(c, source("学生"), {"有", "一", "页"}, lexicon)
+
+
+def test_an_alternative_with_another_first_sound_does_not_reject() -> None:
+    target, c = source(), replace(candidate(), mode="initial", pinyin="bǎi")
+    report = fitting_report(target, c, "千")
+    report["alternatives"][0]["fits_cloze"] = False
+    assert validate_review(report, c, target, {"千"})
+    report["alternatives"][0]["fits_cloze"] = True
+    assert not validate_review(report, c, target, {"千"})
+
+
+def test_initial_cue_is_the_last_resort_for_a_single_character(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    known = {w: "familiar" for w in ("这", "本", "书", "有", "一", "页")}
+    target = source()
+    word = replace(candidate(), hint="", pinyin="bǎi")
+    cued = replace(word, mode="initial")
+    rejected = fitting_report(target, word, "千")
+    passed = fitting_report(target, cued, "千")
+    passed["alternatives"][0]["fits_cloze"] = False
+    prompts = fake_generator(
+        monkeypatch,
+        lexicon,
+        [
+            {"proposals": [{"card_id": 1, "reason": "", "candidates": [asdict(word)]}]},
+            {"reviews": [rejected]},
+            {"proposals": [{"card_id": 1, "reason": "", "candidates": [asdict(cued)]}]},
+            {"reviews": [passed]},
+        ],
+    )
+    result = generate([target], known, {}, tmp_path, Event(), familiar={"千"})
+    assert [d.candidate.mode for d in result.drafts] == ["initial"]
+    assert '"shown_initial": "b…"' in prompts[-1]
+
+
+def admitted_initial_note(col: Collection, lexicon: Lexicon):
+    settings, _original, _card, draft = setup_sentence(col)
+    c = replace(draft.candidate, hint="", mode="initial", pinyin="bǎi")
+    return settings, col.get_note(
+        admit(col, settings, {}, [audited_draft(draft.source, c)], lexicon).admitted[0]
+    )
+
+
+def test_initial_cue_shows_on_the_card(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    _settings, note = admitted_initial_note(collection, lexicon)
+    assert "[b…]" in note.cards()[0].question()
+
+
+def test_initial_cue_survives_the_presentation_upgrade(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    _settings, note = admitted_initial_note(collection, lexicon)
+    upgrade_presentation(collection)
+    assert "::b…}}" in collection.get_note(note.id)["Text"]
+
+
+def test_a_repair_audits_an_initial_note_as_an_initial_note(
+    collection: Collection, lexicon: Lexicon
+) -> None:
+    settings, note = admitted_initial_note(collection, lexicon)
+    note["Disambiguation"] = ""
+    collection.update_note(note)
+    target = next(
+        s for s in snapshot(collection, settings, {}).sources if s.word == "百"
+    )
+    assert target.existing_candidate["mode"] == "initial"
+    c = Candidate.from_dict(target.existing_candidate)
+    assert c.mode == "initial"
+    text = note["Text"]
+    draft = audited_draft(target, c, audit_only=True)
+    assert admit(collection, settings, {}, [draft], lexicon).updated == [note.id]
+    assert collection.get_note(note.id)["Text"] == text
+
+
+def test_a_leech_the_learner_has_reviewed_is_familiar(collection: Collection) -> None:
+    settings, *_ = setup_sentence(collection)
+    note, card = add_word(collection, "千")
+    collection.db.execute("update cards set reps=20 where id=?", card.id)
+    note.tags.append("leech")
+    collection.update_note(note)
+    assert "千" in snapshot(collection, settings, {}).familiar
+
+
+def test_a_contrast_pairs_own_target_competes_in_the_other_blank() -> None:
+    target = replace(source(), reported_confusions=("千",))
+    c = thousand_contrast()
+    report = audit_report(target, c)
+    report["alternatives"][1].update(word="百", fits_context=True)
+    assert not validate_review(report, c, target, set())
+
+
+def test_a_reported_confusion_counts_even_if_it_contains_the_target() -> None:
+    c = candidate()
+    target = replace(source(), reported_confusions=("百万",))
+    assert not validate_review(fitting_report(target, c, "百万"), c, target, set())

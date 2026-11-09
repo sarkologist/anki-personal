@@ -47,7 +47,7 @@ from .collection import (
     snapshot,
     upgrade_presentation,
 )
-from .core import FEEDBACK_REASONS
+from .core import FEEDBACK_REASONS, MODES
 from .diagnostics import Diagnostics
 from .generation import GenerationResult, generate
 from .lexicon import Lexicon
@@ -432,7 +432,7 @@ class Controller:
                 if event.get("type") != "call":
                     return
                 self.state.active_request = event
-                self.status = f"{event['phase']} (attempt {event['attempt']}/3)"
+                self.status = f"{event['phase']} (attempt {event['attempt']}/{len(MODES)})"
                 if event["finished"]:
                     self.state.model_calls = (self.state.model_calls + [event])[-30:]
                 self.save_state()
@@ -451,6 +451,7 @@ class Controller:
                 stop,
                 lessons=lessons,
                 contexts=getattr(current, "contexts", {}),
+                familiar=getattr(current, "familiar", ()),
                 on_approved=checkpoint,
                 progress=report,
                 observe=report,

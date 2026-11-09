@@ -27,8 +27,8 @@ editing the add-on's `meta.json` configuration, or the defaults before packaging
   Anki's daily new limit still decides how many are shown each day; only
   today's share is checked against the review limit. Shared by French.
 - `max_batches_per_day`: default 8. A hard ceiling in both modes; auto-fill only
-  spreads it over cycles. Failed attempts count. A batch costs up to three writer
-  and three audit calls.
+  spreads it over cycles. Failed attempts count. A batch costs up to four writer
+  and four audit calls.
 - `max_calls_per_day`: default 30. Hard ceiling on CLI calls per Anki day,
   checked before every writer, audit and ranking call; a batch that reaches it
   stops and keeps the cards already approved. French has its own count and may

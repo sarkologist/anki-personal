@@ -4,12 +4,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Container, Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from threading import Event
 from typing import Any, Callable
 
-from .core import Candidate, Source, Validated, ValidationError, validate_candidate
+from .core import (
+    MODES,
+    Candidate,
+    Source,
+    Validated,
+    ValidationError,
+    pinyin_initial,
+    validate_candidate,
+)
 from .lexicon import Lexicon, is_word
 from .preparation import brief, context_bundle, pack_lesson
 from .providers import CallTimeout, CliGenerator, checker_available
@@ -36,7 +45,7 @@ CANDIDATE_SCHEMA = object_schema(
             name: STRING
             for name in ("sentence", "translation", "pinyin", "hint", "explanation")
         },
-        "mode": {"type": "string", "enum": ["word", "contrast", "characters"]},
+        "mode": {"type": "string", "enum": list(MODES)},
         "contrast": {
             "anyOf": [
                 {"type": "null"},
@@ -166,7 +175,31 @@ def review_units(candidate: Candidate, source: Source) -> dict[tuple[int, int], 
     return units
 
 
-def validate_review(review: Any, candidate: Candidate, source: Source) -> bool:
+def is_competitor(
+    other: dict[str, Any],
+    target: str,
+    source: Source,
+    answerable: Container[str] | None,
+) -> bool:
+    """Whether the learner could give this word instead of the target. Without
+    `answerable` (an audit being rechecked), the verdict from its review stands."""
+    word = other["word"]
+    # A contrast pair's own target can be answered in its other blank.
+    if word in source.reported_confusions or word == source.word:
+        return True
+    if target in word:
+        return False
+    if answerable is None:
+        return other.get("competitor", True) is not False
+    return word in answerable
+
+
+def validate_review(
+    review: Any,
+    candidate: Candidate,
+    source: Source,
+    answerable: Container[str] | None = None,
+) -> bool:
     if (
         not isinstance(review, dict)
         or review.get("card_id") != source.card_id
@@ -218,8 +251,12 @@ def validate_review(review: Any, candidate: Candidate, source: Source) -> bool:
             fits = len(word) == len(source.word) and all(
                 word[i] == char for i, char in enumerate(source.word) if char != hidden
             )
+        elif candidate.mode == "initial":
+            # The code has no readings, so this one stays the reviewer's judgment.
+            fits = other["fits_cloze"]
+        other["competitor"] = is_competitor(other, units[unit], source, answerable)
         if (unit, word) in seen:
-            doubtful |= other["fits_context"] and fits
+            doubtful |= other["fits_context"] and fits and other["competitor"]
             continue
         # The blank's shape decides this exactly; a reviewer that misjudges it
         # (e.g. answering about meaning) must not void the whole batch.
@@ -241,7 +278,10 @@ def validate_review(review: Any, candidate: Candidate, source: Source) -> bool:
     return (
         review["approved"]
         and not doubtful
-        and not any(other["fits_context"] and other["fits_cloze"] for other in checked)
+        and not any(
+            other["fits_context"] and other["fits_cloze"] and other["competitor"]
+            for other in checked
+        )
     )
 
 
@@ -253,8 +293,10 @@ def validate_audit(draft: Draft) -> None:
     last = records[-1]
     if last.get("candidate") != asdict(draft.candidate):
         raise ValidationError("Disambiguation audit does not match the final card")
-    approved = validate_review(last.get("review"), draft.candidate, draft.source)
-    if not approved and not (draft.audit_only and audit.get("status") == "deferred"):
+    # A deferred audit approves nothing, and its review may be a void one.
+    if draft.audit_only and audit.get("status") == "deferred":
+        return
+    if not validate_review(last.get("review"), draft.candidate, draft.source):
         raise ValidationError("Disambiguation audit did not approve the final card")
 
 
@@ -267,6 +309,7 @@ def generate(
     *,
     lessons: dict[str, Any] | None = None,
     contexts: dict[str, list[dict[str, Any]]] | None = None,
+    familiar: Iterable[str] = (),
     on_approved: Callable[[list[Draft]], None] | None = None,
     progress: Callable[[dict[str, Any]], None] | None = None,
     observe: Callable[[dict[str, Any]], None] | None = None,
@@ -276,6 +319,8 @@ def generate(
     lexicon = Lexicon.load(dictionary_folder)
     lessons = lessons or {}
     contexts = contexts or {}
+    # What the learner could answer; familiar words may not appear in a sentence.
+    answerable = set(known) | set(familiar)
     records = {
         word: [meaning] + [r["context"] for r in contexts.get(word, [])]
         for word, meaning in known.items()
@@ -363,6 +408,11 @@ def generate(
                     {"example": e, "ordinal": o, "target": w}
                     for (e, o), w in review_units(valid.candidate, source).items()
                 ],
+                **(
+                    {"shown_initial": pinyin_initial(valid.candidate.pinyin)}
+                    if valid.candidate.mode == "initial"
+                    else {}
+                ),
             }
             for source, valid in items
         ]
@@ -383,7 +433,12 @@ For EVERY cloze unit, explicitly test at least one plausible competing word (pre
 several near-synonyms). Report each tested word, whether it fits the Chinese context
 ignoring the English translation (fits_context), whether it fits the visible cloze
 pattern (fits_cloze), and a concrete reason. Do not omit alternatives simply to approve.
-Word and contrast blanks hide the WHOLE word, so fits_cloze is always true. Contrast
+Competing words are those in learner_words and reported_confusions, so test those.
+A word outside them, or one containing the target (玩耍 for 玩), is not a competitor:
+never reject because of one.
+Word and contrast blanks hide the WHOLE word, so fits_cloze is always true. Initial
+mode also shows shown_initial, the first pinyin sound of the answer, in the blank:
+fits_cloze is true exactly when the alternative's reading begins with that sound. Contrast
 uses c1 for BOTH examples: both are hidden together; an answer elsewhere is not a cue.
 Characters mode assigns c1, c2, ... to each DIFFERENT character in order, on sibling
 cards. All repetitions of a character share its ordinal, preventing copying a visible
@@ -395,7 +450,7 @@ Each word in a candidate's reported_confusions is what the LEARNER answered inst
 the target: test every one of them as an alternative on the first example.
 Approve only natural everyday Chinese, correct target pinyin and accurate full
 translations, familiar context senses, and enough evidence for a LEARNER. Reject
-if ANY alternative fits both the Chinese context and visible pattern. A general
+if ANY competing word fits both the Chinese context and visible pattern. A general
 synonym like 拒绝 can still fit a polite refusal; do not invent exclusive usage rules.
 Paired examples must give a real distinguishing situation, not two synonym-compatible
 sentences with definitions. Do not rely on idiomatic preference, collocations the
@@ -408,6 +463,7 @@ Data:\n""" + json.dumps(
             {
                 "candidates": context,
                 "known_words": known_data,
+                "learner_words": "、".join(sorted(answerable)),
                 "context_evidence": {
                     w: contexts.get(w, [])[:2] for w in words if w in known
                 },
@@ -441,7 +497,7 @@ Data:\n""" + json.dumps(
                 if key not in indexed:
                     raise ValidationError("Language review omitted this candidate")
                 verdicts = [
-                    (validate_review(r, valid.candidate, source), r)
+                    (validate_review(r, valid.candidate, source, answerable), r)
                     for r in indexed[key]
                 ]
                 approved, report = next((v for v in verdicts if not v[0]), verdicts[0])
@@ -514,7 +570,9 @@ syntax or newlines, at most 60 Chinese characters per example. Supply accurate F
 English translations (shown on the front), target-only tone-marked pinyin, and EMPTY
 hint. The Chinese alone must rule out competing words; never rely on the translation
 to disambiguate (他已经玩腻了 fails: 吃腻/看腻 fit unless the Chinese mentions the
-playing). Prefer richer situational context over shortest length. An additional clause or
+playing). Competing words are those in all_known_words, familiar_words and
+reported_confusions; a word outside them, or one containing the target, is not one.
+familiar_words are only possible answers: never use them in a sentence. Prefer richer situational context over shortest length. An additional clause or
 sentence is allowed. Do not rely on idiom knowledge or an unstated intention. Never
 pretend genuinely overlapping synonyms are exclusive. Avoid unfamiliar grammar,
 names or idioms. Fix every problem the learner reported in learner_feedback; never reuse
@@ -527,6 +585,7 @@ specified below. Use the supplied context_evidence to stay within established se
     # The writer may use any known word, so it sees them all; meanings stay
     # with the retrieved subset, which is what made the prompt large.
     all_known = "、".join(sorted(known))
+    familiar_only = "、".join(sorted(answerable - set(known)))
     checker = {
         "dictionary": str(dictionary_folder),
         "known": sorted(known),
@@ -544,7 +603,7 @@ specified below. Use the supplied context_evidence to stay within established se
     # Ambiguous examples get fuller context or character cues. A contrast pair is
     # reserved for a confusion the learner actually reported, after context
     # alone failed to rule it out, and never replaces character cards.
-    for attempt_index, mode in enumerate(("word", "contrast", "characters"), 1):
+    for attempt_index, mode in enumerate(MODES, 1):
         pending = [
             source
             for source in sources
@@ -554,6 +613,7 @@ specified below. Use the supplied context_evidence to stay within established se
                 or (source.reported_confusions and source.existing_cards <= 1)
             )
             and (mode != "characters" or len(set(source.word)) >= 2)
+            and (mode != "initial" or len(set(source.word)) == 1)
         ]
         if not pending:
             continue
@@ -568,6 +628,14 @@ both natural full translations and a brief truthful explanation of the contextua
 difference. BOTH blanks must be recoverable without guessing an idiomatic preference.
 A broad synonym still fitting either example is grounds to return empty candidates.
 Earlier alternatives are supplied to help you avoid the same ambiguity."""
+        elif mode == "initial":
+            instruction = """Whole-word examples could not disambiguate, and no
+other character can stay visible. Propose up to 3 examples in mode="initial",
+contrast=null, explanation="". Code shows the first pinyin sound of the answer in
+the blank (胖 shows p…), so the context only has to rule out competing words that
+begin with the same sound. You may reuse a natural earlier sentence. Give the
+target's correct pinyin. If a competing word with that sound still fits, choose
+stronger context or return empty candidates."""
         else:
             instruction = """Whole-word examples could not disambiguate. Try ONE
 example in mode="characters", contrast=null, with a brief explanation. This is a
@@ -583,7 +651,8 @@ not become trivial copy-the-visible-character drills; defer if no useful recall 
             records,
             query + " " + json.dumps(deferred, ensure_ascii=False),
             common + sorted(known),
-            96 + (attempt_index - 1) * 32,
+            # Characters and initial are alternatives for any one target.
+            96 + (min(attempt_index, 3) - 1) * 32,
         )
         # Meanings gain a gloss per card (up to 2 kB a word) and were 60% of
         # this prompt. The writer needs the gist; the audit sees them whole.
@@ -610,6 +679,7 @@ not become trivial copy-the-visible-character drills; defer if no useful recall 
             ],
             "known_words": known_data,
             "all_known_words": all_known,
+            "familiar_words": familiar_only,
         }
         response = request(
             base_prompt
@@ -642,7 +712,7 @@ not become trivial copy-the-visible-character drills; defer if no useful recall 
             if not isinstance(candidates, list):
                 candidates = []
             # Extra candidates beyond the limit are ignored, not fatal.
-            candidates = candidates[: 3 if mode == "word" else 1]
+            candidates = candidates[: 3 if mode in ("word", "initial") else 1]
             if (
                 not candidates
                 and isinstance(proposal.get("reason"), str)

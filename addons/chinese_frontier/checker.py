@@ -26,7 +26,7 @@ TOOL_SCHEMA = {
     "properties": {
         "card_id": {"type": "integer", "description": "The target's card_id."},
         "sentence": {"type": "string", "description": "The example sentence."},
-        "mode": {"type": "string", "enum": ["word", "contrast", "characters"]},
+        "mode": {"type": "string", "enum": ["word", "contrast", "characters", "initial"]},
         "contrast_word": {
             "type": "string",
             "description": "Set only to check a contrast pair's second example.",
