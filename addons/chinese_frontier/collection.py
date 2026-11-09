@@ -117,6 +117,8 @@ class Snapshot:
     fixes: set[str] = field(default_factory=set)
     # When the scan began; holds placed later are not yet known to it.
     taken_at: float = 0.0
+    # Words with a reviewed card, established or not: the learner could answer them.
+    familiar: set[str] = field(default_factory=set)
 
     def slots(self, deck_id: int) -> int:
         return self.budget_slots(self.budgets.get(deck_id, []))
@@ -216,6 +218,14 @@ def existing_candidate(fields: dict[str, str], word: str) -> Candidate:
     def unfold(text: str) -> str:
         return plain_text(CLOZE.sub(lambda m: m[2].split("::", 1)[0], text))
 
+    if _json_field(fields.get("Source", "")).get("mode") == "initial":
+        return Candidate(
+            unfold(fields["Text"]),
+            plain_text(fields["Translation"]),
+            plain_text(fields["Pinyin"]),
+            "",
+            "initial",
+        )
     ordinals = {int(m[1]) for m in CLOZE.finditer(fields["Text"])}
     if len(set(word)) >= 2 and (
         len(ordinals) > 1
@@ -653,6 +663,7 @@ def _scan(
         )
     )
     covered_words: set[str] = set()
+    familiar: set[str] = set()
     audit_notes: dict[str, tuple[int, dict[str, str], list[str]]] = {}
     character_evidence: dict[int, list[tuple[int, bool]]] = {}
     character_words: dict[int, tuple[str, str]] = {}
@@ -745,6 +756,8 @@ def _scan(
             if characters:
                 words = ()
                 word = str(source_data.get("word", ""))
+                if is_word(word) and reps > 0:
+                    familiar.add(word)
                 if is_word(word) and home in vocabulary_scope:
                     character_words[nid] = (
                         word,
@@ -779,6 +792,8 @@ def _scan(
             words, hsk_level = _basic_words(
                 fields, model, ordinal, decks[home]["name"], front_field
             )
+        if reps > 0:
+            familiar.update(words)
         meaning = plain_text(fields.get("Meaning", fields.get(back_field, "")))
         if not meaning and model["type"] == 1:
             meaning = plain_text(
@@ -868,6 +883,7 @@ def _scan(
         contexts,
         lookahead_days(config),
         fixes,
+        familiar=familiar,
     )
 
 
@@ -1141,9 +1157,11 @@ def upgrade_presentation(col: Collection) -> OpChanges:
     for nid in col.find_notes(f'"note:{MODEL_NAME}" tag:{GENERATED_TAG}'):
         note = col.get_note(nid)
         reverted = _revert_unreported_contrast(note)
-        text = CLOZE.sub(
-            lambda m: "{{c" + m[1] + "::" + m[2].split("::", 1)[0] + "}}", note["Text"]
-        )
+        text = note["Text"]
+        if _json_field(note["Source"]).get("mode") != "initial":
+            text = CLOZE.sub(
+                lambda m: "{{c" + m[1] + "::" + m[2].split("::", 1)[0] + "}}", text
+            )
         kind = note["CardKind"]
         tags = note.tags
         if _is_character_cue(note):

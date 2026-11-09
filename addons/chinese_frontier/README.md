@@ -98,7 +98,10 @@ Generation independently checks plausible alternative answers for every blank.
 Ambiguous examples are rewritten with fuller context before using character clozes
 as a fallback. Character fallback assigns a separate ordinal to each distinct
 character; repeated characters share an ordinal to prevent copying.
-Single-character and repeated-only words cannot use that fallback.
+Single-character and repeated-only words cannot use that fallback; as a last resort
+their blank shows the first sound of the answer's pinyin instead, as `[p…]`.
+Only words you could answer count as competitors: known words, words with a reviewed
+card and confusions you reported. A word containing the target never counts.
 
 A confusion you report (**I answered** in **Fix this sentence...**) is recorded in
 the note's `Source` field and rejects the sentence. The new sentence's context must

@@ -451,6 +451,7 @@ class Controller:
                 stop,
                 lessons=lessons,
                 contexts=getattr(current, "contexts", {}),
+                familiar=getattr(current, "familiar", ()),
                 on_approved=checkpoint,
                 progress=report,
                 observe=report,
