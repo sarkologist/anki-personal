@@ -186,7 +186,10 @@ Options:
 
 - `--settings PATH`: the settings file (default
   `~/Library/Application Support/AnkiShell/settings.json`)
-- `--anki-base PATH`: another Anki base folder, e.g. a copy for testing
+- `--anki-base PATH`: another Anki base folder, e.g. a copy for testing.
+  Without `--settings`, the run saves its settings to
+  `PATH/AnkiShell/settings.json` and never to the live file; the first run
+  on a copy starts from the live settings, later runs from the copy's.
 - `--profile NAME`
 - `--ankiconnect-port N`: the native AnkiConnect port (0 disables it). The
   default, the API key and the CORS origins come from the AnkiConnect
@@ -212,6 +215,9 @@ Options:
 
   `--test-note 0` creates a fresh cloze note. The exit status is 0 on
   success. `--test` and `--bench` refuse to run on the live Anki folder.
+  Their settings changes (an import, a sync login) go to the copy's
+  `AnkiShell/settings.json`, so settings a test needs, such as `"plugins"`,
+  go there too.
   `harness/editor-save.js` checks that edits made just before a note switch
   are saved. `harness/editor-features.js` (same page) checks paste, undo,
   input method composition, MathJax/LaTeX, format buttons and options;
@@ -244,9 +250,9 @@ Options:
   `harness/browser-priority.js` (same page) checks Suspended Card
   Priority's column, sorting and menu through the plugin host; it needs the
   add-on in the copy's `addons21`, `"plugins": ["suspended_card_priority"]`
-  and the profile's `suspended-card-priority.json`. Pass
-  `--ankiconnect-port 0` to test runs, so they leave the running shell's
-  port alone.
+  in the copy's settings and the profile's `suspended-card-priority.json`.
+  Pass `--ankiconnect-port 0` to test runs, so they leave the running
+  shell's port alone.
   `--test harness/main-flow.js --test-page main` adds a test deck
   and reviews it through the deck list, overview and reviewer: keys, undo,
   typed answers, audio, TTS and LaTeX. `harness/shortcuts-reload.js` checks
