@@ -153,7 +153,7 @@ fn load_settings(
     let load = |path: &Path| -> Result<Settings> {
         let mut settings = Settings::load(path)?;
         if let Some(base) = anki_base {
-            settings.anki_base = Some(base.to_path_buf());
+            settings.use_anki_base_for_this_run(base.to_path_buf());
         }
         Ok(settings)
     };
@@ -172,8 +172,8 @@ fn load_settings(
     if !own.exists() {
         return Ok((own, settings));
     }
-    let mut settings = load(&own)?;
-    settings.anki_base = Some(base);
+    let mut settings = Settings::load(&own)?;
+    settings.use_anki_base_for_this_run(base);
     Ok((own, settings))
 }
 
@@ -1180,10 +1180,8 @@ mod test {
         let copy = dir.path().join("copy");
         std::fs::create_dir_all(&live_base).unwrap();
         std::fs::create_dir_all(&copy).unwrap();
-        let start = Settings {
-            anki_base: Some(copy.clone()),
-            ..Default::default()
-        };
+        let mut start = Settings::default();
+        start.anki_base = Some(copy.clone());
         start.save(&live).unwrap();
         let (path, _) = load_settings(None, None, &live, &live_base).unwrap();
         assert_eq!(path, copy.join("AnkiShell/settings.json"));
