@@ -6737,6 +6737,7 @@ dependencies = [
  "reqwest 0.12.23",
  "sha2 0.11.0",
  "tar",
+ "tempfile",
  "termcolor",
  "tokio",
  "which",

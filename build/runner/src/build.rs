@@ -26,6 +26,7 @@ pub struct BuildArgs {
 
 pub fn run_build(args: BuildArgs) {
     let build_root = &setup_build_root();
+    let _lock = lock_build_root(build_root);
 
     let path = if cfg!(windows) {
         format!(
@@ -114,6 +115,33 @@ pub fn run_build(args: BuildArgs) {
     }
 }
 
+/// Holds `build.lock` in the build root until the build ends, so builds
+/// sharing a build root (several sessions in one checkout) run one at a
+/// time. Interleaved builds mix their outputs: an overlap once left
+/// out/sveltekit with one SvelteKit build's page and another's scripts, and
+/// every SvelteKit page loaded blank.
+// File::lock is from Rust 1.89; rust-toolchain.toml pins a newer toolchain
+#[allow(clippy::incompatible_msrv)]
+fn lock_build_root(build_root: &Utf8Path) -> fs::File {
+    let path = build_root.join("build.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap_or_else(|e| panic!("opening {path}: {e}"));
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => {
+            println!("Waiting for another build in {build_root} to finish...");
+            file.lock()
+                .unwrap_or_else(|e| panic!("locking {path}: {e}"));
+        }
+        Err(fs::TryLockError::Error(e)) => panic!("locking {path}: {e}"),
+    }
+    file
+}
+
 fn get_ninja_command() -> &'static str {
     if which::which("n2").is_ok() {
         "n2"
@@ -195,4 +223,30 @@ fn maybe_update_env_file(build_root: &Utf8Path) {
     let current_env = format!("{build_root_env};{release};{other_watched_env}");
 
     write_if_changed(&env_file, &current_env);
+}
+
+#[cfg(test)]
+mod test {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn a_second_build_waits_for_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(dir.path()).unwrap().to_owned();
+        let first = lock_build_root(&root);
+        let (tx, rx) = mpsc::channel();
+        let r = root.clone();
+        let second = std::thread::spawn(move || {
+            let lock = lock_build_root(&r);
+            tx.send(()).unwrap();
+            lock
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        drop(first);
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        second.join().unwrap();
+    }
 }
