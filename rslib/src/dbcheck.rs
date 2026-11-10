@@ -677,7 +677,7 @@ mod test {
             }
         );
         let note = col.storage.get_note(note.id)?.unwrap();
-        assert_eq!(note.fields()[1], "b");
+        assert_eq!(&note.fields()[..], &["a\u{fffd}", "b"]);
 
         Ok(())
     }
