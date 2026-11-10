@@ -44,7 +44,9 @@ pub fn pending_key(label: &str, cmd: &str) -> String {
 
 #[derive(Debug, Clone)]
 pub struct Args {
-    pub settings: PathBuf,
+    /// `--settings`; None means the live file, or the copy's own file on
+    /// a run with `--anki-base` (see `settings_files`).
+    pub settings: Option<PathBuf>,
     /// Overrides the settings' Anki base folder for this run.
     pub anki_base: Option<PathBuf>,
     pub profile: Option<String>,
@@ -66,9 +68,7 @@ pub struct Args {
 impl Args {
     pub fn parse(mut it: impl Iterator<Item = String>) -> Result<Args> {
         let mut args = Args {
-            settings: dirs::data_dir()
-                .context("no data dir")?
-                .join("AnkiShell/settings.json"),
+            settings: None,
             anki_base: None,
             profile: None,
             web: None,
@@ -87,7 +87,7 @@ impl Args {
         while let Some(flag) = it.next() {
             let mut value = || it.next().with_context(|| format!("{flag} needs a value"));
             match flag.as_str() {
-                "--settings" => args.settings = value()?.into(),
+                "--settings" => args.settings = Some(value()?.into()),
                 "--anki-base" => args.anki_base = Some(value()?.into()),
                 "--profile" => args.profile = Some(value()?),
                 "--web" => args.web = Some(value()?.into()),
@@ -124,6 +124,57 @@ impl Args {
         }
         Ok(args)
     }
+
+    /// The settings for this run, and the file it saves them to.
+    pub fn load_settings(&self) -> Result<(PathBuf, Settings)> {
+        let live = dirs::data_dir()
+            .context("no data dir")?
+            .join("AnkiShell/settings.json");
+        load_settings(
+            self.settings.as_deref(),
+            self.anki_base.as_deref(),
+            &live,
+            &crate::settings::default_anki_base(),
+        )
+    }
+}
+
+/// `--settings` is loaded and saved as given. Otherwise a run whose Anki
+/// base is a copy (anything but the live folder, from `--anki-base` or the
+/// saved settings) saves to `<copy>/AnkiShell/settings.json`, so its sync
+/// logins and imports never reach the live file; until that file exists, it
+/// starts from the live settings.
+fn load_settings(
+    explicit: Option<&Path>,
+    anki_base: Option<&Path>,
+    live: &Path,
+    live_base: &Path,
+) -> Result<(PathBuf, Settings)> {
+    let load = |path: &Path| -> Result<Settings> {
+        let mut settings = Settings::load(path)?;
+        if let Some(base) = anki_base {
+            settings.use_anki_base_for_this_run(base.to_path_buf());
+        }
+        Ok(settings)
+    };
+    if let Some(path) = explicit {
+        return Ok((path.to_path_buf(), load(path)?));
+    }
+    let settings = load(live)?;
+    let base = anki_base
+        .map(Path::to_path_buf)
+        .or_else(|| settings.anki_base.clone())
+        .unwrap_or_else(|| live_base.to_path_buf());
+    if crate::sync::same_folder(&base, live_base) {
+        return Ok((live.to_path_buf(), settings));
+    }
+    let own = base.join("AnkiShell/settings.json");
+    if !own.exists() {
+        return Ok((own, settings));
+    }
+    let mut settings = Settings::load(&own)?;
+    settings.use_anki_base_for_this_run(base);
+    Ok((own, settings))
 }
 
 /// Bundled assets: `Resources/web` in the app bundle, else the dev build's
@@ -805,7 +856,9 @@ fn current_deck_id(shell: &Shell) -> Option<i64> {
 /// Test and bench runs create and edit notes, so they need a copy of the
 /// profiles, not the live ones.
 fn check_scratch_base(args: &Args, anki_base: &Path) -> Result<()> {
-    if (args.test.is_some() || args.bench) && anki_base == crate::settings::default_anki_base() {
+    if (args.test.is_some() || args.bench)
+        && crate::sync::same_folder(anki_base, &crate::settings::default_anki_base())
+    {
         anyhow::bail!(
             "--test and --bench change the collection; pass --anki-base with a copy of {}",
             anki_base.display()
@@ -816,19 +869,16 @@ fn check_scratch_base(args: &Args, anki_base: &Path) -> Result<()> {
 
 pub fn run(args: Args) -> Result<()> {
     let web = find_web(&args)?;
-    let mut settings = Settings::load(&args.settings)?;
-    if let Some(base) = &args.anki_base {
-        settings.use_anki_base_for_this_run(base.clone());
-    }
+    let (settings_path, mut settings) = args.load_settings()?;
     check_scratch_base(&args, &settings.anki_base())?;
     if args.import || settings.profiles.is_empty() {
         if let Err(err) = settings.import_from_anki() {
             tracing::warn!("{err:#}");
         }
-        settings.save(&args.settings)?;
+        settings.save(&settings_path)?;
     } else {
         match settings.import_theme_if_missing() {
-            Ok(true) => settings.save(&args.settings)?,
+            Ok(true) => settings.save(&settings_path)?,
             Ok(false) => {}
             Err(err) => tracing::warn!("{err:#}"),
         }
@@ -860,7 +910,7 @@ pub fn run(args: Args) -> Result<()> {
         app: app.clone(),
         evals: Evals::default(),
         editors: Editors::default(),
-        settings_path: args.settings.clone(),
+        settings_path,
         settings: Mutex::new(settings),
         geometry: args.geometry,
         background: args.background,
@@ -1078,5 +1128,79 @@ mod test {
         assert!(check_scratch_base(&args(&["--bench"]), &live).is_err());
         assert!(check_scratch_base(&args(&["--test", "x.js"]), Path::new("/tmp/copy")).is_ok());
         assert!(check_scratch_base(&args(&[]), &live).is_ok());
+    }
+
+    /// A run on a copy that saves (a sync login, a re-import) must leave
+    /// the live settings alone, and later runs on the copy must see it.
+    #[test]
+    fn a_run_on_a_copy_never_writes_the_live_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("live/AnkiShell/settings.json");
+        let live_base = dir.path().join("live/Anki2");
+        let copy = dir.path().join("copy");
+        std::fs::create_dir_all(&live_base).unwrap();
+        std::fs::create_dir_all(&copy).unwrap();
+        let mut start = Settings::default();
+        start.profiles.push(crate::settings::Profile {
+            name: "User 1".into(),
+            sync: Default::default(),
+        });
+        start.profiles[0].sync.sync_key = Some("ankiweb-key".into());
+        start.save(&live).unwrap();
+        let before = std::fs::read_to_string(&live).unwrap();
+
+        let run = || load_settings(None, Some(&copy), &live, &live_base).unwrap();
+        let (path, mut settings) = run();
+        assert_eq!(settings.profiles.len(), 1, "starts from the live settings");
+        assert_eq!(settings.anki_base(), copy);
+        let auth = crate::sync::SyncAuth {
+            hkey: "loopback-key".into(),
+            ..Default::default()
+        };
+        crate::sync::store_login(&mut settings.profiles[0].sync, "test", &auth);
+        settings.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&live).unwrap(), before);
+
+        let (_, again) = run();
+        assert_eq!(
+            again.profiles[0].sync.sync_key.as_deref(),
+            Some("loopback-key"),
+            "the next run on the copy reads the copy's settings"
+        );
+        assert_eq!(again.anki_base(), copy);
+    }
+
+    /// A copy saved as the base (by an older run, or by hand) counts as a
+    /// copy even without `--anki-base`.
+    #[test]
+    fn a_saved_copy_base_saves_to_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("live/AnkiShell/settings.json");
+        let live_base = dir.path().join("live/Anki2");
+        let copy = dir.path().join("copy");
+        std::fs::create_dir_all(&live_base).unwrap();
+        std::fs::create_dir_all(&copy).unwrap();
+        let mut start = Settings::default();
+        start.anki_base = Some(copy.clone());
+        start.save(&live).unwrap();
+        let (path, _) = load_settings(None, None, &live, &live_base).unwrap();
+        assert_eq!(path, copy.join("AnkiShell/settings.json"));
+    }
+
+    #[test]
+    fn explicit_settings_and_the_live_base_use_the_given_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = dir.path().join("live.json");
+        let live_base = dir.path().join("Anki2");
+        std::fs::create_dir_all(&live_base).unwrap();
+        let given = dir.path().join("given.json");
+        let copy = dir.path().join("copy");
+        let (path, settings) = load_settings(Some(&given), Some(&copy), &live, &live_base).unwrap();
+        assert_eq!((path, settings.anki_base()), (given, copy));
+        let load = |base: Option<&Path>| load_settings(None, base, &live, &live_base).unwrap().0;
+        assert_eq!(load(None), live);
+        assert_eq!(load(Some(&live_base)), live);
+        // the live folder by another name is still the live folder
+        assert_eq!(load(Some(&live_base.join("../Anki2"))), live);
     }
 }
