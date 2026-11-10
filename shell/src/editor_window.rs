@@ -289,8 +289,10 @@ fn page_html(ui: &Ui, mode: Mode) -> String {
             String::new(),
         ),
     };
-    let body =
-        format!("<style>{CHROME_CSS}</style>{top}<iframe id=shell-side hidden></iframe>{bottom}");
+    let body = format!(
+        "<style>{CHROME_CSS}</style>{top}<iframe id=shell-side hidden></iframe>\
+         <div id=shell-side-split></div>{bottom}"
+    );
     pages::std_html(
         &ui.shell.web,
         &body,
@@ -319,9 +321,11 @@ body.shell-editor > .note-editor { grid-area: editor; height: auto; min-height: 
 #shell-top label { margin-left: 6px; }
 .shell-chooser { min-width: 140px; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; \
   white-space: nowrap; text-align: left; }
-#shell-side { grid-area: side; width: 380px; border: 0; border-left: 1px solid var(--border, #ccc); \
-  height: 100%; }
-#shell-side[hidden] { display: none; }
+#shell-side { grid-area: side; width: var(--shell-side, 380px); max-width: calc(100vw - 320px); \
+  border: 0; border-left: 1px solid var(--border, #ccc); height: 100%; }
+#shell-side[hidden], #shell-side[hidden] + #shell-side-split { display: none; }
+#shell-side-split { grid-area: side; justify-self: start; width: 6px; margin-left: -3px; \
+  cursor: col-resize; z-index: 1; }
 #shell-bottom { grid-area: bottom; display: flex; align-items: center; gap: 6px; padding: 6px 8px; \
   border-top: 1px solid var(--border, #ccc); font-size: 13px; }
 .shell-spacer { flex: 1; }
@@ -387,6 +391,30 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
         $("shell-deck").textContent = deck;
     }};
     window.shellSetHistory = (any) => {{ $("shell-history").disabled = !any; }};
+    // the side panel's splitter: the panel is the rightmost column
+    const sideWidth = {side_width};
+    if (sideWidth > 0) document.body.style.setProperty("--shell-side", sideWidth + "px");
+    const sideSplit = $("shell-side-split");
+    sideSplit.addEventListener("pointerdown", (e) => {{
+        e.preventDefault();
+        sideSplit.setPointerCapture(e.pointerId);
+        const frames = [...document.querySelectorAll("iframe")];
+        for (const f of frames) f.style.pointerEvents = "none";
+        const move = (ev) => {{
+            const w = Math.max(260, Math.min(innerWidth - ev.clientX, innerWidth - 320));
+            document.body.style.setProperty("--shell-side", w + "px");
+        }};
+        const end = () => {{
+            sideSplit.removeEventListener("pointermove", move);
+            sideSplit.removeEventListener("pointerup", end);
+            sideSplit.removeEventListener("pointercancel", end);
+            for (const f of frames) f.style.pointerEvents = "";
+            pycmd("editorSideWidth:" + Math.round($("shell-side").getBoundingClientRect().width));
+        }};
+        sideSplit.addEventListener("pointermove", move);
+        sideSplit.addEventListener("pointerup", end);
+        sideSplit.addEventListener("pointercancel", end);
+    }});
     const formatKeys = {keys};
     document.addEventListener("keydown", (e) => {{
         if (!browse && e.metaKey && !e.altKey && !e.ctrlKey && (e.key === "Enter" || e.code === "NumpadEnter")) {{
@@ -452,6 +480,7 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
         max_drop = MAX_DROP_BYTES,
         deleted = js(ui.main.tr.adding_note_deleted()),
         keys = Value::Array(keys),
+        side_width = ui.settings.lock().unwrap().editor.side_width,
     )
 }
 
@@ -1412,6 +1441,13 @@ pub fn register(ui: &Arc<Ui>) {
         Value::Null
     });
     reg("noteLoaded", |_, _, _| Value::Null);
+    reg("editorSideWidth", |ui, _, width| {
+        if let Ok(width) = width.parse() {
+            ui.settings.lock().unwrap().editor.side_width = width;
+            ui.save_settings_now();
+        }
+        Value::Null
+    });
     reg("ioImageLoaded", |_, _, _| Value::Null);
     // options
     reg("toggleSticky", |ui, label, args| {

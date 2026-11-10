@@ -87,6 +87,8 @@ pub struct EditorPrefs {
     pub last_highlight_color: Option<String>,
     pub add_tags_collapsed: bool,
     pub edit_tags_collapsed: bool,
+    /// The side panel's width, in pixels (0: the default).
+    pub side_width: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

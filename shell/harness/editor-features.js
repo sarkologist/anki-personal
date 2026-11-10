@@ -209,6 +209,29 @@ const panelText = await until("the side panel", () => side.contentDocument?.getE
     () => null,
 );
 check("side panel shown", [side.hidden, panelText], [false, "side panel"]);
+// its splitter resizes it, and the width is kept
+const sideSplit = document.getElementById("shell-side-split");
+const splitAt = sideSplit.getBoundingClientRect();
+const pointer = (type, x) =>
+    sideSplit.dispatchEvent(
+        new PointerEvent(type, {
+            pointerId: 1,
+            isPrimary: true,
+            clientX: x,
+            clientY: splitAt.top + 50,
+            bubbles: true,
+        }),
+    );
+const wantWidth = Math.round(side.getBoundingClientRect().width) + 100;
+pointer("pointerdown", splitAt.left + 3);
+pointer("pointermove", innerWidth - wantWidth);
+pointer("pointerup", innerWidth - wantWidth);
+check("side panel resized", Math.round(side.getBoundingClientRect().width), wantWidth);
+const keptWidth = await until("the kept width", async () => {
+    const w = (await bridge("testSettings"))?.editor?.sideWidth;
+    return w === wantWidth && w;
+}).catch(() => null);
+check("side panel width kept", keptWidth, wantWidth);
 const blocked = [];
 document.addEventListener("securitypolicyviolation", (e) => blocked.push(e.effectiveDirective));
 const mediaFrame = document.createElement("iframe");
