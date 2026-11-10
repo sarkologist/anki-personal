@@ -158,6 +158,32 @@ document.execCommand("insertText", false, "shell browser edited");
 await until("the edit saved", async () => (await bridge(`testNote:${firstNote}`))?.[0] === "shell browser edited");
 await until("the row redrawn", () => fronts().includes("shell browser edited"));
 check("the row shows the edit", fronts().includes("shell browser edited"), true);
+// an add-on's side panel, dragged as wide as it goes, stays in the window
+// and leaves the editor its room (with the table narrowed to give it some)
+document.body.style.setProperty("--shell-table", "400px");
+await bridge("testSidePanel:<p>side panel</p>");
+const side = document.getElementById("shell-side");
+await until("the side panel", () => !side.hidden);
+const sideSplit = document.getElementById("shell-side-split");
+const splitTop = sideSplit.getBoundingClientRect().top + 50;
+for (
+    const [type, x] of [["pointerdown", sideSplit.getBoundingClientRect().left + 3], ["pointermove", 10], [
+        "pointerup",
+        10,
+    ]]
+) {
+    sideSplit.dispatchEvent(
+        new PointerEvent(type, { pointerId: 1, isPrimary: true, clientX: x, clientY: splitTop, bubbles: true }),
+    );
+}
+check("the side panel stays in the window", Math.round(side.getBoundingClientRect().right) <= innerWidth, true);
+check(
+    "the editor keeps its room",
+    document.querySelector(".note-editor").getBoundingClientRect().width >= 315,
+    true,
+);
+side.hidden = true;
+document.body.style.removeProperty("--shell-table");
 
 // 4. Shift+click: several rows, no editor.
 press(rows()[2], { shift: true });
