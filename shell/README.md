@@ -187,7 +187,7 @@ Options:
 - `--settings PATH`: the settings file (default
   `~/Library/Application Support/AnkiShell/settings.json`)
 - `--anki-base PATH`: another Anki base folder, e.g. a copy for testing.
-  Without `--settings`, the run saves its settings to
+  Without `--settings`, a run on a copy saves its settings to
   `PATH/AnkiShell/settings.json` and never to the live file; the first run
   on a copy starts from the live settings, later runs from the copy's.
 - `--profile NAME`
@@ -215,9 +215,9 @@ Options:
 
   `--test-note 0` creates a fresh cloze note. The exit status is 0 on
   success. `--test` and `--bench` refuse to run on the live Anki folder.
-  Their settings changes (an import, a sync login) go to the copy's
-  `AnkiShell/settings.json`, so settings a test needs, such as `"plugins"`,
-  go there too.
+  Without `--settings`, their settings changes (an import, a sync login)
+  go to the copy's `AnkiShell/settings.json`, so settings a test needs,
+  such as `"plugins"`, go there too.
   `harness/editor-save.js` checks that edits made just before a note switch
   are saved. `harness/editor-features.js` (same page) checks paste, undo,
   input method composition, MathJax/LaTeX, format buttons and options;
