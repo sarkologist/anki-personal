@@ -321,8 +321,11 @@ body.shell-editor > .note-editor { grid-area: editor; height: auto; min-height: 
 #shell-top label { margin-left: 6px; }
 .shell-chooser { min-width: 140px; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; \
   white-space: nowrap; text-align: left; }
-#shell-side { grid-area: side; width: var(--shell-side, 380px); max-width: calc(100vw - 320px); \
-  border: 0; border-left: 1px solid var(--border, #ccc); height: 100%; }
+#shell-side { grid-area: side; width: var(--shell-side, 380px); \
+  max-width: max(200px, calc(100vw - 320px)); border: 0; \
+  border-left: 1px solid var(--border, #ccc); height: 100%; }
+body.shell-browse:not(.shell-no-note) > #shell-side \
+  { max-width: max(200px, calc(100vw - var(--shell-table, 60vw) - 325px)); }
 #shell-side[hidden], #shell-side[hidden] + #shell-side-split { display: none; }
 #shell-side-split { grid-area: side; justify-self: start; width: 6px; margin-left: -3px; \
   cursor: col-resize; z-index: 1; }
@@ -400,20 +403,22 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
         sideSplit.setPointerCapture(e.pointerId);
         const frames = [...document.querySelectorAll("iframe")];
         for (const f of frames) f.style.pointerEvents = "none";
+        // the editor keeps 320px (in Browse, right of the table)
+        const editor = document.querySelector(".note-editor");
+        const editorLeft = editor && editor.offsetParent ? editor.getBoundingClientRect().left : 0;
+        const most = Math.max(200, innerWidth - editorLeft - 320);
         const move = (ev) => {{
-            const w = Math.max(260, Math.min(innerWidth - ev.clientX, innerWidth - 320));
+            const w = Math.min(Math.max(260, innerWidth - ev.clientX), most);
             document.body.style.setProperty("--shell-side", w + "px");
         }};
         const end = () => {{
             sideSplit.removeEventListener("pointermove", move);
-            sideSplit.removeEventListener("pointerup", end);
-            sideSplit.removeEventListener("pointercancel", end);
+            for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) sideSplit.removeEventListener(t, end);
             for (const f of frames) f.style.pointerEvents = "";
             pycmd("editorSideWidth:" + Math.round($("shell-side").getBoundingClientRect().width));
         }};
         sideSplit.addEventListener("pointermove", move);
-        sideSplit.addEventListener("pointerup", end);
-        sideSplit.addEventListener("pointercancel", end);
+        for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) sideSplit.addEventListener(t, end);
     }});
     const formatKeys = {keys};
     document.addEventListener("keydown", (e) => {{
