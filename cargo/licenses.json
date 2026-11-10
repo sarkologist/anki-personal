@@ -1272,6 +1272,14 @@
     "repository": "https://github.com/orlp/foldhash"
   },
   {
+    "authors": "Orson Peters <orsonpeters@gmail.com>",
+    "description": "A fast, non-cryptographic, minimally DoS-resistant hashing algorithm.",
+    "license": "Zlib",
+    "license_file": null,
+    "name": "foldhash",
+    "repository": "https://github.com/orlp/foldhash"
+  },
+  {
     "authors": "Steven Fackler <sfackler@gmail.com>",
     "description": "A framework for Rust wrappers over C APIs",
     "license": "Apache-2.0 OR MIT",
@@ -1680,12 +1688,12 @@
     "repository": "https://github.com/rust-lang/hashbrown"
   },
   {
-    "authors": "kyren <kerriganw@gmail.com>",
+    "authors": null,
     "description": "HashMap-like containers that hold their key-value pairs in a user controllable order",
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "hashlink",
-    "repository": "https://github.com/kyren/hashlink"
+    "repository": "https://github.com/djc/hashlink"
   },
   {
     "authors": "Sean McArthur <sean@seanmonstar.com>",
@@ -3192,6 +3200,14 @@
     "repository": "https://github.com/3Hren/msgpack-rust"
   },
   {
+    "authors": null,
+    "description": "Helping to implement SQLite VFS.",
+    "license": "MIT",
+    "license_file": null,
+    "name": "rsqlite-vfs",
+    "repository": "https://github.com/Spxg/sqlite-wasm-rs"
+  },
+  {
     "authors": "Michele d'Amico <michele.damico@gmail.com>",
     "description": "Rust fixture based test framework. It use procedural macro to implement fixtures and table based tests.",
     "license": "Apache-2.0 OR MIT",
@@ -3646,6 +3662,14 @@
     "license_file": null,
     "name": "spirv",
     "repository": "https://github.com/gfx-rs/rspirv"
+  },
+  {
+    "authors": "Spxg <noz@live.com>",
+    "description": "`wasm32-unknown-unknown` bindings to the libsqlite3 library.",
+    "license": "MIT",
+    "license_file": null,
+    "name": "sqlite-wasm-rs",
+    "repository": "https://github.com/Spxg/sqlite-wasm-rs"
   },
   {
     "authors": "Robert Grosse <n210241048576@gmail.com>",
