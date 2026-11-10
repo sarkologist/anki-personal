@@ -818,7 +818,7 @@ pub fn run(args: Args) -> Result<()> {
     let web = find_web(&args)?;
     let mut settings = Settings::load(&args.settings)?;
     if let Some(base) = &args.anki_base {
-        settings.anki_base = Some(base.clone());
+        settings.use_anki_base_for_this_run(base.clone());
     }
     check_scratch_base(&args, &settings.anki_base())?;
     if args.import || settings.profiles.is_empty() {
