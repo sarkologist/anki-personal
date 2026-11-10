@@ -30,6 +30,10 @@ pub struct Settings {
     /// The old Anki's base folder (holding `prefs21.db` and the profile
     /// folders). None means the default location.
     pub anki_base: Option<PathBuf>,
+    /// `--anki-base` (a profile copy), for this run only: never saved, so
+    /// a run on a copy doesn't point later runs at it.
+    #[serde(skip)]
+    anki_base_for_run: Option<PathBuf>,
     /// Python with `aqt` installed, for the import and the plugin host.
     /// None means search the usual install locations.
     pub import_python: Option<PathBuf>,
@@ -172,8 +176,15 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    pub fn use_anki_base_for_this_run(&mut self, base: PathBuf) {
+        self.anki_base_for_run = Some(base);
+    }
+
     pub fn anki_base(&self) -> PathBuf {
-        self.anki_base.clone().unwrap_or_else(default_anki_base)
+        self.anki_base_for_run
+            .clone()
+            .or_else(|| self.anki_base.clone())
+            .unwrap_or_else(default_anki_base)
     }
 
     pub fn profile(&self, name: &str) -> Option<&Profile> {
@@ -435,6 +446,21 @@ mod test {
         };
         settings.merge_import(IMPORTED.as_bytes()).unwrap();
         assert_eq!(settings.startup_profile(), Some("Other"));
+    }
+
+    #[test]
+    fn a_run_on_a_copy_keeps_the_saved_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        Settings::default().save(&path).unwrap();
+        let mut settings = Settings::load(&path).unwrap();
+        settings.use_anki_base_for_this_run("/copy".into());
+        assert_eq!(settings.anki_base(), PathBuf::from("/copy"));
+        settings.save(&path).unwrap();
+        assert_eq!(
+            Settings::load(&path).unwrap().anki_base(),
+            default_anki_base()
+        );
     }
 
     #[test]
