@@ -25,6 +25,9 @@ xz2.workspace = true
 zip.workspace = true
 zstd.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 reqwest = { workspace = true, features = ["native-tls"] }
 
