@@ -55,14 +55,11 @@ impl From<Error> for AnkiError {
                     info: reason.to_owned(),
                 };
             }
+        } else if let Error::Utf8Error(..) = &err {
+            return utf8_error();
         } else if let Error::FromSqlConversionFailure(_, _, err) = &err {
             if let Some(_err) = err.downcast_ref::<Utf8Error>() {
-                return AnkiError::DbError {
-                    source: DbError {
-                        info: "".to_string(),
-                        kind: DbErrorKind::Utf8,
-                    },
-                };
+                return utf8_error();
             }
         }
         AnkiError::DbError {
@@ -74,17 +71,23 @@ impl From<Error> for AnkiError {
     }
 }
 
+fn utf8_error() -> AnkiError {
+    AnkiError::DbError {
+        source: DbError {
+            info: "".to_string(),
+            kind: DbErrorKind::Utf8,
+        },
+    }
+}
+
 impl From<FromSqlError> for AnkiError {
     fn from(err: FromSqlError) -> Self {
-        if let FromSqlError::Other(ref err) = err {
-            if let Some(_err) = err.downcast_ref::<Utf8Error>() {
-                return AnkiError::DbError {
-                    source: DbError {
-                        info: "".to_string(),
-                        kind: DbErrorKind::Utf8,
-                    },
-                };
+        match &err {
+            FromSqlError::Utf8Error(_) => return utf8_error(),
+            FromSqlError::Other(err) if err.downcast_ref::<Utf8Error>().is_some() => {
+                return utf8_error();
             }
+            _ => {}
         }
         AnkiError::DbError {
             source: DbError {

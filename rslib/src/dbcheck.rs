@@ -658,6 +658,31 @@ mod test {
     }
 
     #[test]
+    fn invalid_utf8_in_note_is_fixed() -> Result<()> {
+        let mut col = Collection::new();
+        let nt = col.get_notetype_by_name("Basic")?.unwrap();
+        let mut note = nt.new_note();
+        col.add_note(&mut note, DeckId(1))?;
+
+        // 0xff is never valid UTF-8; 0x1f is the field separator
+        col.storage
+            .db
+            .execute_batch("update notes set flds = cast(x'61ff1f62' as text)")?;
+        let out = col.check_database()?;
+        assert_eq!(
+            out,
+            CheckDatabaseOutput {
+                invalid_utf8: 1,
+                ..Default::default()
+            }
+        );
+        let note = col.storage.get_note(note.id)?.unwrap();
+        assert_eq!(note.fields()[1], "b");
+
+        Ok(())
+    }
+
+    #[test]
     fn deck_names() -> Result<()> {
         let mut col = Collection::new();
 
