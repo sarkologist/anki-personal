@@ -88,7 +88,8 @@ pub fn register(ui: &Arc<Ui>) {
     // a side panel's widgets
     let u = ui.clone();
     bridge.register("addonWidget", move |_, label, args| {
-        if !editor_window::is_editor(label) || !u.plugins.host.is_running() {
+        let drawn = editor_window::is_editor(label) || super::windows::is_window(label);
+        if !drawn || !u.plugins.host.is_running() {
             return Value::Null;
         }
         let Ok(msg) = serde_json::from_str::<Value>(args) else {
@@ -342,6 +343,9 @@ fn pages_closed(ui: &Ui, msg: &Value) {
         for label in editor_window_labels(&labels) {
             ui.shell.pages.remove(&page_id(label, widget));
         }
+        for label in super::windows::labels(ui) {
+            ui.shell.pages.remove(&page_id(&label, widget));
+        }
     }
 }
 
@@ -374,7 +378,17 @@ fn side_panel(ui: &Ui, label: &str, msg: &Value) {
 }
 
 fn load_side_panel(ui: &Ui, label: &str, root: u64, visible: bool) {
-    // the web views' pages, served for this webview
+    serve_pages(ui, label);
+    editor_window::set_side_panel(
+        ui,
+        label,
+        Some(widgets_html(ui, label, root, false)),
+        visible,
+    );
+}
+
+/// The web views' pages, served for webview `label`.
+pub(super) fn serve_pages(ui: &Ui, label: &str) {
     for (widget, html) in ui.plugins.editors.pages.lock().unwrap().iter() {
         ui.shell.pages.set(
             &page_id(label, *widget),
@@ -382,12 +396,19 @@ fn load_side_panel(ui: &Ui, label: &str, root: u64, visible: bool) {
             Some(html.clone()),
         );
     }
-    editor_window::set_side_panel(ui, label, Some(widgets_html(ui, label, root)), visible);
 }
 
-/// The page drawing dock `root`'s widgets in editor `label`.
-fn widgets_html(ui: &Ui, label: &str, root: u64) -> String {
-    let setup = json!({"root": root, "label": label});
+/// ... no longer (its window closed).
+pub(super) fn forget_pages(ui: &Ui, label: &str) {
+    for widget in ui.plugins.editors.pages.lock().unwrap().keys() {
+        ui.shell.pages.remove(&page_id(label, *widget));
+    }
+}
+
+/// The page drawing `root`'s widgets in webview `label`: a dock in an
+/// editor's side panel, or an add-on window (`window`).
+pub(super) fn widgets_html(ui: &Ui, label: &str, root: u64, window: bool) -> String {
+    let setup = json!({"root": root, "label": label, "window": window});
     pages::std_html(
         &ui.shell.web,
         &format!(
@@ -413,14 +434,16 @@ fn widget_update(ui: &Ui, msg: &Value) {
         .iter()
         .find(|(_, d)| d.0 == root)
         .map(|(l, _)| l.clone());
+    let update = json!({"seq": msg["seq"], "ops": msg["ops"]});
     if let Some(label) = label {
-        let update = json!({"seq": msg["seq"], "ops": msg["ops"]});
         ui.eval(
             &label,
             format!(
                 "document.getElementById(\"shell-side\")?.contentWindow?.shellWidgets?.apply({update});"
             ),
         );
+    } else {
+        super::windows::update(ui, root, &update);
     }
 }
 
@@ -497,9 +520,19 @@ fn widget_page(ui: &Ui, msg: &Value) {
         .lock()
         .unwrap()
         .insert(widget, html.clone());
-    for label in ui.plugins.editors.docks.lock().unwrap().keys() {
+    let mut labels: Vec<String> = ui
+        .plugins
+        .editors
+        .docks
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    labels.extend(super::windows::labels(ui));
+    for label in labels {
         ui.shell.pages.set(
-            &page_id(label, widget),
+            &page_id(&label, widget),
             WebviewKind::AddonView,
             Some(html.clone()),
         );

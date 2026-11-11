@@ -85,8 +85,11 @@ needs an Anki install's Python, found as for the profile import
 - **Agent pane:** the toolbar's Agent button (or Cmd+Option+Shift+E) in
   Add or Edit Current shows the pane beside the fields, as in Anki: the
   same settings, requests, transcript and Apply. Its × hides it. The agent
-  queue window (Tools > Agent Queue) and the pane in the browser aren't in
-  the shell yet.
+  queue (Tools > Agent Queue, or Cmd+Option+Shift+Q) is a window of its
+  own, as in Anki: the requests' table, the selected one's transcript,
+  reply, next-run settings and actions, with their shortcuts, Defer's menu
+  and its date dialog, and Discard's reason prompt. The pane in the
+  browser and the queue's toolbar badge aren't in the shell yet.
 - **Alfred bridge:** Alfred's "insert into Anki" pastes into the field you
   last left in Add or Edit Current, as in Anki, but at the field's end:
   the add-on's caret script needs `ShadowRoot.getSelection`, which WebKit
@@ -241,7 +244,10 @@ Options:
   `harness/agent-pane.js` (`--test-page add`, and `--test-page editor
   --test-note 0`) drives the agent pane with a real request; it needs the
   add-on in the copy's `addons21` with its provider set to Ollama and a
-  local model. `harness/alfred-bridge.js` (`--test-page add`) calls the
+  local model. `harness/agent-queue.js` (`--test-page main`) opens the
+  queue window on a copy whose `agent_queue.sqlite` has open requests (none
+  queued, so nothing runs) and checks the table, selection, Defer's menu
+  and dialog, Discard's prompt and closing. `harness/alfred-bridge.js` (`--test-page add`) calls the
   Alfred bridge's server as the workflow does.
   `--test harness/browser.js --test-page browser` opens the browser on a
   test deck and checks searching, sorting, selecting, editing, columns,

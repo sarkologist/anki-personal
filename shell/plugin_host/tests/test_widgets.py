@@ -351,16 +351,13 @@ def test_checkboxes_and_the_folder_picker(mw):
 
 
 def test_what_the_shell_cant_show_says_so(mw):
-    from aqt.qt import QDateTimeEdit, QDialog, QTableWidget
+    from aqt.qt import QCalendarWidget
 
-    with pytest.raises(NotImplementedError, match="QTableWidget"):
-        QTableWidget()
+    with pytest.raises(NotImplementedError, match="QCalendarWidget"):
+        QCalendarWidget()
     # but its enums can be read where a module only mentions them
-    assert QTableWidget.SelectionBehavior.SelectRows is not None
-    with pytest.raises(NotImplementedError):
-        QDateTimeEdit()
-    with pytest.raises(NotImplementedError, match="dialogs"):
-        QDialog().show()
+    assert QCalendarWidget.SelectionMode.SingleSelection is not None
+    # a widget is shown in a window, not as one
     with pytest.raises(NotImplementedError, match="windows"):
         QWidget().show()
 
@@ -607,3 +604,355 @@ def test_a_closed_windows_editor_does_nothing(mw, col):
     editor.loadNote()
     mw.loop.run_pending()
     assert mw.native.sent == [] and got == [None]
+
+
+# Windows
+##########################################################################
+
+
+def window_event(window: QWidget, op: str, widget: Any = None, **fields: Any) -> Any:
+    return event(window, op, widget, **fields)  # type: ignore[arg-type]
+
+
+def test_a_shown_main_window_is_a_shell_window_drawing_its_central_widget(mw):
+    from aqt.qt import QMainWindow
+
+    closed = []
+
+    class Queue(QMainWindow):
+        def closeEvent(self, event: Any) -> None:
+            closed.append(True)
+            super().closeEvent(event)
+
+    window = Queue(mw, Qt.WindowType.Window)
+    window.setWindowTitle("Agent Queue")
+    central = QWidget()
+    central.setLayout(QVBoxLayout())
+    label = QLabel("threads")
+    central.layout().addWidget(label)
+    window.setCentralWidget(central)
+    window.resize(900, 600)
+    assert not window.isVisible() and not label.isVisible()
+    window.show()
+    mw.loop.run_pending()
+    assert window.isVisible() and label.isVisible()
+    assert mw.native.ops("widget_window") == [
+        {"root": window._id, "title": "Agent Queue", "width": 900, "height": 600}
+    ]
+
+    tree = window_event(window, "tree")["tree"]
+    assert tree["type"] == "window"
+    assert tree["child"]["layout"]["items"][0]["w"]["text"] == "threads"
+    label.setText("2 threads")
+    assert updates(mw)[0]["props"]["text"] == "2 threads"
+    (batch,) = mw.native.ops("widget_update")
+    assert batch["root"] == window._id
+
+    window.setWindowTitle("Agent Queue (2)")
+    window.raise_()
+    window.activateWindow()
+    assert mw.native.ops("widget_window_title")[-1]["title"] == "Agent Queue (2)"
+    assert mw.native.ops("widget_window_raise")
+
+    # closed by the user in the shell
+    widgets.handle_event({"root": window._id, "op": "closed", "id": window._id})
+    assert closed == [True] and not window.isVisible()
+    # (which the shell doesn't need to hear about)
+    mw.loop.run_pending()
+    assert mw.native.ops("widget_window_close") == []
+    # and shown again
+    window.show()
+    mw.loop.run_pending()
+    assert len(mw.native.ops("widget_window")) == 2
+    window.close()
+    assert closed == [True, True]
+    mw.loop.run_pending()
+    assert mw.native.ops("widget_window_close") == [{"root": window._id}]
+
+
+def test_hiding_and_showing_a_window_in_one_task_keeps_it(mw):
+    from aqt.qt import QMainWindow
+
+    window = QMainWindow(mw)
+    label = QLabel("a")
+    window.setCentralWidget(label)
+    window.show()
+    mw.loop.run_pending()
+    window.hide()
+    window.show()
+    label.setText("b")
+    mw.loop.run_pending()
+    assert len(mw.native.ops("widget_window")) == 1
+    assert mw.native.ops("widget_window_close") == []
+    # its page still gets the changes
+    (op,) = updates(mw)
+    assert op["props"]["text"] == "b"
+
+
+def test_a_window_keeps_qt_geometry_it_cant_apply(mw):
+    from aqt.qt import QByteArray, QMainWindow
+
+    window = QMainWindow(mw)
+    blob = QByteArray.fromBase64(b"AdnQywADAAA=")
+    assert window.restoreGeometry(blob) is False
+    # saved back as it was, for the Qt Anki sharing the config
+    assert bytes(window.saveGeometry().toBase64().data()) == b"AdnQywADAAA="
+
+
+def test_a_window_dialog_is_its_own_root(mw):
+    from aqt.qt import QDialog, QMainWindow
+
+    window = QMainWindow(mw)
+    window.setCentralWidget(QWidget())
+    window.show()
+    dialog = QDialog(window)
+    dialog.setLayout(QVBoxLayout())
+    label = QLabel("a")
+    dialog.layout().addWidget(label)
+    mw.loop.run_pending()
+    mw.native.sent.clear()
+    # not drawn in the window it belongs to
+    label.setText("b")
+    assert updates(mw) == []
+    assert label.window() is dialog
+    dialog.show()
+    mw.loop.run_pending()
+    assert mw.native.ops("widget_window")[0]["root"] == dialog._id
+
+
+def test_a_modal_dialog_waits_for_its_answer_on_a_nested_loop(mw):
+    from aqt.qt import QDialog, QDialogButtonBox
+
+    dialog = QDialog()
+    dialog.setLayout(QVBoxLayout())
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+    )
+    dialog.layout().addWidget(buttons)
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+
+    # the user clicks OK in the window while exec() waits
+    def click() -> None:
+        if not mw.native.ops("widget_window"):
+            mw.loop.post(click)
+            return
+        widgets.handle_event({"root": dialog._id, "op": "clicked", "id": ok._id})
+
+    mw.loop.post(click)
+    assert dialog.exec() == QDialog.DialogCode.Accepted
+    assert not dialog.isVisible()
+    mw.loop.run_pending()
+    assert mw.native.ops("widget_window_close") == [{"root": dialog._id}]
+
+    # as does Escape, after the dialog's own shortcuts
+    trees = []
+    mw.loop.post(
+        lambda: trees.append(widgets.handle_event({"root": dialog._id, "op": "tree"}))
+    )
+    mw.loop.post(
+        lambda: widgets.handle_event(
+            {"root": dialog._id, "op": "shortcut", "id": dialog._id}
+        )
+    )
+    assert dialog.exec() == QDialog.DialogCode.Rejected
+    assert trees[0]["tree"]["shortcuts"] == [{"id": dialog._id, "keys": "Escape"}]
+
+    # closing the window rejects it
+    finished = []
+    dialog.finished.connect(finished.append)
+    mw.loop.post(
+        lambda: widgets.handle_event(
+            {"root": dialog._id, "op": "closed", "id": dialog._id}
+        )
+    )
+    assert dialog.exec() == QDialog.DialogCode.Rejected
+    assert finished == [0]
+
+
+def test_qinputdialog_get_text(mw):
+    from aqt.qt import QInputDialog, QLineEdit
+
+    def answer() -> None:
+        opened = mw.native.ops("widget_window")
+        if not opened:
+            # not open yet: after the task that shows it
+            mw.loop.post(answer)
+            return
+        root = opened[0]["root"]
+        dialog = widgets._widgets[root]
+        (edit,) = [
+            w
+            for w in widgets._widgets.values()
+            if isinstance(w, QLineEdit) and w.window() is dialog
+        ]
+        widgets.handle_event(
+            {
+                "root": root,
+                "op": "return",
+                "id": edit._id,
+                "values": {str(edit._id): "too vague"},
+            }
+        )
+
+    mw.loop.post(answer)
+    assert QInputDialog.getText(None, "Discard", "Why?") == ("too vague", True)
+    assert mw.native.ops("widget_window")[0]["title"] == "Discard"
+
+
+def test_date_time_edit_round_trips_local_time(mw):
+    from aqt.qt import QDateTime, QDateTimeEdit
+
+    edit = QDateTimeEdit(QDateTime.fromSecsSinceEpoch(1_800_000_000))
+    edit.setCalendarPopup(True)
+    edit.setMinimumDateTime(QDateTime.fromSecsSinceEpoch(1_700_000_000))
+    pane = QWidget()
+    pane.setLayout(QVBoxLayout())
+    pane.layout().addWidget(edit)
+    dock = shown(mw, pane)
+    assert edit._props()["value"] == QDateTimeEdit._local(1_800_000_000)
+    assert edit._props()["min"] == QDateTimeEdit._local(1_700_000_000)
+    changed = []
+    edit.dateTimeChanged.connect(changed.append)
+    later = QDateTime.fromSecsSinceEpoch(1_800_003_600)
+    event(dock, "datetime", edit, value=QDateTimeEdit._local(later.toSecsSinceEpoch()))
+    assert edit.dateTime().toSecsSinceEpoch() == 1_800_003_600
+    assert len(changed) == 1
+
+
+def test_table_widget_rows_and_selection(mw):
+    from aqt.qt import QAbstractItemView, QTableWidget, QTableWidgetItem
+
+    table = QTableWidget(0, 3)
+    table.setHorizontalHeaderLabels(["", "Request", "Deck"])
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.verticalHeader().hide()
+    table.horizontalHeader().setStretchLastSection(False)
+    table.setColumnWidth(1, 220)
+    selections = []
+    table.itemSelectionChanged.connect(lambda: selections.append(table.currentRow()))
+    pane = QWidget()
+    pane.setLayout(QVBoxLayout())
+    pane.layout().addWidget(table)
+    dock = shown(mw, pane)
+
+    blocked = table.blockSignals(True)
+    table.setRowCount(2)
+    for row, cells in enumerate([("●", "fix", "Bio"), ("", "add", "Chem")]):
+        for column, text in enumerate(cells):
+            item = QTableWidgetItem(text)
+            item.setToolTip(text)
+            table.setItem(row, column, item)
+    table.selectRow(1)
+    table.blockSignals(blocked)
+    assert selections == []
+    (op,) = updates(mw)
+    props = op["props"]
+    assert props["headers"] == ["", "Request", "Deck"]
+    assert props["rows"] == [["●", "fix", "Bio"], ["", "add", "Chem"]]
+    assert props["widths"] == {"1": 220}
+    assert props["selected"] == 1 and props["vheader"] is False
+    assert table.item(1, 2).text() == "Chem" and table.rowCount() == 2
+
+    event(dock, "row", table, value=0)
+    assert selections == [0] and table.currentRow() == 0
+    # the same row again changes nothing
+    event(dock, "row", table, value=0)
+    assert selections == [0]
+    table.clearSelection()
+    assert table._props()["selected"] == -1
+    table.setRowCount(0)
+    assert table.currentRow() == -1
+
+
+def test_a_button_menu_shows_its_actions_and_triggers_them(mw):
+    from aqt.qt import QMenu
+
+    button = QPushButton("Defer")
+    menu = QMenu(button)
+    hits = []
+    menu.addAction("1 hour").triggered.connect(lambda: hits.append("hour"))
+    menu.addSeparator()
+    undefer = menu.addAction("Undefer")
+    undefer.triggered.connect(lambda: hits.append("undefer"))
+    button.setMenu(menu)
+    pane = QWidget()
+    pane.setLayout(QVBoxLayout())
+    pane.layout().addWidget(button)
+    dock = shown(mw, pane)
+
+    items = button._props()["menu"]
+    assert [item.get("text") for item in items] == ["1 hour", None, "Undefer"]
+    assert items[1] == {"sep": True}
+    undefer.setEnabled(False)
+    (op,) = updates(mw)
+    assert op["props"]["menu"][2]["enabled"] is False
+    event(dock, "menu", button, value=items[0]["id"])
+    event(dock, "menu", button, value=items[2]["id"])
+    assert hits == ["hour"]
+
+
+def test_shortcuts_of_buttons_and_windows(mw):
+    from aqt.qt import QKeySequence, QMainWindow, QShortcut
+
+    window = QMainWindow(mw)
+    central = QWidget()
+    central.setLayout(QVBoxLayout())
+    apply = QPushButton("Apply")
+    apply.setShortcut(QKeySequence("Ctrl+Shift+A"))
+    central.layout().addWidget(apply)
+    window.setCentralWidget(central)
+    escape = QShortcut(QKeySequence("Escape"), window)
+    escape.activated.connect(window.close)
+    # another window's shortcut isn't this one's
+    QShortcut(QKeySequence("Ctrl+B"), QMainWindow(mw))
+    window.show()
+    mw.loop.run_pending()
+
+    tree = window_event(window, "tree")["tree"]
+    assert tree["shortcuts"] == [{"id": escape._id, "keys": "Escape"}]
+    assert apply._props()["shortcut"] == "Ctrl+Shift+A"
+    window_event(window, "shortcut", escape)
+    assert not window.isVisible()
+
+
+def test_tools_actions_send_their_shortcuts(mw):
+    from aqt.qt import QAction, QKeySequence
+
+    action = QAction("Agent Queue", mw)
+    action.setShortcut(QKeySequence("Ctrl+Alt+Shift+Q"))
+    assert action.shortcut().toString() == "Ctrl+Alt+Shift+Q"
+
+
+def test_tooltips_from_an_add_on_window_show_in_it(mw):
+    from aqt.qt import QMainWindow
+    from aqt.utils import tooltip
+
+    window = QMainWindow(mw)
+    child = QWidget()
+    window.setCentralWidget(child)
+    tooltip("before", parent=child)
+    window.show()
+    tooltip("Deferred", parent=child)
+    assert [t["window"] for t in mw.native.ops("tooltip")] == [
+        None,
+        f"addon-window-{window._id}",
+    ]
+
+
+def test_a_shortcut_is_kept_by_its_parent_as_in_qt(mw):
+    import gc
+
+    from aqt.qt import QKeySequence, QMainWindow, QShortcut
+
+    window = QMainWindow(mw)
+    window.setCentralWidget(QWidget())
+    # nothing else holds it
+    QShortcut(QKeySequence("Escape"), window).activated.connect(window.close)
+    gc.collect()
+    window.show()
+    mw.loop.run_pending()
+    (shortcut,) = window_event(window, "tree")["tree"]["shortcuts"]
+    widgets.handle_event({"root": window._id, "op": "shortcut", "id": shortcut["id"]})
+    assert not window.isVisible()

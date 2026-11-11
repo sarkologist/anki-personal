@@ -92,6 +92,10 @@ class EditorWindow(QMainWindow):
         self._docks: list[Any] = []
         self.deck_chooser = DeckChooser()
 
+    def _is_window(self) -> bool:
+        # the shell's own window, not an add-on's
+        return False
+
     def isVisible(self) -> bool:
         return not self.editor._closed
 

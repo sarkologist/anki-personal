@@ -67,9 +67,54 @@ fn addon_item(
     app: &AppHandle,
     item: &crate::plugins::ui::MenuItem,
 ) -> tauri::Result<MenuItem<Wry>> {
-    MenuItemBuilder::with_id(format!("{ADDON_ITEM}{}", item.id), &item.text)
-        .enabled(item.enabled)
-        .build(app)
+    let builder = || {
+        MenuItemBuilder::with_id(format!("{ADDON_ITEM}{}", item.id), &item.text)
+            .enabled(item.enabled)
+    };
+    let accel = item.shortcut.as_deref().and_then(qt_accelerator);
+    match accel {
+        // a sequence the menu can't take still gets its item
+        Some(accel) => builder()
+            .accelerator(&accel)
+            .build(app)
+            .or_else(|_| builder().build(app)),
+        None => builder().build(app),
+    }
+}
+
+/// Qt's key sequence as a menu accelerator: Qt's Ctrl is Cmd on macOS,
+/// and its Meta is Ctrl. Only single chords.
+pub fn qt_accelerator(keys: &str) -> Option<String> {
+    let keys = keys.trim();
+    if keys.is_empty() || keys.contains(',') {
+        return None;
+    }
+    let parts: Vec<&str> = keys.split('+').map(str::trim).collect();
+    let (key, mods) = parts.split_last()?;
+    let mut out: Vec<&str> = vec![];
+    for m in mods {
+        out.push(match m.to_ascii_lowercase().as_str() {
+            "ctrl" => "Cmd",
+            "meta" => "Ctrl",
+            "alt" => "Alt",
+            "shift" => "Shift",
+            _ => return None,
+        });
+    }
+    let key = match key.to_ascii_lowercase().as_str() {
+        "" => return None,
+        "esc" | "escape" => "Escape".to_string(),
+        "return" | "enter" => "Enter".to_string(),
+        "del" | "delete" => "Delete".to_string(),
+        "backspace" => "Backspace".to_string(),
+        "space" => "Space".to_string(),
+        "tab" => "Tab".to_string(),
+        k if k.len() == 1 => k.to_ascii_uppercase(),
+        k if k.starts_with('f') && k[1..].parse::<u8>().is_ok() => k.to_ascii_uppercase(),
+        _ => return None,
+    };
+    out.push(&key);
+    Some(out.join("+"))
 }
 
 /// "Title (key)": the page shortcut, shown since it isn't a key equivalent.
@@ -503,4 +548,24 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
     }
     crate::editor_window::note_changed_elsewhere(ui);
     refresh(ui);
+}
+
+#[cfg(test)]
+mod test {
+    use super::qt_accelerator;
+
+    #[test]
+    fn qt_shortcuts_become_menu_accelerators() {
+        assert_eq!(
+            qt_accelerator("Ctrl+Alt+Shift+Q").as_deref(),
+            Some("Cmd+Alt+Shift+Q")
+        );
+        assert_eq!(qt_accelerator("Meta+Return").as_deref(), Some("Ctrl+Enter"));
+        assert_eq!(qt_accelerator("Ctrl+F5").as_deref(), Some("Cmd+F5"));
+        // sequences of chords and unknown keys or modifiers aren't
+        assert_eq!(qt_accelerator("Ctrl+K, Ctrl+C"), None);
+        assert_eq!(qt_accelerator("Hyper+Q"), None);
+        assert_eq!(qt_accelerator("Ctrl+Media"), None);
+        assert_eq!(qt_accelerator(""), None);
+    }
 }

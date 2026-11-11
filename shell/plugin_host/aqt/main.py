@@ -74,6 +74,23 @@ class Loop:
                 break
             self._run(fn)
 
+    def run_until(self, done: Callable[[], bool]) -> None:
+        """A nested loop (a modal dialog's): run tasks until `done`."""
+        while not done() and not self._stopped:
+            for fn in self._due_timers():
+                self._run(fn)
+            if done():
+                return
+            try:
+                fn = self._queue.get(timeout=self._wait())
+            except queue.Empty:
+                continue
+            if fn is None:
+                # stopping: the outer loop sees it too
+                self._stopped = True
+                return
+            self._run(fn)
+
     def run_pending(self) -> None:
         """Run what's queued and due now (tests)."""
         while True:
