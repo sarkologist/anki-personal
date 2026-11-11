@@ -85,10 +85,12 @@ needs an Anki install's Python, found as for the profile import
 - **Agent pane:** the toolbar's Agent button (or Cmd+Option+Shift+E) in
   Add or Edit Current shows the pane beside the fields, as in Anki: the
   same settings, requests, transcript and Apply. Its × hides it. The agent
-  queue (Tools > Agent Queue, or Cmd+Option+Shift+Q) is a window of its
-  own, as in Anki: the requests' table, the selected one's transcript,
+  queue (Tools > Agent Queue) is a window of its own, as in Anki: the requests' table, the selected one's transcript,
   reply, next-run settings and actions, with their shortcuts, Defer's menu
-  and its date dialog, and Discard's reason prompt. The pane in the
+  and its date dialog, and Discard's reason prompt. Its default key,
+  Cmd+Option+Shift+Q, is macOS's immediate Log Out, so the shell doesn't
+  give the menu item a key unless the add-on's `queue_shortcut` is set to
+  another. The pane in the
   browser and the queue's toolbar badge aren't in the shell yet.
 - **Alfred bridge:** Alfred's "insert into Anki" pastes into the field you
   last left in Add or Edit Current, as in Anki, but at the field's end:

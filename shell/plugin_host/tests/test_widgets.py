@@ -956,3 +956,49 @@ def test_a_shortcut_is_kept_by_its_parent_as_in_qt(mw):
     (shortcut,) = window_event(window, "tree")["tree"]["shortcuts"]
     widgets.handle_event({"root": window._id, "op": "shortcut", "id": shortcut["id"]})
     assert not window.isVisible()
+
+
+def test_closing_or_hiding_a_dialog_ends_its_exec_and_rejects_as_in_qt(mw):
+    from aqt.qt import QDialog
+
+    for end in ("close", "hide"):
+        dialog = QDialog()
+        dialog.setLayout(QVBoxLayout())
+        rejected = []
+        dialog.rejected.connect(lambda: rejected.append(True))
+        mw.loop.post(getattr(dialog, end))
+        assert dialog.exec() == QDialog.DialogCode.Rejected
+        assert rejected == ([True] if end == "close" else [])
+
+
+def test_closing_a_dialog_in_the_shell_runs_its_close_event(mw):
+    from aqt.qt import QDialog
+
+    saved = []
+
+    class Picker(QDialog):
+        def closeEvent(self, event: Any) -> None:
+            saved.append(True)
+            super().closeEvent(event)
+
+    dialog = Picker()
+    dialog.setLayout(QVBoxLayout())
+    mw.loop.post(
+        lambda: widgets.handle_event(
+            {"root": dialog._id, "op": "closed", "id": dialog._id}
+        )
+    )
+    assert dialog.exec() == QDialog.DialogCode.Rejected
+    assert saved == [True]
+
+
+def test_a_web_views_page_is_released_with_it(mw):
+    import gc
+
+    view = AnkiWebView()
+    view.stdHtml("<p>proposal</p>")
+    id = view._id
+    del view
+    gc.collect()
+    mw.loop.run_pending()
+    assert mw.native.ops("widget_pages_closed") == [{"widgets": [id]}]

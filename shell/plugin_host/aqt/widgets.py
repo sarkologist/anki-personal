@@ -1677,15 +1677,20 @@ class QDialog(QWidget):
             return None
         return super()._from_page(op, value, event)
 
-    def _closed_by_user(self) -> None:
-        # Qt's close button rejects
-        self._window_open = False
+    def closeEvent(self, event: Any) -> None:
+        # as Qt's: closing rejects (so the close button does)
         if self._shown:
             self.reject()
-        self._window_gone()
 
-    def closeEvent(self, event: Any) -> None:
-        pass
+    def setVisible(self, visible: bool) -> None:
+        # hiding ends exec, as in Qt (without an answer)
+        if not visible:
+            self._running = False
+        super().setVisible(visible)
+
+    def _window_gone(self) -> None:
+        self._running = False
+        super()._window_gone()
 
     def exec(self) -> int:
         import aqt
@@ -2629,6 +2634,7 @@ class AnkiWebView(QWidget):
         self._bridge: Callable[[str], Any] | None = None
         self._callbacks: dict[int, Callable[[Any], None]] = {}
         self._callback_ids = itertools.count(1)
+        self._page_release: Any = None
 
     def _props(self) -> dict[str, Any]:
         return {**super()._props(), "page": self._page}
@@ -2661,6 +2667,9 @@ class AnkiWebView(QWidget):
         self._replay = []
         self._replay_size = 0
         native = _native()
+        if native and self._page_release is None:
+            # the shell forgets the page with the view (a closed window's)
+            self._page_release = weakref.finalize(self, _release_page, self._id)
         if native:
             native.notify(
                 "widget_page",
@@ -2710,6 +2719,18 @@ class AnkiWebView(QWidget):
 
     def page(self) -> Any:
         return None
+
+
+def _release_page(widget: int) -> None:
+    try:
+        _post(
+            lambda: (
+                (n := _native()) and n.notify("widget_pages_closed", widgets=[widget])
+            )
+        )
+    except Exception:
+        # the host is going away
+        pass
 
 
 def unsupported(name: str) -> type:

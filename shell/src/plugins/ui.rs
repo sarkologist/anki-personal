@@ -334,10 +334,14 @@ fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> Option<Value> {
             }
         }
         "tooltip" => match msg["window"].as_str() {
-            Some(label)
-                if crate::editor_window::is_editor(label) || super::windows::is_window(label) =>
-            {
+            Some(label) if crate::editor_window::is_editor(label) => {
                 crate::editor_window::tooltip(ui, label, text)
+            }
+            Some(label) if super::windows::is_window(label) => {
+                match super::windows::resolve(ui, label) {
+                    Some(window) => crate::editor_window::tooltip(ui, &window, text),
+                    None => main_window::tooltip(ui, text),
+                }
             }
             _ => main_window::tooltip(ui, text),
         },

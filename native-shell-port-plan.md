@@ -1401,7 +1401,15 @@ window (the host log had the `NotImplementedError`).
   on a window's widgets are the page's keys (Qt's Ctrl is Cmd); a
   `QShortcut`'s parent keeps it, as in Qt (the queue's Escape shortcut is
   otherwise unreferenced). Tools items get their action's shortcut as the
-  menu item's key equivalent.
+  menu item's key equivalent, except keys macOS or the app menu have: the
+  queue's default, Cmd+Option+Shift+Q, is the system's immediate Log Out
+  (Qt Anki registers it all the same).
+- **Review** (an independent Opus pass), fixed: `close()` or `hide()` on a
+  dialog during `exec` left the nested loop running forever (Qt's
+  `closeEvent` rejects, and hiding ends `exec`); a window shown again just
+  after closing could get the dying window and then be closed by its
+  `Destroyed` (each opening now has its own label); add-on windows' web
+  view pages were never released (now with the view).
 - **Checks:** `plugin_host/tests/test_widgets.py` (windows, dialogs, the
   nested loop, the table, menus, shortcuts, geometry, tooltips) and
   `harness/agent-queue.js` on a copy of the real profile: 4 open requests

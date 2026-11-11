@@ -82,24 +82,57 @@ fn addon_item(
     }
 }
 
+/// Keys macOS or every app's own menus already have; an add-on's item
+/// mustn't take them (Cmd+Option+Shift+Q logs out at once).
+const RESERVED: &[&str] = &[
+    "Cmd+Q",
+    "Cmd+W",
+    "Cmd+H",
+    "Cmd+M",
+    "Cmd+Alt+H",
+    "Cmd+Shift+Q",
+    "Cmd+Alt+Shift+Q",
+    "Cmd+Ctrl+Q",
+    "Cmd+Alt+Escape",
+    "Cmd+Space",
+    "Cmd+Tab",
+    "Cmd+Shift+3",
+    "Cmd+Shift+4",
+    "Cmd+Shift+5",
+];
+
 /// Qt's key sequence as a menu accelerator: Qt's Ctrl is Cmd on macOS,
-/// and its Meta is Ctrl. Only single chords.
+/// and its Meta is Ctrl. Only single chords, and none of the system's.
 pub fn qt_accelerator(keys: &str) -> Option<String> {
+    let accel = qt_chord(keys)?;
+    (!RESERVED.contains(&accel.as_str())).then_some(accel)
+}
+
+fn qt_chord(keys: &str) -> Option<String> {
     let keys = keys.trim();
     if keys.is_empty() || keys.contains(',') {
         return None;
     }
     let parts: Vec<&str> = keys.split('+').map(str::trim).collect();
     let (key, mods) = parts.split_last()?;
+    let mods: Vec<String> = mods.iter().map(|m| m.to_ascii_lowercase()).collect();
     let mut out: Vec<&str> = vec![];
-    for m in mods {
-        out.push(match m.to_ascii_lowercase().as_str() {
-            "ctrl" => "Cmd",
-            "meta" => "Ctrl",
-            "alt" => "Alt",
-            "shift" => "Shift",
-            _ => return None,
-        });
+    // in one order, so the reserved ones can be compared
+    for (qt, accel) in [
+        ("ctrl", "Cmd"),
+        ("meta", "Ctrl"),
+        ("alt", "Alt"),
+        ("shift", "Shift"),
+    ] {
+        if mods.iter().any(|m| m == qt) {
+            out.push(accel);
+        }
+    }
+    if mods
+        .iter()
+        .any(|m| !["ctrl", "meta", "alt", "shift"].contains(&m.as_str()))
+    {
+        return None;
     }
     let key = match key.to_ascii_lowercase().as_str() {
         "" => return None,
@@ -557,10 +590,17 @@ mod test {
     #[test]
     fn qt_shortcuts_become_menu_accelerators() {
         assert_eq!(
-            qt_accelerator("Ctrl+Alt+Shift+Q").as_deref(),
-            Some("Cmd+Alt+Shift+Q")
+            qt_accelerator("Ctrl+Alt+Shift+A").as_deref(),
+            Some("Cmd+Alt+Shift+A")
+        );
+        assert_eq!(
+            qt_accelerator("Shift+Ctrl+A").as_deref(),
+            Some("Cmd+Shift+A")
         );
         assert_eq!(qt_accelerator("Meta+Return").as_deref(), Some("Ctrl+Enter"));
+        // the system's keys aren't taken (this one logs out at once)
+        assert_eq!(qt_accelerator("Ctrl+Alt+Shift+Q"), None);
+        assert_eq!(qt_accelerator("Shift+Alt+Ctrl+Q"), None);
         assert_eq!(qt_accelerator("Ctrl+F5").as_deref(), Some("Cmd+F5"));
         // sequences of chords and unknown keys or modifiers aren't
         assert_eq!(qt_accelerator("Ctrl+K, Ctrl+C"), None);
