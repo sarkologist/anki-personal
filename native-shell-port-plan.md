@@ -824,8 +824,8 @@ running them as before.
   - `plugin_host/tests/test_widgets.py` (the widgets and editors in
     process) and `tests/plugin_host.rs` (replies).
 - **Not ported:**
-  - the agent queue window, the pane in the browser (phase 4), the
-    toolbar badge;
+  - the agent queue window (since ported: "Add-on windows" below), the
+    pane in the browser (phase 4), the toolbar badge;
   - the reviewer's selection in a request's context (the reviewer's page
     isn't the host's);
   - Alfred's paste at the caret: the add-on's caret script uses
@@ -1366,3 +1366,55 @@ already exist in `ts/`; hosting them is small when they're wanted.
     prompt; the saved templates in the collection) and, in Edit Current,
     the Cards button. Unit tests render previews (edited template and
     styling, the sample type box) and check the frame is sandboxed.
+
+### Add-on windows: the agent queue (2026-11-11)
+
+Tools > Agent Queue did nothing: the queue window is a `QMainWindow` with a
+`QTableWidget`, and the shim could neither create the table nor show a
+window (the host log had the `NotImplementedError`).
+
+- **Windows.** A shown `QMainWindow` or `QDialog` is a [Root] of its own:
+  the shell opens a window (`addon-window-<root>`, `plugins/windows.rs`)
+  drawing it with the side panels' page (`widgets.js`), and the same
+  `addonWidget:`/`widget_update` traffic as a dock. Its open and close go
+  out after the task, from where it ended up, so hiding and showing again
+  keeps the window and its page. Closing it in the shell runs
+  `closeEvent` (a dialog's rejects it); its web views' pages are served
+  for it while it's open. A dialog isn't drawn in the window it belongs
+  to: `root_of` stops at windows. Tooltips with a window's widget as
+  parent show in that window. `saveGeometry` returns what
+  `restoreGeometry` got (which the shell can't apply), so the Qt Anki
+  sharing the add-on's config keeps its geometry.
+- **Modal dialogs.** `exec` shows the dialog and runs the host's loop
+  until it's answered (`Loop.run_until`), as Qt's nested loop. The event
+  that opened it waits meanwhile, so its window's page (whose bridge
+  commands are ordered) waits up to the 5 s widget timeout, then goes on;
+  other windows aren't blocked, unlike Qt's application-modal dialogs.
+  `QDialogButtonBox` (macOS order), `QInputDialog.getText/getItem`,
+  `QDateTimeEdit` (the page's `datetime-local`, to the minute), Escape
+  rejects. The new window's focus is on its first field.
+- **Table.** `QTableWidget` of text, a row at a time: click, arrows,
+  Home/End, double-click or Enter to activate; Qt's signal rules
+  (`itemSelectionChanged` only on a change, none while blocked).
+- **Button menus and shortcuts.** `setMenu` shows the menu's actions under
+  the button (Escape closes it). Buttons' `setShortcut` and `QShortcut`s
+  on a window's widgets are the page's keys (Qt's Ctrl is Cmd); a
+  `QShortcut`'s parent keeps it, as in Qt (the queue's Escape shortcut is
+  otherwise unreferenced). Tools items get their action's shortcut as the
+  menu item's key equivalent, except keys macOS or the app menu have: the
+  queue's default, Cmd+Option+Shift+Q, is the system's immediate Log Out
+  (Qt Anki registers it all the same).
+- **Review** (an independent Opus pass), fixed: `close()` or `hide()` on a
+  dialog during `exec` left the nested loop running forever (Qt's
+  `closeEvent` rejects, and hiding ends `exec`); a window shown again just
+  after closing could get the dying window and then be closed by its
+  `Destroyed` (each opening now has its own label); add-on windows' web
+  view pages were never released (now with the view).
+- **Checks:** `plugin_host/tests/test_widgets.py` (windows, dialogs, the
+  nested loop, the table, menus, shortcuts, geometry, tooltips) and
+  `harness/agent-queue.js` on a copy of the real profile: 4 open requests
+  in the table, selection and detail, Defer's menu and date dialog,
+  Discard's prompt cancelled (the store unchanged), Escape closes, Tools
+  reopens.
+- **Not ported:** the queue's toolbar badge; reporting a window's size
+  back (it opens at the add-on's `resize`).

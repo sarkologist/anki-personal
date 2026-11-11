@@ -81,9 +81,10 @@ class Native:
             id = self.action_id(action)
             self.actions[id] = action
             if action.isVisible():
-                items.append(
-                    {"id": id, "text": action.text(), "enabled": action.isEnabled()}
-                )
+                item = {"id": id, "text": action.text(), "enabled": action.isEnabled()}
+                if shortcut := action.shortcut().toString():
+                    item["shortcut"] = shortcut
+                items.append(item)
         self.notify("menu", menu=menu.name, items=items)
 
     def operation_did_execute(self, changes: OpChanges) -> None:

@@ -14,9 +14,11 @@ from anki.lang import tr_legacyglobal as tr  # noqa: F401
 
 
 def _window(parent: Any) -> str | None:
-    """The shell window an add-on's widget is in (an editor's side panel)."""
+    """The shell window an add-on's widget is in (an editor's side panel,
+    or an add-on window)."""
     from aqt.browser import Browser
     from aqt.editor import EditorWindow
+    from aqt.widgets import QWidget
 
     widget = parent
     while widget is not None:
@@ -24,8 +26,15 @@ def _window(parent: Any) -> str | None:
             return widget.editor.label
         if isinstance(widget, Browser):
             return "browser"
+        if isinstance(widget, QWidget) and widget._is_window():
+            return window_label(widget) if widget.isVisible() else None
         widget = getattr(widget, "_parent", None)
     return None
+
+
+def window_label(window: Any) -> str:
+    """An add-on window's label in the shell (`plugins::windows`)."""
+    return f"addon-window-{window._id}"
 
 
 def tooltip(

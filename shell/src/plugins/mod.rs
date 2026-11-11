@@ -14,6 +14,7 @@
 
 pub mod editors;
 pub mod ui;
+pub mod windows;
 pub mod wire;
 
 use std::collections::HashMap;

@@ -456,9 +456,33 @@ impl Ui {
         title: &str,
         kind: WebviewKind,
         url: &str,
-        (width, height): (f64, f64),
+        size: (f64, f64),
     ) -> Result<()> {
         self.shell.pages.set(label, kind, None);
+        self.open_sized_window(label, title, url, size)
+    }
+
+    /// A window of `html` (an add-on window's), in front of the main
+    /// window.
+    pub fn open_html_window(
+        &self,
+        label: &str,
+        title: &str,
+        kind: WebviewKind,
+        html: String,
+        size: (f64, f64),
+    ) -> Result<()> {
+        self.shell.pages.set(label, kind, Some(html));
+        self.open_sized_window(label, title, &pages::legacy_page_url(label), size)
+    }
+
+    fn open_sized_window(
+        &self,
+        label: &str,
+        title: &str,
+        url: &str,
+        (width, height): (f64, f64),
+    ) -> Result<()> {
         self.evals.reset(label);
         if let Some(window) = self.app.get_webview_window(label) {
             window.navigate(url.parse()?)?;

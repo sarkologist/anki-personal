@@ -2,11 +2,14 @@
 // License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 // An add-on's Qt widgets (the plugin host's aqt.widgets), drawn in a side
-// panel. The host has their state: this asks it for the tree, applies its
-// ordered batches of changes (`shellWidgets.apply`), and sends it what the
-// user does. Typing goes with the next message, or after a pause.
+// panel or an add-on window. The host has their state: this asks it for the
+// tree, applies its ordered batches of changes (`shellWidgets.apply`), and
+// sends it what the user does. Typing goes with the next message, or after
+// a pause. Shortcuts (buttons', and `QShortcut`s) are this page's keys.
 (() => {
-    const { root, label } = window.shellWidgetsSetup;
+    const setup = window.shellWidgetsSetup;
+    const { root, label } = setup;
+    const inWindow = !!setup.window;
     const widgets = new Map();
     // typed text the host hasn't had yet: id -> value
     const typed = new Map();
@@ -115,6 +118,130 @@
             }
             return { el };
         },
+        window(node) {
+            const el = element("div", "qwindow");
+            if (node.child) {
+                const child = build(node.child);
+                child.classList.add("qwindow-child");
+                el.append(child);
+            }
+            return { el };
+        },
+        table(node) {
+            const el = element("div", "qtable");
+            el.tabIndex = 0;
+            const table = element("table");
+            const cols = element("colgroup");
+            const head = element("thead");
+            const body = element("tbody");
+            table.append(cols, head, body);
+            el.append(table);
+            let count = 0;
+            let selected = -1;
+            let shown = "";
+            const mark = (row) => {
+                selected = row;
+                [...body.rows].forEach((tr, i) => tr.classList.toggle("selected", i === row));
+                body.rows[row]?.scrollIntoView({ block: "nearest" });
+            };
+            const choose = (row, op, column = 0) => {
+                if (row < 0 || row >= count) {
+                    return;
+                }
+                mark(row);
+                send(op, node.id, { value: row, column });
+            };
+            const at = (e) => {
+                const td = e.target instanceof Element && e.target.closest("td");
+                return td ? [td.parentElement.sectionRowIndex, td.cellIndex] : null;
+            };
+            body.addEventListener("click", (e) => {
+                const cell = at(e);
+                if (cell) {
+                    choose(cell[0], "row", cell[1]);
+                }
+            });
+            body.addEventListener("dblclick", (e) => {
+                const cell = at(e);
+                if (cell) {
+                    choose(cell[0], "activate", cell[1]);
+                }
+            });
+            el.addEventListener("keydown", (e) => {
+                const step = { ArrowUp: -1, ArrowDown: 1, PageUp: -10, PageDown: 10 }[e.key];
+                if (step !== undefined) {
+                    e.preventDefault();
+                    choose(Math.max(0, Math.min(count - 1, (selected < 0 ? -1 : selected) + step)), "row");
+                } else if (e.key === "Home" || e.key === "End") {
+                    e.preventDefault();
+                    choose(e.key === "Home" ? 0 : count - 1, "row");
+                } else if (e.key === "Enter" && selected >= 0) {
+                    choose(selected, "activate");
+                }
+            });
+            return {
+                el,
+                set(p) {
+                    const key = JSON.stringify([p.headers, p.widths, p.rows, p.tips]);
+                    if (key !== shown) {
+                        shown = key;
+                        const columns = Math.max(p.headers.length, ...p.rows.map((r) => r.length), 0);
+                        cols.replaceChildren(
+                            ...Array.from({ length: columns }, (_, i) => {
+                                const col = element("col");
+                                const width = p.widths[String(i)];
+                                if (width !== undefined) {
+                                    col.style.width = `${width}px`;
+                                }
+                                return col;
+                            }),
+                        );
+                        const tr = element("tr");
+                        for (let i = 0; i < columns; i++) {
+                            const th = element("th");
+                            th.textContent = p.headers[i] ?? "";
+                            tr.append(th);
+                        }
+                        head.replaceChildren(tr);
+                        body.replaceChildren(
+                            ...p.rows.map((cells, r) => {
+                                const row = element("tr");
+                                cells.forEach((text, c) => {
+                                    const td = element("td");
+                                    td.textContent = text;
+                                    td.title = p.tips?.[r]?.[c] || "";
+                                    row.append(td);
+                                });
+                                return row;
+                            }),
+                        );
+                        count = p.rows.length;
+                        selected = -1;
+                    }
+                    head.hidden = !p.hheader;
+                    if (p.selected !== selected) {
+                        mark(p.selected);
+                    }
+                },
+                focus: () => el.focus(),
+            };
+        },
+        datetime(node) {
+            const el = element("input", "qdatetime");
+            el.type = "datetime-local";
+            el.addEventListener("change", () => send("datetime", node.id, { value: el.value }));
+            return {
+                el,
+                set(p) {
+                    if (document.activeElement !== el || !el.value) {
+                        el.value = p.value;
+                    }
+                    el.min = p.min ?? "";
+                    el.disabled = !p.enabled;
+                },
+                focus: () => el.focus(),
+            };
+        },
         dock(node) {
             const el = element("div", "qdock");
             const bar = element("div", "qdock-bar");
@@ -155,16 +282,28 @@
         button(node) {
             const el = element("button", "qbutton");
             el.type = "button";
-            el.addEventListener("click", () => send("clicked", node.id, {}));
-            return {
+            const w = {
                 el,
+                menu: null,
+                shortcut: "",
                 set(p) {
                     el.textContent = p.text;
                     el.disabled = !p.enabled;
                     el.classList.toggle("checked", !!p.checked);
+                    w.menu = p.menu || null;
+                    el.classList.toggle("has-menu", !!w.menu);
+                    w.shortcut = p.shortcut ? normalKeys(p.shortcut) : "";
                 },
                 focus: () => el.focus(),
             };
+            el.addEventListener("click", () => {
+                if (w.menu) {
+                    popupMenu(el, w.menu, (id) => send("menu", node.id, { value: id }));
+                } else {
+                    send("clicked", node.id, {});
+                }
+            });
+            return w;
         },
         toolbutton(node) {
             const w = builders.button(node);
@@ -423,7 +562,7 @@
     // a stretch take the room left
     ////////////////////////////////////////////////////////////////////
 
-    const grows = new Set(["textedit", "web", "splitter", "widget"]);
+    const grows = new Set(["textedit", "web", "splitter", "widget", "table"]);
 
     function layout(l) {
         const el = element("div", `qlayout q${l.kind}`);
@@ -491,14 +630,126 @@
         w.set?.(p);
     }
 
+    let rendered = false;
     function render(tree) {
         widgets.clear();
+        closeMenu();
+        shortcuts = (tree.shortcuts || []).map((s) => ({ id: s.id, keys: normalKeys(s.keys) }));
         container.replaceChildren(build(tree));
         // typing not sent yet stays
         for (const [id, value] of typed) {
             widgets.get(Number(id))?.value?.(value);
         }
+        if (inWindow && !rendered) {
+            // as Qt, a new window's focus is on its first field
+            const first = [
+                ...container.querySelectorAll(
+                    "input:not([type=checkbox]), textarea, select, .qtable",
+                ),
+            ].find((el) => !el.disabled && el.checkVisibility());
+            first?.focus();
+        }
+        rendered = true;
     }
+
+    // Button menus
+    ////////////////////////////////////////////////////////////////////
+
+    let openMenu = null;
+    function closeMenu() {
+        openMenu?.remove();
+        openMenu = null;
+    }
+    function popupMenu(anchor, items, choose) {
+        closeMenu();
+        const menu = element("div", "qmenu");
+        for (const item of items) {
+            if (item.sep) {
+                menu.append(element("div", "qmenu-sep"));
+                continue;
+            }
+            const entry = element("button", "qmenu-item");
+            entry.type = "button";
+            entry.textContent = item.text;
+            entry.disabled = !item.enabled;
+            entry.addEventListener("click", () => {
+                closeMenu();
+                choose(item.id);
+            });
+            menu.append(entry);
+        }
+        document.body.append(menu);
+        const rect = anchor.getBoundingClientRect();
+        const below = rect.bottom + menu.offsetHeight <= innerHeight;
+        menu.style.left = `${Math.max(0, Math.min(rect.left, innerWidth - menu.offsetWidth))}px`;
+        menu.style.top = `${below ? rect.bottom : Math.max(0, rect.top - menu.offsetHeight)}px`;
+        openMenu = menu;
+        menu.querySelector(".qmenu-item:not(:disabled)")?.focus();
+    }
+    document.addEventListener(
+        "pointerdown",
+        (e) => {
+            if (openMenu && !openMenu.contains(e.target)) {
+                closeMenu();
+            }
+        },
+        true,
+    );
+
+    // Shortcuts, as Qt writes them ("Ctrl+Shift+A"; Qt's Ctrl is Cmd)
+    ////////////////////////////////////////////////////////////////////
+
+    let shortcuts = [];
+    const MODIFIERS = ["ctrl", "meta", "alt", "shift"];
+    const KEY_NAMES = { esc: "escape", return: "enter", del: "delete", " ": "space" };
+    function normalKeys(keys) {
+        const parts = String(keys).split("+").map((k) => k.trim().toLowerCase());
+        const key = parts.pop() || "";
+        const mods = MODIFIERS.filter((m) => parts.includes(m));
+        return [...mods, KEY_NAMES[key] ?? key].join("+");
+    }
+    function eventKeys(e) {
+        let key = e.key.toLowerCase();
+        if (/^Key[A-Z]$/.test(e.code)) {
+            key = e.code.slice(3).toLowerCase();
+        } else if (/^Digit\d$/.test(e.code)) {
+            key = e.code.slice(5);
+        }
+        const held = { ctrl: e.metaKey, meta: e.ctrlKey, alt: e.altKey, shift: e.shiftKey };
+        return [...MODIFIERS.filter((m) => held[m]), KEY_NAMES[key] ?? key].join("+");
+    }
+    document.addEventListener(
+        "keydown",
+        (e) => {
+            if (e.isComposing || ["Shift", "Meta", "Alt", "Control"].includes(e.key)) {
+                return;
+            }
+            if (openMenu) {
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    closeMenu();
+                }
+                return;
+            }
+            const keys = eventKeys(e);
+            const button = [...widgets.values()].find(
+                (w) => w.shortcut === keys && !w.el.disabled && w.el.checkVisibility(),
+            );
+            const shortcut = shortcuts.find((s) => s.keys === keys);
+            if (!button && !shortcut) {
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            if (button) {
+                button.el.click();
+            } else {
+                send("shortcut", shortcut.id, {});
+            }
+        },
+        true,
+    );
 
     function applyOp(op) {
         if (op.tree) {

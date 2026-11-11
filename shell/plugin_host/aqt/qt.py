@@ -2,28 +2,37 @@
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 """The Qt the plugin host supports: signals, actions for the shell's
-menus, timers on the host's loop, and the widgets the shell can draw
-(aqt.widgets). Other Qt names can be imported and named, but not created
+menus and the widgets' button menus, timers on the host's loop, and the
+widgets the shell can draw (aqt.widgets). Other Qt names can be imported and named, but not created
 (see `unsupported`); add-ons can also use web panels (aqt.native)."""
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable
 from typing import Any
 
 from .widgets import (  # noqa: F401
     AnkiWebView,
     QAbstractButton,
+    QAbstractItemView,
     QBoxLayout,
+    QByteArray,
     QCheckBox,
+    QCloseEvent,
     QComboBox,
+    QDateTime,
+    QDateTimeEdit,
     QDialog,
+    QDialogButtonBox,
     QDockWidget,
     QEvent,
     QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
     QKeyEvent,
     QLabel,
     QLayout,
@@ -32,15 +41,20 @@ from .widgets import (  # noqa: F401
     QObject,
     QPlainTextEdit,
     QPushButton,
+    QShortcut,
+    QSize,
     QSizePolicy,
     QSplitter,
     Qt,
+    QTableWidget,
+    QTableWidgetItem,
     QTextCursor,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
     Signal,
+    _keys,
     qconnect,
     unsupported,
 )
@@ -58,11 +72,16 @@ class QAction(QObject):
         self._checkable = False
         self._checked = False
         self._menu: Any = None
+        self._shortcut = ""
+        # the button menus showing it
+        self._in: list[QMenu] = []
         self.triggered = Signal()
 
     def _changed(self) -> None:
         if self._menu is not None:
             self._menu.mw.native.menu_changed(self._menu)
+        for menu in self._in:
+            menu._changed()
 
     def text(self) -> str:
         return self._text
@@ -97,8 +116,12 @@ class QAction(QObject):
     def isChecked(self) -> bool:
         return self._checked
 
-    def setShortcut(self, *_args: Any) -> None:
-        pass
+    def setShortcut(self, keys: Any) -> None:
+        self._shortcut = _keys(keys)
+        self._changed()
+
+    def shortcut(self) -> QKeySequence:
+        return QKeySequence(self._shortcut)
 
     def setShortcutContext(self, *_args: Any) -> None:
         pass
@@ -126,25 +149,73 @@ class QAction(QObject):
 
 
 class QMenu(QObject):
-    """A context menu being filled by a hook; the shell shows its actions."""
+    """A context menu being filled by a hook, or a button's menu; the shell
+    shows its actions."""
 
     def __init__(self, title: str = "", parent: Any = None) -> None:
         super().__init__(parent)
         self.title = title
         self.actions: list[QAction] = []
+        # the actions, and None for separators
+        self._entries: list[QAction | None] = []
+        self._buttons: list[Any] = []
 
     def addAction(self, action: str | QAction, *_args: Any) -> QAction:
         if isinstance(action, str):
             action = QAction(action, self)
         self.actions.append(action)
+        self._entries.append(action)
+        action._in.append(self)
+        self._changed()
         return action
 
     def addSeparator(self) -> None:
-        pass
+        self._entries.append(None)
+        self._changed()
+
+    def _changed(self) -> None:
+        for ref in self._buttons:
+            if (button := ref()) is not None:
+                button._changed()
+
+    def _items(self) -> list[dict[str, Any]]:
+        """For the page: the visible actions, and separators between them."""
+        items: list[dict[str, Any]] = []
+        for entry in self._entries:
+            if entry is None:
+                if items and "sep" not in items[-1]:
+                    items.append({"sep": True})
+            elif entry.isVisible():
+                items.append(
+                    {
+                        "id": _menu_id(entry),
+                        "text": entry.text(),
+                        "enabled": entry.isEnabled(),
+                    }
+                )
+        if items and "sep" in items[-1]:
+            items.pop()
+        return items
+
+    def _trigger(self, id: Any) -> None:
+        for entry in self._entries:
+            if entry is not None and entry.isVisible() and _menu_id(entry) == id:
+                entry.trigger()
+                return
 
     def addMenu(self, _title: str) -> QMenu:
         # submenus are flattened into this one
         return self
+
+
+_menu_ids = itertools.count(1)
+
+
+def _menu_id(action: QAction) -> int:
+    """An action's id in the button menus' pages."""
+    if not hasattr(action, "_menu_id"):
+        action._menu_id = next(_menu_ids)
+    return action._menu_id
 
 
 class QTimer(QObject):
@@ -216,27 +287,6 @@ class QKeySequence:
 
     def toString(self, *_args: Any) -> str:
         return self._keys
-
-
-class QShortcut(QObject):
-    """Shortcuts on Qt windows: the shell has its own, so these never fire."""
-
-    def __init__(
-        self, key: Any = None, parent: Any = None, *_args: Any, **kwargs: Any
-    ) -> None:
-        super().__init__(parent)
-        self.activated = Signal()
-        if callable(kwargs.get("activated")):
-            self.activated.connect(kwargs["activated"])
-
-    def setKey(self, *_args: Any) -> None:
-        pass
-
-    def setContext(self, *_args: Any) -> None:
-        pass
-
-    def setEnabled(self, *_args: Any) -> None:
-        pass
 
 
 class sip:

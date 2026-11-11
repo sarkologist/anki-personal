@@ -47,6 +47,9 @@ pub struct MenuItem {
     pub text: String,
     #[serde(default = "enabled")]
     pub enabled: bool,
+    /// Qt's key sequence ("Ctrl+Alt+Shift+Q"; Ctrl is Cmd).
+    #[serde(default)]
+    pub shortcut: Option<String>,
 }
 
 fn enabled() -> bool {
@@ -60,6 +63,7 @@ pub struct Plugins {
     /// The add-ons' items in Tools.
     pub tools: Mutex<Vec<MenuItem>>,
     pub editors: super::editors::State,
+    pub windows: super::windows::State,
 }
 
 impl Plugins {
@@ -69,6 +73,7 @@ impl Plugins {
             panels: Mutex::new(HashMap::new()),
             tools: Mutex::new(vec![]),
             editors: Default::default(),
+            windows: Default::default(),
         }
     }
 }
@@ -260,6 +265,7 @@ pub fn window_destroyed(ui: &Ui, label: &str) {
     if crate::editor_window::is_editor(label) {
         super::editors::closed(ui, label);
     }
+    super::windows::destroyed(ui, label);
 }
 
 pub fn window_focused(ui: &Ui, label: &str, focused: bool) {
@@ -271,6 +277,7 @@ pub fn window_focused(ui: &Ui, label: &str, focused: bool) {
 /// The host's end: its menu items and panels go with it.
 fn forget_host_ui(ui: &Arc<Ui>) {
     super::editors::host_stopped(ui);
+    super::windows::host_stopped(ui);
     crate::browser_window::host_stopped(ui);
     ui.plugins.tools.lock().unwrap().clear();
     crate::menus::set_tools(ui, vec![]);
@@ -291,7 +298,7 @@ fn forget_host_ui(ui: &Arc<Ui>) {
 
 fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> Option<Value> {
     let text = msg["text"].as_str().unwrap_or_default();
-    if super::editors::on_host(ui, op, msg) {
+    if super::editors::on_host(ui, op, msg) || super::windows::on_host(ui, op, msg) {
         return None;
     }
     if let Some(reply) = crate::browser_window::on_host(ui, op, msg) {
@@ -329,6 +336,12 @@ fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> Option<Value> {
         "tooltip" => match msg["window"].as_str() {
             Some(label) if crate::editor_window::is_editor(label) => {
                 crate::editor_window::tooltip(ui, label, text)
+            }
+            Some(label) if super::windows::is_window(label) => {
+                match super::windows::resolve(ui, label) {
+                    Some(window) => crate::editor_window::tooltip(ui, &window, text),
+                    None => main_window::tooltip(ui, text),
+                }
             }
             _ => main_window::tooltip(ui, text),
         },

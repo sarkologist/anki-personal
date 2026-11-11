@@ -4,17 +4,21 @@
 """Qt widgets drawn by the native shell (aqt.qt re-exports them).
 
 The widgets the supported add-ons build their forms from keep their state
-here, as Qt's do; a widget shown somewhere (a dock in an editor window) is
-a [Root], which the shell draws with a generic page (`widgets.js` in the
-shell). The page asks for the whole tree when it loads, and gets ordered
-batches of changes afterwards (`widget_update`); what the user does comes
-back as `widget_event`s, which run the widgets' signals as Qt would.
+here, as Qt's do; a widget shown somewhere (a dock in an editor window, or
+a window of its own: a main window or a dialog) is a [Root], which the
+shell draws with a generic page (`widgets.js` in the shell). The page asks
+for the whole tree when it loads, and gets ordered batches of changes
+afterwards (`widget_update`); what the user does comes back as
+`widget_event`s, which run the widgets' signals as Qt would. A modal
+dialog's `exec` runs the host's loop until it's answered, as Qt's does.
 
-Unsupported widgets (tables, date pickers, top-level windows) raise
-NotImplementedError when they're created or shown."""
+Other widgets raise NotImplementedError when they're created, and so does
+showing a widget that isn't in a window."""
 
 from __future__ import annotations
 
+import base64
+import datetime
 import enum
 import functools
 import inspect
@@ -80,6 +84,7 @@ class QObject:
         self._parent = parent
         self._object_name = ""
         self._signals_blocked = False
+        self._shortcuts_kept: list[QShortcut] = []
 
     def parent(self) -> Any:
         return self._parent
@@ -249,6 +254,55 @@ class QKeyEvent(QEvent):
         return self._text
 
 
+class QCloseEvent(QEvent):
+    pass
+
+
+class QSize:
+    def __init__(self, width: int = 0, height: int = 0) -> None:
+        self._width = int(width)
+        self._height = int(height)
+
+    def width(self) -> int:
+        return self._width
+
+    def height(self) -> int:
+        return self._height
+
+
+class QByteArray:
+    def __init__(self, data: Any = b"") -> None:
+        self._data = data.encode() if isinstance(data, str) else bytes(data)
+
+    @staticmethod
+    def fromBase64(data: Any) -> QByteArray:
+        try:
+            return QByteArray(base64.b64decode(bytes(QByteArray(data))))
+        except ValueError:
+            return QByteArray()
+
+    def toBase64(self) -> QByteArray:
+        return QByteArray(base64.b64encode(self._data))
+
+    def data(self) -> bytes:
+        return self._data
+
+    def isEmpty(self) -> bool:
+        return not self._data
+
+    def size(self) -> int:
+        return len(self._data)
+
+    def __bytes__(self) -> bytes:
+        return self._data
+
+
+def _keys(keys: Any) -> str:
+    """A key sequence as Qt writes it ("Ctrl+Shift+A")."""
+    to_string = getattr(keys, "toString", None)
+    return str(to_string() if callable(to_string) else keys or "")
+
+
 # what the page's KeyboardEvent.key is to Qt
 _PAGE_KEYS = {
     "Escape": Qt.Key.Key_Escape,
@@ -293,6 +347,63 @@ def key_event(event: dict[str, Any]) -> QKeyEvent:
 
 # Roots: widgets shown by the shell
 ##########################################################################
+
+# every QShortcut, for the roots' pages
+_shortcuts: weakref.WeakSet[QShortcut] = weakref.WeakSet()
+
+
+class QShortcut(QObject):
+    """A shortcut in a dock or window, fired by its page; on another
+    window (the main one), it never fires (the shell has its own keys)."""
+
+    def __init__(
+        self, key: Any = None, parent: Any = None, *_args: Any, **kwargs: Any
+    ) -> None:
+        super().__init__(parent)
+        self._id = next(_ids)
+        _widgets[self._id] = self
+        self._keys = _keys(key)
+        self._enabled = True
+        self.activated = Signal(self)
+        self.activatedAmbiguously = Signal(self)
+        if callable(kwargs.get("activated")):
+            self.activated.connect(kwargs["activated"])
+        # its parent keeps it, as Qt's owns it
+        if isinstance(parent, QObject):
+            parent._shortcuts_kept.append(self)
+        _shortcuts.add(self)
+        self._structure_changed()
+
+    def _structure_changed(self) -> None:
+        if root := root_of(self):
+            root.structure_changed()
+
+    def _from_page(self, op: str | None, value: Any, event: Any = None) -> Any:
+        if op == "shortcut" and self._enabled:
+            self.activated.emit()
+        return None
+
+    def setKey(self, key: Any) -> None:
+        self._keys = _keys(key)
+        self._structure_changed()
+
+    def key(self) -> Any:
+        from .qt import QKeySequence
+
+        return QKeySequence(self._keys)
+
+    def setContext(self, *_args: Any) -> None:
+        pass
+
+    def setAutoRepeat(self, *_args: Any) -> None:
+        pass
+
+    def setEnabled(self, enabled: bool) -> None:
+        self._enabled = bool(enabled)
+
+    def isEnabled(self) -> bool:
+        return self._enabled
+
 
 _ids = itertools.count(1)
 _widgets: weakref.WeakValueDictionary[int, QWidget] = weakref.WeakValueDictionary()
@@ -386,13 +497,26 @@ class Root:
                     _post(functools.partial(callback, None))
         return {"seq": self.seq, "tree": self.widget._tree()}
 
+    def shortcuts(self) -> list[dict[str, Any]]:
+        """The `QShortcut`s of the root's widgets, which its page fires."""
+        return [
+            {"id": shortcut._id, "keys": shortcut._keys}
+            for shortcut in list(_shortcuts)
+            if shortcut._keys and root_of(shortcut) is self
+        ]
 
-def root_of(widget: QWidget | None) -> Root | None:
+
+def root_of(widget: Any) -> Root | None:
+    """The root drawing `widget`: its dock's or window's. A window not
+    shown has none (a dialog isn't drawn in the window it belongs to)."""
     while widget is not None:
         root = _roots.get(widget._id)
         if root is not None and root.widget is widget:
             return root
-        widget = widget._parent if isinstance(widget._parent, QWidget) else None
+        if isinstance(widget, QWidget) and widget._is_window():
+            return None
+        parent = widget._parent
+        widget = parent if isinstance(parent, QWidget) else None
     return None
 
 
@@ -438,6 +562,11 @@ class QWidget(QObject):
         self._enabled = True
         self._tooltip = ""
         self._sizes: dict[str, int] = {}
+        self._window_size: tuple[int, int] | None = None
+        self._geometry = b""
+        # a window: whether the shell has it open, and a sync is due
+        self._window_open = False
+        self._window_sync = False
 
     # state the page draws
 
@@ -453,6 +582,9 @@ class QWidget(QObject):
         node = {"id": self._id, "type": self._kind, **self._props()}
         if self._layout is not None:
             node["layout"] = self._layout._tree()
+        root = _roots.get(self._id)
+        if root is not None and root.widget is self:
+            node["shortcuts"] = root.shortcuts()
         return node
 
     def _changed(self) -> None:
@@ -468,7 +600,96 @@ class QWidget(QObject):
             root.op({"id": self._id, **op})
 
     def _from_page(self, op: str | None, value: Any, event: Any = None) -> Any:
+        if op == "closed" and self._is_window():
+            self._closed_by_user()
         return None
+
+    # windows: a main window or dialog, shown, is a shell window
+
+    def _is_window(self) -> bool:
+        return False
+
+    def _show_window(self, visible: bool) -> None:
+        if visible == (self._shown is True):
+            return
+        self._shown = visible
+        if visible and root_of(self) is None:
+            Root(self)
+        # the shell gets where it ends up after the task, so hiding and
+        # showing again keeps its window (and page)
+        if not self._window_sync:
+            self._window_sync = True
+            _post(self._sync_window)
+
+    def _sync_window(self) -> None:
+        self._window_sync = False
+        shown = self._shown is True
+        if shown == self._window_open:
+            return
+        self._window_open = shown
+        native = _native()
+        if shown:
+            width, height = self._window_size or self._default_size()
+            if native:
+                native.notify(
+                    "widget_window",
+                    root=self._id,
+                    title=self.windowTitle(),
+                    width=width,
+                    height=height,
+                )
+        else:
+            if root := _roots.get(self._id):
+                root.close()
+            if native:
+                native.notify("widget_window_close", root=self._id)
+
+    def _default_size(self) -> tuple[int, int]:
+        return (640, 480)
+
+    def _window_gone(self) -> None:
+        """The shell closed the window: it isn't shown, whatever happens."""
+        self._window_open = False
+        self._shown = False
+        if root := _roots.get(self._id):
+            root.close()
+
+    def _closed_by_user(self) -> None:
+        """The shell's window was closed: as Qt's close button, but the
+        window is gone whatever closeEvent decides."""
+        self._window_open = False
+        self.closeEvent(QCloseEvent())
+        self._window_gone()
+
+    def closeEvent(self, event: Any) -> None:
+        pass
+
+    def resize(self, *size: Any) -> None:
+        if len(size) == 1:
+            size = (size[0].width(), size[0].height())
+        self._window_size = (int(size[0]), int(size[1]))
+
+    def size(self) -> Any:
+        return QSize(*(self._window_size or self._default_size()))
+
+    def saveGeometry(self) -> QByteArray:
+        # what restoreGeometry had, for the Qt Anki sharing the config
+        return QByteArray(self._geometry)
+
+    def restoreGeometry(self, geometry: Any) -> bool:
+        self._geometry = bytes(geometry)
+        return False
+
+    def raise_(self) -> None:
+        # (before the window is open, opening it brings it to the front)
+        native = _native()
+        if self._is_window() and self._window_open and native:
+            native.notify("widget_window_raise", root=self._id)
+
+    activateWindow = raise_
+
+    def isActiveWindow(self) -> bool:
+        return bool(self._is_window() and self._shown)
 
     # Qt API
 
@@ -481,7 +702,7 @@ class QWidget(QObject):
 
     def window(self) -> QWidget:
         widget = self
-        while isinstance(widget._parent, QWidget):
+        while isinstance(widget._parent, QWidget) and not widget._is_window():
             widget = widget._parent
         return widget
 
@@ -494,6 +715,9 @@ class QWidget(QObject):
         return self._layout
 
     def setVisible(self, visible: bool) -> None:
+        if self._is_window():
+            self._show_window(bool(visible))
+            return
         if self._shown is bool(visible):
             return
         self._shown = bool(visible)
@@ -511,6 +735,8 @@ class QWidget(QObject):
         self.setVisible(False)
 
     def isHidden(self) -> bool:
+        if self._is_window():
+            return self._shown is not True
         return self._shown is False or (self._shown is None and self._parent is None)
 
     def isVisible(self) -> bool:
@@ -594,11 +820,19 @@ class QWidget(QObject):
 
     def setWindowTitle(self, title: str) -> None:
         self._window_title = title
+        native = _native()
+        if self._is_window() and self._window_open and native:
+            native.notify("widget_window_title", root=self._id, title=title)
 
     def windowTitle(self) -> str:
         return getattr(self, "_window_title", "")
 
     def close(self) -> bool:
+        if self._is_window() and self._shown:
+            event = QCloseEvent()
+            self.closeEvent(event)
+            if not event.isAccepted():
+                return False
         self.hide()
         return True
 
@@ -686,6 +920,8 @@ class QAbstractButton(QWidget):
         self._text = text
         self._checkable = False
         self._checked = False
+        self._shortcut = ""
+        self._menu: Any = None
         self.clicked = Signal(self)
         self.toggled = Signal(self)
         self.pressed = Signal(self)
@@ -695,12 +931,29 @@ class QAbstractButton(QWidget):
         props = {**super()._props(), "text": self._text}
         if self._checkable:
             props["checked"] = self._checked
+        if self._shortcut:
+            props["shortcut"] = self._shortcut
+        if self._menu is not None:
+            props["menu"] = self._menu._items()
         return props
 
     def _from_page(self, op: str | None, value: Any, event: Any = None) -> Any:
         if op == "clicked" and self._enabled:
             self.click()
+        elif op == "menu" and self._enabled and self._menu is not None:
+            self._menu._trigger(value)
         return None
+
+    def setMenu(self, menu: Any) -> None:
+        self._menu = menu
+        menu._buttons.append(weakref.ref(self))
+        self._changed()
+
+    def menu(self) -> Any:
+        return self._menu
+
+    def showMenu(self) -> None:
+        pass
 
     def click(self) -> None:
         if self._checkable:
@@ -734,8 +987,14 @@ class QAbstractButton(QWidget):
     def setIcon(self, *_args: Any) -> None:
         pass
 
-    def setShortcut(self, *_args: Any) -> None:
-        pass
+    def setShortcut(self, keys: Any) -> None:
+        self._shortcut = _keys(keys)
+        self._changed()
+
+    def shortcut(self) -> Any:
+        from .qt import QKeySequence
+
+        return QKeySequence(self._shortcut)
 
 
 class QPushButton(QAbstractButton):
@@ -1274,7 +1533,25 @@ class QSplitter(QFrame):
 
 
 class QMainWindow(QWidget):
-    """Windows can't be shown (yet); this is what docks are added to."""
+    """A window of its own, shown in the shell, drawing its central widget
+    (no menus, toolbars or docks; the editor windows take docks)."""
+
+    _kind = "window"
+
+    def __init__(self, parent: Any = None, *_args: Any, **_kwargs: Any) -> None:
+        super().__init__(parent)
+        self._central: QWidget | None = None
+
+    def _is_window(self) -> bool:
+        return True
+
+    def _default_size(self) -> tuple[int, int]:
+        return (900, 640)
+
+    def _tree(self) -> dict[str, Any]:
+        node = super()._tree()
+        node["child"] = self._central._tree() if self._central else None
+        return node
 
     def addDockWidget(self, area: Any, dock: QDockWidget, *_args: Any) -> None:
         raise NotImplementedError(
@@ -1282,7 +1559,12 @@ class QMainWindow(QWidget):
         )
 
     def setCentralWidget(self, widget: QWidget) -> None:
+        self._central = widget
         widget._parent = self
+        self._structure_changed()
+
+    def centralWidget(self) -> QWidget | None:
+        return self._central
 
     def statusBar(self) -> Any:
         raise NotImplementedError("QMainWindow.statusBar")
@@ -1361,40 +1643,102 @@ class QDockWidget(QWidget):
 
 
 class QDialog(QWidget):
+    """A window of its own. `exec` shows it and runs the host's loop until
+    it's answered, so the shell's other events (its own buttons) go on."""
+
     class DialogCode(enum.IntEnum):
         Rejected = 0
         Accepted = 1
 
     def __init__(self, parent: Any = None, *_args: Any, **_kwargs: Any) -> None:
         super().__init__(parent)
+        self._result = 0
+        self._running = False
         self.accepted = Signal(self)
         self.rejected = Signal(self)
         self.finished = Signal(self)
 
-    def setVisible(self, visible: bool) -> None:
-        if visible:
-            raise NotImplementedError(
-                f"{type(self).__name__}: the native shell doesn't show add-on "
-                "dialogs yet"
-            )
-        self._shown = False
-
-    def isHidden(self) -> bool:
+    def _is_window(self) -> bool:
         return True
 
+    def _default_size(self) -> tuple[int, int]:
+        return (460, 200)
+
+    def _tree(self) -> dict[str, Any]:
+        node = super()._tree()
+        if "shortcuts" in node:
+            # Escape rejects, as in Qt
+            node["shortcuts"].append({"id": self._id, "keys": "Escape"})
+        return node
+
+    def _from_page(self, op: str | None, value: Any, event: Any = None) -> Any:
+        if op == "shortcut" and self._shown:
+            self.reject()
+            return None
+        return super()._from_page(op, value, event)
+
+    def closeEvent(self, event: Any) -> None:
+        # as Qt's: closing rejects (so the close button does)
+        if self._shown:
+            self.reject()
+
+    def setVisible(self, visible: bool) -> None:
+        # hiding ends exec, as in Qt (without an answer)
+        if not visible:
+            self._running = False
+        super().setVisible(visible)
+
+    def _window_gone(self) -> None:
+        self._running = False
+        super()._window_gone()
+
     def exec(self) -> int:
+        import aqt
+
+        self._result = 0
+        self._running = True
         self.show()
-        return 0
+        try:
+            if aqt.mw:
+                aqt.mw.loop.run_until(lambda: not self._running)
+        finally:
+            self._running = False
+        return self._result
 
     exec_ = exec
 
+    def open(self) -> None:
+        self.show()
+
+    def done(self, result: int) -> None:
+        self._result = int(result)
+        self._running = False
+        self.hide()
+        self.finished.emit(self._result)
+        if self._result == QDialog.DialogCode.Accepted:
+            self.accepted.emit()
+        else:
+            self.rejected.emit()
+
     def accept(self) -> None:
-        self.accepted.emit()
+        self.done(QDialog.DialogCode.Accepted)
 
     def reject(self) -> None:
-        self.rejected.emit()
+        self.done(QDialog.DialogCode.Rejected)
+
+    def result(self) -> int:
+        return self._result
+
+    def setResult(self, result: int) -> None:
+        self._result = int(result)
 
     def setModal(self, *_args: Any) -> None:
+        pass
+
+    def setWindowModality(self, *_args: Any) -> None:
+        pass
+
+    def setSizeGripEnabled(self, *_args: Any) -> None:
         pass
 
 
@@ -1418,6 +1762,674 @@ class QFileDialog(metaclass=_Names):
             return ""
         out = native.request("choose_folder", title=caption, folder=directory)
         return out if isinstance(out, str) else ""
+
+
+class QDateTime:
+    """A point in time (local, as the page shows it)."""
+
+    def __init__(self, secs: float = 0.0) -> None:
+        self._secs = float(secs)
+
+    @staticmethod
+    def fromSecsSinceEpoch(secs: int, *_args: Any) -> QDateTime:
+        return QDateTime(secs)
+
+    @staticmethod
+    def currentDateTime() -> QDateTime:
+        return QDateTime(datetime.datetime.now().timestamp())
+
+    @staticmethod
+    def currentSecsSinceEpoch() -> int:
+        return int(datetime.datetime.now().timestamp())
+
+    def toSecsSinceEpoch(self) -> int:
+        return int(self._secs)
+
+    def addSecs(self, secs: int) -> QDateTime:
+        return QDateTime(self._secs + secs)
+
+    def secsTo(self, other: QDateTime) -> int:
+        return int(other._secs - self._secs)
+
+    def isValid(self) -> bool:
+        return True
+
+    def __lt__(self, other: QDateTime) -> bool:
+        return self._secs < other._secs
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, QDateTime) and self._secs == other._secs
+
+    def __hash__(self) -> int:
+        return hash(self._secs)
+
+
+class QDateTimeEdit(QWidget):
+    """A date and time, picked to the minute (the page's datetime-local)."""
+
+    _kind = "datetime"
+
+    def __init__(self, value: Any = None, parent: Any = None, *_args: Any) -> None:
+        if isinstance(value, QWidget):
+            value, parent = None, value
+        super().__init__(parent)
+        self._value = value if isinstance(value, QDateTime) else QDateTime()
+        self._minimum: QDateTime | None = None
+        self.dateTimeChanged = Signal(self)
+
+    @staticmethod
+    def _local(secs: float) -> str:
+        return datetime.datetime.fromtimestamp(secs).strftime("%Y-%m-%dT%H:%M")
+
+    def _props(self) -> dict[str, Any]:
+        props = {**super()._props(), "value": self._local(self._value._secs)}
+        if self._minimum is not None:
+            props["min"] = self._local(self._minimum._secs)
+        return props
+
+    def _from_page(self, op: str | None, value: Any, event: Any = None) -> Any:
+        if op == "datetime" and isinstance(value, str):
+            try:
+                secs = datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M").timestamp()
+            except ValueError:
+                return None
+            if secs != self._value._secs:
+                self._value = QDateTime(secs)
+                self.dateTimeChanged.emit(self._value)
+        return None
+
+    def dateTime(self) -> QDateTime:
+        return self._value
+
+    def setDateTime(self, value: QDateTime) -> None:
+        if value != self._value:
+            self._value = value
+            self._changed()
+            self.dateTimeChanged.emit(value)
+
+    def setMinimumDateTime(self, value: QDateTime) -> None:
+        self._minimum = value
+        self._changed()
+
+    def setCalendarPopup(self, *_args: Any) -> None:
+        pass
+
+    def setDisplayFormat(self, *_args: Any) -> None:
+        pass
+
+
+class QDialogButtonBox(QWidget):
+    """A dialog's buttons, as a row (macOS order: rejecting ones before
+    accepting ones, on the right)."""
+
+    class StandardButton(enum.IntFlag):
+        NoButton = 0
+        Ok = 0x00000400
+        Save = 0x00000800
+        Open = 0x00002000
+        Yes = 0x00004000
+        No = 0x00010000
+        Abort = 0x00040000
+        Retry = 0x00080000
+        Ignore = 0x00100000
+        Close = 0x00200000
+        Cancel = 0x00400000
+        Discard = 0x00800000
+        Help = 0x01000000
+        Apply = 0x02000000
+        Reset = 0x04000000
+
+    class ButtonRole(enum.IntEnum):
+        InvalidRole = -1
+        AcceptRole = 0
+        RejectRole = 1
+        DestructiveRole = 2
+        ActionRole = 3
+        HelpRole = 4
+        YesRole = 5
+        NoRole = 6
+        ResetRole = 7
+        ApplyRole = 8
+
+    _STANDARD = {
+        StandardButton.Ok: ("OK", ButtonRole.AcceptRole),
+        StandardButton.Save: ("Save", ButtonRole.AcceptRole),
+        StandardButton.Open: ("Open", ButtonRole.AcceptRole),
+        StandardButton.Yes: ("Yes", ButtonRole.YesRole),
+        StandardButton.No: ("No", ButtonRole.NoRole),
+        StandardButton.Abort: ("Abort", ButtonRole.RejectRole),
+        StandardButton.Retry: ("Retry", ButtonRole.AcceptRole),
+        StandardButton.Ignore: ("Ignore", ButtonRole.AcceptRole),
+        StandardButton.Close: ("Close", ButtonRole.RejectRole),
+        StandardButton.Cancel: ("Cancel", ButtonRole.RejectRole),
+        StandardButton.Discard: ("Don't Save", ButtonRole.DestructiveRole),
+        StandardButton.Help: ("Help", ButtonRole.HelpRole),
+        StandardButton.Apply: ("Apply", ButtonRole.ApplyRole),
+        StandardButton.Reset: ("Reset", ButtonRole.ResetRole),
+    }
+    _ACCEPTING = (ButtonRole.AcceptRole, ButtonRole.YesRole)
+    _REJECTING = (ButtonRole.RejectRole, ButtonRole.NoRole)
+
+    def __init__(self, buttons: Any = None, *args: Any) -> None:
+        parent = next((a for a in (buttons, *args) if isinstance(a, QWidget)), None)
+        super().__init__(parent)
+        self._buttons: list[tuple[QPushButton, Any, Any]] = []
+        self.accepted = Signal(self)
+        self.rejected = Signal(self)
+        self.clicked = Signal(self)
+        self.helpRequested = Signal(self)
+        self.setLayout(QHBoxLayout())
+        if isinstance(buttons, int) and not isinstance(buttons, _Placeholder):
+            self.setStandardButtons(buttons)
+
+    def _relayout(self) -> None:
+        layout = QHBoxLayout()
+        layout.addStretch(1)
+        rank = {role: 1 for role in self._REJECTING} | {
+            role: 2 for role in self._ACCEPTING
+        }
+        # sorted is stable: added order within each group
+        for button, _role, _standard in sorted(
+            self._buttons, key=lambda b: rank.get(b[1], 0)
+        ):
+            layout.addWidget(button)
+        self.setLayout(layout)
+
+    def _clicked(self, button: QPushButton, role: Any) -> None:
+        self.clicked.emit(button)
+        if role in self._ACCEPTING:
+            self.accepted.emit()
+        elif role in self._REJECTING:
+            self.rejected.emit()
+        elif role == self.ButtonRole.HelpRole:
+            self.helpRequested.emit()
+
+    def addButton(self, button: Any, role: Any = None) -> QPushButton | None:
+        standard = None
+        if isinstance(button, self.StandardButton) or (
+            isinstance(button, int) and not isinstance(button, _Placeholder)
+        ):
+            standard = self.StandardButton(button)
+            text, role = self._STANDARD.get(standard, ("", self.ButtonRole.ActionRole))
+            button = QPushButton(text)
+        elif isinstance(button, str):
+            button = QPushButton(button)
+        if role is None:
+            role = self.ButtonRole.ActionRole
+        button.clicked.connect(
+            lambda _checked=False, b=button, r=role: self._clicked(b, r)
+        )
+        self._buttons.append((button, role, standard))
+        self._relayout()
+        return button
+
+    def setStandardButtons(self, buttons: int) -> None:
+        for standard in self._STANDARD:
+            if int(buttons) & int(standard):
+                self.addButton(standard)
+
+    def button(self, standard: Any) -> QPushButton | None:
+        for button, _role, s in self._buttons:
+            if s is not None and int(s) == int(standard):
+                return button
+        return None
+
+    def buttons(self) -> list[QPushButton]:
+        return [button for button, _role, _s in self._buttons]
+
+    def buttonRole(self, button: QPushButton) -> Any:
+        for b, role, _s in self._buttons:
+            if b is button:
+                return role
+        return self.ButtonRole.InvalidRole
+
+    def setOrientation(self, *_args: Any) -> None:
+        pass
+
+    def setCenterButtons(self, *_args: Any) -> None:
+        pass
+
+
+class QInputDialog(metaclass=_Names):
+    """`getText` and `getItem`, as a dialog in the shell."""
+
+    @staticmethod
+    def getText(
+        parent: Any,
+        title: str,
+        label: str,
+        echo: Any = None,
+        text: str = "",
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> tuple[str, bool]:
+        dialog = QDialog(parent)
+        dialog.setWindowTitle(title)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 12)
+        dialog.setLayout(layout)
+        prompt = QLabel(label)
+        prompt.setWordWrap(True)
+        layout.addWidget(prompt)
+        edit = QLineEdit(text)
+        layout.addWidget(edit)
+        layout.addStretch(1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        edit.returnPressed.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.resize(420, 160)
+        ok = dialog.exec() == QDialog.DialogCode.Accepted
+        return edit.text(), ok
+
+    @staticmethod
+    def getItem(
+        parent: Any,
+        title: str,
+        label: str,
+        items: list[str],
+        current: int = 0,
+        editable: bool = True,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> tuple[str, bool]:
+        dialog = QDialog(parent)
+        dialog.setWindowTitle(title)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 12, 12, 12)
+        dialog.setLayout(layout)
+        layout.addWidget(QLabel(label))
+        combo = QComboBox()
+        combo.addItems(items)
+        combo.setCurrentIndex(current)
+        combo.setEditable(editable)
+        layout.addWidget(combo)
+        layout.addStretch(1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(420, 160)
+        ok = dialog.exec() == QDialog.DialogCode.Accepted
+        return combo.currentText(), ok
+
+
+# Tables
+##########################################################################
+
+
+class QAbstractItemView(QWidget):
+    class SelectionBehavior(metaclass=_Names):
+        pass
+
+    class SelectionMode(metaclass=_Names):
+        pass
+
+    class EditTrigger(metaclass=_Names):
+        pass
+
+    class ScrollHint(metaclass=_Names):
+        pass
+
+    class ScrollMode(metaclass=_Names):
+        pass
+
+
+class QHeaderView(QObject):
+    class ResizeMode(metaclass=_Names):
+        pass
+
+    def __init__(self, table: QTableWidget, prop: str) -> None:
+        super().__init__(table)
+        self._table = table
+        self._prop = prop
+        self._visible = True
+
+    def setVisible(self, visible: bool) -> None:
+        if self._visible != bool(visible):
+            self._visible = bool(visible)
+            self._table._changed()
+
+    def hide(self) -> None:
+        self.setVisible(False)
+
+    def show(self) -> None:
+        self.setVisible(True)
+
+    def isHidden(self) -> bool:
+        return not self._visible
+
+    def resizeSection(self, column: int, width: int) -> None:
+        self._table.setColumnWidth(column, width)
+
+    def sectionSize(self, column: int) -> int:
+        return self._table.columnWidth(column)
+
+    def setStretchLastSection(self, *_args: Any) -> None:
+        pass
+
+    def setSectionResizeMode(self, *_args: Any) -> None:
+        pass
+
+    def setDefaultSectionSize(self, *_args: Any) -> None:
+        pass
+
+    def setHighlightSections(self, *_args: Any) -> None:
+        pass
+
+    def setSectionsClickable(self, *_args: Any) -> None:
+        pass
+
+    def setMinimumSectionSize(self, *_args: Any) -> None:
+        pass
+
+
+class QTableWidgetItem:
+    def __init__(self, text: Any = "", *_args: Any) -> None:
+        self._text = text if isinstance(text, str) else ""
+        self._tip = ""
+        self._data: dict[Any, Any] = {}
+        self._table: QTableWidget | None = None
+
+    def _changed(self) -> None:
+        if self._table is not None:
+            self._table._changed()
+
+    def text(self) -> str:
+        return self._text
+
+    def setText(self, text: str) -> None:
+        self._text = text
+        self._changed()
+
+    def toolTip(self) -> str:
+        return self._tip
+
+    def setToolTip(self, tip: str) -> None:
+        self._tip = tip
+        self._changed()
+
+    def setData(self, role: Any, value: Any) -> None:
+        self._data[role] = value
+
+    def data(self, role: Any) -> Any:
+        return self._data.get(role)
+
+    def tableWidget(self) -> QTableWidget | None:
+        return self._table
+
+    def row(self) -> int:
+        table = self._table
+        if table is None:
+            return -1
+        for r, cells in enumerate(table._cells):
+            if self in cells:
+                return r
+        return -1
+
+    def setFlags(self, *_args: Any) -> None:
+        pass
+
+    def flags(self) -> Any:
+        return Qt.ItemFlag.ItemIsEnabled
+
+    def setTextAlignment(self, *_args: Any) -> None:
+        pass
+
+    def setForeground(self, *_args: Any) -> None:
+        pass
+
+    def setBackground(self, *_args: Any) -> None:
+        pass
+
+    def setFont(self, *_args: Any) -> None:
+        pass
+
+    def setIcon(self, *_args: Any) -> None:
+        pass
+
+
+class QTableWidget(QAbstractItemView):
+    """A table of text, selected a row at a time (the page's list)."""
+
+    _kind = "table"
+
+    def __init__(self, rows: Any = 0, columns: int = 0, parent: Any = None) -> None:
+        if not isinstance(rows, int):
+            rows, parent = 0, rows
+        super().__init__(parent)
+        self._columns = int(columns)
+        self._headers: list[str] = []
+        self._cells: list[list[QTableWidgetItem | None]] = []
+        self._widths: dict[int, int] = {}
+        self._current = -1
+        self._selected = -1
+        self._horizontal = QHeaderView(self, "hheader")
+        self._vertical = QHeaderView(self, "vheader")
+        self.itemSelectionChanged = Signal(self)
+        self.currentCellChanged = Signal(self)
+        self.currentItemChanged = Signal(self)
+        self.cellClicked = Signal(self)
+        self.cellDoubleClicked = Signal(self)
+        self.cellActivated = Signal(self)
+        self.itemClicked = Signal(self)
+        self.itemDoubleClicked = Signal(self)
+        self.itemActivated = Signal(self)
+        self.setRowCount(int(rows))
+
+    def _props(self) -> dict[str, Any]:
+        return {
+            **super()._props(),
+            "headers": list(self._headers),
+            "rows": [
+                [item.text() if item else "" for item in cells] for cells in self._cells
+            ],
+            "tips": [
+                [item.toolTip() if item else "" for item in cells]
+                for cells in self._cells
+            ],
+            "widths": {str(c): w for c, w in self._widths.items()},
+            "selected": self._selected,
+            "hheader": self._horizontal._visible,
+            "vheader": self._vertical._visible,
+        }
+
+    def _from_page(self, op: str | None, value: Any, event: Any = None) -> Any:
+        if not isinstance(value, int) or not 0 <= value < len(self._cells):
+            return None
+        column = int((event or {}).get("column") or 0)
+        if op == "row":
+            self.selectRow(value)
+            self.cellClicked.emit(value, column)
+            if item := self.item(value, column):
+                self.itemClicked.emit(item)
+        elif op == "activate":
+            self.selectRow(value)
+            self.cellDoubleClicked.emit(value, column)
+            self.cellActivated.emit(value, column)
+            if item := self.item(value, column):
+                self.itemDoubleClicked.emit(item)
+                self.itemActivated.emit(item)
+        return None
+
+    def _set_current(self, row: int, selected: int) -> None:
+        previous = self._current
+        changed = selected != self._selected
+        self._current = row
+        self._selected = selected
+        self._changed()
+        if row != previous:
+            self.currentCellChanged.emit(row, 0, previous, 0)
+            self.currentItemChanged.emit(self.item(row, 0), self.item(previous, 0))
+        if changed:
+            self.itemSelectionChanged.emit()
+
+    # rows and columns
+
+    def setRowCount(self, rows: int) -> None:
+        rows = max(0, int(rows))
+        del self._cells[rows:]
+        while len(self._cells) < rows:
+            self._cells.append([None] * self._columns)
+        self._changed()
+        if self._current >= rows or self._selected >= rows:
+            self._set_current(
+                self._current if self._current < rows else -1,
+                self._selected if self._selected < rows else -1,
+            )
+
+    def rowCount(self) -> int:
+        return len(self._cells)
+
+    def setColumnCount(self, columns: int) -> None:
+        self._columns = max(0, int(columns))
+        for cells in self._cells:
+            del cells[self._columns :]
+            cells.extend([None] * (self._columns - len(cells)))
+        self._changed()
+
+    def columnCount(self) -> int:
+        return self._columns
+
+    def insertRow(self, row: int) -> None:
+        row = max(0, min(int(row), len(self._cells)))
+        self._cells.insert(row, [None] * self._columns)
+        if self._current >= row:
+            self._current += 1
+        if self._selected >= row:
+            self._selected += 1
+        self._changed()
+
+    def removeRow(self, row: int) -> None:
+        if 0 <= row < len(self._cells):
+            del self._cells[row]
+            current = self._current - (self._current > row)
+            selected = self._selected - (self._selected > row)
+            self._set_current(
+                -1 if self._current == row else current,
+                -1 if self._selected == row else selected,
+            )
+
+    def setHorizontalHeaderLabels(self, labels: Iterable[str]) -> None:
+        self._headers = [str(label) for label in labels]
+        self._changed()
+
+    def setItem(self, row: int, column: int, item: QTableWidgetItem) -> None:
+        if 0 <= row < len(self._cells) and 0 <= column < self._columns:
+            item._table = self
+            self._cells[row][column] = item
+            self._changed()
+
+    def item(self, row: int, column: int) -> QTableWidgetItem | None:
+        if 0 <= row < len(self._cells) and 0 <= column < self._columns:
+            return self._cells[row][column]
+        return None
+
+    def takeItem(self, row: int, column: int) -> QTableWidgetItem | None:
+        item = self.item(row, column)
+        if item is not None:
+            self._cells[row][column] = None
+            item._table = None
+            self._changed()
+        return item
+
+    def clear(self) -> None:
+        self._headers = []
+        self.clearContents()
+
+    def clearContents(self) -> None:
+        for cells in self._cells:
+            cells[:] = [None] * self._columns
+        self._changed()
+
+    # selection
+
+    def currentRow(self) -> int:
+        return self._current
+
+    def currentColumn(self) -> int:
+        return 0 if self._current >= 0 else -1
+
+    def currentItem(self) -> QTableWidgetItem | None:
+        return self.item(self._current, 0)
+
+    def setCurrentCell(self, row: int, _column: int = 0, *_args: Any) -> None:
+        self.selectRow(row)
+
+    def selectRow(self, row: int) -> None:
+        if 0 <= row < len(self._cells):
+            self._set_current(row, row)
+
+    def clearSelection(self) -> None:
+        if self._selected != -1:
+            self._set_current(self._current, -1)
+
+    def selectedItems(self) -> list[QTableWidgetItem]:
+        if self._selected < 0:
+            return []
+        return [item for item in self._cells[self._selected] if item is not None]
+
+    def selectedRows(self) -> list[int]:
+        return [self._selected] if self._selected >= 0 else []
+
+    # looks
+
+    def setColumnWidth(self, column: int, width: int) -> None:
+        self._widths[int(column)] = int(width)
+        self._changed()
+
+    def columnWidth(self, column: int) -> int:
+        return self._widths.get(int(column), 100)
+
+    def horizontalHeader(self) -> QHeaderView:
+        return self._horizontal
+
+    def verticalHeader(self) -> QHeaderView:
+        return self._vertical
+
+    def setSelectionBehavior(self, *_args: Any) -> None:
+        pass
+
+    def setSelectionMode(self, *_args: Any) -> None:
+        pass
+
+    def setEditTriggers(self, *_args: Any) -> None:
+        pass
+
+    def setWordWrap(self, *_args: Any) -> None:
+        pass
+
+    def setAlternatingRowColors(self, *_args: Any) -> None:
+        pass
+
+    def setSortingEnabled(self, *_args: Any) -> None:
+        pass
+
+    def setShowGrid(self, *_args: Any) -> None:
+        pass
+
+    def setVerticalScrollMode(self, *_args: Any) -> None:
+        pass
+
+    def setHorizontalScrollMode(self, *_args: Any) -> None:
+        pass
+
+    def resizeColumnsToContents(self) -> None:
+        pass
+
+    def resizeRowsToContents(self) -> None:
+        pass
+
+    def scrollToItem(self, *_args: Any) -> None:
+        pass
+
+    def scrollToTop(self) -> None:
+        pass
 
 
 # Layouts
@@ -1622,6 +2634,7 @@ class AnkiWebView(QWidget):
         self._bridge: Callable[[str], Any] | None = None
         self._callbacks: dict[int, Callable[[Any], None]] = {}
         self._callback_ids = itertools.count(1)
+        self._page_release: Any = None
 
     def _props(self) -> dict[str, Any]:
         return {**super()._props(), "page": self._page}
@@ -1654,6 +2667,9 @@ class AnkiWebView(QWidget):
         self._replay = []
         self._replay_size = 0
         native = _native()
+        if native and self._page_release is None:
+            # the shell forgets the page with the view (a closed window's)
+            self._page_release = weakref.finalize(self, _release_page, self._id)
         if native:
             native.notify(
                 "widget_page",
@@ -1703,6 +2719,18 @@ class AnkiWebView(QWidget):
 
     def page(self) -> Any:
         return None
+
+
+def _release_page(widget: int) -> None:
+    try:
+        _post(
+            lambda: (
+                (n := _native()) and n.notify("widget_pages_closed", widgets=[widget])
+            )
+        )
+    except Exception:
+        # the host is going away
+        pass
 
 
 def unsupported(name: str) -> type:

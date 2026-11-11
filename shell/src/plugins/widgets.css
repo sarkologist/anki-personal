@@ -1,7 +1,7 @@
 /* Copyright: Ankitects Pty Ltd and contributors
    License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html */
 
-/* an add-on's widgets in a side panel (widgets.js) */
+/* an add-on's widgets in a side panel or window (widgets.js) */
 html,
 body {
     height: 100%;
@@ -159,4 +159,89 @@ body {
 }
 .disabled {
     opacity: 0.6;
+}
+
+.qwindow {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+.qwindow-child {
+    flex: 1 1 auto;
+}
+.qtable {
+    overflow: auto;
+    min-height: 60px;
+    border: 1px solid var(--border, #ccc);
+    border-radius: 4px;
+    outline: none;
+    background: var(--canvas-inset, transparent);
+}
+.qtable:focus-visible {
+    box-shadow: 0 0 0 2px var(--border-focus, #4a90d9);
+}
+.qtable table {
+    border-collapse: collapse;
+    table-layout: fixed;
+    width: 100%;
+}
+.qtable th,
+.qtable td {
+    padding: 3px 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: left;
+    cursor: default;
+}
+.qtable th {
+    position: sticky;
+    top: 0;
+    font-weight: 600;
+    background: var(--canvas-elevated, #f3f3f3);
+    border-bottom: 1px solid var(--border, #ccc);
+}
+.qtable tr.selected td {
+    background: var(--button-primary-bg, #3b82f6);
+    color: #fff;
+}
+.qdatetime {
+    font: inherit;
+}
+.qbutton.has-menu::after {
+    content: " ▾";
+}
+.qmenu {
+    position: fixed;
+    z-index: 3000;
+    display: flex;
+    flex-direction: column;
+    min-width: 160px;
+    padding: 4px 0;
+    border: 1px solid var(--border, #ccc);
+    border-radius: 6px;
+    background: var(--canvas-elevated, #fff);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+.qmenu-item {
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    padding: 4px 14px;
+}
+.qmenu-item:not(:disabled):hover,
+.qmenu-item:not(:disabled):focus {
+    background: var(--button-primary-bg, #3b82f6);
+    color: #fff;
+    outline: none;
+}
+.qmenu-item:disabled {
+    opacity: 0.5;
+}
+.qmenu-sep {
+    height: 1px;
+    margin: 4px 0;
+    background: var(--border, #ccc);
 }
