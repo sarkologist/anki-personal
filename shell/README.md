@@ -255,6 +255,10 @@ Options:
   test deck and checks searching, sorting, selecting, editing, columns,
   modes, the sidebar, every action and its dialog, find and replace,
   duplicates, the previewer and card info against the collection.
+  `harness/escape-closes.js` (`--test-page main`) checks that Escape
+  closes Edit Current (saving it), Add (asking first) and the browser
+  (from its table's frame), but not the main window or a page's own use
+  of the key.
   `harness/browser-priority.js` (same page) checks Suspended Card
   Priority's column, sorting and menu through the plugin host; it needs the
   add-on in the copy's `addons21`, `"plugins": ["suspended_card_priority"]`

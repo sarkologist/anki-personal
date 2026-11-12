@@ -128,6 +128,7 @@ of in a second dialog.
 
     function onKeydown(event: KeyboardEvent): void {
         if (event.key === "Escape") {
+            event.preventDefault();
             bridgeCommand("screenClose");
         }
     }

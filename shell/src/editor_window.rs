@@ -352,7 +352,7 @@ body.shell-browse.shell-no-note > .note-editor, body.shell-browse.shell-no-note 
 ";
 
 /// The bars' behaviour, and the window's keys: Cmd+Enter adds (or closes
-/// Edit Current), Escape closes Add, Cmd+Shift+H opens the history, and the
+/// Edit Current), Escape closes the history menu, Cmd+Shift+H opens it, and the
 /// format buttons' hotkeys. External drops go to the shell, as Qt's
 /// `dropEvent`; drags inside the page stay WebKit's.
 fn chrome_js(ui: &Ui, mode: Mode) -> String {
@@ -441,13 +441,12 @@ fn chrome_js(ui: &Ui, mode: Mode) -> String {
             }}
         }}
     }}, true);
-    // Escape closes Add (not Edit Current, as in Qt), unless the page used
-    // it (closing a popup)
+    // Escape closes the history menu, else the window
+    // (`bridge::ESCAPE_CLOSES_SCRIPT`)
     document.addEventListener("keydown", (e) => {{
-        // (Escape also cancels an input method's composition)
-        if (add && e.key === "Escape" && !e.defaultPrevented && !e.isComposing && e.keyCode !== 229) {{
-            if (historyMenu && !historyMenu.hidden) {{ historyMenu.hidden = true; return; }}
-            pycmd("closeEditor");
+        if (e.key === "Escape" && !e.isComposing && historyMenu && !historyMenu.hidden) {{
+            e.preventDefault();
+            historyMenu.hidden = true;
         }}
     }});
     let draggingHere = false;
@@ -1217,7 +1216,7 @@ const RECORD_HTML: &str = r#"<style>body { margin: 0; padding: 18px 22px; font-s
   save.disabled = false;
   save.focus();
   save.addEventListener("click", () => rec.stop());
-  document.addEventListener("keydown", (e) => { if (e.key === "Enter") rec.stop(); if (e.key === "Escape") answer(null); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Enter") rec.stop(); if (e.key === "Escape") { e.preventDefault(); answer(null); } });
 })();</script>"#;
 
 /// `paste` (the page cancelled the paste event): the pasteboard, filtered

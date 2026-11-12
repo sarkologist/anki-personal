@@ -376,6 +376,10 @@ impl Ui {
                 // runs for subframes too, so it can't open links itself; the
                 // bridge script sends link clicks as openUrl
                 .on_navigation(crate::protocol::allowed_navigation);
+        if escape_closes(label) {
+            builder =
+                builder.initialization_script_for_all_frames(crate::bridge::ESCAPE_CLOSES_SCRIPT);
+        }
         if label == MAIN {
             builder = builder
                 .initialization_script_for_all_frames(crate::shortcuts::key_script(
@@ -427,6 +431,7 @@ impl Ui {
                 .resizable(true)
                 .minimizable(false)
                 .initialization_script_for_all_frames(crate::bridge::init_script())
+                .initialization_script_for_all_frames(crate::bridge::ESCAPE_CLOSES_SCRIPT)
                 .on_navigation(crate::protocol::allowed_navigation);
         if let Some(main) = self.app.get_webview_window(MAIN) {
             if let (Ok(pos), Ok(size)) = (main.outer_position(), main.outer_size()) {
@@ -493,6 +498,7 @@ impl Ui {
                 .title(title)
                 .inner_size(width, height)
                 .initialization_script_for_all_frames(crate::bridge::init_script())
+                .initialization_script_for_all_frames(crate::bridge::ESCAPE_CLOSES_SCRIPT)
                 .on_navigation(crate::protocol::allowed_navigation);
         if self.background {
             builder = builder.focused(false);
@@ -784,6 +790,16 @@ fn register_bridge(ui: &Arc<Ui>) {
         crate::testchan::page_loaded(&u, label);
         Value::Null
     });
+    // Escape in a window but the main one (`bridge::ESCAPE_CLOSES_SCRIPT`)
+    let u = ui.clone();
+    bridge.register("close", move |_, label, rest| {
+        if rest.is_empty() && escape_closes(label) {
+            if let Some(w) = u.app.get_webview_window(label) {
+                let _ = w.close();
+            }
+        }
+        Value::Null
+    });
     let u = ui.clone();
     // the home page's buttons; card JS in the main window mustn't reach them
     bridge.register("reimportProfiles", move |_, label, _| {
@@ -832,7 +848,7 @@ fn register_bridge(ui: &Arc<Ui>) {
         }
         let did = current_deck_id(shell).unwrap_or(1);
         let _ = u.open_window(
-            "deck-options",
+            crate::main_window::DECK_OPTIONS,
             "Deck Options",
             WebviewKind::DeckOptions,
             Content::Route(format!("deck-options/{did}")),
@@ -864,6 +880,12 @@ fn register_bridge(ui: &Arc<Ui>) {
             }
             Ok(vec![])
         });
+}
+
+/// Whether Escape closes window `label`: not the main window, nor Deck
+/// Options, whose close doesn't yet ask before discarding changes.
+fn escape_closes(label: &str) -> bool {
+    label != MAIN && label != crate::main_window::DECK_OPTIONS
 }
 
 /// The main window shows the home page (no reviewer, so no card JS).

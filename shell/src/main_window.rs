@@ -41,7 +41,7 @@ use crate::sync;
 /// under them, so they must be closed first.
 pub const COLLECTION_WINDOWS: &[&str] = &[
     "editor",
-    "deck-options",
+    DECK_OPTIONS,
     crate::preferences::LABEL,
     crate::screens::FILTERED_DECK,
     crate::screens::CUSTOM_STUDY,
@@ -532,7 +532,8 @@ pub fn apply(ui: &Arc<Ui>, effects: Vec<Effect>) {
                         if state(ui) != MainState::Review {
                             return;
                         }
-                        let keep_going = answer.is_some_and(|a| a.button == 0);
+                        // closed (Escape): keep reviewing, the default
+                        let keep_going = answer.map_or(true, |a| a.button == 0);
                         let effects = ui
                             .main
                             .reviewer
@@ -562,6 +563,8 @@ pub fn tooltip(ui: &Ui, msg: &str) {
     );
 }
 
+pub const DECK_OPTIONS: &str = "deck-options";
+
 /// The deck's options: deck options, or the filtered deck dialog for a
 /// filtered deck (`AnkiQt.onDeckConf`).
 pub fn open_deck_options(ui: &Ui, did: i64) {
@@ -574,7 +577,7 @@ pub fn open_deck_options(ui: &Ui, did: i64) {
         return;
     }
     let _ = ui.open_window(
-        "deck-options",
+        DECK_OPTIONS,
         "Deck Options",
         WebviewKind::DeckOptions,
         Content::Route(format!("deck-options/{did}")),
