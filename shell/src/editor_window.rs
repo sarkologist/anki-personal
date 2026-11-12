@@ -1216,7 +1216,7 @@ const RECORD_HTML: &str = r#"<style>body { margin: 0; padding: 18px 22px; font-s
   save.disabled = false;
   save.focus();
   save.addEventListener("click", () => rec.stop());
-  document.addEventListener("keydown", (e) => { if (e.key === "Enter") rec.stop(); if (e.key === "Escape") answer(null); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Enter") rec.stop(); if (e.key === "Escape") { e.preventDefault(); answer(null); } });
 })();</script>"#;
 
 /// `paste` (the page cancelled the paste event): the pasteboard, filtered

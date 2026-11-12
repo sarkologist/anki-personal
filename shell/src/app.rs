@@ -790,8 +790,8 @@ fn register_bridge(ui: &Arc<Ui>) {
     });
     // Escape in a window but the main one (`bridge::ESCAPE_CLOSES_SCRIPT`)
     let u = ui.clone();
-    bridge.register("close", move |_, label, _| {
-        if escape_closes(label) {
+    bridge.register("close", move |_, label, rest| {
+        if rest.is_empty() && escape_closes(label) {
             if let Some(w) = u.app.get_webview_window(label) {
                 let _ = w.close();
             }

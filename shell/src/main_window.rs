@@ -532,7 +532,8 @@ pub fn apply(ui: &Arc<Ui>, effects: Vec<Effect>) {
                         if state(ui) != MainState::Review {
                             return;
                         }
-                        let keep_going = answer.is_some_and(|a| a.button == 0);
+                        // closed (Escape): keep reviewing, the default
+                        let keep_going = answer.map_or(true, |a| a.button == 0);
                         let effects = ui
                             .main
                             .reviewer

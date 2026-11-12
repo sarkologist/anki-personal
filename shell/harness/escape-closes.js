@@ -5,7 +5,8 @@
 // used it (`bridge::ESCAPE_CLOSES_SCRIPT`). Run with --test-page main; it
 // adds a note to the copy.
 // Checks: the main window stays; Edit Current closes from a field and
-// saves what was typed; Add with input asks first; the browser keeps
+// saves what was typed; Add with input asks first, and Escape in that
+// prompt keeps editing; the browser keeps
 // Escape that clears its sidebar filter, and closes from the search box
 // (in the table's frame).
 
@@ -62,6 +63,9 @@ const staysOpen = async (label) => {
 // the main window
 await escape("main", "document.body");
 check("main window stays", await staysOpen("main"), true);
+// (it has no Escape script; the shell ignores "close" from it too)
+await bridge("close");
+check("main window ignores close", await staysOpen("main"), true);
 
 // Edit Current: from a field, saving what was typed
 const front = `shell escape ${Date.now()}`;
@@ -80,12 +84,24 @@ await until("the Add window", () => isOpen("add"));
 await until("the Add window's field", () => inWindow("add", `!!${FIELD}`));
 await type("add", "unsaved");
 await escape("add", FIELD);
-const dialogs = await until("the discard prompt", async () => {
-    const d = await bridge("testDialogs");
-    return d.length ? d : undefined;
-});
+const prompt = async () => {
+    const d = await until("the discard prompt", async () => {
+        const d = await bridge("testDialogs");
+        return d.length ? d : undefined;
+    });
+    await until("the prompt's window", () => isOpen(d[0][0]));
+    return d;
+};
+let dialogs = await prompt();
 check("Add asks before discarding", dialogs.length, 1);
 check("Add stays while asking", await isOpen("add"), true);
+// Escape in the prompt keeps editing
+await escape(dialogs[0][0], "document.body");
+await until("the prompt to close", async () => !(await isOpen(dialogs[0][0])));
+check("Escape in the prompt keeps Add", await staysOpen("add"), true);
+check("and its input", await inWindow("add", `${FIELD}.textContent`), "unsaved");
+await escape("add", FIELD);
+dialogs = await prompt();
 await bridge(`testDialog:${JSON.stringify({ button: 0, fields: {} })}`);
 await until("Add to close", async () => !(await isOpen("add")));
 
