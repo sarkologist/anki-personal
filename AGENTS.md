@@ -77,13 +77,17 @@ Always do this in a throwaway test profile, never the user's main one:
 
 - Launch with a temporary base folder (`-b <tmp dir>`), seeded with test
   notes, so the user's collection, media and add-ons are never opened.
-- Don't disturb the user's running Anki: no single-instance hand-off, no
-  AnkiConnect port 8765, and keep the test window from taking focus.
+- Don't disturb the user's running Anki. `-b` alone doesn't isolate the
+  instance: the single-instance key (`AnkiApp.KEY`) depends only on the OS
+  user, so a second launch hands off to the user's Anki, raises its window,
+  and exits. Give the test instance its own key (patch `aqt.AnkiApp.KEY` in
+  a launcher, or run it with its own `TMPDIR`). Also keep off AnkiConnect
+  port 8765, and keep the test window from taking focus.
 - If a test must use a shared resource such as the system clipboard, save it
   first and restore it afterwards.
 - Run the same scenario on the pre-fix build too, so you know it reproduces
   the bug. Stop the old test instance before relaunching: a leftover one
-  silently answers in its place.
+  takes the same hand-off and silently answers with stale code.
 
 ## Fixing errors
 
