@@ -413,11 +413,24 @@ await until("an error", async () => (await bridge("testDialogs")).length > 0);
 await answerDialog({ button: 0, fields: {} });
 await search(`did:${testDeck}`);
 await until("the deck", () => rowCount() === 4);
+searchBox.focus();
+key("ArrowDown", { key: "ArrowDown" }, searchBox);
+await until("the history list", () => doc.querySelector("#browser-history"));
+const historyList = doc.querySelector("#browser-history");
 check(
     "searches kept in the history",
-    [...doc.querySelectorAll("#browser-history option")].some((o) => o.value === `did:${testDeck}`),
+    [...historyList.querySelectorAll("li")].some((o) => o.textContent.trim() === `did:${testDeck}`),
     true,
 );
+const listBox = historyList.getBoundingClientRect();
+const inputBox = searchBox.getBoundingClientRect();
+check(
+    "the history list is under the search bar",
+    Math.abs(listBox.left - inputBox.left) < 2 && listBox.top >= inputBox.bottom && listBox.top - inputBox.bottom < 8,
+    true,
+);
+key("Escape", { key: "Escape" }, searchBox);
+await until("the list closed", () => !doc.querySelector("#browser-history"));
 
 // 12. Previewer and card info follow the current card.
 await until("its rows", () => rows().length === 4 && cells(rows()[0])[sortField]);

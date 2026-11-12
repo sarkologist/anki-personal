@@ -10,6 +10,7 @@ and table); the editor beside it is the stock editor page.
 
     import { call, type Init, type Message, type SelectionInfo } from "./bridge";
     import { invert, SelectionSender, type SelectionState } from "./lib";
+    import SearchBar from "./SearchBar.svelte";
     import Sidebar from "./Sidebar.svelte";
     import Table from "./Table.svelte";
 
@@ -28,7 +29,7 @@ and table); the editor beside it is the stock editor page.
 
     let tableView: Table;
     let sidebarView: Sidebar;
-    let searchInput: HTMLInputElement;
+    let searchBar: SearchBar;
 
     $: widths = table.notes_mode ? noteWidths : cardWidths;
 
@@ -140,8 +141,8 @@ and table); the editor beside it is the stock editor page.
     function pageAction(action: string): boolean {
         switch (action) {
             case "find":
-                searchInput?.focus();
-                searchInput?.select();
+                searchBar?.focus();
+                searchBar?.select();
                 return true;
             case "sidebarFilter":
                 sidebarView?.focusFilter();
@@ -221,15 +222,6 @@ and table); the editor beside it is the stock editor page.
         }
     }
 
-    function onSearchKey(event: KeyboardEvent): void {
-        if (event.key === "Enter") {
-            event.preventDefault();
-            search();
-        } else if (event.key === "ArrowDown" && !event.altKey && history.length === 0) {
-            tableView?.focus();
-        }
-    }
-
     function onWidths(changed: Record<string, number>): void {
         if (table.notes_mode) {
             noteWidths = { ...noteWidths, ...changed };
@@ -264,7 +256,7 @@ and table); the editor beside it is the stock editor page.
     onMount(() => {
         window.browserReceive = receive;
         document.addEventListener("keydown", onKey, true);
-        searchInput?.focus();
+        searchBar?.focus();
         setTimeout(() => tableView?.scrollToRow(selection.current), 0);
     });
     onDestroy(() => {
@@ -277,22 +269,14 @@ and table); the editor beside it is the stock editor page.
 
 <div class="page" style="--sidebar-width: {sidebarWidth}px">
     <div class="toolbar">
-        <input
-            class="search"
-            type="search"
-            list="browser-history"
-            placeholder={labels.search}
+        <SearchBar
+            bind:this={searchBar}
             bind:value={searchText}
-            bind:this={searchInput}
-            on:keydown={onSearchKey}
-            spellcheck="false"
-            autocomplete="off"
+            {history}
+            placeholder={labels.search}
+            onSearch={search}
+            onDown={() => tableView?.focus()}
         />
-        <datalist id="browser-history">
-            {#each history as entry}
-                <option value={entry}></option>
-            {/each}
-        </datalist>
         <div class="mode" role="group" title={labels.toggleMode}>
             <button
                 class:active={!table.notes_mode}
@@ -361,10 +345,6 @@ and table); the editor beside it is the stock editor page.
         gap: 6px;
         padding: 6px 8px;
         border-bottom: 1px solid var(--border, #ccc);
-    }
-    .search {
-        flex: 1;
-        min-width: 120px;
     }
     .mode {
         display: flex;
