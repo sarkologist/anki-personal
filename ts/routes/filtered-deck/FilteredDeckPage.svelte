@@ -64,6 +64,7 @@ Building a filtered deck, or changing one, as qt/aqt/filtered_deck.py.
 
     function onKeydown(event: KeyboardEvent): void {
         if (event.key === "Escape") {
+            event.preventDefault();
             bridgeCommand("screenClose");
         }
     }
