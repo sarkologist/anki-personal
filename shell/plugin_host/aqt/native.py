@@ -25,6 +25,15 @@ from anki.utils import from_json_bytes, to_json_bytes
 from .main import report_exception
 
 
+def set_latex_commands(png: list[list[str]], svg: list[list[str]]) -> None:
+    """The shell's LaTeX toolchain as latex.py's globals, where an add-on
+    such as "Edit LaTeX toolchain" sets them in Anki."""
+    from anki import latex
+
+    latex.pngCommands = png
+    latex.svgCommands = svg
+
+
 class Panel:
     def __init__(
         self,
@@ -151,6 +160,8 @@ class Native:
             gui_hooks.operation_did_execute(changes, None)
         elif name == "set_state":
             mw.state = event["state"]
+        elif name == "set_latex_commands":
+            set_latex_commands(event["png"], event["svg"])
         elif name in ("set_theme", "theme_did_change"):
             from aqt.theme import theme_manager
 
