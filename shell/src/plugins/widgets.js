@@ -830,5 +830,9 @@
         const batches = waiting;
         waiting = [];
         batches.forEach(window.shellWidgets.apply);
+        // given while this page was loading (`editors::State::loading`)
+        if (out.focus) {
+            widgets.get(out.focus)?.focus?.();
+        }
     });
 })();

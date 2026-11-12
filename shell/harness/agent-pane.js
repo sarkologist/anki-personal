@@ -7,10 +7,11 @@
 // add-on's provider set to Ollama with a local model:
 //   --test shell/harness/agent-pane.js --test-page add
 //   --test shell/harness/agent-pane.js --test-page editor --test-note 0
-// Checks: the shortcut and the toolbar button open and close the pane;
-// its form; Enter in the prompt sends a request, which the model answers
-// in the transcript with a proposal; Apply fills the editor's field, and
-// the note is saved (Edit Current) or added with it (Add).
+// Checks: the shortcut and the toolbar button open and close the pane,
+// with the focus in its prompt; its form; Enter in the prompt sends a
+// request, which the model answers in the transcript with a proposal;
+// Apply fills the editor's field, and the note is saved (Edit Current) or
+// added with it (Add).
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const frame = () =>
@@ -85,10 +86,15 @@ document.dispatchEvent(
     }),
 );
 await until("the pane, from the shortcut", () => !side.hidden && pane()?.querySelector(".qdock textarea"));
+// the add-on focuses the prompt on showing the pane, the first time too
+const promptFocused = () => pane()?.activeElement?.matches("textarea[placeholder=Message]") || undefined;
+check("the prompt has the focus", await until("the prompt's focus", promptFocused, 5000).catch(() => false), true);
 button.click();
 await until("the pane to close", () => side.hidden);
+editables()[0].focus();
 button.click();
 await until("the pane again", () => !side.hidden);
+check("and again", await until("the prompt's focus", promptFocused, 5000).catch(() => false), true);
 check("one toolbar button", document.querySelectorAll("[data-command=editorAgentPane]").length, 1);
 
 const doc = pane();
