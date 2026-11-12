@@ -194,6 +194,10 @@ _installed = False
 _panes: weakref.WeakKeyDictionary[Editor, "EditorAgentPane"] = (
     weakref.WeakKeyDictionary()
 )
+# Editor -> the note it last loaded (`_on_editor_did_load_note`).
+_loaded_notes: weakref.WeakKeyDictionary[Editor, int | None] = (
+    weakref.WeakKeyDictionary()
+)
 _browser_panes: weakref.WeakKeyDictionary[Any, "EditorAgentPane"] = (
     weakref.WeakKeyDictionary()
 )
@@ -437,13 +441,21 @@ def _add_editor_menu_action(editor: Editor) -> None:
 
 
 def _on_editor_did_load_note(editor: Editor) -> None:
-    if pane := _panes.get(editor):
+    pane = _panes.get(editor)
+    if pane is not None:
         pane.on_editor_context_changed()
-    elif _has_ongoing_chat(editor):
-        # Edit Current opens on the note's chat, leaving the focus in the
-        # fields; once the pane exists, showing it is the user's call
+    # Edit Current opens on a note's chat once per note shown, leaving the
+    # focus in the fields: reloading the same note (after a save, say)
+    # leaves a pane the user hid hidden
+    note_id = editor.note.id if editor.note is not None else None
+    same_note = editor in _loaded_notes and _loaded_notes[editor] == note_id
+    _loaded_notes[editor] = note_id
+    if same_note or not _has_ongoing_chat(editor):
+        return
+    if pane is None:
         pane = EditorAgentPane(editor)
         _panes[editor] = pane
+    if not pane.is_shown():
         pane.show_pane(focus=False)
 
 
@@ -453,9 +465,15 @@ def _has_ongoing_chat(editor: Editor) -> bool:
     if editor.editorMode is not EditorMode.EDIT_CURRENT or note is None or not note.id:
         return False
     service = queue_runtime.service()
-    return service is not None and (
-        pick_thread(service.store.threads_for_note(note.id)) is not None
-    )
+    if service is None:
+        return False
+    try:
+        threads = service.store.threads_for_note(note.id)
+    except Exception as exc:
+        # an error here would cost the editors this hook for the session
+        print(f"agent pane: reading the note's chats failed: {exc}")
+        return False
+    return pick_thread(threads) is not None
 
 
 def _on_add_cards_did_add_note(_note: Any) -> None:
@@ -1302,12 +1320,14 @@ class EditorAgentPane(ThreadPanel, QWidget):
         path = ensure_agent_log_folder(aqt.mw.addonManager, ADDON)
         openFolder(str(path))
 
+    def is_shown(self) -> bool:
+        return (self if self.dock is None else self.dock).isVisible()
+
     def toggle(self) -> None:
-        widget = self if self.dock is None else self.dock
-        if not widget.isVisible():
+        if not self.is_shown():
             self.show_pane()
             return
-        widget.setVisible(False)
+        (self if self.dock is None else self.dock).setVisible(False)
         if self.dock is not None:
             self._stop_selection_context_refresh()
 

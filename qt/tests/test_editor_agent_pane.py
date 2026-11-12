@@ -8866,10 +8866,15 @@ class FakeAutoPane:
     def __init__(self, editor: Any) -> None:
         self.editor = editor
         self.shown: list[bool] = []
+        self.visible = False
         self.context_changes = 0
 
     def show_pane(self, *, focus: bool = True) -> None:
         self.shown.append(focus)
+        self.visible = True
+
+    def is_shown(self) -> bool:
+        return self.visible
 
     def on_editor_context_changed(self) -> None:
         self.context_changes += 1
@@ -8880,6 +8885,7 @@ def _load_note_in(
 ) -> tuple[Any, Any]:
     monkeypatch.setattr(runtime, "EditorAgentPane", FakeAutoPane)
     monkeypatch.setattr(runtime, "_panes", {})
+    monkeypatch.setattr(runtime, "_loaded_notes", {})
 
     class Editor:  # hashable, as the panes are kept by editor
         editorMode = mode
@@ -8930,7 +8936,7 @@ def test_other_editors_leave_the_pane_closed_for_an_ongoing_chat(
         assert pane is None
 
 
-def test_a_pane_already_there_is_not_shown_again(
+def test_reloading_the_same_note_keeps_a_hidden_pane_hidden(
     pane_runtime: Any, queue: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, _runner = queue
@@ -8938,9 +8944,91 @@ def test_a_pane_already_there_is_not_shown_again(
     editor, pane = _load_note_in(
         pane_runtime, monkeypatch, pane_runtime.EditorMode.EDIT_CURRENT
     )
+    pane.visible = False  # the user hid it
 
-    # the user hid it; the next load (after a save, say) keeps it hidden
+    # loaded again, after a save, say
     pane_runtime._on_editor_did_load_note(editor)
 
     assert pane.shown == [False]
     assert pane.context_changes == 1
+
+
+def test_another_note_with_a_chat_shows_the_hidden_pane(
+    pane_runtime: Any, queue: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    store.create_thread({}, {}, "Improve this", note_id=123)
+    store.create_thread({}, {}, "And this", note_id=456)
+    editor, pane = _load_note_in(
+        pane_runtime, monkeypatch, pane_runtime.EditorMode.EDIT_CURRENT
+    )
+    pane.visible = False
+
+    # the reviewer's next card, in the same window
+    editor.note = _editor_note(456)
+    pane_runtime._on_editor_did_load_note(editor)
+
+    assert pane.shown == [False, False]
+
+
+def test_a_failing_store_leaves_the_pane_closed(
+    pane_runtime: Any, queue: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+
+    def locked(_note_id: int) -> list[Any]:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "threads_for_note", locked)
+
+    _editor, pane = _load_note_in(
+        pane_runtime, monkeypatch, pane_runtime.EditorMode.EDIT_CURRENT
+    )
+
+    assert pane is None
+
+
+class FocusPrompt(FakePrompt):
+    def __init__(self) -> None:
+        super().__init__("")
+        self.focused = False
+
+    def setFocus(self) -> None:
+        self.focused = True
+
+
+class ToggleDock(FakeDock):
+    def setVisible(self, visible: bool) -> None:
+        self.visible = visible
+
+
+def _pane_for_showing(runtime: Any) -> Any:
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.dock = ToggleDock(False)
+    pane.prompt = FocusPrompt()
+    pane.refresh_context_label = lambda: None
+    pane._provider = lambda: PROVIDER_CODEX
+    pane.refreshes = []
+    pane._start_selection_context_refresh = lambda: pane.refreshes.append("start")
+    pane._stop_selection_context_refresh = lambda: pane.refreshes.append("stop")
+    return pane
+
+
+def test_show_pane_can_leave_the_focus_where_it_is(pane_runtime: Any) -> None:
+    pane = _pane_for_showing(pane_runtime)
+
+    pane.show_pane(focus=False)
+
+    assert pane.dock.visible is True
+    assert pane.prompt.focused is False
+
+
+def test_toggle_shows_with_the_prompt_focused_then_hides(pane_runtime: Any) -> None:
+    pane = _pane_for_showing(pane_runtime)
+
+    pane.toggle()
+    assert (pane.dock.visible, pane.prompt.focused) == (True, True)
+
+    pane.toggle()
+    assert pane.dock.visible is False
+    assert pane.refreshes == ["start", "stop"]
