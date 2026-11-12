@@ -106,6 +106,36 @@ describe("pasteHTML", () => {
             );
         },
     );
+
+    // What Chromium puts on the clipboard when copying a rendered legacy
+    // LaTeX preview: the frame, handles, and the decorated element whose
+    // source lives in data-latex while its children are the rendered preview.
+    const decoratedLegacyLatex = [
+        "text <anki-frame data-frames=\"anki-latex\" block=\"true\">",
+        "<frame-start data-frames=\"anki-latex\"> </frame-start>",
+        "<anki-latex data-latex-kind=\"display\" ",
+        "data-latex=\"\\draw[-&amp;gt;] (a)--(b); <b>x</b>\" ",
+        "contenteditable=\"false\" decorated=\"true\" style=\"white-space: normal;\">",
+        "<span data-anki=\"latex\" role=\"img\" class=\"legacy-latex block\" ",
+        "title=\"\\draw[-&amp;gt;] (a)--(b);\">",
+        "<img class=\"legacy-latex-preview block\" src=\"latex-abc.svg\" alt=\"x\">",
+        "</span></anki-latex>",
+        "<frame-end data-frames=\"anki-latex\"> </frame-end></anki-frame> end",
+    ].join("");
+
+    test.each([true, false])(
+        "pastes a copied legacy LaTeX preview as its source (internal: %s)",
+        (internal) => {
+            pasteHTML(decoratedLegacyLatex, internal, true);
+
+            expect(execCommand).toHaveBeenCalledWith(
+                "inserthtml",
+                false,
+                "text <anki-latex data-latex-kind=\"display\">"
+                    + "\\draw[-&gt;] (a)--(b); <b>x</b></anki-latex> end",
+            );
+        },
+    );
 });
 
 describe("unwrapHeadingsWrappingBlocks", () => {

@@ -6,7 +6,6 @@ import { elementIsBlock, nodeIsElement, nodeIsText } from "@tslib/dom";
 import { updateAllState } from "$lib/components/WithState.svelte";
 import { execCommand } from "$lib/domlib";
 
-import { Mathjax } from "../editable/mathjax-element.svelte";
 import { filterHTML } from "../html-filter";
 import { decoratedElements, decorateUndecoratedElements } from "./decorated-elements";
 
@@ -156,12 +155,12 @@ export function pasteHTML(
     internal: boolean,
     extendedMode: boolean,
 ): void {
-    // Read formula source before filtering can discard data-mathjax and the
-    // frame's block attribute. Clipboard tracking can miss an internal copy,
-    // so normalize MathJax even when this paste is classified as external.
-    // This also keeps rendered frames out of insertHTML, where they can split
-    // the surrounding block instead of inserting as inline math.
-    html = internal ? decoratedElements.toStored(html) : Mathjax.toStored(html);
+    // Read formula source (data-mathjax, data-latex) before filtering can
+    // discard it and the frame's block attribute. Clipboard tracking can miss
+    // an internal copy, so normalize even when this paste is classified as
+    // external. This also keeps rendered frames out of insertHTML, where they
+    // can split the surrounding block instead of inserting as inline math.
+    html = decoratedElements.toStored(html);
     html = normalizeMarkdownMathElements(html);
     html = filterHTML(html, internal, extendedMode);
     html = decoratedElements.toUndecorated(html);

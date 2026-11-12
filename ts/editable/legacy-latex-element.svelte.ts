@@ -12,7 +12,12 @@ import { FrameElement, frameElement } from "./frame-element";
 import type { LegacyLatexKind } from "./legacy-latex-preview";
 import LegacyLatex_svelte from "./LegacyLatex.svelte";
 
-const legacyLatexTagPattern = /<anki-latex\b([^>]*)>(.*?)<\/anki-latex>/gsu;
+const legacyLatexFramePattern =
+    /<anki-frame\b(?=[^>]*\bdata-frames=(?:"anki-latex"|'anki-latex'|anki-latex))[^>]*>.*?<\/anki-frame>/gsu;
+// Quote-aware so a `>` inside an attribute value (e.g. a serialized
+// data-latex) doesn't end the opening tag early.
+const legacyLatexTagPattern = /<anki-latex\b((?:[^>"']|"[^"]*"|'[^']*')*)>(.*?)<\/anki-latex>/gsu;
+const dataLatexAttributePattern = /\sdata-latex\s*=/u;
 const legacyLatexDisplayDelimiterPattern = /\[\$\$\](.*?)\[\/\$\$\]/gsu;
 const legacyLatexInlineDelimiterPattern = /\[\$\](.*?)\[\/\$\]/gsu;
 
@@ -37,19 +42,55 @@ function blockFor(kind: LegacyLatexKind): boolean {
     return kind === "display";
 }
 
+function wrapStored(kind: LegacyLatexKind, text: string): string {
+    const [open, close] = delimiterFor(kind);
+    return `${open}${text}${close}`;
+}
+
+/**
+ * Decorated (rendered) markup, as it reaches the clipboard: the source lives
+ * in `data-latex` and the children are the preview, so innerHTML must not be
+ * used. Parse it so the browser decodes the attribute.
+ */
+function decoratedHtmlToStored(html: string): string {
+    const template = document.createElement("template");
+    template.innerHTML = html;
+
+    const element = template.content.querySelector<HTMLElement>("anki-latex");
+    if (!element) {
+        return html;
+    }
+
+    let kind = kindFromElement(element);
+    if (!element.hasAttribute("data-latex-kind")) {
+        const frameBlock = element.closest("anki-frame")?.getAttribute("block");
+        kind = frameBlock === "true" ? "display" : "inline";
+    }
+
+    return wrapStored(kind, element.dataset.latex ?? element.innerHTML);
+}
+
 export const LegacyLatex: DecoratedElementConstructor = class LegacyLatex extends HTMLElement
     implements DecoratedElement
 {
     static tagName = "anki-latex";
 
     static toStored(undecorated: string): string {
-        return undecorated.replace(
-            legacyLatexTagPattern,
-            (_match: string, attributes: string, text: string) => {
-                const [open, close] = delimiterFor(kindFromAttributes(attributes));
-                return `${open}${text}${close}`;
-            },
-        );
+        if (!undecorated.includes("anki-latex")) {
+            return undecorated;
+        }
+
+        return undecorated
+            .replace(legacyLatexFramePattern, decoratedHtmlToStored)
+            .replace(
+                legacyLatexTagPattern,
+                (match: string, attributes: string, text: string) => {
+                    if (dataLatexAttributePattern.test(attributes)) {
+                        return decoratedHtmlToStored(match);
+                    }
+                    return wrapStored(kindFromAttributes(attributes), text);
+                },
+            );
     }
 
     static toUndecorated(stored: string): string {
