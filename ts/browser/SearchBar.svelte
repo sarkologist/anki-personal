@@ -87,7 +87,12 @@ own indicator and puts its popup in the wrong place inside a frame.
 
     function onKey(event: KeyboardEvent): void {
         // modified arrows (Shift+Down, Cmd+Down…) edit the text
-        const plain = !(event.shiftKey || event.metaKey || event.ctrlKey || event.altKey);
+        const plain = !(
+            event.shiftKey ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey
+        );
         if (!plain && event.key.startsWith("Arrow")) {
             return;
         }
