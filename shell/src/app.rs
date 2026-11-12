@@ -525,6 +525,8 @@ impl Ui {
             profiles = settings.profiles.len(),
             "imported profiles from Anki"
         );
+        drop(settings);
+        crate::plugins::ui::latex_changed(self);
         Ok(())
     }
 

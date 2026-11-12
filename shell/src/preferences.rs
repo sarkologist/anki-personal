@@ -211,6 +211,7 @@ fn set_shell_preferences(ui: &Arc<Ui>, args: &str) -> Result<()> {
         }
         crate::latex::set_toolchain(settings.latex_toolchain());
     }
+    crate::plugins::ui::latex_changed(ui);
     ui.save_settings_now();
     crate::theme::apply(ui, None);
     Ok(())

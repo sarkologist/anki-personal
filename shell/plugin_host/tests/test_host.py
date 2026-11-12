@@ -81,6 +81,9 @@ PROBE = textwrap.dedent(
         if text == "probe:night":
             from aqt.theme import theme_manager
             return (True, theme_manager.night_mode)
+        if text == "probe:latex":
+            from anki import latex
+            return (True, [latex.pngCommands, latex.svgCommands])
         if text == "probe:child":
             import subprocess
             return (True, subprocess.Popen(["sleep", "60"]).pid)
@@ -285,6 +288,17 @@ def test_add_ons_see_the_shells_theme(host):
     shell.event("theme_did_change", night=False)
     assert shell.message("probe:night")["value"] is False
     assert ["theme"] in shell.message("probe:seen")["value"]
+
+
+def test_add_ons_render_latex_with_the_shells_toolchain(host):
+    shell, _proc, _probe = host
+    png, svg = shell.message("probe:latex")["value"]
+    custom = [["pdflatex", "tmp.tex"], ["pdf2svg", "tmp.pdf", "tmp.svg"]]
+    shell.event("set_latex_commands", png=None, svg=custom)
+    assert shell.message("probe:latex")["value"] == [png, custom]
+    # back to latex.py's own
+    shell.event("set_latex_commands", png=None, svg=None)
+    assert shell.message("probe:latex")["value"] == [png, svg]
 
 
 def test_the_deck_browser_gets_the_add_ons_html(host):
