@@ -48,6 +48,11 @@ pub struct State {
     pages: Mutex<HashMap<u64, String>>,
     /// The editor windows with the focus.
     focused: Mutex<HashSet<String>>,
+    /// Editor label -> the widget last given the focus while its side
+    /// panel's page was loading, until the page asks for its tree. The
+    /// page misses updates sent before then (and its tree has their seq),
+    /// so the add-on's `setFocus` on showing a new dock would be lost.
+    loading: Mutex<HashMap<String, Option<u64>>>,
 }
 
 /// The page id a web view widget's HTML is served as, in editor `label`;
@@ -95,10 +100,19 @@ pub fn register(ui: &Arc<Ui>) {
         let Ok(msg) = serde_json::from_str::<Value>(args) else {
             return Value::Null;
         };
-        u.plugins
+        let tree = msg["op"] == "tree";
+        let mut out = u
+            .plugins
             .host
             .event("widget_event", msg, WIDGET_TIMEOUT)
-            .unwrap_or(Value::Null)
+            .unwrap_or(Value::Null);
+        if tree {
+            let focus = u.plugins.editors.loading.lock().unwrap().remove(label);
+            if let (Some(Some(id)), Some(out)) = (focus, out.as_object_mut()) {
+                out.insert("focus".into(), json!(id));
+            }
+        }
+        out
     });
     // the second half of `call_after_note_saved`
     let u = ui.clone();
@@ -167,6 +181,7 @@ pub fn closed(ui: &Ui, label: &str) {
     let state = &ui.plugins.editors;
     state.focused.lock().unwrap().remove(label);
     state.buttons.lock().unwrap().remove(label);
+    state.loading.lock().unwrap().remove(label);
     if state.docks.lock().unwrap().remove(label).is_some() {
         for widget in state.pages.lock().unwrap().keys() {
             ui.shell.pages.remove(&page_id(label, *widget));
@@ -379,6 +394,12 @@ fn side_panel(ui: &Ui, label: &str, msg: &Value) {
 
 fn load_side_panel(ui: &Ui, label: &str, root: u64, visible: bool) {
     serve_pages(ui, label);
+    ui.plugins
+        .editors
+        .loading
+        .lock()
+        .unwrap()
+        .insert(label.to_string(), None);
     editor_window::set_side_panel(
         ui,
         label,
@@ -436,6 +457,11 @@ fn widget_update(ui: &Ui, msg: &Value) {
         .map(|(l, _)| l.clone());
     let update = json!({"seq": msg["seq"], "ops": msg["ops"]});
     if let Some(label) = label {
+        if let Some(focus) = ui.plugins.editors.loading.lock().unwrap().get_mut(&label) {
+            if let Some(id) = focused_widget(&msg["ops"]) {
+                *focus = Some(id);
+            }
+        }
         ui.eval(
             &label,
             format!(
@@ -445,6 +471,15 @@ fn widget_update(ui: &Ui, msg: &Value) {
     } else {
         super::windows::update(ui, root, &update);
     }
+}
+
+/// The widget a batch of ops last gives the focus.
+fn focused_widget(ops: &Value) -> Option<u64> {
+    ops.as_array()?
+        .iter()
+        .rev()
+        .find(|op| op["focus"] == true)
+        .and_then(|op| op["id"].as_u64())
 }
 
 /// A web view's page (`AnkiWebView.stdHtml`). Its commands go to the view's
@@ -536,5 +571,22 @@ fn widget_page(ui: &Ui, msg: &Value) {
             WebviewKind::AddonView,
             Some(html.clone()),
         );
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn the_last_focus_op_wins() {
+        let ops = json!([
+            {"id": 1, "focus": true},
+            {"id": 2, "props": {}},
+            {"id": 3, "focus": true},
+            {"id": 4, "eval": "x"},
+        ]);
+        assert_eq!(focused_widget(&ops), Some(3));
+        assert_eq!(focused_widget(&json!([{"id": 2, "props": {}}])), None);
     }
 }
