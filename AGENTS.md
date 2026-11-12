@@ -68,6 +68,23 @@ separate focused tests.
 Prefer declaring static constraints in code where possible. Avoid tests that
 only restate those declarations; test behavior that can fail independently.
 
+## Testing in the running app
+
+Unit tests are not enough: before reporting a user-visible fix as done,
+reproduce it in a running dev build and confirm the fix there.
+
+Always do this in a throwaway test profile, never the user's main one:
+
+- Launch with a temporary base folder (`-b <tmp dir>`), seeded with test
+  notes, so the user's collection, media and add-ons are never opened.
+- Don't disturb the user's running Anki: no single-instance hand-off, no
+  AnkiConnect port 8765, and keep the test window from taking focus.
+- If a test must use a shared resource such as the system clipboard, save it
+  first and restore it afterwards.
+- Run the same scenario on the pre-fix build too, so you know it reproduces
+  the bug. Stop the old test instance before relaunching: a leftover one
+  silently answers in its place.
+
 ## Fixing errors
 
 When dealing with build errors or failing tests, invoke 'check' or one
