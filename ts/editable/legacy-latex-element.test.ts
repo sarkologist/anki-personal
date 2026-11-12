@@ -41,6 +41,32 @@ describe("LegacyLatex", () => {
         expect(LegacyLatex.toStored(undecorated)).toBe("[$]<b>x</b>[/$]");
     });
 
+    test("reads source from data-latex rather than the rendered preview", () => {
+        expect(
+            LegacyLatex.toStored(
+                "a <anki-latex data-latex-kind=\"inline\" data-latex=\"<b>x</b> &amp;gt;\" decorated=\"true\">"
+                    + "<span data-anki=\"latex\"><img src=\"latex-1.svg\"></span></anki-latex> b",
+            ),
+        ).toBe("a [$]<b>x</b> &gt;[/$] b");
+    });
+
+    test("stores several decorated frames as pasted after BeautifulSoup re-serialization", () => {
+        // _pastePreFilter escapes <> in attributes and single-quotes values containing ".
+        const frame = (kind: string, block: string, latex: string) =>
+            `<anki-frame data-frames="anki-latex" block="${block}"><frame-start> </frame-start>`
+            + `<anki-latex data-latex-kind="${kind}" data-latex='${latex}' decorated="true">`
+            + "<span data-anki=\"latex\"><img src=\"latex-1.svg\"/></span></anki-latex>"
+            + "<frame-end> </frame-end></anki-frame>";
+
+        expect(
+            LegacyLatex.toStored(
+                frame("display", "true", "\\text{\"q\"} &amp;lt;b&amp;gt;")
+                    + " and "
+                    + frame("inline", "false", "&lt;b&gt;y&lt;/b&gt;"),
+            ),
+        ).toBe("[$$]\\text{\"q\"} &lt;b&gt;[/$$] and [$]<b>y</b>[/$]");
+    });
+
     test("stores decorated previews as legacy latex delimiters", () => {
         const fragment = document.createRange().createContextualFragment(
             [
