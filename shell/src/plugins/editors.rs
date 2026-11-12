@@ -573,3 +573,20 @@ fn widget_page(ui: &Ui, msg: &Value) {
         );
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn the_last_focus_op_wins() {
+        let ops = json!([
+            {"id": 1, "focus": true},
+            {"id": 2, "props": {}},
+            {"id": 3, "focus": true},
+            {"id": 4, "eval": "x"},
+        ]);
+        assert_eq!(focused_widget(&ops), Some(3));
+        assert_eq!(focused_widget(&json!([{"id": 2, "props": {}}])), None);
+    }
+}

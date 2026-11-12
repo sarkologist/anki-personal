@@ -827,12 +827,13 @@
         }
         seq = out.seq;
         render(out.tree);
-        const batches = waiting;
-        waiting = [];
-        batches.forEach(window.shellWidgets.apply);
-        // given while this page was loading (`editors::State::loading`)
+        // given while this page was loading (`editors::State::loading`);
+        // before the batches that came since, which may move it again
         if (out.focus) {
             widgets.get(out.focus)?.focus?.();
         }
+        const batches = waiting;
+        waiting = [];
+        batches.forEach(window.shellWidgets.apply);
     });
 })();
