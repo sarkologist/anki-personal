@@ -769,11 +769,13 @@ pub fn start(ui: &Arc<Ui>, run: TestRun) -> Result<()> {
         });
     // LaTeX commands for this run only (`LatexCommands` JSON), so checks
     // don't run the user's own toolchain
+    let u = ui.clone();
     ui.shell.bridge.register(
         "testLatexToolchain",
-        |_, _, args| match serde_json::from_str(args) {
+        move |_, _, args| match serde_json::from_str(args) {
             Ok(commands) => {
                 crate::latex::set_toolchain(commands);
+                crate::plugins::ui::latex_changed(&u);
                 json!(true)
             }
             Err(_) => json!(false),

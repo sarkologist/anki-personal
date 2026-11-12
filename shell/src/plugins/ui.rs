@@ -230,10 +230,16 @@ pub fn notify(ui: &Ui, event: &str, fields: Value) {
 }
 
 /// The LaTeX toolchain the shell renders cards with, so add-ons that render
-/// LaTeX themselves (the agent pane's previews) run the same commands.
+/// LaTeX themselves (the agent pane's previews) run the same commands. The
+/// defaults are filled in, as an add-on in the host may have replaced
+/// latex.py's.
 pub fn latex_changed(ui: &Ui) {
-    let commands = serde_json::to_value(crate::latex::toolchain()).unwrap_or_default();
-    notify(ui, "set_latex_commands", commands);
+    let toolchain = crate::latex::toolchain();
+    notify(
+        ui,
+        "set_latex_commands",
+        json!({"png": toolchain.for_kind(false), "svg": toolchain.for_kind(true)}),
+    );
 }
 
 pub fn state_changed(ui: &Ui, old: MainState, new: MainState) {

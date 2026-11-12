@@ -292,12 +292,9 @@ def test_add_ons_see_the_shells_theme(host):
 
 def test_add_ons_render_latex_with_the_shells_toolchain(host):
     shell, _proc, _probe = host
-    png, svg = shell.message("probe:latex")["value"]
-    custom = [["pdflatex", "tmp.tex"], ["pdf2svg", "tmp.pdf", "tmp.svg"]]
-    shell.event("set_latex_commands", png=None, svg=custom)
-    assert shell.message("probe:latex")["value"] == [png, custom]
-    # back to latex.py's own
-    shell.event("set_latex_commands", png=None, svg=None)
+    png = [["latex", "tmp.tex"], ["dvipng", "tmp.dvi", "-o", "tmp.png"]]
+    svg = [["pdflatex", "tmp.tex"], ["pdf2svg", "tmp.pdf", "tmp.svg"]]
+    shell.event("set_latex_commands", png=png, svg=svg)
     assert shell.message("probe:latex")["value"] == [png, svg]
 
 
