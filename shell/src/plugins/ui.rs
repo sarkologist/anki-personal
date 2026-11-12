@@ -229,6 +229,19 @@ pub fn notify(ui: &Ui, event: &str, fields: Value) {
     ui.plugins.host.notify(event, fields);
 }
 
+/// The LaTeX toolchain the shell renders cards with, so add-ons that render
+/// LaTeX themselves (the agent pane's previews) run the same commands. The
+/// defaults are filled in, as an add-on in the host may have replaced
+/// latex.py's.
+pub fn latex_changed(ui: &Ui) {
+    let toolchain = crate::latex::toolchain();
+    notify(
+        ui,
+        "set_latex_commands",
+        json!({"png": toolchain.for_kind(false), "svg": toolchain.for_kind(true)}),
+    );
+}
+
 pub fn state_changed(ui: &Ui, old: MainState, new: MainState) {
     if old != new {
         notify(
@@ -311,6 +324,7 @@ fn on_host(ui: &Arc<Ui>, op: &str, msg: &Value) -> Option<Value> {
             let state = state_name(*ui.main.state.lock().unwrap());
             notify(ui, "set_state", json!({"state": state}));
             notify(ui, "set_theme", json!({"night": ui.shell.night.get()}));
+            latex_changed(ui);
             crate::browser_window::host_ready(ui);
         }
         "addon_failed" => {
