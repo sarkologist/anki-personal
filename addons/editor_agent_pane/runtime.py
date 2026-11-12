@@ -439,6 +439,23 @@ def _add_editor_menu_action(editor: Editor) -> None:
 def _on_editor_did_load_note(editor: Editor) -> None:
     if pane := _panes.get(editor):
         pane.on_editor_context_changed()
+    elif _has_ongoing_chat(editor):
+        # Edit Current opens on the note's chat, leaving the focus in the
+        # fields; once the pane exists, showing it is the user's call
+        pane = EditorAgentPane(editor)
+        _panes[editor] = pane
+        pane.show_pane(focus=False)
+
+
+def _has_ongoing_chat(editor: Editor) -> bool:
+    """Whether Edit Current's note has a chat the pane would show."""
+    note = editor.note
+    if editor.editorMode is not EditorMode.EDIT_CURRENT or note is None or not note.id:
+        return False
+    service = queue_runtime.service()
+    return service is not None and (
+        pick_thread(service.store.threads_for_note(note.id)) is not None
+    )
 
 
 def _on_add_cards_did_add_note(_note: Any) -> None:
@@ -1286,23 +1303,25 @@ class EditorAgentPane(ThreadPanel, QWidget):
         openFolder(str(path))
 
     def toggle(self) -> None:
-        if self.dock is None:
-            self.setVisible(not self.isVisible())
-            if self.isVisible():
-                self.prompt.setFocus()
-                self.refresh_context_label()
-                if self._provider() == PROVIDER_OLLAMA:
-                    self._refresh_ollama_models()
+        widget = self if self.dock is None else self.dock
+        if not widget.isVisible():
+            self.show_pane()
             return
-        self.dock.setVisible(not self.dock.isVisible())
-        if self.dock.isVisible():
-            self.prompt.setFocus()
-            self.refresh_context_label()
-            if self._provider() == PROVIDER_OLLAMA:
-                self._refresh_ollama_models()
-            self._start_selection_context_refresh()
-        else:
+        widget.setVisible(False)
+        if self.dock is not None:
             self._stop_selection_context_refresh()
+
+    def show_pane(self, *, focus: bool = True) -> None:
+        """Show the pane, with the focus in the prompt unless ``focus`` is false."""
+        widget = self if self.dock is None else self.dock
+        widget.setVisible(True)
+        if focus:
+            self.prompt.setFocus()
+        self.refresh_context_label()
+        if self._provider() == PROVIDER_OLLAMA:
+            self._refresh_ollama_models()
+        if self.dock is not None:
+            self._start_selection_context_refresh()
 
     def refresh_context_label(self) -> None:
         if self.browser is not None:
