@@ -2600,7 +2600,7 @@ fn form_html(message_html: &str, fields: &[FormField], ok: &str, cancel: &str) -
              pycmd('dialogAnswer:' + JSON.stringify({{ button: i, fields }})); }};\
            document.querySelector('[data-i=\"1\"]').addEventListener('click', () => send(1));\
            document.querySelector('form').addEventListener('submit', (e) => {{ e.preventDefault(); send(0); }});\
-           document.addEventListener('keydown', (e) => {{ if (e.key === 'Escape') send(1); }});\
+           document.addEventListener('keydown', (e) => {{ if (e.key === 'Escape') {{ e.preventDefault(); send(1); }} }});\
            const first = document.querySelector('input:not([type=checkbox]), select');\
            if (first) {{ first.focus(); if (first.select) first.select(); }}\
          }}</script>",
@@ -2699,7 +2699,7 @@ pub fn toggle_preview(ui: &Arc<Ui>) {
              if (e.target && (e.target.tagName === 'INPUT' && e.target.type !== 'checkbox' || e.target.isContentEditable)) return;\
              if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Enter') {{ e.preventDefault(); pycmd('previewNext'); }}\
              else if (e.key === 'ArrowLeft') {{ e.preventDefault(); pycmd('previewBack'); }}\
-             else if (e.key === 'Escape') pycmd('previewClose');\
+             else if (e.key === 'Escape') {{ e.preventDefault(); pycmd('previewClose'); }}\
              else if ((e.key === 'b' || e.key === 'B') && !e.metaKey) {{ const b = document.getElementById('both'); b.checked = !b.checked; pycmd('previewBoth:' + b.checked); }}\
              else if ((e.key === 'r' || e.key === 'R') && !e.metaKey) pycmd('previewReplay');\
            }};\

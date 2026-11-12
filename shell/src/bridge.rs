@@ -87,6 +87,48 @@ pub fn init_script() -> String {
     )
 }
 
+/// Escape closes a window other than the main one, as Qt's `AnkiWebView`
+/// script (`pycmd("close")`, `onEsc`), unless the page used the key itself
+/// (closing a popup, clearing a filter): by `preventDefault`, checked once
+/// every listener has run, or `stopPropagation`. A frame's unused Escape
+/// goes to the top page as if pressed there, so the page's own keys (an
+/// add-on window's shortcuts) still get it; sandboxed frames can't reach
+/// the bridge themselves.
+pub const ESCAPE_CLOSES_SCRIPT: &str = r#"(() => {
+    if (location.protocol !== "anki:") {
+        return;
+    }
+    const top = window.top === window;
+    window.addEventListener("keydown", (e) => {
+        // (Escape also cancels an input method's composition)
+        if (e.key !== "Escape" || e.isComposing || e.keyCode === 229
+            || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) {
+            return;
+        }
+        setTimeout(() => {
+            if (e.defaultPrevented) {
+                return;
+            }
+            if (top) {
+                window.pycmd("close");
+            } else {
+                window.top.postMessage({ shellEscape: true }, "*");
+            }
+        });
+    });
+    if (top) {
+        window.addEventListener("message", (e) => {
+            if (e.data?.shellEscape === true && e.source !== window) {
+                const frame = [...document.querySelectorAll("iframe")]
+                    .find((f) => f.contentWindow === e.source);
+                (frame || document.body).dispatchEvent(new KeyboardEvent("keydown", {
+                    key: "Escape", code: "Escape", bubbles: true, cancelable: true,
+                }));
+            }
+        });
+    }
+})();"#;
+
 #[derive(Default)]
 pub struct Bridge {
     handlers: RwLock<HashMap<String, Handler>>,
@@ -135,7 +177,8 @@ impl Bridge {
 
     pub fn dispatch(&self, shell: &Shell, label: &str, cmd: &str) -> Value {
         let (name, rest) = cmd.split_once(':').unwrap_or((cmd, ""));
-        if name != "domDone" {
+        // the shell's own, as Qt's webview handles them before add-ons
+        if name != "domDone" && name != "close" {
             let routes = self.routes.read().unwrap();
             let route = routes
                 .iter()
@@ -214,6 +257,7 @@ mod test {
         let bridge = &shell.bridge;
         bridge.register("key", |_, _, rest| Value::from(format!("key {rest}")));
         bridge.register("domDone", |_, _, _| Value::from("dom"));
+        bridge.register("close", |_, label, _| Value::from(format!("close {label}")));
         bridge.route_prefix("panel-", |_, label, cmd| {
             (!cmd.starts_with("key:pass")).then(|| Value::from(format!("{label} {cmd}")))
         });
@@ -223,6 +267,7 @@ mod test {
             "panel-1 key:{\"a\":1}"
         );
         assert_eq!(bridge.dispatch(&shell, "panel-1", "domDone"), "dom");
+        assert_eq!(bridge.dispatch(&shell, "panel-1", "close"), "close panel-1");
         assert_eq!(bridge.dispatch(&shell, "panel-1", "key:pass"), "key pass");
         assert_eq!(bridge.dispatch(&shell, "main", "key:1"), "key 1");
         assert_eq!(bridge.dispatch(&shell, "main", "known:x"), "fell back");
