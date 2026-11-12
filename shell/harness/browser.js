@@ -413,11 +413,44 @@ await until("an error", async () => (await bridge("testDialogs")).length > 0);
 await answerDialog({ button: 0, fields: {} });
 await search(`did:${testDeck}`);
 await until("the deck", () => rowCount() === 4);
+searchBox.focus();
+key("ArrowDown", { key: "ArrowDown" }, searchBox);
+await until("the history list", () => doc.querySelector("#browser-history"));
+const historyList = doc.querySelector("#browser-history");
 check(
     "searches kept in the history",
-    [...doc.querySelectorAll("#browser-history option")].some((o) => o.value === `did:${testDeck}`),
+    [...historyList.querySelectorAll("li")].some((o) => o.textContent.trim() === `did:${testDeck}`),
     true,
 );
+const listBox = historyList.getBoundingClientRect();
+const inputBox = searchBox.getBoundingClientRect();
+check(
+    "the history list is under the search bar",
+    Math.abs(listBox.left - inputBox.left) < 2 && listBox.top >= inputBox.bottom && listBox.top - inputBox.bottom < 8,
+    true,
+);
+key("Escape", { key: "Escape" }, searchBox);
+await until("the list closed", () => !doc.querySelector("#browser-history"));
+key("ArrowDown", { key: "ArrowDown", shift: true }, searchBox);
+await sleep(100);
+check("Shift+Down edits the text, not the list", !doc.querySelector("#browser-history"), true);
+searchBox.value = "unsearched";
+searchBox.dispatchEvent(new win.Event("input"));
+key("ArrowDown", { key: "ArrowDown" }, searchBox);
+await until("the history list again", () => doc.querySelector("#browser-history"));
+const entry = () =>
+    [...doc.querySelectorAll("#browser-history li")].find((li) => li.textContent.trim() === `did:${testDeck}`);
+const mouse = (el, button) =>
+    el.dispatchEvent(new win.MouseEvent("mousedown", { button, bubbles: true, cancelable: true }));
+mouse(entry(), 2);
+doc.dispatchEvent(new win.MouseEvent("mouseup", { button: 2, bubbles: true }));
+await sleep(100);
+check("a right-click picks nothing", [searchBox.value, !!doc.querySelector("#browser-history")], ["unsearched", true]);
+mouse(entry(), 0);
+doc.dispatchEvent(new win.MouseEvent("mouseup", { button: 0, bubbles: true }));
+await until("the picked search", () => searchBox.value === `did:${testDeck}` && rowCount() === 4);
+check("a click picks and runs a search", !doc.querySelector("#browser-history"), true);
+check("the search bar keeps focus", doc.activeElement === searchBox, true);
 
 // 12. Previewer and card info follow the current card.
 await until("its rows", () => rows().length === 4 && cells(rows()[0])[sortField]);
