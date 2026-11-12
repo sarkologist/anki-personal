@@ -18,6 +18,8 @@ own indicator and puts its popup in the wrong place inside a frame.
     let list: HTMLElement;
     let open = false;
     let active = -1;
+    /** A press on the list (its scrollbar, say) is under way: the input's blur keeps it open. */
+    let pressing = false;
 
     export function focus(): void {
         input?.focus();
@@ -38,7 +40,10 @@ own indicator and puts its popup in the wrong place inside a frame.
         active = -1;
     }
 
-    function toggle(): void {
+    function toggle(event: MouseEvent): void {
+        if (event.button !== 0) {
+            return;
+        }
         if (open) {
             hide();
         } else if (history.length) {
@@ -65,7 +70,27 @@ own indicator and puts its popup in the wrong place inside a frame.
         setTimeout(scrollToActive, 0);
     }
 
+    function onBlur(): void {
+        if (!pressing) {
+            hide();
+        }
+    }
+
+    function endPress(): void {
+        if (pressing) {
+            pressing = false;
+            if (open) {
+                input.focus();
+            }
+        }
+    }
+
     function onKey(event: KeyboardEvent): void {
+        // modified arrows (Shift+Down, Cmd+Down…) edit the text
+        const plain = !(event.shiftKey || event.metaKey || event.ctrlKey || event.altKey);
+        if (!plain && event.key.startsWith("Arrow")) {
+            return;
+        }
         if (open) {
             switch (event.key) {
                 case "ArrowDown":
@@ -104,6 +129,8 @@ own indicator and puts its popup in the wrong place inside a frame.
     }
 </script>
 
+<svelte:window on:mouseup={endPress} />
+
 <div class="combo">
     <input
         class="search"
@@ -112,7 +139,7 @@ own indicator and puts its popup in the wrong place inside a frame.
         bind:value
         bind:this={input}
         on:keydown={onKey}
-        on:blur={hide}
+        on:blur={onBlur}
         on:input={hide}
         spellcheck="false"
         autocomplete="off"
@@ -130,13 +157,12 @@ own indicator and puts its popup in the wrong place inside a frame.
         ▾
     </button>
     {#if open}
-        <!-- the input keeps focus (and the list stays open) through clicks on it -->
         <ul
             id="browser-history"
             class="history"
             role="listbox"
             bind:this={list}
-            on:mousedown|preventDefault
+            on:mousedown={() => (pressing = true)}
         >
             {#each history as entry, i}
                 <li
@@ -144,7 +170,7 @@ own indicator and puts its popup in the wrong place inside a frame.
                     aria-selected={i === active}
                     class:active={i === active}
                     title={entry}
-                    on:mousedown={() => pick(entry)}
+                    on:mousedown|preventDefault={(e) => e.button === 0 && pick(entry)}
                     on:mouseenter={() => (active = i)}
                 >
                     {entry}

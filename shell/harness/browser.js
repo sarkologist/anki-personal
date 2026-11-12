@@ -431,6 +431,26 @@ check(
 );
 key("Escape", { key: "Escape" }, searchBox);
 await until("the list closed", () => !doc.querySelector("#browser-history"));
+key("ArrowDown", { key: "ArrowDown", shift: true }, searchBox);
+await sleep(100);
+check("Shift+Down edits the text, not the list", !doc.querySelector("#browser-history"), true);
+searchBox.value = "unsearched";
+searchBox.dispatchEvent(new win.Event("input"));
+key("ArrowDown", { key: "ArrowDown" }, searchBox);
+await until("the history list again", () => doc.querySelector("#browser-history"));
+const entry = () =>
+    [...doc.querySelectorAll("#browser-history li")].find((li) => li.textContent.trim() === `did:${testDeck}`);
+const mouse = (el, button) =>
+    el.dispatchEvent(new win.MouseEvent("mousedown", { button, bubbles: true, cancelable: true }));
+mouse(entry(), 2);
+doc.dispatchEvent(new win.MouseEvent("mouseup", { button: 2, bubbles: true }));
+await sleep(100);
+check("a right-click picks nothing", [searchBox.value, !!doc.querySelector("#browser-history")], ["unsearched", true]);
+mouse(entry(), 0);
+doc.dispatchEvent(new win.MouseEvent("mouseup", { button: 0, bubbles: true }));
+await until("the picked search", () => searchBox.value === `did:${testDeck}` && rowCount() === 4);
+check("a click picks and runs a search", !doc.querySelector("#browser-history"), true);
+check("the search bar keeps focus", doc.activeElement === searchBox, true);
 
 // 12. Previewer and card info follow the current card.
 await until("its rows", () => rows().length === 4 && cells(rows()[0])[sortField]);
