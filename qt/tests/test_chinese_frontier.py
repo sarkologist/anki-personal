@@ -2202,22 +2202,25 @@ METADATA = {"Source", "Dependencies", "Disambiguation"}
 
 
 def field_flags(model):
-    return {f["name"]: (f["excludeFromSearch"], f["collapsed"]) for f in model["flds"]}
+    return {
+        f["name"]: (f["excludeFromSearch"], f["collapsed"], f.get("readOnly", False))
+        for f in model["flds"]
+    }
 
 
 def test_new_model_hides_metadata_fields(collection: Collection) -> None:
     flags = field_flags(ensure_model(collection))
-    assert flags == {name: (name in METADATA, name in METADATA) for name in flags}
+    assert flags == {name: (name in METADATA,) * 3 for name in flags}
 
 
 def test_existing_model_gets_metadata_flags_once(collection: Collection) -> None:
     model = ensure_model(collection)
     for f in model["flds"]:
-        f["excludeFromSearch"] = f["collapsed"] = False
+        f["excludeFromSearch"] = f["collapsed"] = f["readOnly"] = False
     collection.models.update_dict(model)
     upgraded = ensure_model(collection)
     flags = field_flags(upgraded)
-    assert flags == {name: (name in METADATA, name in METADATA) for name in flags}
+    assert flags == {name: (name in METADATA,) * 3 for name in flags}
     stored = collection.models.get(upgraded["id"])
     assert field_flags(stored) == flags
     before = (stored["mod"], stored["flds"])

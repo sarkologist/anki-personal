@@ -357,6 +357,7 @@ pub fn load_note_js(
             setClozeFields({cloze_fields});
             setPlainTexts({plain});
             setDescriptions({descriptions});
+            setReadOnly({read_only});
             setFonts({fonts});
             focusField({focus});
             setNoteId({nid});
@@ -383,6 +384,7 @@ pub fn load_note_js(
         cloze_fields = json!(cloze_fields),
         plain = per_field("plainText", json!(false)),
         descriptions = per_field("description", json!("")),
+        read_only = per_field("readOnly", json!(false)),
         fonts = Value::Array(fonts),
         focus = json!(focus_to),
         nid = session.page_id(),

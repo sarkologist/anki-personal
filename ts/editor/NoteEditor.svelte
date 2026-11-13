@@ -220,6 +220,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         );
     }
 
+    let fieldsReadOnly: boolean[] = [];
+    export function setReadOnly(readOnly: boolean[]): void {
+        fieldsReadOnly = readOnly;
+    }
+
     let fonts: [string, number, boolean][] = [];
 
     const fields = clearableArray<EditorFieldAPI>();
@@ -439,6 +444,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         collapsed: fieldsCollapsed[index],
         hidden: hideFieldInOcclusionType(index, ioFields),
         isClozeField: clozeFields[index],
+        readOnly: fieldsReadOnly[index] ?? false,
     })) as FieldData[];
 
     let lastSavedTags: string[] | null = null;
@@ -589,7 +595,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
         const index = parseInt(first.dataset?.index ?? "");
 
-        if (Number.isNaN(index) || !fields[index] || fieldsCollapsed[index]) {
+        if (
+            Number.isNaN(index) ||
+            !fields[index] ||
+            fieldsCollapsed[index] ||
+            fieldsReadOnly[index]
+        ) {
             return false;
         }
 
@@ -857,6 +868,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             setClozeFields,
             setPlainTexts,
             setDescriptions,
+            setReadOnly,
             setFonts,
             focusField,
             setTags,
@@ -1017,7 +1029,9 @@ the AddCards dialog) should be implemented in the user of this component.
                                     show={fields[index] === $hoveredField ||
                                         fields[index] === $focusedField}
                                 />
-                                {#if plainTextDefaults[index]}
+                                {#if field.readOnly}
+                                    <!-- no input to switch to -->
+                                {:else if plainTextDefaults[index]}
                                     <RichTextBadge
                                         show={!fieldsCollapsed[index] &&
                                             (fields[index] === $hoveredField ||

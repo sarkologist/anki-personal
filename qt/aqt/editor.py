@@ -777,6 +777,8 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
         cloze_fields = [ord in cloze_fields_ords for ord in range(len(flds))]
         plain_texts = [fld.get("plainText", False) for fld in flds]
         descriptions = [fld.get("description", "") for fld in flds]
+        # not in the Fields dialog: set by add-ons for fields they own
+        read_only = [fld.get("readOnly", False) for fld in flds]
         notetype_meta = {"id": self.note.mid, "modTime": note_type["mod"]}
         notetype_templates = [(t["qfmt"], t["afmt"]) for t in note_type["tmpls"]]
         notetype_css = note_type["css"]
@@ -812,6 +814,7 @@ require("anki/ui").loaded.then(() => require("anki/NoteEditor").instances[0].too
             setClozeFields({json.dumps(cloze_fields)});
             setPlainTexts({json.dumps(plain_texts)});
             setDescriptions({json.dumps(descriptions)});
+            setReadOnly({json.dumps(read_only)});
             setFonts({json.dumps(self.fonts())});
             focusField({json.dumps(focusTo)});
             setNoteId({json.dumps(self.note.id)});
