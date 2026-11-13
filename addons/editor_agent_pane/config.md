@@ -62,8 +62,10 @@ direct OpenAI API billing.
   accepted. Default 30.
 - `queue_show_badge`: Whether the top toolbar shows "Agent: N ready" (requests
   with a proposal ready, an answer, or a stale proposal, not counting deferred
-  ones), which opens the queue window. Hidden while N is 0. Default `true`;
-  takes effect the next time the toolbar is drawn.
+  ones), hidden while N is 0, and the main screen shows "Agent queue: N
+  requests need your attention" (or "nothing needs your attention") under the
+  deck list. Both open the queue window. Default `true`; takes effect the next
+  time the toolbar and main screen are drawn.
 - `queue_shortcut`: Opens the agent queue window from anywhere in Anki (also
   Tools > Agent Queue). Default `Ctrl+Alt+Shift+Q`; takes effect on restart.
 - `queue_window_geometry`: Saved size and position of the queue window.
