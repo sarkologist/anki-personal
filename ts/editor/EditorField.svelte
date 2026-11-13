@@ -17,6 +17,8 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         collapsed: boolean;
         hidden: boolean;
         isClozeField: boolean;
+        /** Shown as text only: the inputs stay mounted but hidden. */
+        readOnly: boolean;
     }
 
     export interface EditorFieldAPI {
@@ -55,6 +57,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
     import type { Destroyable } from "./destroyable";
     import EditingArea from "./EditingArea.svelte";
+    import { readOnlyText } from "./read-only-field";
 
     export let content: Writable<string>;
     export let field: FieldData;
@@ -111,20 +114,27 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             on:focusout
             {hidden}
         >
-            <EditingArea
-                {content}
-                fontFamily={field.fontFamily}
-                fontSize={field.fontSize}
-                api={editingArea}
-            >
-                {#if flipInputs}
-                    <slot name="plain-text-input" />
-                    <slot name="rich-text-input" />
-                {:else}
-                    <slot name="rich-text-input" />
-                    <slot name="plain-text-input" />
-                {/if}
-            </EditingArea>
+            {#if field.readOnly}
+                <pre class="read-only" dir={field.direction}>{readOnlyText(
+                        $content,
+                    )}</pre>
+            {/if}
+            <div class:read-only-inputs={field.readOnly}>
+                <EditingArea
+                    {content}
+                    fontFamily={field.fontFamily}
+                    fontSize={field.fontSize}
+                    api={editingArea}
+                >
+                    {#if flipInputs}
+                        <slot name="plain-text-input" />
+                        <slot name="rich-text-input" />
+                    {:else}
+                        <slot name="rich-text-input" />
+                        <slot name="plain-text-input" />
+                    {/if}
+                </EditingArea>
+            </div>
         </div>
     </Collapsible>
 </div>
@@ -161,5 +171,20 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         &:focus-within {
             outline: 2px solid var(--border-focus);
         }
+    }
+
+    .read-only {
+        margin: 0;
+        padding: 6px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-size: 0.85em;
+        color: var(--fg-subtle);
+        background: var(--canvas-inset);
+        user-select: text;
+    }
+
+    .read-only-inputs {
+        display: none;
     }
 </style>
