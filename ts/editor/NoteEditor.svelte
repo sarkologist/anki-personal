@@ -525,6 +525,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
         const updates: AgentFieldUpdate[] = [];
         for (const [index, fieldStore] of fieldStores.entries()) {
+            if (fieldsReadOnly[index]) {
+                continue;
+            }
             const html = get(fieldStore);
             const transformed = transform(html, index);
             if (transformed !== html) {
@@ -668,7 +671,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             : plainTextInputs[index];
 
         if (!collapsed) {
-            defaultInput.api.refocus();
+            // a read-only field's inputs are hidden: leave the caret out of them
+            if (!fieldsReadOnly[index]) {
+                defaultInput.api.refocus();
+            }
         } else if (!plainTextDefaults[index]) {
             plainTextsHidden[index] = true;
         } else {

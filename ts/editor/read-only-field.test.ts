@@ -13,7 +13,11 @@ test("escaped single-line JSON is decoded and pretty-printed", () => {
 });
 
 test("non-JSON content is shown as its text", () => {
-    expect(readOnlyText("a &lt;b&gt;<br>c")).toBe("a <b>c");
+    expect(readOnlyText("a &lt;b&gt;")).toBe("a <b>");
+});
+
+test("line breaks in the HTML are kept", () => {
+    expect(readOnlyText("a<br>b<div>c</div><div>d</div>")).toBe("a\nb\nc\nd");
 });
 
 test("markup in the field is never rendered", () => {
