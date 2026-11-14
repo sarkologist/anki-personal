@@ -322,6 +322,26 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         &titled(ui, &tr.qt_misc_stats(), "stats"),
         None,
     )?;
+    let view = SubmenuBuilder::new(app, "View")
+        .item(&item(
+            app,
+            crate::zoom::ZOOM_IN,
+            &tr.qt_accel_zoom_in(),
+            Some("CmdOrCtrl+="),
+        )?)
+        .item(&item(
+            app,
+            crate::zoom::ZOOM_OUT,
+            &tr.qt_accel_zoom_out(),
+            Some("CmdOrCtrl+-"),
+        )?)
+        .item(&item(
+            app,
+            crate::zoom::RESET_ZOOM,
+            &tr.qt_accel_reset_zoom(),
+            Some("CmdOrCtrl+0"),
+        )?)
+        .build()?;
     let go = SubmenuBuilder::new(app, "Go")
         .item(&decks)
         .item(&study)
@@ -363,7 +383,7 @@ pub fn build(ui: &Ui, app: &AppHandle) -> tauri::Result<(Menu<Wry>, Menus)> {
         .item(&PredefinedMenuItem::fullscreen(app, None)?)
         .build()?;
     let menu = MenuBuilder::new(app)
-        .items(&[&app_menu, &file, &edit, &go, &card, &tools, &window])
+        .items(&[&app_menu, &file, &edit, &view, &go, &card, &tools, &window])
         .build()?;
     let menus = Menus {
         undo,
@@ -538,6 +558,7 @@ fn handle_event(ui: &Arc<Ui>, id: &str) {
         }
         "addonsRestart" => crate::plugins::ui::restart(ui),
         "addonsLog" => crate::plugins::ui::show_log(ui),
+        id if crate::zoom::on_menu(ui, id) => return,
         id if id.starts_with(crate::browser_window::MENU_PREFIX) => {
             crate::browser_window::menu_event(ui, &id[crate::browser_window::MENU_PREFIX.len()..]);
         }
