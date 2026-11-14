@@ -68,6 +68,8 @@ pub struct Settings {
     pub latex_imported: bool,
     /// The card browser's layout and search history.
     pub browser: BrowserPrefs,
+    /// The main window's zoom (View menu); None is 1.
+    pub main_window_zoom: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -166,6 +168,11 @@ impl Settings {
 
     pub fn theme_pref(&self) -> ThemePref {
         self.theme.or(self.anki_theme).unwrap_or_default()
+    }
+
+    pub fn main_window_zoom(&self) -> f64 {
+        self.main_window_zoom
+            .map_or(crate::zoom::DEFAULT, crate::zoom::clamped)
     }
 
     /// The LaTeX commands to run, where they aren't latex.py's.
@@ -436,6 +443,17 @@ mod test {
             settings.merge_import(json.as_bytes()).unwrap();
             assert!(!settings.backfill_needed(), "{json}");
         }
+    }
+
+    #[test]
+    fn the_main_window_zoom_is_1_unless_saved_and_usable() {
+        let saved = |zoom| Settings {
+            main_window_zoom: zoom,
+            ..Default::default()
+        };
+        assert_eq!(saved(None).main_window_zoom(), 1.0);
+        assert_eq!(saved(Some(1.2)).main_window_zoom(), 1.2);
+        assert_eq!(saved(Some(9.0)).main_window_zoom(), 5.0);
     }
 
     #[test]

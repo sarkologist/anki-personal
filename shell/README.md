@@ -37,6 +37,10 @@ import/export, ...) still need the old Anki.
   (`autoSync`). Sync redirects are kept (`currentSyncUrl`). A profile copy
   (any `--anki-base` other than the default) can only sync with a server on
   this machine (`customSyncUrl` pointing at 127.0.0.1), never AnkiWeb.
+- **View > Zoom In/Zoom Out/Reset Zoom** (Cmd+=, Cmd+-, Cmd+0) zoom the
+  main window (deck list, overview, reviewer) by 10% steps, as in Anki. The
+  zoom is saved in the settings file (`main_window_zoom`), not shared with
+  the old Anki. The other windows have no zoom yet.
 - Dark mode follows the system's appearance, also when it changes while
   the shell runs, as in Anki. `"theme": "light"` or `"dark"` in the
   settings file fixes it instead; the default is the old Anki's theme
@@ -243,6 +247,8 @@ Options:
   `--test harness/dark-mode.js --test-page main` switches the theme and a
   simulated system appearance through the deck list, overview and
   reviewer (it changes no system setting).
+  `harness/zoom.js` (`--test-page main`, with `"main_window_zoom": 1.3`
+  in the copy's settings file) checks the View menu's zoom.
   `harness/agent-pane.js` (`--test-page add`, and `--test-page editor
   --test-note 0`) drives the agent pane with a real request; it needs the
   add-on in the copy's `addons21` with its provider set to Ollama and a

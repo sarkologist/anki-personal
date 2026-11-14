@@ -463,9 +463,12 @@ unsafe fn window_look(
     };
     let key = NSString::from_str("drawsBackground");
     let draws: *mut NSNumber = msg_send![webview as *mut AnyObject, valueForKey: &*key];
+    // in points, so a page's innerWidth over it is its zoom
+    let bounds: objc2_foundation::NSRect = msg_send![webview as *mut AnyObject, bounds];
     json!({
         "background": [component("r"), component("g"), component("b")],
         "drawsBackground": draws.as_ref().map(|n| n.as_bool()),
+        "width": bounds.size.width,
     })
 }
 
