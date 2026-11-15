@@ -119,7 +119,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
                         $content,
                     )}</pre>
             {/if}
-            <div class:read-only-inputs={field.readOnly}>
+            <!-- inert: nothing can focus or type into the hidden inputs -->
+            <div
+                class:read-only-inputs={field.readOnly}
+                inert={field.readOnly || undefined}
+            >
                 <EditingArea
                     {content}
                     fontFamily={field.fontFamily}

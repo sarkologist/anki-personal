@@ -224,7 +224,9 @@ Options:
   go to the copy's `AnkiShell/settings.json`, so settings a test needs,
   such as `"plugins"`, go there too.
   `harness/editor-save.js` checks that edits made just before a note switch
-  are saved. `harness/editor-features.js` (same page) checks paste, undo,
+  are saved. `harness/editor-readonly.js` (same page) checks that a
+  read-only field's stored value survives a note switch that leaves it
+  focused. `harness/editor-features.js` (same page) checks paste, undo,
   input method composition, MathJax/LaTeX, format buttons and options;
   pastes come from a scratch pasteboard, never the clipboard.
   `--test harness/editor-add.js --test-page add` drives Add Cards: the

@@ -69,7 +69,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import EditorToolbar from "./editor-toolbar";
     import type { FieldData } from "./EditorField.svelte";
     import EditorField from "./EditorField.svelte";
-    import { saveFieldsCommand, transformContentBeforeSave } from "./field-save";
+    import { fieldContentToSave, saveFieldsCommand } from "./field-save";
     import Fields from "./Fields.svelte";
     import ImageOverlay from "./image-overlay";
     import LatexOverlay from "./latex-overlay";
@@ -162,6 +162,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         suppressFieldSave = true;
         try {
             loadFieldContent(fieldStores, richTextInputs, fs);
+            loadedFields = fs.map(([, content]) => content);
         } finally {
             suppressFieldSave = wasSuppressingFieldSave;
         }
@@ -224,6 +225,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     export function setReadOnly(readOnly: boolean[]): void {
         fieldsReadOnly = readOnly;
     }
+    // what setFields loaded: saved instead of a read-only field's store
+    let loadedFields: string[] = [];
+    const readOnlyFields = () => ({ readOnly: fieldsReadOnly, loaded: loadedFields });
 
     let fonts: [string, number, boolean][] = [];
 
@@ -458,7 +462,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let suppressFieldSave = false;
 
     function updateField(index: number, content: string): void {
-        if (suppressFieldSave) {
+        if (suppressFieldSave || fieldsReadOnly[index]) {
             return;
         }
 
@@ -467,7 +471,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         fieldSave.schedule(
             () =>
                 bridgeCommand(
-                    `key:${index}:${noteId}:${transformContentBeforeSave(content)}`,
+                    `key:${index}:${noteId}:${fieldContentToSave(
+                        index,
+                        content,
+                        readOnlyFields(),
+                    )}`,
                 ),
             600,
         );
@@ -500,6 +508,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         const { index, html } = update;
         if (!Number.isInteger(index) || index < 0 || index >= fieldStores.length) {
             throw new Error(`Invalid field index: ${index}`);
+        }
+        // agent proposals and transforms never change a read-only field
+        if (fieldsReadOnly[index]) {
+            return;
         }
         if (get(fieldStores[index]) === html) {
             return;
@@ -552,7 +564,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             }
             await tick();
             fieldSave.clear();
-            bridgeCommand(saveFieldsCommand(noteId, fieldStores));
+            bridgeCommand(saveFieldsCommand(noteId, fieldStores, readOnlyFields()));
         } finally {
             suppressFieldSave = wasSuppressingFieldSave;
         }
@@ -997,8 +1009,10 @@ the AddCards dialog) should be implemented in the user of this component.
                         $focusedField = null;
                         setAddonButtonsDisabled(true);
                         bridgeCommand(
-                            `blur:${index}:${getNoteId()}:${transformContentBeforeSave(
+                            `blur:${index}:${getNoteId()}:${fieldContentToSave(
+                                index,
                                 get(content),
+                                readOnlyFields(),
                             )}`,
                         );
                     }}
