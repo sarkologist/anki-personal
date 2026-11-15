@@ -69,7 +69,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     import EditorToolbar from "./editor-toolbar";
     import type { FieldData } from "./EditorField.svelte";
     import EditorField from "./EditorField.svelte";
-    import { saveFieldsCommand, transformContentBeforeSave } from "./field-save";
+    import { fieldContentToSave, saveFieldsCommand } from "./field-save";
     import Fields from "./Fields.svelte";
     import ImageOverlay from "./image-overlay";
     import LatexOverlay from "./latex-overlay";
@@ -162,6 +162,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         suppressFieldSave = true;
         try {
             loadFieldContent(fieldStores, richTextInputs, fs);
+            loadedFields = fs.map(([, content]) => content);
         } finally {
             suppressFieldSave = wasSuppressingFieldSave;
         }
@@ -219,6 +220,14 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             d.replace(/\\/g, "").replace(/"/g, '\\"'),
         );
     }
+
+    let fieldsReadOnly: boolean[] = [];
+    export function setReadOnly(readOnly: boolean[]): void {
+        fieldsReadOnly = readOnly;
+    }
+    // what setFields loaded: saved instead of a read-only field's store
+    let loadedFields: string[] = [];
+    const readOnlyFields = () => ({ readOnly: fieldsReadOnly, loaded: loadedFields });
 
     let fonts: [string, number, boolean][] = [];
 
@@ -439,6 +448,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         collapsed: fieldsCollapsed[index],
         hidden: hideFieldInOcclusionType(index, ioFields),
         isClozeField: clozeFields[index],
+        readOnly: fieldsReadOnly[index] ?? false,
     })) as FieldData[];
 
     let lastSavedTags: string[] | null = null;
@@ -452,7 +462,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
     let suppressFieldSave = false;
 
     function updateField(index: number, content: string): void {
-        if (suppressFieldSave) {
+        if (suppressFieldSave || fieldsReadOnly[index]) {
             return;
         }
 
@@ -461,7 +471,11 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         fieldSave.schedule(
             () =>
                 bridgeCommand(
-                    `key:${index}:${noteId}:${transformContentBeforeSave(content)}`,
+                    `key:${index}:${noteId}:${fieldContentToSave(
+                        index,
+                        content,
+                        readOnlyFields(),
+                    )}`,
                 ),
             600,
         );
@@ -495,6 +509,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
         if (!Number.isInteger(index) || index < 0 || index >= fieldStores.length) {
             throw new Error(`Invalid field index: ${index}`);
         }
+        // agent proposals and transforms never change a read-only field
+        if (fieldsReadOnly[index]) {
+            return;
+        }
         if (get(fieldStores[index]) === html) {
             return;
         }
@@ -519,6 +537,9 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
         const updates: AgentFieldUpdate[] = [];
         for (const [index, fieldStore] of fieldStores.entries()) {
+            if (fieldsReadOnly[index]) {
+                continue;
+            }
             const html = get(fieldStore);
             const transformed = transform(html, index);
             if (transformed !== html) {
@@ -543,7 +564,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             }
             await tick();
             fieldSave.clear();
-            bridgeCommand(saveFieldsCommand(noteId, fieldStores));
+            bridgeCommand(saveFieldsCommand(noteId, fieldStores, readOnlyFields()));
         } finally {
             suppressFieldSave = wasSuppressingFieldSave;
         }
@@ -589,7 +610,12 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
         const index = parseInt(first.dataset?.index ?? "");
 
-        if (Number.isNaN(index) || !fields[index] || fieldsCollapsed[index]) {
+        if (
+            Number.isNaN(index) ||
+            !fields[index] ||
+            fieldsCollapsed[index] ||
+            fieldsReadOnly[index]
+        ) {
             return false;
         }
 
@@ -657,7 +683,10 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             : plainTextInputs[index];
 
         if (!collapsed) {
-            defaultInput.api.refocus();
+            // a read-only field's inputs are hidden: leave the caret out of them
+            if (!fieldsReadOnly[index]) {
+                defaultInput.api.refocus();
+            }
         } else if (!plainTextDefaults[index]) {
             plainTextsHidden[index] = true;
         } else {
@@ -857,6 +886,7 @@ License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
             setClozeFields,
             setPlainTexts,
             setDescriptions,
+            setReadOnly,
             setFonts,
             focusField,
             setTags,
@@ -979,8 +1009,10 @@ the AddCards dialog) should be implemented in the user of this component.
                         $focusedField = null;
                         setAddonButtonsDisabled(true);
                         bridgeCommand(
-                            `blur:${index}:${getNoteId()}:${transformContentBeforeSave(
+                            `blur:${index}:${getNoteId()}:${fieldContentToSave(
+                                index,
                                 get(content),
+                                readOnlyFields(),
                             )}`,
                         );
                     }}
@@ -1017,7 +1049,9 @@ the AddCards dialog) should be implemented in the user of this component.
                                     show={fields[index] === $hoveredField ||
                                         fields[index] === $focusedField}
                                 />
-                                {#if plainTextDefaults[index]}
+                                {#if field.readOnly}
+                                    <!-- no input to switch to -->
+                                {:else if plainTextDefaults[index]}
                                     <RichTextBadge
                                         show={!fieldsCollapsed[index] &&
                                             (fields[index] === $hoveredField ||

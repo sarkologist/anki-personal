@@ -1059,12 +1059,13 @@ def _read_budgets(
 
 
 def _hide_metadata(model: dict[str, Any]) -> bool:
+    """Collapse the add-on's JSON fields and make them read-only in the editor."""
     changed = False
     for item in model["flds"]:
         if item["name"] in METADATA_FIELDS and not (
-            item["excludeFromSearch"] and item["collapsed"]
+            item["excludeFromSearch"] and item["collapsed"] and item.get("readOnly")
         ):
-            item["excludeFromSearch"] = item["collapsed"] = True
+            item["excludeFromSearch"] = item["collapsed"] = item["readOnly"] = True
             changed = True
     return changed
 
