@@ -1,13 +1,18 @@
 # Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
-"""A top-toolbar link, "Agent: N ready", that opens the queue window.
+"""Where the queue says how many threads wait on the user.
 
 N counts the threads waiting on the user (proposal ready, answered, stale),
-excluding deferred ones; the link is hidden at zero. The link is added through
-``top_toolbar_did_init_links`` whenever the toolbar is drawn, and updated in
-place (one ``eval`` on the toolbar webview, no page reload) when a thread
-changes, since this module's listener is in the queue's fan-out.
+excluding deferred ones. Two places show it, both opening the queue window:
+
+- A top-toolbar link, "Agent: N ready", hidden at zero. It is added through
+  ``top_toolbar_did_init_links`` whenever the toolbar is drawn, and updated in
+  place (one ``eval`` on the toolbar webview, no page reload) when a thread
+  changes, since this module's listener is in the queue's fan-out.
+- A main-screen line under the deck list, like the Frontier add-on's: "Agent
+  queue: N requests need your attention. Review", or "nothing needs your
+  attention". The deck browser is redrawn only when N changes.
 """
 
 from __future__ import annotations
@@ -26,11 +31,14 @@ from .queue_store import ANSWERED, READY, STALE, QueueStore
 BADGE_COMMAND = "agentQueueBadge"
 BADGE_ID = "agent-queue-badge"
 BADGE_STATUSES = (READY, ANSWERED, STALE)
+STATUS_COMMAND = "agentQueueStatus"
 
 ConfigGetter = Callable[[], dict[str, Any]]
 
 _config: ConfigGetter = dict
 _installed = False
+# The count the main screen last showed; None when it showed no line.
+_shown: int | None = None
 
 
 def install(*, config: ConfigGetter) -> None:
@@ -40,10 +48,13 @@ def install(*, config: ConfigGetter) -> None:
         return
     _installed = True
     gui_hooks.top_toolbar_did_init_links.append(_on_top_toolbar_did_init_links)
+    gui_hooks.deck_browser_will_render_content.append(_on_deck_browser_render)
+    gui_hooks.webview_did_receive_js_message.append(_on_js_message)
     # After queue_runtime opened the store (its hook was added first).
     gui_hooks.profile_did_open.append(refresh)
-    # Deferrals end without a store change; catch up on screen changes.
-    gui_hooks.state_did_change.append(lambda _new, _old: refresh())
+    # Deferrals end without a store change; catch up on screen changes. A move
+    # to the deck browser renders it anyway, after this hook (asynchronously).
+    gui_hooks.state_did_change.append(lambda _new, _old: refresh(redraw=False))
 
 
 def enabled() -> bool:
@@ -57,6 +68,20 @@ def badge_count(store: QueueStore, now: float | None = None) -> int:
 
 def badge_text(count: int) -> str:
     return f"Agent: {count} ready"
+
+
+def status_html(count: int) -> str:
+    style = "margin:1em auto;text-align:center"
+    if not count:
+        return (
+            f'<div style="{style};opacity:.6">'
+            "Agent queue: nothing needs your attention.</div>"
+        )
+    requests = "request needs" if count == 1 else "requests need"
+    return (
+        f'<div style="{style}">Agent queue: {count} {requests} your attention. '
+        f"<a href=# onclick=\"return pycmd('{STATUS_COMMAND}')\">Review</a></div>"
+    )
 
 
 def _current_count() -> int:
@@ -83,6 +108,31 @@ def _on_top_toolbar_did_init_links(links: list[str], toolbar: Any) -> None:
     )
 
 
+def _main_screen_count() -> int | None:
+    """None while there is no store to report on (it opens after the first
+    deck-browser draw, in profile_did_open)."""
+    service = queue_runtime.service()
+    if not enabled() or service is None:
+        return None
+    return badge_count(service.store)
+
+
+def _on_deck_browser_render(_deck_browser: Any, content: Any) -> None:
+    global _shown
+    _shown = _main_screen_count()
+    if _shown is not None:
+        content.stats += status_html(_shown)
+
+
+def _on_js_message(
+    handled: tuple[bool, Any], message: str, _context: Any
+) -> tuple[bool, Any]:
+    if message != STATUS_COMMAND:
+        return handled
+    _open_queue()
+    return (True, None)
+
+
 def badge_js(count: int) -> str:
     text = json.dumps(badge_text(count))
     return (
@@ -92,14 +142,23 @@ def badge_js(count: int) -> str:
     )
 
 
-def refresh() -> None:
-    """Update the drawn link's text and visibility."""
+def refresh(*, redraw: bool = True) -> None:
+    """Update the drawn link, and the main screen if its count changed."""
     if not enabled():
         return
+    count = _main_screen_count()
     web = getattr(getattr(aqt.mw, "toolbar", None), "web", None)
-    if web is None:
-        return
-    web.eval(badge_js(_current_count()))
+    if web is not None:
+        web.eval(badge_js(count or 0))
+    mw = aqt.mw
+    # count is None once the store closed (profile closing): never redraw then.
+    if (
+        redraw
+        and count is not None
+        and count != _shown
+        and getattr(mw, "state", None) == "deckBrowser"
+    ):
+        mw.deckBrowser.refresh()
 
 
 class _Listener:

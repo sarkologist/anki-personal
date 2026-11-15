@@ -1446,6 +1446,94 @@ def test_badge_updates_on_thread_changes_and_opens_the_window(
     assert opened == [{}]
 
 
+class _FakeDeckBrowser:
+    def __init__(self) -> None:
+        self.refreshes = 0
+
+    def refresh(self) -> None:
+        self.refreshes += 1
+
+
+def _main_screen(qw: Any) -> str:
+    content = types.SimpleNamespace(stats="")
+    qw.runtime.queue_badge._on_deck_browser_render(None, content)
+    return content.stats
+
+
+def test_main_screen_says_what_needs_attention_and_opens_the_window(
+    qw: Any, queue: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    badge = qw.runtime.queue_badge
+    monkeypatch.setattr(badge, "_config", lambda: {"queue_show_badge": True})
+
+    assert "Agent queue: nothing needs your attention." in _main_screen(qw)
+
+    _thread(store)
+    _thread(store, status="running")
+    assert "Agent queue: 1 request needs your attention." in _main_screen(qw)
+    _thread(store, status="answered")
+    shown = _main_screen(qw)
+    assert "Agent queue: 2 requests need your attention." in shown
+    assert badge.STATUS_COMMAND in shown
+
+    opened: list[Any] = []
+    monkeypatch.setattr(qw, "open_window", lambda **kw: opened.append(kw))
+    assert badge._on_js_message((False, None), "other", None) == (False, None)
+    assert opened == []
+    assert badge._on_js_message((False, None), badge.STATUS_COMMAND, None) == (
+        True,
+        None,
+    )
+    assert opened == [{}]
+
+
+def test_main_screen_redraws_only_when_the_count_changes(
+    qw: Any, queue: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, _runner = queue
+    badge = qw.runtime.queue_badge
+    monkeypatch.setattr(badge, "_config", lambda: {"queue_show_badge": True})
+    browser = _FakeDeckBrowser()
+    qw.runtime.aqt.mw.state = "deckBrowser"
+    qw.runtime.aqt.mw.deckBrowser = browser
+    # Anki draws the deck list before profile_did_open opens the store.
+    with monkeypatch.context() as before_open:
+        before_open.setattr(qw.runtime.queue_runtime, "service", lambda: None)
+        assert _main_screen(qw) == ""
+        badge.refresh()
+        assert browser.refreshes == 0
+    badge.refresh()
+    assert browser.refreshes == 1
+    _main_screen(qw)
+    browser.refreshes = 0
+
+    thread = _thread(store, status="running")
+    badge.listener().on_thread_changed(thread.id)
+    assert browser.refreshes == 0
+
+    store.transition(thread.id, "running", "answered")
+    badge.listener().on_thread_changed(thread.id)
+    assert browser.refreshes == 1
+
+    _main_screen(qw)
+    qw.runtime.aqt.mw.state = "review"
+    _thread(store)
+    badge.listener().on_thread_changed(thread.id)
+    assert browser.refreshes == 1
+
+    # Back on the deck browser, which renders itself: no second render.
+    qw.runtime.aqt.mw.state = "deckBrowser"
+    badge.refresh(redraw=False)
+    assert browser.refreshes == 1
+
+    # A late notice while the profile closes (store gone) must not redraw.
+    with monkeypatch.context() as closed:
+        closed.setattr(qw.runtime.queue_runtime, "service", lambda: None)
+        badge.listener().on_thread_changed(thread.id)
+    assert browser.refreshes == 1
+
+
 def test_badge_is_off_when_configured_off(
     qw: Any, queue: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1461,3 +1549,4 @@ def test_badge_is_off_when_configured_off(
     badge.listener().on_thread_changed("x")
 
     assert links == [] and toolbar.evals == []
+    assert _main_screen(qw) == ""
