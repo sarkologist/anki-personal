@@ -35,6 +35,7 @@ pub mod sync;
 pub mod testchan;
 pub mod theme;
 pub mod webkit;
+pub mod zoom;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -402,6 +402,9 @@ impl Ui {
         let builder = builder.background_color(crate::theme::canvas(self.shell.night.get()));
         let window = builder.build()?;
         crate::theme::style_window(&window, self.shell.night.get());
+        if label == MAIN {
+            crate::zoom::apply(self);
+        }
         if self.background {
             send_to_back(&window)?;
         }
