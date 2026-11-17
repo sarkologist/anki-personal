@@ -163,6 +163,12 @@ class GenerationResult:
     lexicon: Lexicon
 
 
+def reading_length(candidate: Candidate) -> int:
+    """Characters the learner reads to answer, across both contrast examples."""
+    contrast = candidate.contrast
+    return len(candidate.sentence) + (len(contrast.sentence) if contrast else 0)
+
+
 def review_units(candidate: Candidate, source: Source) -> dict[tuple[int, int], str]:
     if candidate.mode == "characters":
         return {
@@ -481,6 +487,7 @@ Data:\n""" + json.dumps(
             reports = []
         expected = {(s.card_id, v.candidate.sentence): (s, v) for s, v in items}
         indexed: dict[tuple[Any, Any], list[Any]] = {}
+        passed: dict[int, list[tuple[Source, Validated]]] = {}
         for report in reports:
             key = (
                 (report.get("card_id"), report.get("sentence"))
@@ -521,20 +528,25 @@ Data:\n""" + json.dumps(
                 and source.card_id not in drafts
                 and valid.card_count >= source.existing_cards
             ):
-                drafts[source.card_id] = Draft(
-                    source,
-                    valid.candidate,
-                    {
-                        "version": GENERATION_POLICY,
-                        "provider": config.get("provider", "codex"),
-                        "checks": list(history[source.card_id]),
-                    },
-                    existing and valid.card_count == source.existing_cards,
-                )
-                if on_approved:
-                    on_approved(list(drafts.values()))
+                passed.setdefault(source.card_id, []).append((source, valid))
             else:
                 deferred[source.key] = report["reason"][:500]
+        # A long sentence invites skimming past the context that rules out
+        # competitors, so the shortest approved example is admitted.
+        for options in passed.values():
+            source, valid = min(options, key=lambda o: reading_length(o[1].candidate))
+            drafts[source.card_id] = Draft(
+                source,
+                valid.candidate,
+                {
+                    "version": GENERATION_POLICY,
+                    "provider": config.get("provider", "codex"),
+                    "checks": list(history[source.card_id]),
+                },
+                existing and valid.card_count == source.existing_cards,
+            )
+        if passed and on_approved:
+            on_approved(list(drafts.values()))
 
     existing_items = []
     for source in sources:
@@ -572,8 +584,10 @@ hint. The Chinese alone must rule out competing words; never rely on the transla
 to disambiguate (他已经玩腻了 fails: 吃腻/看腻 fit unless the Chinese mentions the
 playing). Competing words are those in all_known_words, familiar_words and
 reported_confusions; a word outside them, or one containing the target, is not one.
-familiar_words are only possible answers: never use them in a sentence. Prefer richer situational context over shortest length. An additional clause or
-sentence is allowed. Do not rely on idiom knowledge or an unstated intention. Never
+familiar_words are only possible answers: never use them in a sentence. Use the least
+context that rules out every competing word: learners skim long sentences, so every
+clause must rule a competitor out or fix the sense, and an additional clause or
+sentence is allowed only when it does. Do not rely on idiom knowledge or an unstated intention. Never
 pretend genuinely overlapping synonyms are exclusive. Avoid unfamiliar grammar,
 names or idioms. Fix every problem the learner reported in learner_feedback; never reuse
 rejected_sentences or any avoid_words. reported_confusions are words the learner
@@ -618,7 +632,7 @@ specified below. Use the supplied context_evidence to stay within established se
         if not pending:
             continue
         if mode == "word":
-            instruction = 'Propose up to 3 DIFFERENT examples per target, most informative first. Set mode="word", contrast=null, explanation="". Replace an explicitly rejected example.'
+            instruction = 'Propose up to 3 DIFFERENT examples per target: the tightest one that still rules out every competing word, then fuller ones in case review finds a competitor. The shortest approved example is used. Set mode="word", contrast=null, explanation="". Replace an explicitly rejected example.'
         elif mode == "contrast":
             instruction = """The learner answered a word from reported_confusions instead of the
 target, and a single sentence could not rule it out. Try ONE contrast pair per target. Set mode="contrast" and supply one contrast
