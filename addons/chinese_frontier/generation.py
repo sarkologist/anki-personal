@@ -11,6 +11,7 @@ from threading import Event
 from typing import Any, Callable
 
 from .core import (
+    ATTEMPTS,
     MODES,
     Candidate,
     Source,
@@ -608,14 +609,18 @@ specified below. Use the supplied context_evidence to stay within established se
     # Ambiguous examples get fuller context or character cues. A contrast pair is
     # reserved for a confusion the learner actually reported, after context
     # alone failed to rule it out; on a character note it keeps the first card.
-    for attempt_index, mode in enumerate(MODES, 1):
+    for attempt_index, mode in enumerate(ATTEMPTS, 1):
+        late = "characters" in ATTEMPTS[: attempt_index - 1]
         pending = [
             source
             for source in sources
             if source.card_id not in drafts
             and (
                 mode != "contrast"
-                or source.reported_confusions
+                or (
+                    bool(source.reported_confusions)
+                    and late == (source.existing_cards > 1)
+                )
             )
             and (mode != "characters" or len(set(source.word)) >= 2)
             and (mode != "initial" or len(set(source.word)) == 1)

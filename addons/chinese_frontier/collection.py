@@ -577,7 +577,6 @@ def _repair_source(col: Collection, source: Source, note_id: int) -> Source:
         existing_candidate=previous_candidate,
         existing_fingerprint=presentation_fingerprint(fields),
         existing_cards=len(old_note.cards()),
-        # Character cards keep the confusion; generation never pairs them.
         reported_confusions=tuple(
             w for w in reported_confusions(fields) if w != source.word
         ),
@@ -712,6 +711,8 @@ def _scan(
         key = source_data.get("key")
         adopted = _adopted(source_data)
         logs = _card_logs(review_logs, cid, adopted)
+        if folded_at := source_data.get("folded_at"):
+            logs = [log for log in logs if log[0] >= folded_at]
         live = queue != -1 or cid in fix_cards
         if adopted:
             replaced.add(int(adopted.get("card_id", 0)))
@@ -2015,10 +2016,20 @@ def _admit(
         note.tags = [tag for tag in note.tags if tag != "disambiguation"]
         if kind:
             note.tags.append("disambiguation")
+        # A contrast pair folds a character note into its first card. That card's
+        # character answers never become evidence for the pair's whole words.
+        folded = [
+            card_id
+            for ordinal, (card_id, *_state) in old_cards.items()
+            if ordinal >= expected_count and valid.candidate.mode == "contrast"
+        ]
+        if folded:
+            data = _json_field(note["Source"])
+            data["folded_at"] = int(time.time() * 1000)
+            note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
         if repair_id:
             col.update_note(note)
-            # A contrast pair folds a character note into its first card.
-            if folded := [c.id for c in note.cards() if c.ord >= expected_count]:
+            if folded:
                 col.remove_cards_and_orphaned_notes(folded)
         else:
             col.add_note(note, DeckId(source.deck_id))

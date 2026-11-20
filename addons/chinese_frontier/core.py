@@ -29,6 +29,9 @@ FEEDBACK_REASONS = {
 }
 CLOZE = re.compile(r"\{\{c(\d+)::([^{}]*?)\}\}")
 MODES = ("word", "contrast", "characters", "initial")
+# A character note tries a new character sentence, which keeps every card,
+# before a contrast pair folds it; any other note tries the pair first.
+ATTEMPTS = ("word", "contrast", "characters", "contrast", "initial")
 
 
 class ValidationError(ValueError):
