@@ -843,55 +843,6 @@ def test_live_cloze_in_target_only_deck_does_not_cover_primary_target(
     assert [source.word for source in current.sources] == ["百"]
 
 
-def test_generation_keeps_informative_order_not_shortest(
-    tmp_path: Path, lexicon: Lexicon, monkeypatch
-) -> None:
-    from chinese_frontier import generation
-
-    longer = candidate()
-    shorter = candidate("书有一百页。")
-    responses = iter(
-        [
-            {
-                "proposals": [
-                    {"card_id": 1, "candidates": [longer.__dict__, shorter.__dict__]}
-                ]
-            },
-            {
-                "reviews": [
-                    {
-                        "card_id": 1,
-                        "sentence": c.sentence,
-                        "approved": True,
-                        "reason": "clear",
-                        "search_summary": "Checked competitors",
-                        "alternatives": audit_report(source(), c)["alternatives"],
-                    }
-                    for c in (longer, shorter)
-                ]
-            },
-        ]
-    )
-    monkeypatch.setattr(generation.Lexicon, "load", lambda _folder: lexicon)
-    monkeypatch.setattr(
-        generation.CliGenerator, "__init__", lambda self, _config, _stop: None
-    )
-    monkeypatch.setattr(generation.CliGenerator, "check_login", lambda self: None)
-    monkeypatch.setattr(
-        generation.CliGenerator,
-        "request",
-        lambda self, _prompt, _schema: next(responses),
-    )
-    result = generate(
-        [source()],
-        {word: "familiar" for word in ("这", "本", "书", "有", "一", "页")},
-        {},
-        tmp_path,
-        Event(),
-    )
-    assert result.drafts[0].candidate == longer
-
-
 def test_existing_template_gets_front_translation_without_history_change(
     collection: Collection,
 ) -> None:
@@ -1266,6 +1217,39 @@ def test_a_repeated_review_approves_only_if_every_copy_does(
         familiar={"千"},
     )
     assert not result.drafts
+
+
+def test_the_shortest_approved_example_is_admitted(
+    tmp_path: Path, lexicon: Lexicon, monkeypatch
+) -> None:
+    # A long sentence invites skimming past the context that rules out
+    # competitors, so when several pass review the tightest one is kept.
+    target, full, tight = source(), candidate(), candidate("书有一百页。")
+    fake_generator(
+        monkeypatch,
+        lexicon,
+        [
+            {
+                "proposals": [
+                    {
+                        "card_id": 1,
+                        "reason": "",
+                        "candidates": [asdict(full), asdict(tight)],
+                    }
+                ]
+            },
+            {"reviews": [audit_report(target, full), audit_report(target, tight)]},
+        ],
+    )
+    result = generate(
+        [target],
+        {w: "familiar" for w in ("这", "本", "书", "有", "一", "页")},
+        {},
+        tmp_path,
+        Event(),
+        familiar={"千"},
+    )
+    assert [d.candidate.sentence for d in result.drafts] == [tight.sentence]
 
 
 def test_a_repeated_row_that_misses_the_visible_characters_is_harmless() -> None:

@@ -86,9 +86,10 @@ and source contents are rechecked before admission. Context senses, naturalness,
 grammar, translation, and pinyin receive a separate model review, but remain model
 judgments rather than guarantees. Connector examples must make their logical
 relationship clear from the surrounding clauses, rather than relying only on an
-English hint. Examples are ordered by useful context, not shortest length, and can
-include a preceding clause or sentence. Review tries plausible competing words and
-rejects distinctions that require prior idiom knowledge or an unstated intention.
+English hint. The writer offers its tightest example alongside fuller ones, and the
+shortest one that passes review is admitted: long sentences invite skimming past their
+context. A preceding clause or sentence is used only when it rules a competitor out.
+Review tries plausible competing words and rejects distinctions that require prior idiom knowledge or an unstated intention.
 Genuine synonym overlap is not a learner error. Prefer simple everyday constructions. Unknown
 targets are deferred with backoff and retried when vocabulary changes.
 

@@ -1193,6 +1193,194 @@ def test_a_later_timeout_keeps_earlier_independent_approvals():
     assert error.value.keys == (other.key,)
 
 
+def test_french_reviews_every_valid_candidate_and_admits_the_shortest():
+    from dataclasses import asdict
+    from threading import Event
+
+    from chinese_frontier.french.generation import candidate_hash, generate
+
+    t, tight = target(), candidate()
+    full = replace(tight, sentence="Le train, je emprunte le train.")
+
+    def review(c):
+        return {
+            "key": t.key,
+            "fingerprint": candidate_hash(c),
+            "approved": True,
+            "context_checks": context_checks(),
+            "reason": "checked",
+            "search_summary": "checked alternatives",
+            "alternatives": [
+                {
+                    "example": 0,
+                    "answer": "prends",
+                    "fits_context": False,
+                    "fits_cloze": False,
+                    "reason": "different meaning",
+                }
+            ],
+        }
+
+    class Client:
+        prompts: list[str] = []
+
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                return json.loads(
+                    json.dumps(
+                        {
+                            "proposals": [
+                                {
+                                    "key": t.key,
+                                    "candidates": [asdict(full), asdict(tight)],
+                                }
+                            ]
+                        }
+                    )
+                )
+            return {"reviews": [review(full), review(tight)]}
+
+    client = Client()
+    drafts, _failures = generate(
+        [t],
+        learned("je", "le", "train", "regarde", "parle"),
+        dictionary(),
+        {},
+        Event(),
+        client,
+    )
+    assert [d.candidate.sentence for d in drafts] == [tight.sentence]
+    assert len(client.prompts) == 2
+    assert full.sentence in client.prompts[1] and tight.sentence in client.prompts[1]
+
+
+def test_a_competitor_found_on_either_candidate_survives_into_the_lesson():
+    from dataclasses import asdict
+    from threading import Event
+
+    from chinese_frontier.french.generation import candidate_hash, generate
+
+    t, tight = target(), candidate()
+    full = replace(tight, sentence="Le train, je emprunte le train.")
+
+    def review(c, fits):
+        return {
+            "key": t.key,
+            "fingerprint": candidate_hash(c),
+            "approved": False,
+            "context_checks": context_checks(),
+            "reason": "checked",
+            "search_summary": "checked alternatives",
+            "alternatives": [
+                {
+                    "example": 0,
+                    "answer": "prends",
+                    "fits_context": fits,
+                    "fits_cloze": fits,
+                    "reason": "same meaning" if fits else "different meaning",
+                }
+            ],
+        }
+
+    replies = iter(
+        [
+            json.loads(
+                json.dumps(
+                    {
+                        "proposals": [
+                            {"key": t.key, "candidates": [asdict(tight), asdict(full)]}
+                        ]
+                    }
+                )
+            ),
+            {"reviews": [review(tight, True), review(full, False)]},
+        ]
+    )
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            return next(replies, {"proposals": [{"key": t.key, "candidates": []}]})
+
+    _drafts, failures = generate(
+        [t],
+        learned("je", "le", "train", "regarde", "parle"),
+        dictionary(),
+        {},
+        Event(),
+        Client(),
+    )
+    lesson = json.loads(failures[t.key])
+    assert any(a["fits_context"] and a["fits_cloze"] for a in lesson["alternatives"])
+
+
+def test_a_rejected_tight_candidate_falls_back_to_the_approved_fuller_one():
+    from dataclasses import asdict
+    from threading import Event
+
+    from chinese_frontier.french.generation import candidate_hash, generate
+
+    t, tight = target(), candidate()
+    full = replace(tight, sentence="Le train, je emprunte le train.")
+
+    def review(c, approved):
+        return {
+            "key": t.key,
+            "fingerprint": candidate_hash(c),
+            "approved": approved,
+            "context_checks": context_checks(),
+            "reason": "checked",
+            "search_summary": "checked alternatives",
+            "alternatives": [
+                {
+                    "example": 0,
+                    "answer": "prends",
+                    "fits_context": not approved,
+                    "fits_cloze": not approved,
+                    "reason": "checked",
+                }
+            ],
+        }
+
+    replies = iter(
+        [
+            json.loads(
+                json.dumps(
+                    {
+                        "proposals": [
+                            {"key": t.key, "candidates": [asdict(tight), asdict(full)]}
+                        ]
+                    }
+                )
+            ),
+            {"reviews": [review(tight, False), review(full, True)]},
+        ]
+    )
+
+    class Client:
+        def check_login(self):
+            pass
+
+        def request(self, prompt, schema):
+            return next(replies)
+
+    drafts, _failures = generate(
+        [t],
+        learned("je", "le", "train", "regarde", "parle"),
+        dictionary(),
+        {},
+        Event(),
+        Client(),
+    )
+    assert [d.candidate.sentence for d in drafts] == [full.sentence]
+
+
 def test_independent_review_omits_irrelevant_vocabulary():
     import json
     from dataclasses import asdict
