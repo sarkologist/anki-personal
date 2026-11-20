@@ -16,7 +16,6 @@ members = [
   "rslib",
   "rslib/i18n",
   "rslib/io",
-  "rslib/linkchecker",
   "rslib/process",
   "rslib/proto",
   "rslib/sync",
@@ -28,10 +27,6 @@ resolver = "2"
 [workspace.dependencies.percent-encoding-iri]
 git = "https://github.com/ankitects/rust-url.git"
 rev = "bb930b8d089f4d30d7d19c12e54e66191de47b88"
-
-[workspace.dependencies.linkcheck]
-git = "https://github.com/ankitects/linkcheck.git"
-rev = "2c7c081b148f8c1053df33768bc99f05311cb9a0"
 
 [workspace.dependencies.fsrs]
 version = "5.2.0"
@@ -126,7 +121,7 @@ rusqlite = { version = "0.41.0", features = ["trace", "functions", "collation", 
 rustls-pemfile = "2.2.0"
 scopeguard = "1.2.0"
 serde = { version = "1.0.219", features = ["derive"] }
-serde-aux = "4.7.0"
+serde-aux = { version = "4.7.0", default-features = false }
 serde_json = "1.0.140"
 serde_repr = "0.1.20"
 serde_tuple = "1.1.0"

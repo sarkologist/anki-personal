@@ -1792,14 +1792,6 @@
     "repository": "https://github.com/hyperium/http-body"
   },
   {
-    "authors": null,
-    "description": "No-dep range header parser",
-    "license": "MIT",
-    "license_file": null,
-    "name": "http-range-header",
-    "repository": "https://github.com/MarcusGrass/parse-range-headers"
-  },
-  {
     "authors": "Sean McArthur <sean@seanmonstar.com>",
     "description": "A tiny, safe, speedy, zero-copy HTTP/1.x parser.",
     "license": "Apache-2.0 OR MIT",
@@ -3008,14 +3000,6 @@
     "repository": "https://github.com/rust-random/rand"
   },
   {
-    "authors": "The Rand Project Developers|The Rust Project Developers|The CryptoCorrosion Contributors",
-    "description": "ChaCha random number generator",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "rand_chacha",
-    "repository": "https://github.com/rust-random/rand"
-  },
-  {
     "authors": "The Rand Project Developers|The Rust Project Developers",
     "description": "Core random number generator traits and tools for implementation.",
     "license": "Apache-2.0 OR MIT",
@@ -3816,22 +3800,6 @@
     "repository": "https://github.com/GuillaumeGomez/sysinfo"
   },
   {
-    "authors": "Mullvad VPN",
-    "description": "Bindings to SystemConfiguration framework for macOS",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "system-configuration",
-    "repository": "https://github.com/mullvad/system-configuration-rs"
-  },
-  {
-    "authors": "Mullvad VPN",
-    "description": "Low level bindings to SystemConfiguration framework for macOS",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "system-configuration-sys",
-    "repository": "https://github.com/mullvad/system-configuration-rs"
-  },
-  {
     "authors": "Val Packett <val@packett.cool>",
     "description": "Get system information/statistics in a cross-platform way",
     "license": "Unlicense",
@@ -4000,14 +3968,6 @@
     "repository": "https://github.com/rustls/tokio-rustls"
   },
   {
-    "authors": "Daniel Abramov <dabramov@snapview.de>|Alexey Galakhov <agalakhov@snapview.de>",
-    "description": "Tokio binding for Tungstenite, the Lightweight stream-based WebSocket implementation",
-    "license": "MIT",
-    "license_file": null,
-    "name": "tokio-tungstenite",
-    "repository": "https://github.com/snapview/tokio-tungstenite"
-  },
-  {
     "authors": "Tokio Contributors <team@tokio.rs>",
     "description": "Additional utilities for working with Tokio.",
     "license": "MIT",
@@ -4118,14 +4078,6 @@
     "license_file": null,
     "name": "try-lock",
     "repository": "https://github.com/seanmonstar/try-lock"
-  },
-  {
-    "authors": "Alexey Galakhov|Daniel Abramov",
-    "description": "Lightweight stream-based WebSocket implementation",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "tungstenite",
-    "repository": "https://github.com/snapview/tungstenite-rs"
   },
   {
     "authors": "Jacob Brown <kardeiz@gmail.com>",
@@ -4302,14 +4254,6 @@
     "license_file": null,
     "name": "url",
     "repository": "https://github.com/servo/rust-url"
-  },
-  {
-    "authors": "Simon Sapin <simon.sapin@exyr.org>",
-    "description": "Incremental, zero-copy UTF-8 decoding with error handling",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "utf-8",
-    "repository": "https://github.com/SimonSapin/rust-utf8"
   },
   {
     "authors": "Henri Sivonen <hsivonen@hsivonen.fi>",
@@ -4701,14 +4645,6 @@
     "license": "Apache-2.0 OR MIT",
     "license_file": null,
     "name": "windows-numerics",
-    "repository": "https://github.com/microsoft/windows-rs"
-  },
-  {
-    "authors": "Microsoft",
-    "description": "Windows registry",
-    "license": "Apache-2.0 OR MIT",
-    "license_file": null,
-    "name": "windows-registry",
     "repository": "https://github.com/microsoft/windows-rs"
   },
   {
