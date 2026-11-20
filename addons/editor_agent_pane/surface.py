@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import difflib
 import html
+import itertools
 import json
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -54,8 +55,16 @@ class CreatePreview:
     duplicate_total: int = 0
 
 
-def surface_body() -> str:
-    return """
+def surface_body(*, quotable: bool = False) -> str:
+    """The transcript page. ``quotable`` adds a Quote button for selections,
+    sent as a ``QUOTE_COMMAND`` bridge command (see ``parse_quote_command``)."""
+    body = _SURFACE_BODY
+    if quotable:
+        body += _QUOTE_SCRIPT.replace("__QUOTE_COMMAND__", QUOTE_COMMAND)
+    return body
+
+
+_SURFACE_BODY = """
 <style>
 #agent-pane {
     box-sizing: border-box;
@@ -87,6 +96,22 @@ def surface_body() -> str:
 }
 .agent-message.user .agent-body {
     white-space: pre-wrap;
+}
+.agent-quote {
+    border-left: 3px solid var(--border, #ccc);
+    color: var(--fg-subtle, #666);
+    margin: 0;
+    padding-left: 8px;
+}
+mjx-container.agent-math-selected {
+    background: rgba(80, 140, 255, 0.3);
+    border-radius: 2px;
+}
+.agent-quote-button {
+    font-size: 0.85em;
+    padding: 2px 8px;
+    position: absolute;
+    z-index: 10;
 }
 .agent-selection-context {
     color: var(--fg-subtle, #666);
@@ -275,6 +300,113 @@ window.agentPane = (() => {
     const transcript = document.getElementById("agent-transcript");
     const proposal = document.getElementById("agent-proposal");
 
+    // Tag each rendered formula with its delimited TeX source, so selections
+    // and copies can turn it back into TeX (see agentPane.selectionText).
+    function annotateMath(node) {
+        const doc = MathJax.startup.document;
+        if (!doc || !doc.getMathItemsWithin) {
+            return;
+        }
+        for (const item of doc.getMathItemsWithin([node])) {
+            const root = item.typesetRoot;
+            if (!root || typeof item.math !== "string") {
+                continue;
+            }
+            const open = item.start && item.start.delim;
+            const close = item.end && item.end.delim;
+            root.setAttribute(
+                "data-agent-tex",
+                (open || (item.display ? "\\\\[" : "\\\\("))
+                    + item.math
+                    + (close || (item.display ? "\\\\]" : "\\\\)")),
+            );
+        }
+    }
+
+    function closestMath(node) {
+        const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        return element ? element.closest("mjx-container") : null;
+    }
+
+    // The selected text, with each rendered formula replaced by its TeX
+    // source. A selection that starts or ends inside a formula takes all of
+    // it. Null when nothing in the pane is selected.
+    function selectionText() {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+            return null;
+        }
+        // Only what is in the pane: Select All also takes the Quote button.
+        const range = selection.getRangeAt(0).cloneRange();
+        const pane = document.getElementById("agent-pane");
+        const paneRange = document.createRange();
+        paneRange.selectNodeContents(pane);
+        if (range.compareBoundaryPoints(Range.START_TO_START, paneRange) < 0) {
+            range.setStart(pane, 0);
+        }
+        if (range.compareBoundaryPoints(Range.END_TO_END, paneRange) > 0) {
+            range.setEnd(pane, pane.childNodes.length);
+        }
+        if (range.collapsed) {
+            return null;
+        }
+        const startMath = closestMath(range.startContainer);
+        if (startMath) {
+            range.setStartBefore(startMath);
+        }
+        const endMath = closestMath(range.endContainer);
+        if (endMath) {
+            range.setEndAfter(endMath);
+        }
+        const fragment = range.cloneContents();
+        const formulas = fragment.querySelectorAll("mjx-container");
+        for (const math of formulas) {
+            const tex = math.getAttribute("data-agent-tex");
+            math.replaceWith(document.createTextNode(tex || math.textContent));
+        }
+        // innerText keeps line breaks, but only for rendered elements, so
+        // lay the copy out off-screen, with the white-space rule it came from.
+        const ancestor = closestElement(range.commonAncestorContainer);
+        const holder = document.createElement("div");
+        holder.style.position = "fixed";
+        holder.style.left = "-10000px";
+        holder.style.top = "0";
+        holder.style.whiteSpace = getComputedStyle(ancestor).whiteSpace;
+        holder.appendChild(fragment);
+        document.body.appendChild(holder);
+        const text = holder.innerText;
+        holder.remove();
+        return { text: text.trim(), hasMath: formulas.length > 0 };
+    }
+
+    function closestElement(node) {
+        return node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    }
+
+    // Formulas have no selectable text, so mark the ones a selection takes.
+    document.addEventListener("selectionchange", () => {
+        const selection = window.getSelection();
+        const range = selection && selection.rangeCount && !selection.isCollapsed
+            ? selection.getRangeAt(0)
+            : null;
+        for (const math of document.querySelectorAll("#agent-pane mjx-container")) {
+            math.classList.toggle(
+                "agent-math-selected",
+                !!range && range.intersectsNode(math),
+            );
+        }
+    });
+
+    // Copying a formula gives its TeX rather than the rendered glyphs.
+    document.addEventListener("copy", (event) => {
+        const selected = selectionText();
+        if (!selected || !selected.hasMath || !event.clipboardData) {
+            return;
+        }
+        event.clipboardData.setData("text/plain", selected.text);
+        event.preventDefault();
+    });
+
     async function typeset(node) {
         if (!window.MathJax || !MathJax.startup) {
             return;
@@ -285,6 +417,7 @@ window.agentPane = (() => {
                 MathJax.typesetClear([node]);
             }
             await MathJax.typesetPromise([node]);
+            annotateMath(node);
         } catch (error) {
             console.warn("MathJax render failed", error);
         }
@@ -340,10 +473,109 @@ window.agentPane = (() => {
         clearProposal() {
             proposal.innerHTML = "";
         },
+        selectionText,
     };
 })();
 </script>
 """
+
+QUOTE_COMMAND = "agentQuote"
+
+_QUOTE_SCRIPT = """
+<script>
+(() => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "agent-quote-button";
+    button.textContent = "Quote";
+    button.title = "Quote the selection in your message";
+    button.hidden = true;
+    document.body.appendChild(button);
+    let mouseDown = false;
+
+    function update() {
+        const selected = mouseDown ? null : window.agentPane.selectionText();
+        if (!selected || !selected.text) {
+            button.hidden = true;
+            return;
+        }
+        // Below the selection, at the end of its last line.
+        const range = window.getSelection().getRangeAt(0);
+        const rects = range.getClientRects();
+        const last = rects[rects.length - 1];
+        if (!last) {
+            button.hidden = true;
+            return;
+        }
+        button.hidden = false;
+        const maxLeft = document.documentElement.clientWidth - button.offsetWidth - 4;
+        const left = Math.max(4, Math.min(last.right, maxLeft));
+        const bottom = range.getBoundingClientRect().bottom;
+        button.style.left = `${left + window.scrollX}px`;
+        button.style.top = `${bottom + 4 + window.scrollY}px`;
+    }
+
+    // Keep the selection when the button is pressed.
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => {
+        const selected = window.agentPane.selectionText();
+        if (selected && selected.text) {
+            pycmd("__QUOTE_COMMAND__:" + JSON.stringify(selected.text));
+        }
+        window.getSelection().removeAllRanges();
+    });
+    document.addEventListener("mousedown", (event) => {
+        if (event.target !== button) {
+            mouseDown = true;
+            button.hidden = true;
+        }
+    });
+    document.addEventListener("mouseup", () => {
+        mouseDown = false;
+        setTimeout(update, 0);
+    });
+    document.addEventListener("selectionchange", update);
+    // Text reflows when the pane is resized; follow the selection.
+    window.addEventListener("resize", update);
+})();
+</script>
+"""
+
+
+def parse_quote_command(cmd: str) -> str | None:
+    """The text of a Quote button press, or None for other commands."""
+    prefix = QUOTE_COMMAND + ":"
+    if not cmd.startswith(prefix):
+        return None
+    try:
+        text = json.loads(cmd[len(prefix) :])
+    except ValueError:
+        return None
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return text
+
+
+def quote_block(text: str) -> str:
+    """``text`` as a Markdown quote, one ``> `` per line."""
+    lines = [line.rstrip() for line in text.split("\n")]
+    while lines and not lines[-1]:
+        lines.pop()
+    while lines and not lines[0]:
+        lines.pop(0)
+    return "\n".join(f"> {line}" if line else ">" for line in lines)
+
+
+def quote_insertion(before: str, quote: str) -> str:
+    """What to insert after ``before`` (the message up to the cursor) so the
+    quote is a paragraph of its own, with the cursor on a fresh line below."""
+    if not before or before.endswith("\n\n"):
+        prefix = ""
+    elif before.endswith("\n"):
+        prefix = "\n"
+    else:
+        prefix = "\n\n"
+    return f"{prefix}{quote}\n\n"
 
 
 def selection_context_excerpt(
@@ -368,7 +600,7 @@ def render_user_message(
     prompt: str,
     selected_text: SelectedTextSnapshot | None = None,
 ) -> str:
-    body = _escaped_text(prompt)
+    body = _render_user_text(prompt)
     if selected_text is not None:
         body += _render_selection_context(selected_text)
     return _message("You", body, css_class="user")
@@ -674,6 +906,23 @@ def _message(role: str, body: str, *, css_class: str) -> str:
     <div class="agent-body">{body}</div>
 </section>
 """
+
+
+def _render_user_text(text: str) -> str:
+    """Escaped text, with runs of ``> `` lines shown as a quote."""
+    parts = []
+    for quoted, run in itertools.groupby(text.split("\n"), key=_is_quote_line):
+        lines = list(run)
+        if quoted:
+            inner = "\n".join(line[2:] for line in lines)
+            parts.append(f'<blockquote class="agent-quote">{_escaped_text(inner)}</blockquote>')
+        else:
+            parts.append(_escaped_text("\n".join(lines)))
+    return "".join(parts)
+
+
+def _is_quote_line(line: str) -> bool:
+    return line == ">" or line.startswith("> ")
 
 
 def _escaped_text(text: str) -> str:
