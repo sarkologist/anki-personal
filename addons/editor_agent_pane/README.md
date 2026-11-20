@@ -25,7 +25,10 @@ The selected project folder is writable by default; use the Access menu to switc
 it to read-only mode, or choose "Don't work in a folder" to use card context only.
 Add optional custom instructions in the pane to steer the agent while keeping the
 fixed JSON response and patch safety rules in place. Press Enter to send and
-Shift+Enter for a newline. Proposed note edits are shown as a diff and require
+Shift+Enter for a newline.
+To refer to part of the conversation, select it in the transcript and press the
+**Quote** button that appears; the selection goes into your message as a `>`
+quote. Formulas in a selection are quoted (and copied) as their TeX source. Proposed note edits are shown as a diff and require
 explicit approval.
 
 Use **Card access** to choose **Current card only** (the default), **Other cards

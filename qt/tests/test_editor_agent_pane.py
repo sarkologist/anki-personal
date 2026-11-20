@@ -120,6 +120,9 @@ from editor_agent_pane.surface import (  # noqa: E402
     js_apply_agent_proposal,
     js_clear_transcript,
     multi_note_patch_card_ids,
+    parse_quote_command,
+    quote_block,
+    quote_insertion,
     render_activity_summary,
     render_assistant_message,
     render_error_message,
@@ -127,6 +130,7 @@ from editor_agent_pane.surface import (  # noqa: E402
     render_proposal_diff,
     render_user_message,
     selection_context_label_text,
+    surface_body,
 )
 from editor_agent_pane.ui_text import (  # noqa: E402
     AGENT_BUTTON_LABEL,
@@ -2732,6 +2736,105 @@ def test_render_user_message_truncates_selected_text_context() -> None:
     assert "Selection sent from Front" in rendered
     assert "..." in rendered
     assert "word " * 35 not in rendered
+
+
+def test_parse_quote_command_reads_json_text() -> None:
+    assert parse_quote_command('agentQuote:"a \\\\(x^2\\\\)\\nb"') == "a \\(x^2\\)\nb"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    ["agentOpenNote:1", 'agentQuote:"  \\n "', "agentQuote:{", "agentQuote:[1]"],
+)
+def test_parse_quote_command_rejects_other_commands_and_bad_payloads(
+    cmd: str,
+) -> None:
+    assert parse_quote_command(cmd) is None
+
+
+def test_quote_block_prefixes_lines_and_trims_blank_edges() -> None:
+    assert quote_block("\n  first  \n\nsecond\n\n") == ">   first\n>\n> second"
+
+
+@pytest.mark.parametrize(
+    ("before", "expected"),
+    [
+        ("", "> q\n\n"),
+        ("ask\n\n", "> q\n\n"),
+        ("ask\n", "\n> q\n\n"),
+        ("ask", "\n\n> q\n\n"),
+    ],
+)
+def test_quote_insertion_puts_quote_on_its_own_paragraph(
+    before: str, expected: str
+) -> None:
+    assert quote_insertion(before, "> q") == expected
+
+
+def test_render_user_message_shows_quote_lines_as_blockquote() -> None:
+    rendered = render_user_message("> <x> \\(a\\)\n> b\n\nask")
+
+    assert (
+        '<blockquote class="agent-quote">&lt;x&gt; \\(a\\)<br>b</blockquote><br>ask'
+    ) in rendered
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("a\n> q\nb", 'a<blockquote class="agent-quote">q</blockquote>b'),
+        ("> q\n>\n> r", '<blockquote class="agent-quote">q<br><br>r</blockquote>'),
+    ],
+)
+def test_render_user_message_quote_runs(text: str, expected: str) -> None:
+    assert expected in render_user_message(text)
+
+
+def test_transcript_quote_counts_qt_positions_in_utf16(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    inserted: list[str] = []
+    # The cursor is after "\U0001f600\n" (3 UTF-16 units), so the quote
+    # needs one more newline to start a paragraph.
+    cursor = types.SimpleNamespace(selectionStart=lambda: 3, insertText=inserted.append)
+    pane.prompt = types.SimpleNamespace(
+        toPlainText=lambda: "\U0001f600\nab",
+        textCursor=lambda: cursor,
+        setTextCursor=lambda _cursor: None,
+        setFocus=lambda: None,
+    )
+
+    pane._on_bridge_cmd('agentQuote:"q"')
+
+    assert inserted == ["\n> q\n\n"]
+
+
+def test_surface_offers_quote_button_only_when_quotable() -> None:
+    assert "agentQuote:" not in surface_body()
+    assert "agentQuote:" in surface_body(quotable=True)
+
+
+def test_transcript_quote_command_inserts_into_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    inserted: list[str] = []
+    cursor = types.SimpleNamespace(selectionStart=lambda: 3, insertText=inserted.append)
+    focused: list[bool] = []
+    pane.prompt = types.SimpleNamespace(
+        toPlainText=lambda: "ask",
+        textCursor=lambda: cursor,
+        setTextCursor=lambda _cursor: None,
+        setFocus=lambda: focused.append(True),
+    )
+
+    pane._on_bridge_cmd('agentQuote:"\\\\(x\\\\)"')
+
+    assert inserted == ["\n\n> \\(x\\)\n\n"]
+    assert focused == [True]
 
 
 def test_selection_context_label_text_is_plain_excerpt() -> None:

@@ -290,7 +290,7 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
         right.setLayout(right_layout)
         self.surface = AnkiWebView(self)
         self.surface.stdHtml(
-            surface_body(),
+            surface_body(quotable=True),
             js=["js/mathjax.js", "js/vendor/mathjax/tex-chtml-full.js"],
             context=self,
         )

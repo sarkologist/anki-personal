@@ -67,6 +67,9 @@ from .surface import (
     js_clear_transcript,
     js_set_proposal,
     multi_note_patch_card_ids,
+    parse_quote_command,
+    quote_block,
+    quote_insertion,
     render_activity_line,
     render_creates_proposal,
     render_multi_note_card_proposal_diff,
@@ -326,6 +329,8 @@ class ThreadPanel:
     apply_anyway_button: Any = None
     rerun_button: Any = None
     retry_button: Any = None
+    # The message box the transcript's Quote button quotes into, if any.
+    prompt: Any = None
     # Follows "[Applied." / "[Discarded." in the status banner.
     _closed_hint = PANE_CLOSED_HINT
     _thread_id: str | None
@@ -420,6 +425,9 @@ class ThreadPanel:
         return previews
 
     def _on_bridge_cmd(self, cmd: str) -> Any:
+        if (quoted := parse_quote_command(cmd)) is not None:
+            self._insert_transcript_quote(quoted)
+            return None
         note_id = parse_open_note_command(cmd)
         if note_id is None:
             return None
@@ -427,6 +435,18 @@ class ThreadPanel:
         if mw is not None:
             aqt.dialogs.open("Browser", mw, search=(f"nid:{note_id}",))
         return None
+
+    def _insert_transcript_quote(self, text: str) -> None:
+        """Quote ``text`` (selected in the transcript) in the message box, at
+        the cursor, replacing any text selected there."""
+        prompt = self.prompt
+        if prompt is None:
+            return
+        cursor = prompt.textCursor()
+        before = _utf16_prefix(prompt.toPlainText(), cursor.selectionStart())
+        cursor.insertText(quote_insertion(before, quote_block(text)))
+        prompt.setTextCursor(cursor)
+        prompt.setFocus()
 
     def _set_multi_proposal(
         self,
@@ -1011,3 +1031,8 @@ def prepare_note_update(col: Any, note_id: int, patch: NotePatch) -> Any:
     if patch.tag_patch.has_changes():
         note.tags = list(patch.tag_patch.apply(tuple(note.tags)))
     return note
+
+
+def _utf16_prefix(text: str, units: int) -> str:
+    """``text`` up to a Qt text position, which counts UTF-16 code units."""
+    return text.encode("utf-16-le")[: 2 * units].decode("utf-16-le", errors="ignore")
