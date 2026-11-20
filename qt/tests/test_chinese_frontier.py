@@ -1397,11 +1397,18 @@ def student_contrast() -> Candidate:
     )
 
 
+STAGED_CHARACTERS = {
+    "existing_cards": 1,
+    "existing_candidate": {"mode": "characters"},
+}
+
+
+@pytest.mark.parametrize("note", [{"existing_cards": 2}, STAGED_CHARACTERS])
 def test_a_character_note_tries_characters_before_a_contrast_pair(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, note: dict
 ) -> None:
     lexicon = Lexicon({"有", "一", "页", "学", "生", "学生", "学者"})
-    target = replace(source("学生"), reported_confusions=("学者",), existing_cards=2)
+    target = replace(source("学生"), reported_confusions=("学者",), **note)
     c = student_contrast()
     empty = {"proposals": [{"card_id": 1, "candidates": []}]}
     prompts = fake_generator(
@@ -1748,6 +1755,38 @@ def test_only_a_contrast_pair_may_replace_character_cards(
         repair.key: "Repair would delete an existing sibling card"
     }
     assert len(collection.get_note(note_id).cards()) == 2
+
+
+def test_a_staged_character_answer_is_not_whole_word_evidence_after_a_pair(
+    collection: Collection,
+) -> None:
+    settings, target, c = student_target(collection)
+    deck = collection.decks.get(1)
+    deck["newLimit"] = 1
+    collection.decks.update_dict(deck)
+    note_id = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(target, replace(c, mode="characters"))],
+        collection_lexicon(),
+    ).admitted[0]
+    (card,) = collection.get_note(note_id).cards()
+    establish(collection, card)
+    record_feedback(collection, note_id, answered="学者")
+    (repair,) = [
+        s for s in snapshot(collection, settings, {}).sources if s.word == "学生"
+    ]
+    assert repair.character_note
+    result = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(repair, student_contrast())],
+        collection_lexicon(),
+    )
+    assert result.updated == [note_id]
+    assert "学生" not in snapshot(collection, settings, {}).known
 
 
 def test_a_folded_character_answer_is_not_whole_word_evidence(

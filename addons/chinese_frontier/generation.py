@@ -619,7 +619,7 @@ specified below. Use the supplied context_evidence to stay within established se
                 mode != "contrast"
                 or (
                     bool(source.reported_confusions)
-                    and late == (source.existing_cards > 1)
+                    and late == source.character_note
                 )
             )
             and (mode != "characters" or len(set(source.word)) >= 2)

@@ -126,6 +126,13 @@ class Source:
     rejected_sentences: tuple[str, ...] = ()
 
     @property
+    def character_note(self) -> bool:
+        """The note being repaired tests characters, even if staging has
+        added only one of its cards so far."""
+        mode = (self.existing_candidate or {}).get("mode")
+        return mode == "characters" or self.existing_cards > 1
+
+    @property
     def key(self) -> str:
         sense = " ".join(self.definition.casefold().split())
         return hashlib.sha256(f"{self.word}\n{sense}".encode()).hexdigest()

@@ -2018,12 +2018,17 @@ def _admit(
             note.tags.append("disambiguation")
         # A contrast pair folds a character note into its first card. That card's
         # character answers never become evidence for the pair's whole words.
+        folding = (
+            bool(repair_id)
+            and valid.candidate.mode == "contrast"
+            and source.character_note
+        )
         folded = [
             card_id
             for ordinal, (card_id, *_state) in old_cards.items()
-            if ordinal >= expected_count and valid.candidate.mode == "contrast"
+            if folding and ordinal >= expected_count
         ]
-        if folded:
+        if folding:
             data = _json_field(note["Source"])
             data["folded_at"] = int(time.time() * 1000)
             note["Source"] = html.escape(json.dumps(data, ensure_ascii=False))
