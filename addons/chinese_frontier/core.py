@@ -29,6 +29,9 @@ FEEDBACK_REASONS = {
 }
 CLOZE = re.compile(r"\{\{c(\d+)::([^{}]*?)\}\}")
 MODES = ("word", "contrast", "characters", "initial")
+# A character note tries a new character sentence, which keeps every card,
+# before a contrast pair folds it; any other note tries the pair first.
+ATTEMPTS = ("word", "contrast", "characters", "contrast", "initial")
 
 
 class ValidationError(ValueError):
@@ -123,6 +126,13 @@ class Source:
     rejected_sentences: tuple[str, ...] = ()
 
     @property
+    def character_note(self) -> bool:
+        """The note being repaired tests characters, even if staging has
+        added only one of its cards so far."""
+        mode = (self.existing_candidate or {}).get("mode")
+        return mode == "characters" or self.existing_cards > 1
+
+    @property
     def key(self) -> str:
         sense = " ".join(self.definition.casefold().split())
         return hashlib.sha256(f"{self.word}\n{sense}".encode()).hexdigest()
@@ -202,6 +212,12 @@ class Validated:
     dependencies: tuple[str, ...]
     translation: str = ""
     card_count: int = 1
+
+    def keeps_cards(self, existing: int) -> bool:
+        """A repair never deletes a sibling card, except that a contrast pair,
+        which answers a confusion the learner reported, folds a character
+        note into its first card."""
+        return self.card_count >= existing or self.candidate.mode == "contrast"
 
 
 def sentence_problems(

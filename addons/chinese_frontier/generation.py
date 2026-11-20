@@ -11,6 +11,7 @@ from threading import Event
 from typing import Any, Callable
 
 from .core import (
+    ATTEMPTS,
     MODES,
     Candidate,
     Source,
@@ -453,9 +454,14 @@ translations, familiar context senses, and enough evidence for a LEARNER. Reject
 if ANY competing word fits both the Chinese context and visible pattern. A general
 synonym like 拒绝 can still fit a polite refusal; do not invent exclusive usage rules.
 Paired examples must give a real distinguishing situation, not two synonym-compatible
-sentences with definitions. Do not rely on idiomatic preference, collocations the
-learner has yet to learn, or the author's unstated intention. Reject unnatural filler,
-harder grammar or idioms, and definition hints. Contrast explanations must be truthful.
+sentences with definitions. Outside a contrast pair, do not rely on idiomatic
+preference, collocations the learner has yet to learn, or the author's unstated
+intention. A contrast pair is where the learner learns how its two words differ: a real
+usage difference (register, collocation, what each word can describe) may rule the
+other word out of an example if the explanation states it and it is true of everyday
+Chinese. A preference the explanation leaves unstated never does. Reject unnatural
+filler, harder grammar or idioms, and definition hints. Contrast explanations must be
+truthful.
 learner_feedback records what the LEARNER found wrong with earlier versions of a card.
 Reject a candidate that has any of those problems, and say which in reason.
 Return one review per (card_id, sentence), quoting the primary sentence exactly.
@@ -519,7 +525,7 @@ Data:\n""" + json.dumps(
             if (
                 approved
                 and source.card_id not in drafts
-                and valid.card_count >= source.existing_cards
+                and valid.keeps_cards(source.existing_cards)
             ):
                 drafts[source.card_id] = Draft(
                     source,
@@ -602,15 +608,19 @@ specified below. Use the supplied context_evidence to stay within established se
     }
     # Ambiguous examples get fuller context or character cues. A contrast pair is
     # reserved for a confusion the learner actually reported, after context
-    # alone failed to rule it out, and never replaces character cards.
-    for attempt_index, mode in enumerate(MODES, 1):
+    # alone failed to rule it out; on a character note it keeps the first card.
+    for attempt_index, mode in enumerate(ATTEMPTS, 1):
+        late = "characters" in ATTEMPTS[: attempt_index - 1]
         pending = [
             source
             for source in sources
             if source.card_id not in drafts
             and (
                 mode != "contrast"
-                or (source.reported_confusions and source.existing_cards <= 1)
+                or (
+                    bool(source.reported_confusions)
+                    and late == source.character_note
+                )
             )
             and (mode != "characters" or len(set(source.word)) >= 2)
             and (mode != "initial" or len(set(source.word)) == 1)
@@ -624,8 +634,11 @@ specified below. Use the supplied context_evidence to stay within established se
 target, and a single sentence could not rule it out. Try ONE contrast pair per target. Set mode="contrast" and supply one contrast
 object whose word is EXACTLY one of that target's reported_confusions.
 The second word is clozed too, with the SAME c1 ordinal: ONE card, two examples. Give
-both natural full translations and a brief truthful explanation of the contextual
-difference. BOTH blanks must be recoverable without guessing an idiomatic preference.
+both natural full translations and a brief explanation of how the two words differ.
+Each blank must be recoverable from its own example: by the situation, or by a real
+usage difference between the words (register, collocation, what each can describe)
+that the explanation states. The explanation is how the learner learns that
+difference, so it must be true of everyday Chinese, never an invented exclusive rule.
 A broad synonym still fitting either example is grounds to return empty candidates.
 Earlier alternatives are supplied to help you avoid the same ambiguity."""
         elif mode == "initial":

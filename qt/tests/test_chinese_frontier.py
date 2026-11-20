@@ -1374,7 +1374,7 @@ def test_reported_confusion_needs_a_sentence_that_rules_it_out(
         validate_review(audit_report(other, single), single, other)
 
 
-def test_confusion_falls_back_to_a_contrast_pair_but_keeps_character_cards(
+def test_confusion_falls_back_to_a_contrast_pair(
     tmp_path: Path, lexicon: Lexicon, monkeypatch
 ) -> None:
     target = replace(source("学生"), reported_confusions=("学者",))
@@ -1384,13 +1384,47 @@ def test_confusion_falls_back_to_a_contrast_pair_but_keeps_character_cards(
     assert len(prompts) == 3 and result.drafts == []
     assert 'mode="contrast"' in prompts[1] and "学者" in prompts[1]
     assert target.key in result.deferred
-    # A contrast pair would delete a character card, so it is never tried.
-    prompts = fake_generator(monkeypatch, lexicon, [empty] * 2)
-    generate(
-        [replace(target, existing_cards=2)], KNOWN_PAGE_WORDS, {}, tmp_path, Event()
+
+
+def student_contrast() -> Candidate:
+    return replace(
+        Candidate("学生有一本书。", "The student has a book.", "xué shēng", ""),
+        mode="contrast",
+        explanation="学生 studies at a school; 学者 is a scholar.",
+        contrast=Contrast(
+            "学者", "学者有一本书。", "The scholar has a book.", "xué zhě", "scholar"
+        ),
     )
-    assert len(prompts) == 2
-    assert not any('mode="contrast"' in prompt for prompt in prompts)
+
+
+STAGED_CHARACTERS = {
+    "existing_cards": 1,
+    "existing_candidate": {"mode": "characters"},
+}
+
+
+@pytest.mark.parametrize("note", [{"existing_cards": 2}, STAGED_CHARACTERS])
+def test_a_character_note_tries_characters_before_a_contrast_pair(
+    tmp_path: Path, monkeypatch, note: dict
+) -> None:
+    lexicon = Lexicon({"有", "一", "页", "学", "生", "学生", "学者"})
+    target = replace(source("学生"), reported_confusions=("学者",), **note)
+    c = student_contrast()
+    empty = {"proposals": [{"card_id": 1, "candidates": []}]}
+    prompts = fake_generator(
+        monkeypatch,
+        lexicon,
+        [
+            empty,
+            empty,
+            {"proposals": [{"card_id": 1, "candidates": [asdict(c)]}]},
+            {"reviews": [audit_report(target, c)]},
+        ],
+    )
+    result = generate([target], KNOWN_PAGE_WORDS, {}, tmp_path, Event())
+    assert 'mode="characters"' in prompts[1]
+    assert 'mode="contrast"' in prompts[2]
+    assert [d.candidate for d in result.drafts] == [c]
 
 
 def test_contrast_needs_a_reported_competitor(lexicon: Lexicon) -> None:
@@ -1661,6 +1695,122 @@ def test_confusion_on_character_cards_reaches_the_writer(
     ]
     assert repair.reported_confusions == ("学者",)
     assert repair.existing_cards == 2
+
+
+def held_character_note(collection: Collection) -> tuple:
+    """A two-card character note whose learner answered 学者; the first card
+    has review history."""
+    settings, target, c = student_target(collection)
+    note_id = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(target, replace(c, mode="characters"))],
+        collection_lexicon(),
+    ).admitted[0]
+    first = min(collection.get_note(note_id).cards(), key=lambda card: card.ord)
+    first.type = first.queue = 2
+    first.reps, first.ivl = 6, 20
+    collection.update_card(first)
+    record_feedback(collection, note_id, answered="学者")
+    (repair,) = [
+        s for s in snapshot(collection, settings, {}).sources if s.word == "学生"
+    ]
+    return settings, note_id, first.id, repair
+
+
+def collection_lexicon() -> Lexicon:
+    return Lexicon(
+        {"这", "本", "书", "有", "一", "百", "页", "学", "生", "学生", "学者"}
+    )
+
+
+def test_a_contrast_pair_replacing_character_cards_keeps_the_first_card(
+    collection: Collection,
+) -> None:
+    settings, note_id, first_id, repair = held_character_note(collection)
+    result = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(repair, student_contrast())],
+        collection_lexicon(),
+    )
+    assert result.updated == [note_id] and not result.rejected
+    (card,) = collection.get_note(note_id).cards()
+    assert (card.id, card.reps, card.ivl) == (first_id, 6, 20)
+    assert card.queue != QUEUE_TYPE_SUSPENDED
+    assert card.question().count('class="cloze"') == 2
+
+
+def test_only_a_contrast_pair_may_replace_character_cards(
+    collection: Collection,
+) -> None:
+    settings, note_id, _first_id, repair = held_character_note(collection)
+    word = Candidate("学生有一本书。", "The student has a book.", "xué shēng", "")
+    draft = audited_draft(repair, word)
+    draft.audit["checks"][0]["review"]["alternatives"][0]["word"] = "学者"
+    result = admit(collection, settings, {}, [draft], collection_lexicon())
+    assert result.rejected == {
+        repair.key: "Repair would delete an existing sibling card"
+    }
+    assert len(collection.get_note(note_id).cards()) == 2
+
+
+def test_a_staged_character_answer_is_not_whole_word_evidence_after_a_pair(
+    collection: Collection,
+) -> None:
+    settings, target, c = student_target(collection)
+    deck = collection.decks.get(1)
+    deck["newLimit"] = 1
+    collection.decks.update_dict(deck)
+    note_id = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(target, replace(c, mode="characters"))],
+        collection_lexicon(),
+    ).admitted[0]
+    (card,) = collection.get_note(note_id).cards()
+    establish(collection, card)
+    record_feedback(collection, note_id, answered="学者")
+    (repair,) = [
+        s for s in snapshot(collection, settings, {}).sources if s.word == "学生"
+    ]
+    assert repair.character_note
+    result = admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(repair, student_contrast())],
+        collection_lexicon(),
+    )
+    assert result.updated == [note_id]
+    assert "学生" not in snapshot(collection, settings, {}).known
+
+
+def test_a_folded_character_answer_is_not_whole_word_evidence(
+    collection: Collection,
+) -> None:
+    settings, note_id, first_id, repair = held_character_note(collection)
+    for days in (2, 3):
+        log_review(collection, first_id, days=days)
+    admit(
+        collection,
+        settings,
+        {},
+        [audited_draft(repair, student_contrast())],
+        collection_lexicon(),
+    )
+    known = snapshot(collection, settings, {}).known
+    assert "学生" not in known and "学者" not in known
+    # Reviews of the pair itself count.
+    note = collection.get_note(note_id)
+    data = json.loads(note["Source"].replace("&quot;", '"'))
+    data["folded_at"] = (collection.sched.day_cutoff - 10 * 86400) * 1000
+    note["Source"] = json.dumps(data)
+    collection.update_note(note)
+    assert "学生" in snapshot(collection, settings, {}).known
 
 
 def test_character_word_needs_all_siblings_learned_for_context(
