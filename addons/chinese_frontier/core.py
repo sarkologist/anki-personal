@@ -203,6 +203,12 @@ class Validated:
     translation: str = ""
     card_count: int = 1
 
+    def keeps_cards(self, existing: int) -> bool:
+        """A repair never deletes a sibling card, except that a contrast pair,
+        which answers a confusion the learner reported, folds a character
+        note into its first card."""
+        return self.card_count >= existing or self.candidate.mode == "contrast"
+
 
 def sentence_problems(
     sentence: str, source: Source, known: set[str], lexicon: Lexicon, mode: str

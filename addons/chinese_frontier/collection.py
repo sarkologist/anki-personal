@@ -1900,7 +1900,7 @@ def _admit(
             valid = validate_candidate(
                 draft.candidate, source, set(current.known), lexicon
             )
-            if valid.card_count < source.existing_cards:
+            if not valid.keeps_cards(source.existing_cards):
                 raise ValidationError("Repair would delete an existing sibling card")
         except ValueError as exc:
             rejected[source.key] = str(exc)
@@ -2017,6 +2017,9 @@ def _admit(
             note.tags.append("disambiguation")
         if repair_id:
             col.update_note(note)
+            # A contrast pair folds a character note into its first card.
+            if folded := [c.id for c in note.cards() if c.ord >= expected_count]:
+                col.remove_cards_and_orphaned_notes(folded)
         else:
             col.add_note(note, DeckId(source.deck_id))
         stored = col.get_note(NoteId(note.id))

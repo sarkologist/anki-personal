@@ -108,8 +108,11 @@ A confusion you report (**I answered** in **Fix this sentence...**) is recorded 
 the note's `Source` field and rejects the sentence. The new sentence's context must
 rule the word out, and the reviewer must test it as an alternative. Only if no single
 sentence passes may the note become a pair contrasting the two words, both hidden
-with `c1` on one card that keeps its history; notes with character cards are never
-turned into pairs. Contrast pairs are never made to rescue an ambiguous example
+with `c1` on one card that keeps its history. A note with character cards keeps its
+first card and loses the others. The pair's explanation says how the words differ,
+so a real usage difference, such as 著名 not describing faults, may tell its
+examples apart; a single sentence may not rely on one. Contrast pairs are never made
+to rescue an ambiguous example
 without a reported confusion. If nothing passes review, the existing card is kept and
 the attempt is logged. Older contrast pairs
 made without a reported confusion are reduced to their first example once and
