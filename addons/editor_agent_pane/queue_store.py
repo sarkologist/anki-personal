@@ -20,7 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+from .attachments import Attachment, attachments_from_dicts, attachments_to_dicts
+
+SCHEMA_VERSION = 4
 TITLE_CHARS = 60
 
 QUEUED = "queued"
@@ -102,6 +104,8 @@ create table proposals (
 _MIGRATE_V2 = "alter table proposals add column result_json text"
 # v3: hidden from the queue until this time (epoch seconds); status unchanged.
 _MIGRATE_V3 = "alter table threads add column deferred_until real"
+# v4: a user message's attached selections (attachments.py), as JSON.
+_MIGRATE_V4 = "alter table messages add column attachments_json text"
 
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -137,6 +141,7 @@ class Message:
     text: str
     html: str
     created_at: float
+    attachments: tuple[Attachment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -155,6 +160,13 @@ def _title(prompt: str) -> str:
     if len(first_line) <= TITLE_CHARS:
         return first_line
     return first_line[: TITLE_CHARS - 1] + "…"
+
+
+def _loads(text: str | None) -> Any:
+    try:
+        return json.loads(text) if text else None
+    except ValueError:
+        return None
 
 
 def _dumps(value: Any) -> str:
@@ -186,6 +198,7 @@ def _message(row: sqlite3.Row) -> Message:
         text=row["text"],
         html=row["html"],
         created_at=row["created_at"],
+        attachments=attachments_from_dicts(_loads(row["attachments_json"])),
     )
 
 
@@ -251,6 +264,10 @@ class QueueStore:
                     conn.execute(_MIGRATE_V2)
                 if version < 3 and not _has_column(conn, "threads", "deferred_until"):
                     conn.execute(_MIGRATE_V3)
+                if version < 4 and not _has_column(
+                    conn, "messages", "attachments_json"
+                ):
+                    conn.execute(_MIGRATE_V4)
                 conn.execute(f"pragma user_version = {SCHEMA_VERSION}")
             except BaseException:
                 conn.rollback()
@@ -270,7 +287,9 @@ class QueueStore:
         first_prompt: str,
         note_id: int | None = None,
         first_prompt_html: str = "",
+        first_attachments: Iterable[Attachment] = (),
     ) -> Thread:
+        first_attachments = tuple(first_attachments)
         thread_id = uuid.uuid4().hex
         now = time.time()
         with self._tx() as conn:
@@ -282,14 +301,22 @@ class QueueStore:
                     now,
                     now,
                     QUEUED,
-                    _title(first_prompt),
+                    _title(
+                        first_prompt
+                        or (first_attachments[0].text if first_attachments else "")
+                    ),
                     note_id,
                     _dumps(context),
                     _dumps(settings),
                 ),
             )
             self._insert_message(
-                conn, thread_id, "user", first_prompt, first_prompt_html
+                conn,
+                thread_id,
+                "user",
+                first_prompt,
+                first_prompt_html,
+                first_attachments,
             )
         thread = self.get_thread(thread_id)
         assert thread is not None
@@ -433,13 +460,19 @@ class QueueStore:
                 (PROPOSAL_CURRENT, thread_id, thread_id, PROPOSAL_APPLIED),
             )
 
-    def reply(self, thread_id: str, text: str, html: str = "") -> None:
+    def reply(
+        self,
+        thread_id: str,
+        text: str,
+        html: str = "",
+        attachments: Iterable[Attachment] = (),
+    ) -> None:
         """Append a user message and send the thread back to the worker."""
         with self._tx() as conn:
             status = self._status(conn, thread_id)
             if status not in REPLY_FROM:
                 raise QueueTransitionError(f"Cannot reply to a {status} thread.")
-            self._insert_message(conn, thread_id, "user", text, html)
+            self._insert_message(conn, thread_id, "user", text, html, attachments)
             self._transition(conn, thread_id, status, QUEUED)
             conn.execute("update threads set error = null where id = ?", (thread_id,))
 
@@ -610,7 +643,9 @@ class QueueStore:
         role: str,
         text: str,
         html: str,
+        attachments: Iterable[Attachment] = (),
     ) -> int:
+        attachments = tuple(attachments)
         if role not in MESSAGE_ROLES:
             raise ValueError(f"Unknown message role: {role!r}.")
         seq = conn.execute(
@@ -619,9 +654,17 @@ class QueueStore:
         ).fetchone()[0]
         now = time.time()
         conn.execute(
-            "insert into messages (thread_id, seq, role, text, html, created_at)"
-            " values (?,?,?,?,?,?)",
-            (thread_id, seq, role, text, html or "", now),
+            "insert into messages (thread_id, seq, role, text, html, created_at,"
+            " attachments_json) values (?,?,?,?,?,?,?)",
+            (
+                thread_id,
+                seq,
+                role,
+                text,
+                html or "",
+                now,
+                _dumps(attachments_to_dicts(attachments)) if attachments else None,
+            ),
         )
         conn.execute("update threads set updated_at = ? where id = ?", (now, thread_id))
         return int(seq)

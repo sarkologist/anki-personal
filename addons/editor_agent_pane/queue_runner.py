@@ -21,6 +21,7 @@ from typing import Any
 
 from .activity import ClaudeActivityRenderer, CodexActivityRenderer
 from .agent_log import AgentRunLogger
+from .attachments import attachments_prompt
 from .card_access import CardReadScope, normalize_card_access, send_with_card_reads
 from .codex_client import (
     AgentResult,
@@ -497,7 +498,7 @@ def replay_history(
     pending: list[str] = []
     for message in messages:
         if message.role == "user":
-            pending.append(message.text)
+            pending.append(_user_turn(message))
         elif message.role == "agent":
             history.append(("\n\n".join(pending), message.text))
             pending = []
@@ -517,8 +518,13 @@ def pending_request(messages: list[Any]) -> tuple[list[tuple[str, str]], str]:
         return history, prompt
     for message in reversed(messages):
         if message.role == "user":
-            return history, message.text
+            return history, _user_turn(message)
     return history, ""
+
+
+def _user_turn(message: Any) -> str:
+    """A user message as the model gets it, with its attached selections."""
+    return attachments_prompt(message.text, getattr(message, "attachments", ()))
 
 
 def note_mods(states: dict[int, dict[str, Any] | None]) -> dict[str, int | None]:

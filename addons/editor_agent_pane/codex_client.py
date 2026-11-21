@@ -937,11 +937,16 @@ def _image_instructions(snapshot: EditorSnapshot | MultiCardSnapshot) -> str:
 
 
 def _selection_instructions(snapshot: EditorSnapshot | MultiCardSnapshot) -> str:
+    attached = (
+        'A user turn may begin with "Attached selections": numbered excerpts the\n'
+        "user picked from the note's fields or from this conversation, each with\n"
+        "an optional comment saying what they want done about it."
+    )
     if isinstance(snapshot, MultiCardSnapshot):
-        return ""
+        return attached
     return (
-        "If context_json.selected_text is non-null, it is the current or most recent\n"
-        "non-empty text selection from a note field."
+        "If context_json.selected_text is non-null, it is a text selection from a\n"
+        "note field sent with the first request.\n" + attached
     )
 
 

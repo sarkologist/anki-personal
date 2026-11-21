@@ -10,6 +10,7 @@ import json
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
+from .attachments import TRANSCRIPT, Attachment, user_label
 from .patches import (
     EditorSnapshot,
     MultiCardSnapshot,
@@ -56,11 +57,12 @@ class CreatePreview:
 
 
 def surface_body(*, quotable: bool = False) -> str:
-    """The transcript page. ``quotable`` adds a Quote button for selections,
-    sent as a ``QUOTE_COMMAND`` bridge command (see ``parse_quote_command``)."""
+    """The transcript page. ``quotable`` adds an "Add to context" button for
+    selections, sent as an ``ADD_CONTEXT_COMMAND`` bridge command (see
+    ``parse_add_context_command``)."""
     body = _SURFACE_BODY
     if quotable:
-        body += _QUOTE_SCRIPT.replace("__QUOTE_COMMAND__", QUOTE_COMMAND)
+        body += _ADD_CONTEXT_SCRIPT.replace("__COMMAND__", ADD_CONTEXT_COMMAND)
     return body
 
 
@@ -106,6 +108,22 @@ _SURFACE_BODY = """
 mjx-container.agent-math-selected {
     background: rgba(80, 140, 255, 0.3);
     border-radius: 2px;
+}
+.agent-attachment {
+    margin-bottom: 8px;
+    white-space: normal;
+}
+.agent-attachment-label {
+    color: var(--fg-subtle, #666);
+    font-size: 0.82em;
+}
+.agent-attachment .agent-quote {
+    white-space: pre-wrap;
+}
+.agent-attachment-comment {
+    margin-top: 2px;
+    padding-left: 11px;
+    white-space: pre-wrap;
 }
 .agent-quote-button {
     font-size: 0.85em;
@@ -336,7 +354,7 @@ window.agentPane = (() => {
         if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
             return null;
         }
-        // Only what is in the pane: Select All also takes the Quote button.
+        // Only what is in the pane: Select All also takes the button.
         const range = selection.getRangeAt(0).cloneRange();
         const pane = document.getElementById("agent-pane");
         const paneRange = document.createRange();
@@ -376,7 +394,17 @@ window.agentPane = (() => {
         document.body.appendChild(holder);
         const text = holder.innerText;
         holder.remove();
-        return { text: text.trim(), hasMath: formulas.length > 0 };
+        // whose message it is from, when it is from one (an attachment shown
+        // in the user's message is not theirs)
+        const message = ancestor.closest(".agent-attachment")
+            ? null
+            : ancestor.closest(".agent-message");
+        const role = message && message.classList.contains("assistant")
+            ? "assistant"
+            : message && message.classList.contains("user")
+            ? "user"
+            : null;
+        return { text: text.trim(), hasMath: formulas.length > 0, role };
     }
 
     function closestElement(node) {
@@ -479,16 +507,16 @@ window.agentPane = (() => {
 </script>
 """
 
-QUOTE_COMMAND = "agentQuote"
+ADD_CONTEXT_COMMAND = "agentAddContext"
 
-_QUOTE_SCRIPT = """
+_ADD_CONTEXT_SCRIPT = """
 <script>
 (() => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "agent-quote-button";
-    button.textContent = "Quote";
-    button.title = "Quote the selection in your message";
+    button.textContent = "Add to context";
+    button.title = "Attach the selection to your next message";
     button.hidden = true;
     document.body.appendChild(button);
     let mouseDown = false;
@@ -520,7 +548,10 @@ _QUOTE_SCRIPT = """
     button.addEventListener("click", () => {
         const selected = window.agentPane.selectionText();
         if (selected && selected.text) {
-            pycmd("__QUOTE_COMMAND__:" + JSON.stringify(selected.text));
+            pycmd(
+                "__COMMAND__:"
+                    + JSON.stringify({ text: selected.text, role: selected.role }),
+            );
         }
         window.getSelection().removeAllRanges();
     });
@@ -542,40 +573,21 @@ _QUOTE_SCRIPT = """
 """
 
 
-def parse_quote_command(cmd: str) -> str | None:
-    """The text of a Quote button press, or None for other commands."""
-    prefix = QUOTE_COMMAND + ":"
+def parse_add_context_command(cmd: str) -> Attachment | None:
+    """The selection of an "Add to context" press, or None for other
+    commands (or a malformed one)."""
+    prefix = ADD_CONTEXT_COMMAND + ":"
     if not cmd.startswith(prefix):
         return None
     try:
-        text = json.loads(cmd[len(prefix) :])
+        data = json.loads(cmd[len(prefix) :])
     except ValueError:
         return None
-    if not isinstance(text, str) or not text.strip():
+    if not isinstance(data, dict):
         return None
-    return text
-
-
-def quote_block(text: str) -> str:
-    """``text`` as a Markdown quote, one ``> `` per line."""
-    lines = [line.rstrip() for line in text.split("\n")]
-    while lines and not lines[-1]:
-        lines.pop()
-    while lines and not lines[0]:
-        lines.pop(0)
-    return "\n".join(f"> {line}" if line else ">" for line in lines)
-
-
-def quote_insertion(before: str, quote: str) -> str:
-    """What to insert after ``before`` (the message up to the cursor) so the
-    quote is a paragraph of its own, with the cursor on a fresh line below."""
-    if not before or before.endswith("\n\n"):
-        prefix = ""
-    elif before.endswith("\n"):
-        prefix = "\n"
-    else:
-        prefix = "\n\n"
-    return f"{prefix}{quote}\n\n"
+    return Attachment.from_dict(
+        {"source": TRANSCRIPT, "text": data.get("text"), "role": data.get("role")}
+    )
 
 
 def selection_context_excerpt(
@@ -599,8 +611,10 @@ def selection_context_label_text(selected_text: SelectedTextSnapshot) -> str:
 def render_user_message(
     prompt: str,
     selected_text: SelectedTextSnapshot | None = None,
+    attachments: Iterable[Attachment] = (),
 ) -> str:
-    body = _render_user_text(prompt)
+    body = "".join(_render_attachment(a) for a in attachments)
+    body += _render_user_text(prompt)
     if selected_text is not None:
         body += _render_selection_context(selected_text)
     return _message("You", body, css_class="user")
@@ -908,6 +922,20 @@ def _message(role: str, body: str, *, css_class: str) -> str:
 """
 
 
+def _render_attachment(attachment: Attachment) -> str:
+    comment = (
+        f'<div class="agent-attachment-comment">{_escaped_text(attachment.comment)}</div>'
+        if attachment.comment
+        else ""
+    )
+    return (
+        '<div class="agent-attachment">'
+        f'<div class="agent-attachment-label">{html.escape(user_label(attachment))}</div>'
+        f'<blockquote class="agent-quote">{_escaped_text(attachment.text.strip())}</blockquote>'
+        f"{comment}</div>"
+    )
+
+
 def _render_user_text(text: str) -> str:
     """Escaped text, with runs of ``> `` lines shown as a quote."""
     parts = []
@@ -915,7 +943,9 @@ def _render_user_text(text: str) -> str:
         lines = list(run)
         if quoted:
             inner = "\n".join(line[2:] for line in lines)
-            parts.append(f'<blockquote class="agent-quote">{_escaped_text(inner)}</blockquote>')
+            parts.append(
+                f'<blockquote class="agent-quote">{_escaped_text(inner)}</blockquote>'
+            )
         else:
             parts.append(_escaped_text("\n".join(lines)))
     return "".join(parts)
