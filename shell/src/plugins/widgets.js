@@ -460,6 +460,8 @@
                 set(p) {
                     if (!unsent(node.id) && el.value !== p.text) {
                         el.value = p.text;
+                        // the host's text comes with its own caret
+                        carets.delete(String(node.id));
                     }
                     el.placeholder = p.placeholder ?? "";
                     el.readOnly = !!p.readOnly;
