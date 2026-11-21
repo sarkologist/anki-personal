@@ -1143,12 +1143,29 @@ class QTextCursor(metaclass=_Names):
         Start = 1
         End = 11
 
-    def __init__(self, text: str = "", position: int = 0) -> None:
+    def __init__(self, text: str = "", position: int = 0, edit: Any = None) -> None:
         self._text = text
         self._position = position
+        # the QPlainTextEdit whose text insertText changes
+        self._edit = edit
 
     def position(self) -> int:
         return self._position
+
+    # The page tells the caret, never a selection: both ends are the caret.
+    def selectionStart(self) -> int:
+        return self._position
+
+    def selectionEnd(self) -> int:
+        return self._position
+
+    def insertText(self, text: str) -> None:
+        """Insert at the caret (positions count UTF-16 units, as in Qt)."""
+        index = _utf16_to_index(self._text, self._position)
+        self._text = self._text[:index] + text + self._text[index:]
+        self._position += _utf16_len(text)
+        if self._edit is not None:
+            self._edit._insert(self._text, self._position)
 
     def blockNumber(self) -> int:
         return self._text[: self._position].count("\n")
@@ -1165,6 +1182,16 @@ class QTextCursor(metaclass=_Names):
         elif op == QTextCursor.MoveOperation.Start:
             self._position = 0
         return True
+
+
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _utf16_to_index(text: str, units: int) -> int:
+    """The index into ``text`` of a position counted in UTF-16 units."""
+    prefix = text.encode("utf-16-le")[: 2 * units]
+    return len(prefix.decode("utf-16-le", errors="ignore"))
 
 
 class QTextDocument:
@@ -1260,7 +1287,13 @@ class QPlainTextEdit(QWidget):
         self._changed()
 
     def textCursor(self) -> QTextCursor:
-        return QTextCursor(self._text, self._cursor)
+        return QTextCursor(self._text, self._cursor, self)
+
+    def _insert(self, text: str, cursor: int) -> None:
+        self._text = text
+        self._cursor = cursor
+        self._changed()
+        self.textChanged.emit()
 
     def setTextCursor(self, cursor: QTextCursor) -> None:
         self._cursor = cursor.position()

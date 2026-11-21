@@ -302,6 +302,28 @@ def test_a_key_handler_sees_the_pages_keys_and_leaves_the_rest_to_it(mw):
     assert ops[-1] == {"id": prompt._id, "cursor": len("earlier")}
 
 
+def test_a_cursor_inserts_into_its_text_edit_as_qt_does(mw):
+    prompt = Prompt()
+    pane = QWidget()
+    pane.setLayout(QVBoxLayout())
+    pane.layout().addWidget(prompt)
+    dock = shown(mw, pane)
+    # the page's caret, in UTF-16 units as in Qt: after the emoji
+    event(dock, "key", prompt, key="a", text="a\U0001f600sk", cursor=3)
+    updates(mw)
+
+    cursor = prompt.textCursor()
+    assert cursor.selectionStart() == cursor.selectionEnd() == 3
+    cursor.insertText("> q\n")
+    prompt.setTextCursor(cursor)
+
+    assert prompt.toPlainText() == "a\U0001f600> q\nsk"
+    assert cursor.position() == 7
+    ops = updates(mw)
+    assert ops[0]["props"]["text"] == "a\U0001f600> q\nsk"
+    assert ops[-1] == {"id": prompt._id, "cursor": 7}
+
+
 def test_web_views_replay_their_evals_and_answer_their_pages(mw):
     pane = QWidget()
     pane.setLayout(QVBoxLayout())
