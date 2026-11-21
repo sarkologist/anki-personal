@@ -11,10 +11,11 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-import aqt.webview  # noqa: F401 (QtWebEngine loads before any QApplication)
 import pytest
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QToolButton
+
+import aqt.webview  # noqa: F401 (QtWebEngine loads before any QApplication)
 
 ADDONS = Path(__file__).resolve().parents[2] / "addons"
 if str(ADDONS) not in sys.path:
