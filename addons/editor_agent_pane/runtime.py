@@ -39,6 +39,7 @@ from aqt.webview import AnkiWebView
 
 from . import queue_badge, queue_runtime, queue_window
 from .agent_log import ensure_agent_log_folder
+from .attachments import Attachment
 from .card_access import (
     CARD_ACCESS_OPTIONS,
     CardReadScope,
@@ -114,12 +115,13 @@ from .recent_folders import (
 from .snapshots import Patch, Snapshot
 from .surface import (
     js_apply_agent_proposal,
-    selection_context_label_text,
+    selection_context_excerpt,
     surface_body,
 )
 from .thread_panel import (
     APPLY_ANYWAY_LABEL,
     APPLY_ANYWAY_TIP,
+    ContextTray,
     MultiCardProposalDialog,
     PromptEdit,
     ThreadPanel,
@@ -135,7 +137,6 @@ from .thread_view import (
     SOURCE_EDIT_CURRENT,
     pick_thread,
     reviewer_card_html,
-    selected_text_of,
     snapshot_card_ids,
     stale_reason,
     thread_context,
@@ -549,6 +550,9 @@ def _sync_browser_multi_card_pane(browser: Any) -> None:
 
 
 class EditorAgentPane(ThreadPanel, QWidget):
+    # the editor's selection, previewed with Add (built with the UI)
+    selection_context_row: Any = None
+
     def __init__(
         self,
         editor: Editor | None = None,
@@ -685,17 +689,35 @@ class EditorAgentPane(ThreadPanel, QWidget):
         )
         self.prompt.setPlaceholderText("Message")
         self.prompt.setMinimumHeight(50)
+        # selections attached to the next message, then the editor's
+        # current selection with Add
+        self.context_tray = ContextTray(self, on_enter=self._send)
         self.selection_context_label = QLabel("")
         self.selection_context_label.setWordWrap(True)
         self.selection_context_label.setTextFormat(Qt.TextFormat.PlainText)
-        self.selection_context_label.setVisible(False)
+        self.selection_add_button = QPushButton("Add")
+        self.selection_add_button.setToolTip(
+            "Attach the editor's selection to the next message"
+        )
+        qconnect(
+            self.selection_add_button.clicked,
+            lambda _checked=False: self._add_editor_selection(),
+        )
+        self.selection_context_row = QWidget()
+        selection_layout = QHBoxLayout()
+        selection_layout.setContentsMargins(0, 0, 0, 0)
+        self.selection_context_row.setLayout(selection_layout)
+        selection_layout.addWidget(self.selection_context_label, 1)
+        selection_layout.addWidget(self.selection_add_button)
+        self.selection_context_row.setVisible(False)
 
         prompt_container = QWidget()
         prompt_layout = QVBoxLayout()
         prompt_layout.setContentsMargins(0, 0, 0, 0)
         prompt_layout.setSpacing(4)
         prompt_container.setLayout(prompt_layout)
-        prompt_layout.addWidget(self.selection_context_label)
+        prompt_layout.addWidget(self.context_tray)
+        prompt_layout.addWidget(self.selection_context_row)
         prompt_layout.addWidget(self.prompt)
 
         self.text_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -1388,10 +1410,16 @@ class EditorAgentPane(ThreadPanel, QWidget):
         self._set_selected_text_snapshot(None)
         self._on_context_changed()
 
+    def _drop_editor_attachments(self) -> None:
+        """The editor's selections describe a note that is no longer shown."""
+        if self.context_tray is not None:
+            self.context_tray.drop_fields()
+
     def on_note_added(self) -> None:
         """Add Cards added the note and loaded a blank one: start afresh."""
         self._context_generation += 1
         self._set_selected_text_snapshot(None)
+        self._drop_editor_attachments()
         self._start_new_request()
 
     def on_browser_context_changed(self) -> None:
@@ -1403,6 +1431,7 @@ class EditorAgentPane(ThreadPanel, QWidget):
         if key == self._shown_context:
             return
         self._shown_context = key
+        self._drop_editor_attachments()
         self._context_generation += 1
         self._force_new_thread = False
         self._suppress_autopick = False
@@ -1495,14 +1524,40 @@ class EditorAgentPane(ThreadPanel, QWidget):
         snapshot: SelectedTextSnapshot | None,
     ) -> None:
         self._selected_text_snapshot = snapshot
+        row = self.selection_context_row
         if snapshot is None:
             self.selection_context_label.clear()
             self.selection_context_label.setVisible(False)
+            if row is not None:
+                row.setVisible(False)
             return
         self.selection_context_label.setText(
-            f"Selection context: {selection_context_label_text(snapshot)}"
+            f"Selected in {snapshot.field_name}: "
+            f'"{selection_context_excerpt(snapshot.text)}"'
         )
         self.selection_context_label.setVisible(True)
+        if row is not None:
+            row.setVisible(True)
+
+    def _add_editor_selection(self) -> None:
+        """Add puts the editor's selection, as it is now, in the tray."""
+        if self.editor is None or self.context_tray is None:
+            return
+        generation = self._context_generation
+        self._query_selected_text_context(
+            lambda raw: self._add_editor_selection_result(generation, raw)
+        )
+
+    def _add_editor_selection_result(self, generation: int, raw: Any) -> None:
+        if generation != self._context_generation or self.editor is None:
+            return
+        selected = validated_selected_text_for_editor(self.editor, raw)
+        if selected is None:
+            tooltip("Select some text in a field first.", parent=self)
+            return
+        self.context_tray.add(
+            Attachment.field(selected.field_name, selected.field_index, selected.text)
+        )
 
     def _threads_for_context(self) -> list[Thread]:
         service = self._service()
@@ -1607,7 +1662,8 @@ class EditorAgentPane(ThreadPanel, QWidget):
 
     def _send(self) -> None:
         prompt = self.prompt.toPlainText().strip()
-        if not prompt:
+        tray = self.context_tray
+        if not prompt and not (tray is not None and tray.items):
             return
         if self._service() is None:
             showWarning("The agent queue is not open yet.", parent=self)
@@ -1615,27 +1671,29 @@ class EditorAgentPane(ThreadPanel, QWidget):
         # Cleared now so a second Send cannot repeat it; restored if the
         # request is abandoned before it reaches the store.
         self.prompt.clear()
+        attachments = tray.take() if tray is not None else ()
         self._save_settings()
         generation = self._context_generation
         reply_to = self._reply_target()
         if reply_to is not None:
             self._after_note_saved(
-                lambda: self._reply_to_thread(reply_to, prompt, generation)
+                lambda: self._reply_to_thread(reply_to, prompt, generation, attachments)
             )
             return
-        self._query_selected_text_context(
-            lambda selected_text: self._send_after_selection_snapshot(
-                prompt,
-                generation,
-                selected_text,
-            ),
-        )
+        self._send_new_request(prompt, generation, attachments)
 
-    def _restore_prompt(self, prompt: str, reason: str | None = None) -> None:
-        """Put back a prompt whose request was not stored, unless the user has
-        typed something new since."""
+    def _restore_prompt(
+        self,
+        prompt: str,
+        reason: str | None = None,
+        attachments: tuple[Attachment, ...] = (),
+    ) -> None:
+        """Put back a prompt and attachments whose request was not stored,
+        unless the user has typed something new since."""
         if not self.prompt.toPlainText().strip():
             self.prompt.setPlainText(prompt)
+        if attachments and self.context_tray is not None:
+            self.context_tray.restore(attachments)
         if reason:
             tooltip(reason, parent=self)
 
@@ -1654,18 +1712,18 @@ class EditorAgentPane(ThreadPanel, QWidget):
             return
         self.editor.call_after_note_saved(callback, keepFocus=True)
 
-    def _send_after_selection_snapshot(
+    def _send_new_request(
         self,
         prompt: str,
         generation: int,
-        selected_text: Any,
+        attachments: tuple[Attachment, ...] = (),
     ) -> None:
         if generation != self._context_generation:
-            self._restore_prompt(prompt, PROMPT_NOT_SENT)
+            self._restore_prompt(prompt, PROMPT_NOT_SENT, attachments)
             return
         self._query_reviewer_context(
             lambda reviewer: self._send_after_reviewer_context(
-                prompt, generation, selected_text, reviewer
+                prompt, generation, reviewer, attachments
             )
         )
 
@@ -1673,14 +1731,14 @@ class EditorAgentPane(ThreadPanel, QWidget):
         self,
         prompt: str,
         generation: int,
-        selected_text: Any,
         reviewer: dict[str, Any] | None,
+        attachments: tuple[Attachment, ...] = (),
     ) -> None:
         if generation != self._context_generation:
-            self._restore_prompt(prompt, PROMPT_NOT_SENT)
+            self._restore_prompt(prompt, PROMPT_NOT_SENT, attachments)
             return
         self._after_note_saved(
-            lambda: self._create_thread(prompt, generation, selected_text, reviewer)
+            lambda: self._create_thread(prompt, generation, reviewer, attachments)
         )
 
     def _query_reviewer_context(
@@ -1723,15 +1781,15 @@ class EditorAgentPane(ThreadPanel, QWidget):
         self,
         prompt: str,
         generation: int,
-        selected_text: Any = None,
         reviewer: dict[str, Any] | None = None,
+        attachments: tuple[Attachment, ...] = (),
     ) -> None:
         if generation != self._context_generation:
-            self._restore_prompt(prompt, PROMPT_NOT_SENT)
+            self._restore_prompt(prompt, PROMPT_NOT_SENT, attachments)
             return
         service = self._service()
         if service is None:
-            self._restore_prompt(prompt)
+            self._restore_prompt(prompt, attachments=attachments)
             showWarning("The agent queue is not open yet.", parent=self)
             return
         snapshot: Snapshot
@@ -1742,16 +1800,16 @@ class EditorAgentPane(ThreadPanel, QWidget):
                 source = SOURCE_BROWSER_MULTI
             else:
                 assert self.editor is not None
-                snapshot = editor_snapshot(self.editor, selected_text)
+                snapshot = editor_snapshot(self.editor)
                 source = _editor_source(self.editor)
             card_scope = self._card_read_scope(snapshot)
         except RuntimeError as exc:
-            self._restore_prompt(prompt)
+            self._restore_prompt(prompt, attachments=attachments)
             showWarning(str(exc), parent=self)
             return
         settings = self._thread_settings(card_scope)
         if settings is None:
-            self._restore_prompt(prompt)
+            self._restore_prompt(prompt, attachments=attachments)
             return
         note_id = snapshot.note_id if isinstance(snapshot, EditorSnapshot) else None
         note = self.editor.note if self.editor is not None else None
@@ -1763,12 +1821,17 @@ class EditorAgentPane(ThreadPanel, QWidget):
             note_mod=int(note_mod) if isinstance(note_mod, int) else None,
             deck_id=self._default_deck_id(snapshot),
         )
-        thread = service.store.create_thread(context, settings, prompt, note_id=note_id)
+        thread = service.store.create_thread(
+            context,
+            settings,
+            prompt,
+            note_id=note_id,
+            first_attachments=attachments,
+        )
         if note_id is None:
             self._local_thread_ids.append(thread.id)
         self._force_new_thread = False
         self._suppress_autopick = False
-        self._set_selected_text_snapshot(selected_text_of(snapshot))
         self._record_prompt(settings, prompt)
         service.runner.enqueue_kick()
         self._load_threads(select=thread.id)
@@ -1800,25 +1863,31 @@ class EditorAgentPane(ThreadPanel, QWidget):
             return None
         return None
 
-    def _reply_to_thread(self, thread_id: str, prompt: str, generation: int) -> None:
+    def _reply_to_thread(
+        self,
+        thread_id: str,
+        prompt: str,
+        generation: int,
+        attachments: tuple[Attachment, ...] = (),
+    ) -> None:
         if generation != self._context_generation:
-            self._restore_prompt(prompt, PROMPT_NOT_SENT)
+            self._restore_prompt(prompt, PROMPT_NOT_SENT, attachments)
             return
         service = self._service()
         if service is None:
-            self._restore_prompt(prompt)
+            self._restore_prompt(prompt, attachments=attachments)
             showWarning("The agent queue is not open yet.", parent=self)
             return
         # A reply runs with the form as it is now, so changing the provider or
         # model in the pane applies to the next run of the shown thread.
         settings = self._reply_settings(service.store.get_thread(thread_id))
         if settings is None:
-            self._restore_prompt(prompt)
+            self._restore_prompt(prompt, attachments=attachments)
             return
         try:
-            service.store.reply(thread_id, prompt)
+            service.store.reply(thread_id, prompt, attachments=attachments)
         except QueueTransitionError as exc:
-            self._restore_prompt(prompt)
+            self._restore_prompt(prompt, attachments=attachments)
             showWarning(str(exc), parent=self)
             return
         service.store.set_settings(thread_id, settings)
@@ -1835,6 +1904,8 @@ class EditorAgentPane(ThreadPanel, QWidget):
         return self._thread_settings(self._card_read_scope(snapshot))
 
     def _record_prompt(self, settings: dict[str, Any], prompt: str) -> None:
+        if not prompt:
+            return
         config = _config()
         _record_prompt_history_for_model(
             config,

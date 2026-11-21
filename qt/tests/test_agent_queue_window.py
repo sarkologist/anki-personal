@@ -25,6 +25,7 @@ from .test_editor_agent_pane import (
     snapshot,
 )
 
+from editor_agent_pane.attachments import Attachment, AttachmentTray  # noqa: E402
 from editor_agent_pane.patches import (  # noqa: E402  # isort: skip
     MultiNotePatch,
     MultiNoteUpdate,
@@ -701,6 +702,38 @@ def test_reply_needs_text_and_a_replyable_thread(qw: Any, queue: Any) -> None:
     assert _status(store, thread.id) == "running"
     assert runner.kicks == 0
     assert window.prompt.toPlainText() == "again"
+
+
+def test_reply_sends_the_tray_with_or_without_text(qw: Any, queue: Any) -> None:
+    store, _runner = queue
+    thread = _thread(store, prompt="first")
+    window = _window(qw)
+    window.refresh()
+    window.context_tray = AttachmentTray()
+    reply = Attachment.transcript("an answer", role="assistant", comment=" why ")
+    window.context_tray.add(reply)
+    window.prompt = FakePrompt("")
+
+    window._reply()
+
+    [*_, message] = store.messages(thread.id)
+    assert (message.text, message.attachments) == ("", (reply.with_comment("why"),))
+    assert window.context_tray.items == ()
+
+
+def test_another_thread_starts_with_an_empty_tray(qw: Any, queue: Any) -> None:
+    store, _runner = queue
+    first = _thread(store, prompt="first")
+    second = _thread(store, prompt="second")
+    window = _window(qw)
+    window.refresh()
+    window.context_tray = AttachmentTray()
+    window._select(first.id)
+    window.context_tray.add(Attachment.transcript("from the first"))
+
+    window._select(second.id)
+
+    assert window.context_tray.items == ()
 
 
 def test_discard_stores_the_reason_and_moves_on(qw: Any, queue: Any) -> None:

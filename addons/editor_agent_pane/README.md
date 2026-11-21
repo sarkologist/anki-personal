@@ -26,10 +26,15 @@ it to read-only mode, or choose "Don't work in a folder" to use card context onl
 Add optional custom instructions in the pane to steer the agent while keeping the
 fixed JSON response and patch safety rules in place. Press Enter to send and
 Shift+Enter for a newline.
-To refer to part of the conversation, select it in the transcript and press the
-**Quote** button that appears; the selection goes into your message as a `>`
-quote. Formulas in a selection are quoted (and copied) as their TeX source. Proposed note edits are shown as a diff and require
-explicit approval.
+Proposed note edits are shown as a diff and require explicit approval.
+
+To point the agent at particular text, attach selections to your message. Select
+text in the transcript and press **Add to context**, or select text in a field
+and press **Add** next to its preview above the message box. Each attachment can
+take a comment, and you can attach several from both places; they go with the
+next message (a new request or a reply) and show above it in the transcript.
+Formulas are attached (and copied) as their TeX source. Switching to another
+note drops the attachments taken from its fields.
 
 Use **Card access** to choose **Current card only** (the default), **Other cards
 in deck**, or **All other cards**. Agents can search permitted cards using Anki

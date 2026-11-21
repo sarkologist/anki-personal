@@ -71,6 +71,7 @@ from .surface import surface_body
 from .thread_panel import (
     APPLY_ANYWAY_LABEL,
     APPLY_ANYWAY_TIP,
+    ContextTray,
     PromptEdit,
     ThreadPanel,
 )
@@ -296,6 +297,8 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
         )
         self.surface.set_bridge_command(self._on_bridge_cmd, self)
         right_layout.addWidget(self.surface, 1)
+        self.context_tray = ContextTray(self, on_enter=self._reply)
+        right_layout.addWidget(self.context_tray)
         self.prompt = PromptEdit(self._reply, lambda: (), self)
         self.prompt.setPlaceholderText("Reply (Enter sends; the agent runs it next)")
         self.prompt.setMaximumHeight(90)
@@ -559,6 +562,9 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
         return cache[deck_id]
 
     def _select(self, thread_id: str | None, *, render: bool = False) -> None:
+        if thread_id != self._thread_id and self.context_tray is not None:
+            # selections from another thread's transcript
+            self.context_tray.take()
         self._thread_id = thread_id
         ids = [thread.id for thread in self._rows]
         blocked = self.table.blockSignals(True)
@@ -640,7 +646,8 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
 
     def _reply(self) -> None:
         text = self.prompt.toPlainText().strip()
-        if not text:
+        tray = self.context_tray
+        if not text and not (tray is not None and tray.items):
             self.prompt.setFocus()
             return
         service = self._service()
@@ -651,9 +658,12 @@ class AgentQueueWindow(ThreadPanel, QMainWindow):
             showWarning("This request is still running or already closed.", parent=self)
             return
         following = self._following_thread_id(thread.id)
+        attachments = tray.take() if tray is not None else ()
         try:
-            service.store.reply(thread.id, text)
+            service.store.reply(thread.id, text, attachments=attachments)
         except QueueTransitionError as exc:
+            if tray is not None:
+                tray.restore(attachments)
             showWarning(str(exc), parent=self)
             return
         self.prompt.clear()

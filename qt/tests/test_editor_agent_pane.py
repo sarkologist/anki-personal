@@ -22,6 +22,7 @@ if str(ADDONS) not in sys.path:
     sys.path.insert(0, str(ADDONS))
 
 from editor_agent_pane import ollama_client  # noqa: E402
+from editor_agent_pane.attachments import Attachment, AttachmentTray  # noqa: E402
 from editor_agent_pane.activity import (  # noqa: E402
     ClaudeActivityRenderer,
     CodexActivityRenderer,
@@ -120,9 +121,6 @@ from editor_agent_pane.surface import (  # noqa: E402
     js_apply_agent_proposal,
     js_clear_transcript,
     multi_note_patch_card_ids,
-    parse_quote_command,
-    quote_block,
-    quote_insertion,
     render_activity_summary,
     render_assistant_message,
     render_error_message,
@@ -1105,10 +1103,7 @@ def test_selection_context_indicator_updates_and_hides(
 
     assert pane._selected_text_snapshot == selected
     assert pane.selection_context_label.visible is True
-    assert (
-        pane.selection_context_label.text
-        == 'Selection context: Front - "selected text"'
-    )
+    assert pane.selection_context_label.text == 'Selected in Front: "selected text"'
 
     pane._set_selected_text_snapshot(None)
 
@@ -2738,39 +2733,6 @@ def test_render_user_message_truncates_selected_text_context() -> None:
     assert "word " * 35 not in rendered
 
 
-def test_parse_quote_command_reads_json_text() -> None:
-    assert parse_quote_command('agentQuote:"a \\\\(x^2\\\\)\\nb"') == "a \\(x^2\\)\nb"
-
-
-@pytest.mark.parametrize(
-    "cmd",
-    ["agentOpenNote:1", 'agentQuote:"  \\n "', "agentQuote:{", "agentQuote:[1]"],
-)
-def test_parse_quote_command_rejects_other_commands_and_bad_payloads(
-    cmd: str,
-) -> None:
-    assert parse_quote_command(cmd) is None
-
-
-def test_quote_block_prefixes_lines_and_trims_blank_edges() -> None:
-    assert quote_block("\n  first  \n\nsecond\n\n") == ">   first\n>\n> second"
-
-
-@pytest.mark.parametrize(
-    ("before", "expected"),
-    [
-        ("", "> q\n\n"),
-        ("ask\n\n", "> q\n\n"),
-        ("ask\n", "\n> q\n\n"),
-        ("ask", "\n\n> q\n\n"),
-    ],
-)
-def test_quote_insertion_puts_quote_on_its_own_paragraph(
-    before: str, expected: str
-) -> None:
-    assert quote_insertion(before, "> q") == expected
-
-
 def test_render_user_message_shows_quote_lines_as_blockquote() -> None:
     rendered = render_user_message("> <x> \\(a\\)\n> b\n\nask")
 
@@ -2790,51 +2752,24 @@ def test_render_user_message_quote_runs(text: str, expected: str) -> None:
     assert expected in render_user_message(text)
 
 
-def test_transcript_quote_counts_qt_positions_in_utf16(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
-    inserted: list[str] = []
-    # The cursor is after "\U0001f600\n" (3 UTF-16 units), so the quote
-    # needs one more newline to start a paragraph.
-    cursor = types.SimpleNamespace(selectionStart=lambda: 3, insertText=inserted.append)
-    pane.prompt = types.SimpleNamespace(
-        toPlainText=lambda: "\U0001f600\nab",
-        textCursor=lambda: cursor,
-        setTextCursor=lambda _cursor: None,
-        setFocus=lambda: None,
+def test_surface_offers_add_to_context_only_when_quotable() -> None:
+    assert "agentAddContext:" not in surface_body()
+    assert "agentAddContext:" in surface_body(quotable=True)
+
+
+def test_render_user_message_shows_its_attachments_escaped() -> None:
+    rendered = render_user_message(
+        "Fix <it>",
+        attachments=(
+            Attachment.field("Back <b>", 1, "x < y", comment="wrong & why"),
+            Attachment.transcript("\\(z\\)", role="assistant"),
+        ),
     )
 
-    pane._on_bridge_cmd('agentQuote:"q"')
-
-    assert inserted == ["\n> q\n\n"]
-
-
-def test_surface_offers_quote_button_only_when_quotable() -> None:
-    assert "agentQuote:" not in surface_body()
-    assert "agentQuote:" in surface_body(quotable=True)
-
-
-def test_transcript_quote_command_inserts_into_prompt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
-    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
-    inserted: list[str] = []
-    cursor = types.SimpleNamespace(selectionStart=lambda: 3, insertText=inserted.append)
-    focused: list[bool] = []
-    pane.prompt = types.SimpleNamespace(
-        toPlainText=lambda: "ask",
-        textCursor=lambda: cursor,
-        setTextCursor=lambda _cursor: None,
-        setFocus=lambda: focused.append(True),
-    )
-
-    pane._on_bridge_cmd('agentQuote:"\\\\(x\\\\)"')
-
-    assert inserted == ["\n\n> \\(x\\)\n\n"]
-    assert focused == [True]
+    assert "Back &lt;b&gt;" in rendered and "x &lt; y" in rendered
+    assert "wrong &amp; why" in rendered
+    assert "Reply" in rendered and "\\(z\\)" in rendered
+    assert rendered.index("x &lt; y") < rendered.index("Fix &lt;it&gt;")
 
 
 def test_selection_context_label_text_is_plain_excerpt() -> None:
@@ -4320,7 +4255,7 @@ def test_codex_agent_uses_writable_cli_by_default_and_parses_patch(
     assert "Current editor context is JSON" in captured["process"].stdin.text
     assert '"selected_text": {"field_name": "Front"' in captured["process"].stdin.text
     assert '"text": "old", "html": "<b>old</b>"' in captured["process"].stdin.text
-    assert "most recent\nnon-empty text selection" in captured["process"].stdin.text
+    assert "Attached selections" in captured["process"].stdin.text
     assert "Improve this" in captured["process"].stdin.text
     assert "may inspect and edit files" in captured["process"].stdin.text
     assert (
@@ -6916,73 +6851,163 @@ def test_send_creates_queued_thread_with_form_settings(
     }
 
 
-def test_send_records_validated_selection_in_snapshot_and_transcript(
+FRONT_SELECTION = {
+    "field_name": "Front",
+    "field_index": 0,
+    "input_kind": "rich_text",
+    "text": "selected <text>",
+    "html": "<strong>selected</strong>",
+}
+
+
+def test_send_attaches_only_what_the_tray_holds(
     pane_runtime: Any, queue: Any, tmp_path: Path
 ) -> None:
     store, _runner = queue
     pane = _pane_for_agent_request(pane_runtime, tmp_path)
-    selected_text = {
-        "field_name": "Front",
-        "field_index": 0,
-        "input_kind": "rich_text",
-        "text": "selected <text>",
-        "html": "<strong>selected</strong>",
-    }
-
-    pane._send_after_selection_snapshot("Improve this", 0, selected_text)
-
-    [thread] = store.threads_for_note(123)
-    expected = SelectedTextSnapshot(
-        field_name="Front",
-        field_index=0,
-        input_kind="rich_text",
-        text="selected <text>",
-        html="<strong>selected</strong>",
+    # a live editor selection is only previewed, never sent by itself
+    pane.editor.web = types.SimpleNamespace(
+        evalWithCallback=lambda _js, callback: callback(FRONT_SELECTION)
     )
-    assert snapshot_from_dict(thread.context["snapshot"]).selected_text == expected
-    assert pane._selected_text_snapshot == expected
-    assert pane.selection_context_label.text == (
-        'Selection context: Front - "selected <text>"'
-    )
-    transcript = "".join(pane.surface.evals)
-    assert "Selection sent from Front" in transcript
-    assert "selected &lt;text&gt;" in transcript
+    pane.context_tray = AttachmentTray()
+    pane.context_tray.add(Attachment.transcript("\\(x\\)", role="assistant"))
+    pane.context_tray.set_comment(0, "  why?  ")
+    pane.prompt = FakePrompt("Explain")
 
-
-def test_send_drops_stale_selection(
-    pane_runtime: Any, queue: Any, tmp_path: Path
-) -> None:
-    store, _runner = queue
-    pane = _pane_for_agent_request(pane_runtime, tmp_path)
-
-    pane._send_after_selection_snapshot(
-        "Improve this",
-        0,
-        {
-            "field_name": "Front",
-            "field_index": 1,
-            "input_kind": "rich_text",
-            "text": "stale",
-            "html": "<strong>stale</strong>",
-        },
-    )
+    pane._send()
 
     [thread] = store.threads_for_note(123)
     assert snapshot_from_dict(thread.context["snapshot"]).selected_text is None
-    assert pane.selection_context_label.visible is False
-    assert "Selection sent" not in "".join(pane.surface.evals)
+    [message] = store.messages(thread.id)
+    assert message.attachments == (
+        Attachment.transcript("\\(x\\)", role="assistant", comment="why?"),
+    )
+    assert pane.context_tray.items == ()
+    transcript = "".join(pane.surface.evals)
+    assert "Selection sent" not in transcript
+    assert "why?" in transcript
 
 
-def test_send_ignores_a_selection_answer_for_a_previous_note(
+def test_a_reply_takes_the_tray_too(
     pane_runtime: Any, queue: Any, tmp_path: Path
 ) -> None:
     store, _runner = queue
     pane = _pane_for_agent_request(pane_runtime, tmp_path)
-    pane._context_generation = 1
+    pane.context_tray = AttachmentTray()
+    pane._create_thread("Fix back", 0)
+    [thread] = store.threads_for_note(123)
+    store.transition(thread.id, "queued", "running")
+    store.add_message(thread.id, "agent", "done")
+    store.transition(thread.id, "running", "answered")
+    pane._load_threads(select=thread.id)
+    back = Attachment.field("Back", 1, "old back")
+    pane.context_tray.add(back)
+    pane.prompt = FakePrompt("")
 
-    pane._send_after_selection_snapshot("Improve this", 0, None)
+    pane._send()
+
+    assert store.messages(thread.id)[-1].attachments == (back,)
+    assert store.messages(thread.id)[-1].text == ""
+    assert pane.context_tray.items == ()
+
+
+def test_nothing_to_send_without_text_or_attachments(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.context_tray = AttachmentTray()
+    pane.prompt = FakePrompt("   ")
+
+    pane._send()
 
     assert store.list_threads() == []
+
+
+def test_an_unsent_request_gives_the_tray_back(
+    pane_runtime: Any, queue: Any, tmp_path: Path
+) -> None:
+    store, _runner = queue
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.context_tray = AttachmentTray()
+    reply = Attachment.transcript("an earlier answer", role="assistant")
+    pane.context_tray.add(reply)
+    pane.prompt = FakePrompt("Improve this")
+    # the note changes while the request is on its way
+    pane.editor.call_after_note_saved = lambda callback, keepFocus=False: (
+        setattr(pane, "_context_generation", 1),
+        callback(),
+    )
+
+    pane._send()
+
+    assert store.list_threads() == []
+    assert pane.prompt.text == "Improve this"
+    assert pane.context_tray.items == (reply,)
+
+
+def test_add_takes_the_editors_selection_into_the_tray(
+    pane_runtime: Any, tmp_path: Path
+) -> None:
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.context_tray = AttachmentTray()
+    pane.editor.web = types.SimpleNamespace(
+        evalWithCallback=lambda _js, callback: callback(FRONT_SELECTION)
+    )
+
+    pane._add_editor_selection()
+    pane._add_editor_selection()
+
+    assert pane.context_tray.items == (Attachment.field("Front", 0, "selected <text>"),)
+
+
+def test_add_ignores_a_stale_editor_selection(
+    pane_runtime: Any, tmp_path: Path
+) -> None:
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.context_tray = AttachmentTray()
+    pane.editor.web = types.SimpleNamespace(
+        evalWithCallback=lambda _js, callback: callback(
+            {**FRONT_SELECTION, "field_index": 1}
+        )
+    )
+
+    pane._add_editor_selection()
+
+    assert pane.context_tray.items == ()
+
+
+def test_a_note_change_drops_the_editors_items_only(
+    pane_runtime: Any, tmp_path: Path
+) -> None:
+    pane = _pane_for_agent_request(pane_runtime, tmp_path)
+    pane.context_tray = AttachmentTray()
+    reply = Attachment.transcript("an earlier answer", role="assistant")
+    pane.context_tray.add(Attachment.field("Front", 0, "front"))
+    pane.context_tray.add(reply)
+    # reloading the same note (after a save) keeps them
+    pane.on_editor_context_changed()
+    assert len(pane.context_tray.items) == 2
+
+    pane.editor.note = _editor_note(456)
+    pane.on_editor_context_changed()
+
+    assert pane.context_tray.items == (reply,)
+
+
+def test_the_transcripts_add_command_fills_the_tray(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _import_runtime_with_aqt_stubs(monkeypatch)
+    pane = runtime.EditorAgentPane.__new__(runtime.EditorAgentPane)
+    pane.context_tray = AttachmentTray()
+
+    pane._on_bridge_cmd('agentAddContext:{"text": "\\\\(x\\\\)", "role": "assistant"}')
+    pane._on_bridge_cmd('agentAddContext:{"text": "  "}')
+
+    assert pane.context_tray.items == (
+        Attachment.transcript("\\(x\\)", role="assistant"),
+    )
 
 
 def test_send_settings_for_ollama(
@@ -8185,9 +8210,10 @@ def test_send_restores_the_prompt_when_the_note_changes_before_it_is_stored(
 ) -> None:
     store, _runner = queue
     pane = _pane_for_agent_request(pane_runtime, tmp_path)
-    pending: list[Callable[[Any], None]] = []
-    pane.editor.web = types.SimpleNamespace(
-        evalWithCallback=lambda _js, callback: pending.append(callback)
+    pending: list[Callable[[], None]] = []
+    # the save before the request is stored waits for the editor
+    pane.editor.call_after_note_saved = lambda callback, keepFocus=False: (
+        pending.append(callback)
     )
     tips: list[str] = []
     _patch_ui(
@@ -8199,7 +8225,7 @@ def test_send_restores_the_prompt_when_the_note_changes_before_it_is_stored(
     assert pane.prompt.text == ""
     pane.editor.note = _editor_note(456)
     pane.on_editor_context_changed()
-    pending.pop()(None)
+    pending.pop()()
 
     assert store.list_threads() == []
     assert pane.prompt.text == "Improve this"

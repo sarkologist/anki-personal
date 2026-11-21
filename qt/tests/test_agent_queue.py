@@ -17,6 +17,10 @@ ADDONS = ROOT / "addons"
 if str(ADDONS) not in sys.path:
     sys.path.insert(0, str(ADDONS))
 
+from editor_agent_pane.attachments import (  # noqa: E402
+    Attachment,
+    attachments_prompt,
+)
 from editor_agent_pane.card_access import CardReadScope  # noqa: E402
 from editor_agent_pane.codex_client import (  # noqa: E402
     AgentResult,
@@ -814,6 +818,115 @@ def test_reply_after_failure_joins_unanswered_user_messages(store: QueueStore) -
     assert call["history"] == []
     assert call["prompt"].startswith("Fix back\n\ntry again")
     assert store.get_thread(thread.id).status == "answered"  # type: ignore[union-attr]
+
+
+# --- attachments --------------------------------------------------------------
+
+BACK = Attachment.field("Back", 1, "x^2 + 1", comment="wrong exponent")
+REPLY = Attachment.transcript("\\(y = 2\\)\nsecond line", role="assistant")
+
+
+def test_attachments_round_trip_through_dicts() -> None:
+    for attachment in (BACK, REPLY, Attachment.transcript("t")):
+        assert Attachment.from_dict(json.loads(json.dumps(attachment.to_dict()))) == (
+            attachment
+        )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        [],
+        {"source": "other", "text": "x"},
+        {"source": "field", "text": "x"},
+        {"source": "field", "text": "x", "field_name": "Back", "field_index": "1"},
+        {"source": "transcript", "text": "  "},
+        {"source": "transcript", "text": "x", "role": "system"},
+        {"source": "transcript", "text": "x", "comment": 3},
+    ],
+)
+def test_malformed_attachments_are_dropped(raw: Any) -> None:
+    assert Attachment.from_dict(raw) is None
+
+
+def test_attachments_prompt_numbers_the_selections_before_the_text() -> None:
+    assert attachments_prompt("Fix it", (BACK, REPLY)) == (
+        "Attached selections:\n"
+        '[1] From the note\'s "Back" field:\n'
+        "> x^2 + 1\n"
+        "Comment: wrong exponent\n"
+        "\n"
+        "[2] From your earlier reply:\n"
+        "> \\(y = 2\\)\n"
+        "> second line\n"
+        "\n"
+        "Fix it"
+    )
+    assert attachments_prompt("Fix it", ()) == "Fix it"
+    assert attachments_prompt("", (REPLY,)).endswith("> second line")
+
+
+def test_messages_keep_their_attachments(store: QueueStore) -> None:
+    thread = store.create_thread(
+        context(), settings(), "Fix back", 11, first_attachments=(BACK,)
+    )
+    store.transition(thread.id, "queued", "running")
+    store.add_message(thread.id, "agent", "done")
+    store.transition(thread.id, "running", "answered")
+    store.reply(thread.id, "", attachments=(REPLY,))
+
+    assert [m.attachments for m in store.messages(thread.id)] == [
+        (BACK,),
+        (),
+        (REPLY,),
+    ]
+
+
+def test_replies_send_attachments_with_their_text_and_replay_them(
+    store: QueueStore,
+) -> None:
+    thread = store.create_thread(
+        context(), settings(), "Fix back", 11, first_attachments=(BACK,)
+    )
+    agent = FakeAgent([result("first"), result("second")])
+    harness = Harness(store, agent)
+    harness.runner.run_once()
+    store.reply(thread.id, "and this", attachments=(REPLY,))
+    harness.runner.run_once()
+
+    first, second = agent.calls
+    assert first["prompt"].startswith(attachments_prompt("Fix back", (BACK,)))
+    assert second["history"] == [(attachments_prompt("Fix back", (BACK,)), "first")]
+    assert second["prompt"].startswith(attachments_prompt("and this", (REPLY,)))
+
+
+def test_v3_store_is_migrated_to_keep_attachments(tmp_path: Path) -> None:
+    import sqlite3
+
+    from editor_agent_pane import queue_store
+
+    path = tmp_path / "v3.sqlite"
+    conn = sqlite3.connect(path)
+    conn.executescript(queue_store._SCHEMA_V1)
+    conn.execute(queue_store._MIGRATE_V2)
+    conn.execute(queue_store._MIGRATE_V3)
+    conn.execute("pragma user_version = 3")
+    conn.execute(
+        "insert into threads values ('t', 0, 0, 'answered', 't', null, '{}', '{}',"
+        " null, null, null, null)"
+    )
+    conn.execute("insert into messages values ('t', 1, 'user', 'hi', '', 0)")
+    conn.commit()
+    conn.close()
+    store = QueueStore.open(path)
+    try:
+        assert store.schema_version() == queue_store.SCHEMA_VERSION
+        assert store.messages("t")[0].attachments == ()
+        store.reply("t", "more", attachments=(REPLY,))
+        assert store.messages("t")[1].attachments == (REPLY,)
+    finally:
+        store.close()
 
 
 def test_card_lookups_use_thread_scope_via_main_thread(store: QueueStore) -> None:
@@ -2775,7 +2888,7 @@ def test_v2_store_is_migrated_to_v3(tmp_path: Path) -> None:
     conn.close()
     store = QueueStore.open(path)
     try:
-        assert store.schema_version() == 3
+        assert store.schema_version() == queue_store.SCHEMA_VERSION
         thread = store.get_thread("t")
         assert thread is not None and thread.deferred_until is None
         store.defer("t", time.time() + 60)
@@ -2801,7 +2914,7 @@ def test_v2_store_that_already_has_deferred_until_opens(tmp_path: Path) -> None:
     for _ in range(2):
         store = QueueStore.open(path)
         try:
-            assert store.schema_version() == 3
+            assert store.schema_version() == queue_store.SCHEMA_VERSION
         finally:
             store.close()
 

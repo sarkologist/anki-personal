@@ -26,10 +26,12 @@ from aqt.qt import (
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     Qt,
     QTextCursor,
+    QToolButton,
     QVBoxLayout,
     QWidget,
     qconnect,
@@ -38,6 +40,7 @@ from aqt.utils import showWarning, tooltip
 from aqt.webview import AnkiWebView
 
 from . import queue_runtime
+from .attachments import Attachment, AttachmentTray, user_label
 from .latex_preview import LegacyLatexPreviewRenderer
 from .patches import (
     EditorSnapshot,
@@ -67,13 +70,12 @@ from .surface import (
     js_clear_transcript,
     js_set_proposal,
     multi_note_patch_card_ids,
-    parse_quote_command,
-    quote_block,
-    quote_insertion,
+    parse_add_context_command,
     render_activity_line,
     render_creates_proposal,
     render_multi_note_card_proposal_diff,
     render_proposal_diff,
+    selection_context_excerpt,
     surface_body,
 )
 from .thread_view import (
@@ -316,6 +318,109 @@ APPLY_ANYWAY_TIP = (
 )
 
 
+class ContextTray(QWidget):
+    """The selections that go with the next message (an ``AttachmentTray``,
+    whose methods it has): a row each, with where it is from and an excerpt,
+    a comment, and a remove button."""
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        on_enter: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._tray = AttachmentTray()
+        self._on_enter = on_enter
+        self._rows: list[QWidget] = []
+        self._comments: list[QLineEdit] = []
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.setLayout(layout)
+        self.setVisible(False)
+
+    @property
+    def items(self) -> tuple[Attachment, ...]:
+        return self._tray.items
+
+    def add(self, attachment: Attachment) -> int | None:
+        """Add a selection, with the focus in its comment."""
+        index = self._tray.add(attachment)
+        if index is not None:
+            self._rebuild()
+            self._comments[index].setFocus()
+        return index
+
+    def remove(self, index: int) -> None:
+        self._tray.remove(index)
+        self._rebuild()
+
+    def set_comment(self, index: int, comment: str) -> None:
+        self._tray.set_comment(index, comment)
+
+    def drop_fields(self) -> None:
+        self._tray.drop_fields()
+        self._rebuild()
+
+    def take(self) -> tuple[Attachment, ...]:
+        items = self._tray.take()
+        self._rebuild()
+        return items
+
+    def restore(self, attachments: tuple[Attachment, ...]) -> None:
+        self._tray.restore(attachments)
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        layout = self.layout()
+        for row in self._rows:
+            layout.removeWidget(row)
+            row.setParent(None)
+            row.deleteLater()
+        self._rows = []
+        self._comments = []
+        for index, attachment in enumerate(self._tray.items):
+            row = self._row(index, attachment)
+            layout.addWidget(row)
+            self._rows.append(row)
+        self.setVisible(bool(self._rows))
+
+    def _row(self, index: int, attachment: Attachment) -> QWidget:
+        row = QWidget()
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        row.setLayout(outer)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        label = QLabel(
+            f'{user_label(attachment)}: "{selection_context_excerpt(attachment.text)}"'
+        )
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setToolTip(attachment.text)
+        remove = QToolButton()
+        remove.setText("×")
+        remove.setToolTip("Remove from the message")
+        remove.setAutoRaise(True)
+        qconnect(remove.clicked, lambda _checked=False, i=index: self.remove(i))
+        top.addWidget(label, 1)
+        top.addWidget(remove)
+        comment = QLineEdit()
+        comment.setPlaceholderText("Comment (optional)")
+        comment.setText(attachment.comment)
+        qconnect(
+            comment.textChanged,
+            lambda text, i=index: self._tray.set_comment(i, text),
+        )
+        if self._on_enter is not None:
+            qconnect(comment.returnPressed, self._on_enter)
+        outer.addLayout(top)
+        outer.addWidget(comment)
+        self._comments.append(comment)
+        return row
+
+
 class ThreadPanel:
     """Mixin: render the selected queue thread and apply/discard/stop it."""
 
@@ -329,8 +434,9 @@ class ThreadPanel:
     apply_anyway_button: Any = None
     rerun_button: Any = None
     retry_button: Any = None
-    # The message box the transcript's Quote button quotes into, if any.
-    prompt: Any = None
+    # Where the transcript's "Add to context" puts a selection, if anywhere
+    # (a ContextTray).
+    context_tray: Any = None
     # Follows "[Applied." / "[Discarded." in the status banner.
     _closed_hint = PANE_CLOSED_HINT
     _thread_id: str | None
@@ -425,8 +531,9 @@ class ThreadPanel:
         return previews
 
     def _on_bridge_cmd(self, cmd: str) -> Any:
-        if (quoted := parse_quote_command(cmd)) is not None:
-            self._insert_transcript_quote(quoted)
+        if (attachment := parse_add_context_command(cmd)) is not None:
+            if self.context_tray is not None:
+                self.context_tray.add(attachment)
             return None
         note_id = parse_open_note_command(cmd)
         if note_id is None:
@@ -435,18 +542,6 @@ class ThreadPanel:
         if mw is not None:
             aqt.dialogs.open("Browser", mw, search=(f"nid:{note_id}",))
         return None
-
-    def _insert_transcript_quote(self, text: str) -> None:
-        """Quote ``text`` (selected in the transcript) in the message box, at
-        the cursor, replacing any text selected there."""
-        prompt = self.prompt
-        if prompt is None:
-            return
-        cursor = prompt.textCursor()
-        before = _utf16_prefix(prompt.toPlainText(), cursor.selectionStart())
-        cursor.insertText(quote_insertion(before, quote_block(text)))
-        prompt.setTextCursor(cursor)
-        prompt.setFocus()
 
     def _set_multi_proposal(
         self,
@@ -1031,8 +1126,3 @@ def prepare_note_update(col: Any, note_id: int, patch: NotePatch) -> Any:
     if patch.tag_patch.has_changes():
         note.tags = list(patch.tag_patch.apply(tuple(note.tags)))
     return note
-
-
-def _utf16_prefix(text: str, units: int) -> str:
-    """``text`` up to a Qt text position, which counts UTF-16 code units."""
-    return text.encode("utf-16-le")[: 2 * units].decode("utf-16-le", errors="ignore")

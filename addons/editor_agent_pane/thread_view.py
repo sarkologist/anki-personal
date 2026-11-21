@@ -183,7 +183,11 @@ def transcript_fragments(
     for message in messages:
         if message.role == "user":
             fragments.append(
-                render_user_message(message.text, selected_text if first_user else None)
+                render_user_message(
+                    message.text,
+                    selected_text if first_user else None,
+                    message.attachments,
+                )
             )
             first_user = False
         elif message.role == "agent":
