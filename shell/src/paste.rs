@@ -13,6 +13,8 @@ use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -710,6 +712,11 @@ pub fn paste_html(
 /// in a temporary file.
 pub fn occlusion_image_from_pasteboard(shell: &Shell, pasteboard: Option<&str>) -> Option<PathBuf> {
     let contents = pasteboard::read(pasteboard, config_bool(shell, BoolKey::PasteImagesAsPng));
+    occlusion_image(shell, &contents)
+}
+
+/// The picture file `contents` names, else its image data in a temp file.
+fn occlusion_image(shell: &Shell, contents: &Contents) -> Option<PathBuf> {
     let media = ShellMedia::new(shell);
     let path = imported_picture(shell, &contents.urls, &media).or_else(|| {
         let image = contents.image.as_ref()?;
@@ -735,8 +742,16 @@ fn imported_picture(shell: &Shell, urls: &[String], media: &dyn Media) -> Option
 fn write_temp_image(image: &Image) -> Result<PathBuf> {
     let dir = std::env::temp_dir().join("anki-paste");
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let path = dir.join(pasted_image_filename(&image.data, image.ext));
-    fs::write(&path, &image.data).with_context(|| format!("writing {}", path.display()))?;
+    let name = pasted_image_filename(&image.data, image.ext);
+    let path = dir.join(&name);
+    // the name is the data's hash, so another paste may be writing the same
+    // file: write a private copy and rename it, so readers never see a
+    // partly written one
+    static WRITES: AtomicUsize = AtomicUsize::new(0);
+    let n = WRITES.fetch_add(1, Ordering::Relaxed);
+    let partial = dir.join(format!(".{name}.{}.{n}", std::process::id()));
+    fs::write(&partial, &image.data).with_context(|| format!("writing {}", partial.display()))?;
+    fs::rename(&partial, &path).with_context(|| format!("renaming to {}", path.display()))?;
     Ok(path)
 }
 
@@ -1375,10 +1390,12 @@ mod shell_test {
         let (dir, shell) = shell();
         let file = dir.path().join("my pic.png");
         std::fs::write(&file, PNG).unwrap();
-        let pb = ScratchPasteboard::new();
-        let url = format!("file://{}", quote(&file.to_string_lossy()));
-        pb.write(None, None, &[&url], Some(PNG));
-        let path = occlusion_image_from_pasteboard(&shell, Some(pb.name())).unwrap();
+        let contents = Contents {
+            urls: vec![format!("file://{}", quote(&file.to_string_lossy()))],
+            image: Some(jpeg()),
+            ..Default::default()
+        };
+        let path = occlusion_image(&shell, &contents).unwrap();
         assert_eq!(
             path,
             ProfilePaths::new(dir.path(), "User 1")
@@ -1388,24 +1405,31 @@ mod shell_test {
         assert_eq!(std::fs::read(path).unwrap(), PNG);
     }
 
+    /// Pasted image data as the pasteboard gives it (re-encoding is
+    /// pasteboard.rs's).
+    fn jpeg() -> Image {
+        Image {
+            data: b"\xff\xd8\xff occlusion".to_vec(),
+            ext: "jpg",
+        }
+    }
+
     #[test]
     fn occlusion_falls_back_to_image_data_in_a_temp_file() {
         let (_dir, shell) = shell();
-        let pb = ScratchPasteboard::new();
-        pb.write(None, None, &["https://example.com/page"], Some(PNG));
-        let path = occlusion_image_from_pasteboard(&shell, Some(pb.name())).unwrap();
+        let contents = Contents {
+            urls: vec!["https://example.com/page".into()],
+            image: Some(jpeg()),
+            ..Default::default()
+        };
+        let path = occlusion_image(&shell, &contents).unwrap();
         let name = path.file_name().unwrap().to_string_lossy();
         assert!(
             name.starts_with("paste-") && name.ends_with(".jpg"),
             "{name}"
         );
-        assert!(std::fs::read(&path)
-            .unwrap()
-            .starts_with(&[0xff, 0xd8, 0xff]));
-        assert_eq!(
-            occlusion_image_from_pasteboard(&shell, Some(ScratchPasteboard::new().name())),
-            None
-        );
+        assert_eq!(std::fs::read(&path).unwrap(), jpeg().data);
+        assert_eq!(occlusion_image(&shell, &Contents::default()), None);
     }
 
     #[test]
