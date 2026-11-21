@@ -13,6 +13,8 @@
     const widgets = new Map();
     // typed text the host hasn't had yet: id -> value
     const typed = new Map();
+    // text edits' carets (UTF-16 units) since the last send
+    const carets = new Map();
     let typedTimer = 0;
     // the tree's batch; until it's drawn, batches wait
     let seq = -1;
@@ -23,8 +25,10 @@
         clearTimeout(typedTimer);
         const values = Object.fromEntries(typed);
         typed.clear();
+        const caretsOut = Object.fromEntries(carets);
+        carets.clear();
         window.pycmd(
-            "addonWidget:" + JSON.stringify({ root, op, id, values, ...extra }),
+            "addonWidget:" + JSON.stringify({ root, op, id, values, carets: caretsOut, ...extra }),
             cb,
         );
     };
@@ -401,6 +405,11 @@
             const el = element("textarea", "qtextedit");
             let keys = false;
             el.addEventListener("input", () => noteTyping(node.id, el.value));
+            // the host's caret follows the page's (QTextCursor inserts there)
+            const noteCaret = () => carets.set(String(node.id), el.selectionStart);
+            for (const type of ["input", "keyup", "mouseup", "focus", "select"]) {
+                el.addEventListener(type, noteCaret);
+            }
             // a subclass's keyPressEvent sees Enter, and Up/Down on the
             // first/last line, before the page acts on them; other keys
             // only tell it (Qt's base class handling is the page's)
@@ -458,7 +467,10 @@
                     keys = !!p.keys;
                 },
                 focus: () => el.focus(),
-                setCursor: (n) => el.setSelectionRange(n, n),
+                setCursor: (n) => {
+                    el.setSelectionRange(n, n);
+                    carets.delete(String(node.id));
+                },
                 value: (v) => (el.value = v),
             };
         },

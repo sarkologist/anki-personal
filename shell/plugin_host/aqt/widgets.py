@@ -531,6 +531,11 @@ def handle_event(event: dict[str, Any]) -> Any:
         widget = _widgets.get(int(id))
         if widget is not None and root_of(widget) is root:
             widget._from_page("text", value)
+    # and where the caret is in text it has typed or clicked into
+    for id, value in (event.get("carets") or {}).items():
+        widget = _widgets.get(int(id))
+        if widget is not None and root_of(widget) is root and isinstance(value, int):
+            widget._from_page("caret", value)
     op = event.get("op")
     if op == "tree":
         return root.tree()
@@ -1168,17 +1173,17 @@ class QTextCursor(metaclass=_Names):
             self._edit._insert(self._text, self._position)
 
     def blockNumber(self) -> int:
-        return self._text[: self._position].count("\n")
+        return self._text[: _utf16_to_index(self._text, self._position)].count("\n")
 
     def atStart(self) -> bool:
         return self._position == 0
 
     def atEnd(self) -> bool:
-        return self._position >= len(self._text)
+        return self._position >= _utf16_len(self._text)
 
     def movePosition(self, op: Any, *_args: Any) -> bool:
         if op == QTextCursor.MoveOperation.End:
-            self._position = len(self._text)
+            self._position = _utf16_len(self._text)
         elif op == QTextCursor.MoveOperation.Start:
             self._position = 0
         return True
@@ -1222,7 +1227,7 @@ class QPlainTextEdit(QWidget):
         self._text = text
         self._placeholder = ""
         self._read_only = False
-        self._cursor = len(text)
+        self._cursor = _utf16_len(text)
         self.textChanged = Signal(self)
         # set while the base class handles a page key
         self._default_key = False
@@ -1238,9 +1243,10 @@ class QPlainTextEdit(QWidget):
 
     def _from_page(self, op: str | None, value: Any, event: Any = None) -> Any:
         if op == "text" and isinstance(value, str):
-            self._set_from_page(
-                value, len(value) if self._cursor > len(value) else None
-            )
+            end = _utf16_len(value)
+            self._set_from_page(value, end if self._cursor > end else None)
+        elif op == "caret" and isinstance(value, int):
+            self._set_from_page(self._text, value)
         elif op == "key" and isinstance(event, dict):
             text = event.get("text")
             if isinstance(text, str):
@@ -1252,7 +1258,7 @@ class QPlainTextEdit(QWidget):
 
     def _set_from_page(self, text: str, cursor: int | None) -> None:
         if cursor is not None:
-            self._cursor = max(0, min(cursor, len(text)))
+            self._cursor = max(0, min(cursor, _utf16_len(text)))
         if text != self._text:
             self._text = text
             self.textChanged.emit()
@@ -1263,7 +1269,7 @@ class QPlainTextEdit(QWidget):
 
     def setPlainText(self, text: str) -> None:
         self._text = text
-        self._cursor = len(text)
+        self._cursor = _utf16_len(text)
         self._changed()
         self.textChanged.emit()
 

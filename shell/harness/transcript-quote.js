@@ -69,6 +69,16 @@ check(
     ["\\(f'(x) = 2x\\)", "\\[\\int_0^1 x\\,dx\\]"],
 );
 
+// typed in the prompt, then the caret clicked back after "hello" (past an
+// astral character, so the caret's UTF-16 units and code points differ)
+const prompt = doc.querySelector("textarea.qtextedit[placeholder=Message]");
+const head = "\u{1D465} hello";
+prompt.focus();
+prompt.value = head + " world";
+prompt.dispatchEvent(new Event("input", { bubbles: true }));
+prompt.setSelectionRange(head.length, head.length);
+prompt.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
 // from inside the first paragraph's text into the display formula
 const selected = await inSurface(`(() => {
     const [p, display] = document.querySelectorAll(".agent-body p");
@@ -85,10 +95,10 @@ const quoted = "derivative is \\(f'(x) = 2x\\) here.\n\n\\[\\int_0^1 x\\,dx\\]";
 check("the selection, math as TeX", selected, { text: quoted, hasMath: true });
 await until("the Quote button", () => inSurface("!document.querySelector('.agent-quote-button').hidden"));
 
-const prompt = doc.querySelector("textarea.qtextedit[placeholder=Message]");
 const before = prompt.value;
 await inSurface("document.querySelector('.agent-quote-button').click(); true");
-const expected = before + "> derivative is \\(f'(x) = 2x\\) here.\n>\n> \\[\\int_0^1 x\\,dx\\]\n\n";
+const quote = "\n\n> derivative is \\(f'(x) = 2x\\) here.\n>\n> \\[\\int_0^1 x\\,dx\\]\n\n";
+const expected = head + quote + " world";
 check(
     "the prompt has the quote",
     await until("the quote in the prompt", () => prompt.value !== before && prompt.value, 10000).catch(() =>
@@ -96,6 +106,7 @@ check(
     ),
     expected,
 );
+check("the caret is after the quote", prompt.selectionStart, (head + quote).length);
 check("the selection is cleared", await inSurface("getSelection().isCollapsed"), true);
 
 doc.querySelector(".qdock-close").click();
