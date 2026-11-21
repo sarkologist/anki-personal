@@ -254,7 +254,9 @@ Options:
   `harness/agent-pane.js` (`--test-page add`, and `--test-page editor
   --test-note 0`) drives the agent pane with a real request; it needs the
   add-on in the copy's `addons21` with its provider set to Ollama and a
-  local model. `harness/agent-queue.js` (`--test-page main`) opens the
+  local model. `harness/transcript-quote.js` (`--test-page add`, the add-on
+  in the copy's `addons21`, no model needed) quotes a transcript selection
+  with math into the prompt. `harness/agent-queue.js` (`--test-page main`) opens the
   queue window on a copy whose `agent_queue.sqlite` has open requests (none
   queued, so nothing runs) and checks the table, selection, Defer's menu
   and dialog, Discard's prompt and closing. `harness/alfred-bridge.js` (`--test-page add`) calls the

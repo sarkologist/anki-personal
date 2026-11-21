@@ -302,6 +302,65 @@ def test_a_key_handler_sees_the_pages_keys_and_leaves_the_rest_to_it(mw):
     assert ops[-1] == {"id": prompt._id, "cursor": len("earlier")}
 
 
+def test_a_cursor_inserts_into_its_text_edit_as_qt_does(mw):
+    prompt = Prompt()
+    pane = QWidget()
+    pane.setLayout(QVBoxLayout())
+    pane.layout().addWidget(prompt)
+    dock = shown(mw, pane)
+    # the page's caret, in UTF-16 units as in Qt: after the emoji
+    event(dock, "key", prompt, key="a", text="a\U0001f600sk", cursor=3)
+    updates(mw)
+
+    cursor = prompt.textCursor()
+    assert cursor.selectionStart() == cursor.selectionEnd() == 3
+    cursor.insertText("> q\n")
+    prompt.setTextCursor(cursor)
+
+    assert prompt.toPlainText() == "a\U0001f600> q\nsk"
+    assert cursor.position() == 7
+    ops = updates(mw)
+    assert ops[0]["props"]["text"] == "a\U0001f600> q\nsk"
+    assert ops[-1] == {"id": prompt._id, "cursor": 7}
+
+
+def test_the_pages_caret_comes_with_its_typing_before_a_handler_runs(mw):
+    pane = QWidget()
+    pane.setLayout(QVBoxLayout())
+    prompt, quote = QPlainTextEdit(), QPushButton("Quote")
+    for w in (prompt, quote):
+        pane.layout().addWidget(w)
+    dock = shown(mw, pane)
+    carets = []
+    quote.clicked.connect(lambda: carets.append(prompt.textCursor().selectionStart()))
+
+    # typed, then the caret clicked back after "he"
+    event(
+        dock,
+        "clicked",
+        quote,
+        values={str(prompt._id): "hello"},
+        carets={str(prompt._id): 2},
+    )
+    # a caret alone (a click, no typing), clamped to the text
+    event(dock, "clicked", quote, carets={str(prompt._id): 99})
+    assert carets == [2, 5]
+
+
+def test_caret_positions_count_utf16_units(mw):
+    prompt = QPlainTextEdit()
+    prompt.setPlainText("x\U0001f600")
+    cursor = prompt.textCursor()
+    assert cursor.position() == 3 and cursor.atEnd()
+    cursor.insertText("Q")
+    assert prompt.toPlainText() == "x\U0001f600Q"
+
+    prompt.setPlainText("\U0001f600\nb")
+    prompt.moveCursor(QTextCursor.MoveOperation.End)
+    assert prompt.textCursor().position() == 4
+    assert prompt.textCursor().blockNumber() == 1
+
+
 def test_web_views_replay_their_evals_and_answer_their_pages(mw):
     pane = QWidget()
     pane.setLayout(QVBoxLayout())
