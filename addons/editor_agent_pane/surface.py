@@ -394,8 +394,11 @@ window.agentPane = (() => {
         document.body.appendChild(holder);
         const text = holder.innerText;
         holder.remove();
-        // whose message it is from, when it is from one
-        const message = ancestor.closest(".agent-message");
+        // whose message it is from, when it is from one (an attachment shown
+        // in the user's message is not theirs)
+        const message = ancestor.closest(".agent-attachment")
+            ? null
+            : ancestor.closest(".agent-message");
         const role = message && message.classList.contains("assistant")
             ? "assistant"
             : message && message.classList.contains("user")

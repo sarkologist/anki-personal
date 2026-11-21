@@ -857,7 +857,7 @@ def test_attachments_prompt_numbers_the_selections_before_the_text() -> None:
         "> x^2 + 1\n"
         "Comment: wrong exponent\n"
         "\n"
-        "[2] From your earlier reply:\n"
+        "[2] From an earlier reply:\n"
         "> \\(y = 2\\)\n"
         "> second line\n"
         "\n"

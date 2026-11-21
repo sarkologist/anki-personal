@@ -116,6 +116,23 @@ const comment = comments()[0];
 comment.value = "why is this 2x?";
 comment.dispatchEvent(new Event("input", { bubbles: true }));
 
+// text quoted inside a sent message's attachment isn't the user's own
+const sent = "<section class=\"agent-message user\"><div class=\"agent-role\">You</div>"
+    + "<div class=\"agent-body\"><div class=\"agent-attachment\"><div class=\"agent-attachment-label\">Reply</div>"
+    + "<blockquote class=\"agent-quote\">quoted answer</blockquote></div>my question</div></section>";
+await inSurface(`agentPane.appendTranscript(${JSON.stringify(sent)}); true`);
+check(
+    "a quote in a sent message has no role",
+    await inSurface(`(() => {
+        const quote = document.querySelector(".agent-message.user .agent-quote");
+        getSelection().selectAllChildren(quote);
+        const role = agentPane.selectionText().role;
+        getSelection().removeAllRanges();
+        return role;
+    })()`),
+    null,
+);
+
 // the editor's selection, previewed, then added
 back.focus();
 await frame();

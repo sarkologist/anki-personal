@@ -107,11 +107,13 @@ def model_label(attachment: Attachment) -> str:
     """Where the selection is from, as the model is told."""
     if attachment.source == FIELD:
         return f'From the note\'s "{attachment.field_name}" field'
+    # the selection may be from another request's transcript (the pane keeps
+    # its tray when another request is shown)
     if attachment.role == "assistant":
-        return "From your earlier reply"
+        return "From an earlier reply"
     if attachment.role == "user":
-        return "From my earlier message"
-    return "From our conversation"
+        return "From an earlier message of mine"
+    return "From an earlier conversation"
 
 
 def user_label(attachment: Attachment) -> str:
@@ -180,9 +182,14 @@ class AttachmentTray:
         self._items = []
         return items
 
-    def restore(self, attachments: Iterable[Attachment]) -> None:
-        """Put back items whose message was not sent, before any added since."""
+    def restore(
+        self, attachments: Iterable[Attachment], *, note_changed: bool = False
+    ) -> None:
+        """Put back items whose message was not sent, before any added since;
+        after a note change, without the old note's field selections."""
         added = self._items
         self._items = []
         for item in (*attachments, *added):
-            self.add(item)
+            # the editor's selections describe the note that was shown
+            if not (note_changed and item.source == FIELD):
+                self.add(item)

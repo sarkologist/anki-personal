@@ -367,8 +367,10 @@ class ContextTray(QWidget):
         self._rebuild()
         return items
 
-    def restore(self, attachments: tuple[Attachment, ...]) -> None:
-        self._tray.restore(attachments)
+    def restore(
+        self, attachments: tuple[Attachment, ...], *, note_changed: bool = False
+    ) -> None:
+        self._tray.restore(attachments, note_changed=note_changed)
         self._rebuild()
 
     def _rebuild(self) -> None:

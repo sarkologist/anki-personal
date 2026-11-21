@@ -1693,7 +1693,9 @@ class EditorAgentPane(ThreadPanel, QWidget):
         if not self.prompt.toPlainText().strip():
             self.prompt.setPlainText(prompt)
         if attachments and self.context_tray is not None:
-            self.context_tray.restore(attachments)
+            self.context_tray.restore(
+                attachments, note_changed=reason == PROMPT_NOT_SENT
+            )
         if reason:
             tooltip(reason, parent=self)
 

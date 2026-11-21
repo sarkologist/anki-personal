@@ -6932,6 +6932,8 @@ def test_an_unsent_request_gives_the_tray_back(
     pane.context_tray = AttachmentTray()
     reply = Attachment.transcript("an earlier answer", role="assistant")
     pane.context_tray.add(reply)
+    # from the note that is no longer shown: not given back
+    pane.context_tray.add(Attachment.field("Front", 0, "front"))
     pane.prompt = FakePrompt("Improve this")
     # the note changes while the request is on its way
     pane.editor.call_after_note_saved = lambda callback, keepFocus=False: (
